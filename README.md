@@ -30,7 +30,15 @@ EveryStage/
 
 ## 开发状态
 
-详见 `docs/PLANNING.md` 中的开发排期建议（第15章）。**阶段0（D3D11零拷贝渲染管线技术验证Demo）代码已在 `src/Poc/ZeroCopyRenderDemo/` 完成初版，但尚未在真实 Windows/GPU 环境编译与验收**（当前开发在 Linux 沙箱中进行，无法编译测试 D3D11/Media Foundation 代码）——下一步需要在 Windows 开发机上完成构建、跑通第4.4节验收标准，具体待验证事项见该 Demo 的 README.md。
+详见 `docs/PLANNING.md` 中的开发排期建议（第15章）。当前代码均在 Linux 沙箱中编写，**尚未在真实
+Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完成构建。
+
+- **阶段0**（D3D11零拷贝渲染管线技术验证Demo）：初版代码已在 `src/Poc/ZeroCopyRenderDemo/` 完成，
+  待 Windows/GPU 环境编译并跑通第4.4节验收标准。
+- **阶段1**（终端机主程序框架）：初版框架已在 `src/Terminal/EveryStage.Terminal/` 完成——覆盖式
+  窗口、投屏开关/断状态机、数据持久化、音频接管；本地内容引擎（图片/视频/PDF）、WPS COM互操作验证、
+  设备发现配对仍未开始，详见该项目的 README.md。
+- 其余阶段尚未开始。
 
 ## License
 
