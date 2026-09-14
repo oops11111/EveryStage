@@ -18,7 +18,7 @@
 | `StateMachine/OutputStateMachine.cs` | §9, §10 | 投屏开关与待机/输出状态两个独立维度；设备请求不受开关约束；"断"不改变开关状态 |
 | `Audio/AudioTakeoverService.cs` | §9.3 | 媒体键暂停 + 静音兜底两段式，断开时对称恢复 |
 | `Tray/TrayIconController.cs` | §10 | 托盘图标 + 开关菜单 + 退出（"关闭程序"的唯一入口） |
-| `ContentEngine/` | §3 | 图片(GDI+，WIC编解码器) + PDF(PdfiumViewer) 渲染器 + 覆盖窗口内的画面呈现控件（等比缩放、黑边） |
+| `ContentEngine/` | §3 | 图片(GDI+，WIC编解码器) + PDF(PdfiumViewer) 渲染器、画面呈现控件（等比缩放、黑边）、视频播放控制器(`VideoContentController`，复用 `EveryStage.Rendering` 的D3D11零拷贝管线，直接对接 `OverlayWindow.VideoHost` 的独立SwapChain) |
 
 ## 已知风险 / 待验证事项
 
@@ -38,11 +38,17 @@
    ——未对照真实 NuGet 源核实，且该库依赖单独的原生 pdfium.dll 包（架构需匹配 x64）。
 6. **图片解码用 GDI+ 而非直接调用 WIC COM 接口**：满足常见格式（JPEG/PNG/BMP/GIF/TIFF）没问题，
    但不支持 WIC 能处理的部分高位深/HDR 格式——如果产品需要展示这类图片，需要换成直接的 WIC interop。
+7. **`VideoContentController` 的 D3D11/Media Foundation 部分**：继承自 `EveryStage.Rendering`，
+   已知风险清单见该库的 README.md（NuGet版本、GUID字面量、COM重载签名等），这里不重复列。这个类
+   自己新增的部分——独立播放线程的启动/取消/Join、`_presenterLock` 保护并发 Present/Resize——
+   逻辑上是新代码，同样没有在真实环境跑过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
-- 视频内容引擎：需要复用 `ZeroCopyRenderDemo` 的 D3D11/Media Foundation 解码渲染管线，直接对接
-  `OverlayWindow.Handle` 建立独立 SwapChain（不能走 `ContentSurface` 的 GDI+ 路径，否则破坏零拷贝）
+- **播放/活动引擎**：`ImageContentRenderer` / `PdfContentRenderer` / `VideoContentController` 都是
+  独立可用的部件，但还没有一个上层调度器把它们接到 `Scenario`/`Activity`/`MediaFile` 数据模型和
+  `OutputStateMachine` 上——按 PLANNING.md §6/§9 实现"点文件→(开关判断)→选对应渲染器播放→按
+  停留时长/完成动作推进"的完整链路，是下一步最重要的一块。
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
 - 设备发现/配对、传输接收端（阶段2/3）

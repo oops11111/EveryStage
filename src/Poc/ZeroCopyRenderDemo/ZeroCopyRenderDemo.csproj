@@ -15,18 +15,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!--
-      Vortice.Windows gives managed, near-1:1 bindings over D3D11 / DXGI / Media Foundation COM
-      interfaces without pulling in the old, unmaintained SharpDX.
-      NOTE: pin these to whatever is actually latest when you first restore on a Windows box —
-      the exact package versions below were not verified against a live NuGet feed. Run
-      `dotnet add package Vortice.Direct3D11` etc. and let it pick current versions if these fail.
-    -->
-    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
-    <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
-    <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
-    <!-- Simple WASAPI playback for the audio master clock; not part of the zero-copy path under test. -->
-    <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- The actual D3D11/MF decode+render pipeline lives in EveryStage.Rendering, shared with the
+         real Terminal video renderer — this demo only supplies the window, scheduling loop, and
+         metrics instrumentation around it. -->
+    <ProjectReference Include="..\..\Shared\EveryStage.Rendering\EveryStage.Rendering.csproj" />
   </ItemGroup>
 
 </Project>

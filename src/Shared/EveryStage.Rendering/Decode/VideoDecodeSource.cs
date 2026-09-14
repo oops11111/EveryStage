@@ -1,16 +1,15 @@
 using Vortice.Direct3D11;
 using Vortice.MediaFoundation;
-using EveryStage.Poc.ZeroCopyRenderDemo.Rendering;
-using static EveryStage.Poc.ZeroCopyRenderDemo.Decode.WellKnownGuids;
+using static EveryStage.Rendering.Decode.WellKnownGuids;
 
-namespace EveryStage.Poc.ZeroCopyRenderDemo.Decode;
+namespace EveryStage.Rendering.Decode;
 
 /// <summary>The decoder's own texture-array slot for one video frame. No copy has happened yet —
 /// the caller (SwapChainPresenter) consumes ArraySlice directly as a video-processor input.</summary>
 public readonly record struct DecodedVideoFrame(ID3D11Texture2D Texture, int ArraySlice, int Width, int Height, long TimestampTicks);
 
 /// <summary>PCM comes off the reader as regular CPU memory since audio isn't part of the
-/// zero-copy path this demo is validating (see AudioPlaybackClock).</summary>
+/// zero-copy path this decoder is meant to validate/serve (see AudioPlaybackClock).</summary>
 public readonly record struct DecodedAudioChunk(byte[] Pcm, long TimestampTicks);
 
 /// <summary>
@@ -94,8 +93,9 @@ public sealed class VideoDecodeSource : IDisposable
         using (var buffer = sample.ConvertToContiguousBuffer())
         {
             // NOTE: exact Lock() signature/return type (Span<byte> vs. raw pointer + length outs)
-            // needs checking against the installed Vortice.MediaFoundation version — see README
-            // "待验证事项". Native IMFMediaBuffer::Lock is (out BYTE*, out maxLength, out currentLength).
+            // needs checking against the installed Vortice.MediaFoundation version — see the
+            // Phase 0 demo's README "待验证事项". Native IMFMediaBuffer::Lock is
+            // (out BYTE*, out maxLength, out currentLength).
             var span = buffer.Lock(out _, out var currentLength);
             var pcm = new byte[currentLength];
             span.Slice(0, currentLength).CopyTo(pcm);

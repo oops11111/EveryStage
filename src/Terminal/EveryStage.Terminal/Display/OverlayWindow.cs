@@ -31,12 +31,19 @@ public sealed class OverlayWindow : Form
 
     /// <summary>
     /// Where image/document renderers' frames land (PLANNING.md §3: image/PDF are rendered
-    /// directly by the Terminal's Content Engine, not screen-captured like Caster content). Video
-    /// does not go through this control — it targets its own D3D11 swap chain attached to
-    /// <see cref="Form.Handle"/> directly (see the Phase 0 demo), since compositing a GPU-decoded
-    /// video texture through a GDI+ Control.Paint would defeat the zero-copy pipeline.
+    /// directly by the Terminal's Content Engine, not screen-captured like Caster content).
     /// </summary>
     public ContentSurface ContentSurface { get; }
+
+    /// <summary>
+    /// A separate child window that <see cref="VideoContentController"/> attaches its D3D11 swap
+    /// chain to. Video needs its own HWND rather than sharing <see cref="ContentSurface"/>'s: a
+    /// GPU swap chain and GDI+ <c>Control.Paint</c> can't usefully composite onto the same window
+    /// surface, and routing video through GDI+ would defeat the zero-copy pipeline entirely. Use
+    /// <see cref="ShowVideoSurface"/>/<see cref="ShowImageSurface"/> to switch which one is on top
+    /// when content changes.
+    /// </summary>
+    public Control VideoHost { get; }
 
     public OverlayWindow(MonitorInfo monitor)
     {
@@ -48,11 +55,32 @@ public sealed class OverlayWindow : Form
         TopMost = true;
         BackColor = System.Drawing.Color.Black;
 
+        VideoHost = new Control { Dock = DockStyle.Fill, BackColor = System.Drawing.Color.Black };
         ContentSurface = new ContentSurface();
+        // Both added up front — Control.Handle (needed to attach a swap chain) only exists once a
+        // control has been created, and adding it to the form's Controls collection is what
+        // triggers that, well before any content actually needs to display.
+        Controls.Add(VideoHost);
         Controls.Add(ContentSurface);
 
         _topMostReasserter = new System.Windows.Forms.Timer { Interval = 2000 };
         _topMostReasserter.Tick += (_, _) => ReassertTopMost();
+    }
+
+    /// <summary>Brings the image/PDF surface to the front, hiding the video host.</summary>
+    public void ShowImageSurface()
+    {
+        VideoHost.Visible = false;
+        ContentSurface.Visible = true;
+        ContentSurface.BringToFront();
+    }
+
+    /// <summary>Brings the video host to the front, hiding the image/PDF surface.</summary>
+    public void ShowVideoSurface()
+    {
+        ContentSurface.Visible = false;
+        VideoHost.Visible = true;
+        VideoHost.BringToFront();
     }
 
     /// <summary>Rebinds this (already-created) overlay to a different physical monitor, e.g. after

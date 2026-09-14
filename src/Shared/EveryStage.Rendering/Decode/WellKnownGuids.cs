@@ -1,4 +1,4 @@
-namespace EveryStage.Poc.ZeroCopyRenderDemo.Decode;
+namespace EveryStage.Rendering.Decode;
 
 /// <summary>
 /// Media Foundation GUIDs used by <see cref="VideoDecodeSource"/>, spelled out as raw literals

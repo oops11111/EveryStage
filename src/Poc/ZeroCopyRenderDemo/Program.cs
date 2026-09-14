@@ -1,8 +1,8 @@
 using System.Diagnostics;
-using EveryStage.Poc.ZeroCopyRenderDemo.Audio;
-using EveryStage.Poc.ZeroCopyRenderDemo.Decode;
 using EveryStage.Poc.ZeroCopyRenderDemo.Diagnostics;
-using EveryStage.Poc.ZeroCopyRenderDemo.Rendering;
+using EveryStage.Rendering;
+using EveryStage.Rendering.Audio;
+using EveryStage.Rendering.Decode;
 
 namespace EveryStage.Poc.ZeroCopyRenderDemo;
 

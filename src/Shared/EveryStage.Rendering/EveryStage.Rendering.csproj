@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>EveryStage.Rendering</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Shared by the Phase 0 validation demo (src/Poc/ZeroCopyRenderDemo) and the real Terminal
+      video content renderer (src/Terminal/.../ContentEngine) — see README.md for why this lives
+      here instead of in either of those projects: the demo isn't supposed to be product code, and
+      the pipeline is equally not Terminal-specific.
+      NOTE: package versions unverified against a live NuGet feed — see the Phase 0 demo's README
+      "已知风险/待验证事项" for the same caveat, which applies here too.
+    -->
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
+    <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+</Project>

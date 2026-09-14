@@ -3,7 +3,7 @@ using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.MediaFoundation;
 
-namespace EveryStage.Poc.ZeroCopyRenderDemo.Rendering;
+namespace EveryStage.Rendering;
 
 /// <summary>
 /// Owns the single D3D11 device shared between the MF decoder (hardware DXVA output textures)

@@ -2,7 +2,7 @@ using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.Mathematics;
 
-namespace EveryStage.Poc.ZeroCopyRenderDemo.Rendering;
+namespace EveryStage.Rendering;
 
 /// <summary>
 /// Presents decoded NV12 DXVA output textures straight to the window's swap chain using the

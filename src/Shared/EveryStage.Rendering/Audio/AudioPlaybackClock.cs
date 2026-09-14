@@ -1,13 +1,14 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
-namespace EveryStage.Poc.ZeroCopyRenderDemo.Audio;
+namespace EveryStage.Rendering.Audio;
 
 /// <summary>
 /// Plays decoded PCM through WASAPI and doubles as the pipeline's master clock
 /// (PLANNING.md §4.2: "音频输出WASAPI，音频时钟为主时钟，视频帧同步音频时钟"). Uses NAudio rather
-/// than hand-rolled WASAPI interop since audio is explicitly *not* the zero-copy path under test
-/// here — only the reported playback position needs to be trustworthy enough to pace video.
+/// than hand-rolled WASAPI interop since audio is explicitly *not* the zero-copy path this library
+/// validates/serves — only the reported playback position needs to be trustworthy enough to pace
+/// video.
 /// </summary>
 public sealed class AudioPlaybackClock : IDisposable
 {
@@ -23,8 +24,9 @@ public sealed class AudioPlaybackClock : IDisposable
             BufferDuration = TimeSpan.FromSeconds(5),
             DiscardOnBufferOverflow = true,
         };
-        // Shared mode + a modest latency: this is a validation demo, not the final low-latency
-        // audio path, so we don't fight for exclusive-mode access here.
+        // Shared mode + a modest latency: this validates/serves the decode->render pipeline, not
+        // a separately-optimized low-latency audio path, so we don't fight for exclusive-mode
+        // access here.
         _output = new WasapiOut(AudioClientShareMode.Shared, useEventSync: true, latency: 50);
         _output.Init(_buffer);
     }
