@@ -40,10 +40,10 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   待 Windows/GPU 环境编译并跑通第4.4节验收标准。
 - **阶段1**（终端机主程序框架 + 本地内容引擎）：初版已在 `src/Terminal/EveryStage.Terminal/` 完成
   ——覆盖式窗口、投屏开关/断状态机、数据持久化、音频接管、图片/PDF/视频渲染（视频复用
-  `src/Shared/EveryStage.Rendering/` 的D3D11零拷贝管线）；还缺一个把这些渲染器接到
-  Scenario/Activity数据模型上的播放调度引擎，以及WPS COM互操作的正式集成、设备发现配对，详见该项目的
-  README.md。WPS互操作已有一个独立验证脚本 `src/Poc/WpsComInteropSpike/`，用于尽早摸清静默模式与
-  翻页是否可行。
+  `src/Shared/EveryStage.Rendering/` 的D3D11零拷贝管线），以及把这些渲染器接到 Scenario/Activity
+  数据模型和状态机上的 `PlaybackEngine`；还缺WPS COM互操作的正式集成、设备发现配对，以及真正会调用
+  `PlaybackEngine` 的UI/网络事件，详见该项目的 README.md。WPS互操作已有一个独立验证脚本
+  `src/Poc/WpsComInteropSpike/`，用于尽早摸清静默模式与翻页是否可行。
 - 其余阶段尚未开始。
 
 ## License

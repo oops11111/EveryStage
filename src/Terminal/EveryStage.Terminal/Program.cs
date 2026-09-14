@@ -1,6 +1,7 @@
 using EveryStage.Terminal.Audio;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Display;
+using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
 using EveryStage.Terminal.Tray;
 
@@ -37,6 +38,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private readonly AudioTakeoverService _audioTakeover = new();
     private readonly TrayIconController _tray;
     private OverlayWindow? _overlay;
+    private PlaybackEngine? _playback;
 
     public TerminalApplicationContext(ScenarioStore store, ScenarioRepository repository)
     {
@@ -45,11 +47,16 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         var extendedDisplay = MonitorService.GetBoundExtendedDisplay();
         if (extendedDisplay != null)
+        {
             _overlay = new OverlayWindow(extendedDisplay);
+            _playback = new PlaybackEngine(_stateMachine, _overlay);
+        }
         // extendedDisplay == null: no second monitor attached yet. §5/§7 don't specify a "no
         // display bound" UX beyond implying it's a real, visible configuration state — the tray
         // tooltip below reflects it, but there is nothing further to build here until Phase 4 UI
-        // exists to surface a proper "未检测到扩展屏" notice.
+        // exists to surface a proper "未检测到扩展屏" notice. No overlay also means no PlaybackEngine
+        // yet; whatever eventually drives "点文件" (Phase 4 UI, or a device-request handler) needs
+        // to tolerate _playback being null until a display shows up.
 
         _stateMachine.StateChanged += OnOutputStateChanged;
 
@@ -77,6 +84,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _stateMachine.Disconnect(); // ensure audio is restored / overlay hidden before teardown.
 
         _tray.Dispose();
+        _playback?.Dispose();
         _overlay?.Dispose();
         _audioTakeover.Dispose();
 
