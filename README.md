@@ -14,7 +14,9 @@ EveryStage/
 ├── docs/            产品规划与设计文档
 ├── src/
 │   ├── Terminal/    终端机主程序（C#，覆盖式全屏窗口 + Content Engine + 传输接收端）
-│   └── Caster/      投屏机轻量工具（C#，屏幕捕获 + 编码 + 推流）
+│   ├── Caster/      投屏机轻量工具（C#，屏幕捕获 + 编码 + 推流）
+│   └── Poc/         阶段前置技术验证Demo（不属于正式产品代码）
+│       └── ZeroCopyRenderDemo/  阶段0：D3D11零拷贝渲染管线验证（详见其 README.md）
 └── .github/         CI/CD 与 issue 模板（待补充）
 ```
 
@@ -28,7 +30,7 @@ EveryStage/
 
 ## 开发状态
 
-当前处于规划阶段，详见 `docs/PLANNING.md` 中的开发排期建议（第15章）。**阶段0（D3D11零拷贝渲染管线技术验证Demo）为最高优先级前置任务，尚未开始。**
+详见 `docs/PLANNING.md` 中的开发排期建议（第15章）。**阶段0（D3D11零拷贝渲染管线技术验证Demo）代码已在 `src/Poc/ZeroCopyRenderDemo/` 完成初版，但尚未在真实 Windows/GPU 环境编译与验收**（当前开发在 Linux 沙箱中进行，无法编译测试 D3D11/Media Foundation 代码）——下一步需要在 Windows 开发机上完成构建、跑通第4.4节验收标准，具体待验证事项见该 Demo 的 README.md。
 
 ## License
 

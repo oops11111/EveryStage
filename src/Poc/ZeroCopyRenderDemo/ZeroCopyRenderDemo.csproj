@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Windows 10 SDK contract needed for DXGI 1.5 / D3D11.3 and current WinRT-free MF interop -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>ZeroCopyRenderDemo</AssemblyName>
+    <RootNamespace>EveryStage.Poc.ZeroCopyRenderDemo</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Vortice.Windows gives managed, near-1:1 bindings over D3D11 / DXGI / Media Foundation COM
+      interfaces without pulling in the old, unmaintained SharpDX.
+      NOTE: pin these to whatever is actually latest when you first restore on a Windows box —
+      the exact package versions below were not verified against a live NuGet feed. Run
+      `dotnet add package Vortice.Direct3D11` etc. and let it pick current versions if these fail.
+    -->
+    <PackageReference Include="Vortice.Direct3D11" Version="3.6.2" />
+    <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <!-- Simple WASAPI playback for the audio master clock; not part of the zero-copy path under test. -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+</Project>
