@@ -16,6 +16,15 @@
   <ItemGroup>
     <!-- Core Audio session enumeration/mute for the audio-takeover behavior in PLANNING.md §9.3. -->
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!--
+      PDF rendering (PLANNING.md §3 "PDF(PDFium)"). PdfiumViewer wraps native pdfium.dll; it needs
+      a companion native-binary package for the target architecture (historically
+      "PdfiumViewer.Native.x86_64.v8-xfa" or similar — the exact current package name/version
+      should be confirmed on nuget.org when first restoring on Windows, since this hasn't been
+      restored/verified in this sandbox).
+    -->
+    <PackageReference Include="PdfiumViewer" Version="2.13.0" />
+    <PackageReference Include="PdfiumViewer.Native.x86_64.v8-xfa" Version="2018.4.8.256" />
   </ItemGroup>
 
 </Project>

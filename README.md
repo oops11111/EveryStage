@@ -16,7 +16,8 @@ EveryStage/
 │   ├── Terminal/    终端机主程序（C#，覆盖式全屏窗口 + Content Engine + 传输接收端）
 │   ├── Caster/      投屏机轻量工具（C#，屏幕捕获 + 编码 + 推流）
 │   └── Poc/         阶段前置技术验证Demo（不属于正式产品代码）
-│       └── ZeroCopyRenderDemo/  阶段0：D3D11零拷贝渲染管线验证（详见其 README.md）
+│       ├── ZeroCopyRenderDemo/    阶段0：D3D11零拷贝渲染管线验证（详见其 README.md）
+│       └── WpsComInteropSpike/    阶段1：WPS COM互操作静默/翻页验证脚本（详见其 README.md）
 └── .github/         CI/CD 与 issue 模板（待补充）
 ```
 
@@ -35,9 +36,10 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
 
 - **阶段0**（D3D11零拷贝渲染管线技术验证Demo）：初版代码已在 `src/Poc/ZeroCopyRenderDemo/` 完成，
   待 Windows/GPU 环境编译并跑通第4.4节验收标准。
-- **阶段1**（终端机主程序框架）：初版框架已在 `src/Terminal/EveryStage.Terminal/` 完成——覆盖式
-  窗口、投屏开关/断状态机、数据持久化、音频接管；本地内容引擎（图片/视频/PDF）、WPS COM互操作验证、
-  设备发现配对仍未开始，详见该项目的 README.md。
+- **阶段1**（终端机主程序框架 + 本地内容引擎）：初版已在 `src/Terminal/EveryStage.Terminal/` 完成
+  ——覆盖式窗口、投屏开关/断状态机、数据持久化、音频接管、图片与PDF渲染；视频内容引擎（需接入阶段0的
+  D3D11管线）、WPS COM互操作正式集成、设备发现配对仍未开始，详见该项目的 README.md。WPS互操作已有一个
+  独立验证脚本 `src/Poc/WpsComInteropSpike/`，用于尽早摸清静默模式与翻页是否可行。
 - 其余阶段尚未开始。
 
 ## License

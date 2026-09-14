@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <AssemblyName>WpsComInteropSpike</AssemblyName>
+    <RootNamespace>EveryStage.Poc.WpsComInteropSpike</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Needed for the `dynamic` late-bound COM calls below. -->
+    <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
+  </ItemGroup>
+
+</Project>

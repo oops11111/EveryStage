@@ -18,6 +18,7 @@
 | `StateMachine/OutputStateMachine.cs` | §9, §10 | 投屏开关与待机/输出状态两个独立维度；设备请求不受开关约束；"断"不改变开关状态 |
 | `Audio/AudioTakeoverService.cs` | §9.3 | 媒体键暂停 + 静音兜底两段式，断开时对称恢复 |
 | `Tray/TrayIconController.cs` | §10 | 托盘图标 + 开关菜单 + 退出（"关闭程序"的唯一入口） |
+| `ContentEngine/` | §3 | 图片(GDI+，WIC编解码器) + PDF(PdfiumViewer) 渲染器 + 覆盖窗口内的画面呈现控件（等比缩放、黑边） |
 
 ## 已知风险 / 待验证事项
 
@@ -33,12 +34,17 @@
 3. **单一扩展屏假设**：`MonitorService.GetBoundExtendedDisplay()` 只返回"第一个非主屏"，多扩展屏
    场景（如果产品后续要支持）需要扩展为"选定用而非取第一个"。
 4. **NotifyIcon 图标**：目前用 `SystemIcons.Application` 占位，阶段5视觉设计落地前需要替换成产品图标。
+5. **`PdfiumViewer` 包名/版本与其 `Render()` 重载签名**（`ContentEngine/PdfContentRenderer.cs`）
+   ——未对照真实 NuGet 源核实，且该库依赖单独的原生 pdfium.dll 包（架构需匹配 x64）。
+6. **图片解码用 GDI+ 而非直接调用 WIC COM 接口**：满足常见格式（JPEG/PNG/BMP/GIF/TIFF）没问题，
+   但不支持 WIC 能处理的部分高位深/HDR 格式——如果产品需要展示这类图片，需要换成直接的 WIC interop。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
-- 本地内容引擎：图片(WIC)、视频(Media Foundation，可复用 `ZeroCopyRenderDemo` 的解码/渲染管线)、
-  PDF(PDFium)
-- WPS COM互操作验证（PLANNING.md 标记为"风险仅次于阶段0"，需要尽早独立验证，不依赖本框架代码）
+- 视频内容引擎：需要复用 `ZeroCopyRenderDemo` 的 D3D11/Media Foundation 解码渲染管线，直接对接
+  `OverlayWindow.Handle` 建立独立 SwapChain（不能走 `ContentSurface` 的 GDI+ 路径，否则破坏零拷贝）
+- WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
+  这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
 - 设备发现/配对、传输接收端（阶段2/3）
 - 正式UI（四大面板 + 悬浮预览窗，阶段4）
 - 三类日志系统（§14.4）——当前完全没有实现，`ScenarioRepository` 目前只是把损坏的旧文件重命名保留，

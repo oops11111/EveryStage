@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using EveryStage.Terminal.ContentEngine;
 
 namespace EveryStage.Terminal.Display;
 
@@ -28,6 +29,15 @@ public sealed class OverlayWindow : Form
 
     public MonitorInfo Monitor { get; private set; }
 
+    /// <summary>
+    /// Where image/document renderers' frames land (PLANNING.md §3: image/PDF are rendered
+    /// directly by the Terminal's Content Engine, not screen-captured like Caster content). Video
+    /// does not go through this control — it targets its own D3D11 swap chain attached to
+    /// <see cref="Form.Handle"/> directly (see the Phase 0 demo), since compositing a GPU-decoded
+    /// video texture through a GDI+ Control.Paint would defeat the zero-copy pipeline.
+    /// </summary>
+    public ContentSurface ContentSurface { get; }
+
     public OverlayWindow(MonitorInfo monitor)
     {
         Monitor = monitor;
@@ -37,6 +47,9 @@ public sealed class OverlayWindow : Form
         ShowInTaskbar = false;
         TopMost = true;
         BackColor = System.Drawing.Color.Black;
+
+        ContentSurface = new ContentSurface();
+        Controls.Add(ContentSurface);
 
         _topMostReasserter = new System.Windows.Forms.Timer { Interval = 2000 };
         _topMostReasserter.Tick += (_, _) => ReassertTopMost();
