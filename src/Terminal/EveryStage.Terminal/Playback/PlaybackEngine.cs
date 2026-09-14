@@ -37,10 +37,32 @@ public sealed class PlaybackEngine : IDisposable
     private int _currentFileIndex = -1;
     private MediaFile? _currentFile;
     private System.Windows.Forms.Timer? _stayDurationTimer;
+    private DateTime _stayDurationArmedAt;
+    private TimeSpan _stayDurationTotal;
 
     /// <summary>Raised after a file actually starts casting to the extended display (never raised
     /// when the cast switch declined the request).</summary>
     public event Action<MediaFile>? FileStarted;
+
+    /// <summary>What's currently on the extended display, for the floating preview window
+    /// (PLANNING.md §8.3) to show — null when nothing is casting.</summary>
+    public MediaFile? CurrentFile => _currentFile;
+
+    public bool IsPaused { get; private set; }
+
+    /// <summary>
+    /// A static frame for the floating preview window to mirror (PLANNING.md §8.3's "缩略画面预览").
+    /// Only available for image/PDF, whose current frame already exists as an in-memory
+    /// <see cref="System.Drawing.Bitmap"/> — for video this returns null rather than a stale or
+    /// fake thumbnail, since producing one for real would mean a GPU-downsampled copy out of the
+    /// zero-copy pipeline, which doesn't exist yet (see this project's README).
+    /// </summary>
+    public System.Drawing.Bitmap? CurrentThumbnail => _currentFile?.Kind switch
+    {
+        MediaKind.Image => _imageRenderer.CurrentFrame,
+        MediaKind.Document => _pdfRenderer.CurrentFrame,
+        _ => null,
+    };
 
     public PlaybackEngine(OutputStateMachine stateMachine, OverlayWindow overlay)
     {
@@ -98,6 +120,7 @@ public sealed class PlaybackEngine : IDisposable
         _stayDurationTimer?.Stop();
         _stayDurationTimer?.Dispose();
         _stayDurationTimer = null;
+        IsPaused = false;
 
         bool casting = _stateMachine.RequestLocalFilePlayback();
         if (!casting)
@@ -162,19 +185,61 @@ public sealed class PlaybackEngine : IDisposable
         ArmStayDurationTimer(file);
     }
 
-    private void ArmStayDurationTimer(MediaFile file)
-    {
-        if (file.StayDuration is not { } stay || stay <= TimeSpan.Zero) return;
+    private void ArmStayDurationTimer(MediaFile file) => ArmStayDurationTimer(file, file.StayDuration ?? TimeSpan.Zero, isFreshStart: true);
 
-        var timer = new System.Windows.Forms.Timer { Interval = Math.Max(1, (int)stay.TotalMilliseconds) };
+    private void ArmStayDurationTimer(MediaFile file, TimeSpan duration, bool isFreshStart)
+    {
+        if (duration <= TimeSpan.Zero)
+        {
+            if (isFreshStart) return; // no stay duration configured at all — nothing to arm.
+            HandleCompletion(file); // resumed with ~0 remaining — it was already due.
+            return;
+        }
+
+        var timer = new System.Windows.Forms.Timer { Interval = Math.Max(1, (int)duration.TotalMilliseconds) };
         timer.Tick += (_, _) =>
         {
             timer.Stop();
             HandleCompletion(file);
         };
         _stayDurationTimer = timer;
+        _stayDurationArmedAt = DateTime.UtcNow;
+        _stayDurationTotal = duration;
         timer.Start();
     }
+
+    /// <summary>
+    /// Floating-preview-window "暂停" (PLANNING.md §8.3) for image/PDF content: freezes the
+    /// stay-duration auto-advance clock in place. Deliberately does nothing for video — pausing
+    /// video mid-frame and resuming from that exact position would need <c>VideoContentController</c>
+    /// to support suspend/resume-in-place, which it doesn't (its <c>Stop()</c> tears the decode
+    /// source down entirely). Rather than fake a "pause" that actually restarts the video from the
+    /// beginning, this is a documented no-op for that case until real pause/resume exists.
+    /// </summary>
+    public void Pause()
+    {
+        if (IsPaused || _currentFile == null || _stayDurationTimer == null) return;
+
+        TimeSpan elapsed = DateTime.UtcNow - _stayDurationArmedAt;
+        TimeSpan remaining = _stayDurationTotal - elapsed;
+        _remainingOnPause = remaining < TimeSpan.Zero ? TimeSpan.Zero : remaining;
+
+        _stayDurationTimer.Stop();
+        IsPaused = true;
+    }
+
+    /// <summary>Resumes a stay-duration countdown paused by <see cref="Pause"/>, from where it left
+    /// off. No-op if nothing is paused.</summary>
+    public void Resume()
+    {
+        if (!IsPaused || _currentFile == null) return;
+        IsPaused = false;
+        _stayDurationTimer?.Dispose();
+        _stayDurationTimer = null;
+        ArmStayDurationTimer(_currentFile, _remainingOnPause, isFreshStart: false);
+    }
+
+    private TimeSpan _remainingOnPause;
 
     private void OnVideoCompleted()
     {

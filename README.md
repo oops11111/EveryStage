@@ -41,13 +41,15 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
 - **阶段1**（终端机主程序框架 + 本地内容引擎）：初版已在 `src/Terminal/EveryStage.Terminal/` 完成
   ——覆盖式窗口、投屏开关/断状态机、数据持久化、音频接管、图片/PDF/视频渲染（视频复用
   `src/Shared/EveryStage.Rendering/` 的D3D11零拷贝管线）、把渲染器接到 Scenario/Activity数据模型和
-  状态机上的 `PlaybackEngine`，以及§14.4要求的三类按天滚动日志；还缺WPS COM互操作的正式集成，以及
-  真正会调用 `PlaybackEngine` 的UI事件，详见该项目的 README.md。WPS互操作已有一个独立验证脚本
+  状态机上的 `PlaybackEngine`，§14.4要求的三类按天滚动日志，以及悬浮预览窗(§8.3，上一项/暂停/下一项
+  /断)——`PlaybackEngine` 终于有了真实调用方，尽管还只是这一个小窗口，不是完整的四大面板主界面。
+  还缺WPS COM互操作的正式集成，详见该项目的 README.md；WPS互操作已有一个独立验证脚本
   `src/Poc/WpsComInteropSpike/`，用于尽早摸清静默模式与翻页是否可行。
 - **阶段3的设备发现/配对**部分（§7）也已提前实现：`Devices/DiscoveryService` 用UDP广播发现终端机、
-  处理配对请求、分离"允许被投放/被监看"权限。**协议格式是本仓库自定义的草案**，因为投屏机(Caster)
-  项目还没有任何代码——两边协议真正对齐要等 Caster 开发启动之后。
-- 其余阶段（阶段2 传输接收端的媒体流部分、阶段4 正式UI）尚未开始。
+  处理配对请求、分离"允许被投放/被监看"权限，配上一个配对确认弹窗(`UI/PairingConfirmationDialog`)。
+  **协议格式是本仓库自定义的草案**，因为投屏机(Caster)项目还没有任何代码——两边协议真正对齐要等
+  Caster 开发启动之后。
+- 其余阶段（阶段2 传输接收端的媒体流部分、阶段4 正式四大面板主界面）尚未开始。
 
 ## License
 

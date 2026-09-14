@@ -5,10 +5,12 @@
 WPS正式集成（有独立验证脚本，见下）、传输接收端（阶段2，实际推流数据的接收解码）、正式UI四大面板与
 悬浮预览窗（阶段4）。
 
-当前是一个只有托盘图标的最小宿主：能开关"投屏开关"、能进出"待机中/扩展屏输出中"两个状态、有了状态
-就会显示/隐藏绑定的扩展屏覆盖窗口并接管/归还系统音频；图片/PDF/视频都能渲染到覆盖窗口上
-（`PlaybackEngine` 把这些渲染器接到 Scenario/Activity 数据模型和状态机上）。目前没有任何UI或网络
-事件会去调用 `PlaybackEngine`——它是给 Phase 4 UI 和设备投屏请求准备好的挂载点，两者都还不存在。
+当前是一个托盘图标 + 悬浮预览窗 + 配对确认弹窗的最小宿主（**不是**PLANNING.md §8.2描述的正式四大
+面板主界面，那部分完全没有开始）：能开关"投屏开关"、能进出"待机中/扩展屏输出中"两个状态、有了状态
+就会显示/隐藏绑定的扩展屏覆盖窗口 + 悬浮预览窗并接管/归还系统音频；图片/PDF/视频都能渲染到覆盖窗口上
+（`PlaybackEngine` 把这些渲染器接到 Scenario/Activity 数据模型和状态机上）；局域网设备发起配对请求时
+会弹出确认对话框。`PlaybackEngine.RequestPlay(Activity, int)` 目前仍然没有真实调用方——悬浮预览窗
+只用得到"上一项/下一项/暂停/断"，真正"点文件开始播放"要等文件/活动面板（阶段4）存在才有入口。
 
 ## 已实现
 
@@ -24,6 +26,8 @@ WPS正式集成（有独立验证脚本，见下）、传输接收端（阶段2�
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
 | `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，已接入`DiscoveryService`)；JSON-lines格式 + 自动清理过期文件 |
 | `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、设备指纹持久化(`DeviceIdentity`/`PairedDeviceStore`)。**`DiscoveryProtocol.cs` 是本仓库自定义的协议草案，不是PLANNING.md规定的格式**——见该文件顶部说明 |
+| `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
+| `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
 
 ## 已知风险 / 待验证事项
 
@@ -67,19 +71,31 @@ WPS正式集成（有独立验证脚本，见下）、传输接收端（阶段2�
     `UdpClient.SendAsync(byte[], int, IPEndPoint)` 重载都是 .NET 6+ 的标准API，比D3D11/MF那套风险
     低很多，但仍未在真实网络环境跑过——尤其是"同一局域网多网卡/多网段时广播地址怎么选"完全没处理，
     当前用的是全局 `IPAddress.Broadcast`（255.255.255.255），部分路由器/网络配置下可能收不到。
-13. **配对确认流程完全没有UI**：`DiscoveryService.PairingRequested` 事件、`RespondToPairing` 方法
-    都已就绪，但没有任何东西订阅前者或调用后者——现在的实际效果是"每个非信任设备的配对请求都会在
-    2分钟后超时并记入日志"，而不是真的支持配对。这是预期中的半成品状态，不是bug。
+13. **`PlaybackEngine.Pause()` 只对图片/PDF真实有效**：靠冻结停留时长计时器实现，视频调用它是文档化
+    的空操作——`VideoContentController` 没有"原地暂停/从暂停位置继续"的能力（`Stop()`是整体拆除解码
+    源），伪造一个会重头播放的"暂停"按钮比明确不支持更糟，所以悬浮预览窗的暂停按钮在播放视频时会被
+    禁用（`FloatingPreviewWindow.RefreshFromEngine` 里 `_pauseButton.Enabled` 那行）。
+14. **`Program.cs` 显式安装 `WindowsFormsSynchronizationContext`**：这是为了保证 `DiscoveryService`
+    后台线程触发配对弹窗时一定有地方 `Post` 回UI线程，不依赖"WinForms会在第一个Control构造时自动装
+    好同步上下文"这种隐式时机（尤其是没有扩展屏、`OverlayWindow`都不会被创建的情况下）。这个写法本身
+    风险不高，但同样没有在真实环境验证过。
+15. **`FloatingPreviewWindow` 的缩略图直接引用 `PlaybackEngine.CurrentThumbnail` 返回的 `Bitmap`**：
+    没有做拷贝。`ImageContentRenderer`/`PdfContentRenderer` 切换文件时会 `Dispose()` 旧的 `Bitmap`
+    再赋新的——只要两者都在UI线程上跑（现有假设，见上面第8条），`PictureBox.Image` 引用切换和旧图
+    释放不会真的并发，但如果以后 `LoadAsync` 变成真异步就需要重新检查这条。
+16. **配对确认弹窗只做了"接受/拒绝"，没有PIN码**：PLANNING.md §7 原话是"弹窗/PIN码"（二选一的口吻），
+    这里只实现了弹窗那一半——`DiscoveryProtocol` 的 `PairRequestMessage` 也没有PIN字段，要加PIN需要
+    先扩展协议本身，而协议本身还是草案（见上面第11条），不适合在弹窗UI里单方面加。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
-- `PlaybackEngine` 还没有任何东西调用它——它是给 Phase 4 UI（文件/活动面板点击、悬浮预览窗按钮）
-  和设备投屏请求处理准备好的挂载点，两者都还不存在。
+- `PlaybackEngine.RequestPlay(Activity, int)` / `RequestPlay(MediaFile)` 仍然没有真实调用方——
+  悬浮预览窗只用得到手动上一项/下一项/暂停/断，"点文件开始播放"要等文件/活动面板（阶段4）存在。
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
 - 传输接收端（阶段2：真正的RTP/H.264接收解码，`Devices/`目前只做发现和配对握手，不涉及媒体流）
-- 设备发现/配对UI：`DiscoveryService.PairingRequested` 需要一个能弹窗/显示PIN码的界面去订阅它
-- 正式UI（四大面板 + 悬浮预览窗，阶段4），包括"设备"面板要用到的 `PairedDeviceStore.All`
+- 正式UI四大面板（文件/活动/设备/设置，阶段4）——目前只有悬浮预览窗和配对弹窗这两个小窗口，
+  "设备"面板要用到的 `PairedDeviceStore.All` 已经有数据源，缺的是界面本身
 - `FileOperationLogger` 的方法（方案/活动创建/修改/删除、文件导入/删除、播放属性变更）目前没有调用方
   ——`ScenarioRepository` 只有整存整取的 `Load`/`Save`，没有细粒度的"添加一个活动"之类的操作方法，
   这些日志调用要等 Phase 4 UI（或别的编辑入口）真正执行这些操作时才有地方挂

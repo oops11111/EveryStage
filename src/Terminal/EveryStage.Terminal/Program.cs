@@ -6,6 +6,7 @@ using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
 using EveryStage.Terminal.Tray;
+using EveryStage.Terminal.UI;
 
 namespace EveryStage.Terminal;
 
@@ -17,6 +18,15 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        // Guarantee a WindowsFormsSynchronizationContext exists on this thread before anything
+        // that runs on a background thread (DiscoveryService's UDP loops) needs to marshal work
+        // back onto it. WinForms normally installs one automatically the first time a Control is
+        // constructed, but that's an implicit ordering detail this code shouldn't depend on —
+        // TerminalApplicationContext's constructor may run entirely without creating a Control at
+        // all (no extended display -> no OverlayWindow) before it needs to post pairing-dialog work.
+        if (SynchronizationContext.Current is not WindowsFormsSynchronizationContext)
+            SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+
         var repository = new ScenarioRepository();
         var store = repository.Load();
 
@@ -27,10 +37,10 @@ internal static class Program
 
 /// <summary>
 /// Wires the Phase 1 framework pieces together: state machine <-> overlay window <-> audio
-/// takeover <-> tray icon. This is deliberately not the full Phase 4 UI (four main panels,
-/// floating preview) — just the "待机中/扩展屏输出中" loop from PLANNING.md §10 running end to end,
-/// so the framework can be exercised (and the local content engine / device-request handling from
-/// the rest of Phase 1 can be built against a working state machine) before the real UI exists.
+/// takeover <-> tray icon <-> device discovery. This is deliberately not the full Phase 4 UI (four
+/// main panels) — just enough surrounding UI (the floating preview window, a pairing confirmation
+/// dialog) to give <c>PlaybackEngine</c> and <c>DiscoveryService</c> real callers instead of sitting
+/// completely unused, per PLANNING.md §10's "待机中/扩展屏输出中" loop and §7's pairing flow.
 /// </summary>
 internal sealed class TerminalApplicationContext : ApplicationContext
 {
@@ -40,36 +50,38 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private readonly AudioTakeoverService _audioTakeover = new();
     private readonly TrayIconController _tray;
     private readonly DiscoveryService _discovery;
+    private readonly SynchronizationContext _uiContext;
     private OverlayWindow? _overlay;
     private PlaybackEngine? _playback;
+    private FloatingPreviewWindow? _previewWindow;
 
     public TerminalApplicationContext(ScenarioStore store, ScenarioRepository repository)
     {
         _store = store;
         _repository = repository;
+        _uiContext = SynchronizationContext.Current
+            ?? throw new InvalidOperationException("Expected Program.Main to have installed a WindowsFormsSynchronizationContext first.");
 
         var extendedDisplay = MonitorService.GetBoundExtendedDisplay();
         if (extendedDisplay != null)
         {
             _overlay = new OverlayWindow(extendedDisplay);
             _playback = new PlaybackEngine(_stateMachine, _overlay);
+            _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
         }
         // extendedDisplay == null: no second monitor attached yet. §5/§7 don't specify a "no
         // display bound" UX beyond implying it's a real, visible configuration state — the tray
         // tooltip below reflects it, but there is nothing further to build here until Phase 4 UI
-        // exists to surface a proper "未检测到扩展屏" notice. No overlay also means no PlaybackEngine
-        // yet; whatever eventually drives "点文件" (Phase 4 UI, or a device-request handler) needs
-        // to tolerate _playback being null until a display shows up.
+        // exists to surface a proper "未检测到扩展屏" notice. No overlay also means no
+        // PlaybackEngine/preview window yet; whatever eventually drives "点文件" (Phase 4 UI, or a
+        // device-request handler) needs to tolerate _playback being null until a display shows up.
 
         _stateMachine.StateChanged += OnOutputStateChanged;
 
         var identity = DeviceIdentity.LoadOrCreate();
         var pairedDevices = new PairedDeviceStore();
         _discovery = new DiscoveryService(identity, pairedDevices, new DeviceConnectionLogger());
-        // PairingRequested has no subscriber yet — there is no UI to show the §7 confirmation
-        // popup/PIN prompt. Every non-trusted pairing request currently just sits until it times
-        // out (DiscoveryService.PruneExpiredPendingRequests), at which point it's logged as a
-        // timed-out pairing attempt rather than vanishing without a trace.
+        _discovery.PairingRequested += OnPairingRequested;
         _discovery.Start();
 
         _tray = new TrayIconController(_stateMachine);
@@ -81,13 +93,27 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         if (state == OutputState.Active)
         {
             _overlay?.ShowOverlay();
+            _previewWindow?.ShowForActiveOutput();
             _ = _audioTakeover.TakeoverAsync(); // fire-and-forget: UI thread must not block on this.
         }
         else
         {
             _overlay?.HideOverlay();
+            _previewWindow?.HideForIdleOutput();
             _audioTakeover.Restore();
         }
+    }
+
+    private void OnPairingRequested(PairingRequest request)
+    {
+        // Raised from DiscoveryService's background receive loop — a modal dialog must be shown
+        // from the UI thread.
+        _uiContext.Post(_ =>
+        {
+            using var dialog = new PairingConfirmationDialog(request);
+            dialog.ShowDialog();
+            _discovery.RespondToPairing(request.RequestId, dialog.Accepted, dialog.TrustMode, dialog.AllowCast, dialog.AllowMonitor);
+        }, null);
     }
 
     private void OnExitRequested()
@@ -97,6 +123,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         _tray.Dispose();
         _discovery.Dispose();
+        _previewWindow?.Dispose();
         _playback?.Dispose();
         _overlay?.Dispose();
         _audioTakeover.Dispose();
