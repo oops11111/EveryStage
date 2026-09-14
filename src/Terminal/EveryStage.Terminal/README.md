@@ -1,8 +1,9 @@
-# EveryStage.Terminal — 终端机主程序框架 + 本地内容引擎（阶段1）
+# EveryStage.Terminal — 终端机主程序框架 + 本地内容引擎 + 设备发现配对（阶段1 + 阶段3一部分）
 
 对应 `docs/PLANNING.md` 第15章阶段1的前两项："终端机主程序框架（覆盖式窗口、投屏开关/断状态机、
-数据持久化）"+"本地内容引擎（图片/视频/PDF）"。**不包含**WPS正式集成（有独立验证脚本，见下）、
-设备发现配对、传输接收端、正式UI四大面板与悬浮预览窗——这些是阶段1剩余部分与阶段2/3/4的工作。
+数据持久化）"+"本地内容引擎（图片/视频/PDF）"，以及阶段3的"设备发现/配对"部分（§7）。**不包含**
+WPS正式集成（有独立验证脚本，见下）、传输接收端（阶段2，实际推流数据的接收解码）、正式UI四大面板与
+悬浮预览窗（阶段4）。
 
 当前是一个只有托盘图标的最小宿主：能开关"投屏开关"、能进出"待机中/扩展屏输出中"两个状态、有了状态
 就会显示/隐藏绑定的扩展屏覆盖窗口并接管/归还系统音频；图片/PDF/视频都能渲染到覆盖窗口上
@@ -21,7 +22,8 @@
 | `Tray/TrayIconController.cs` | §10 | 托盘图标 + 开关菜单 + 退出（"关闭程序"的唯一入口） |
 | `ContentEngine/` | §3 | 图片(GDI+，WIC编解码器) + PDF(PdfiumViewer) 渲染器、画面呈现控件（等比缩放、黑边）、视频播放控制器(`VideoContentController`，复用 `EveryStage.Rendering` 的D3D11零拷贝管线，直接对接 `OverlayWindow.VideoHost` 的独立SwapChain) |
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
-| `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，尚无调用方)；JSON-lines格式 + 自动清理过期文件 |
+| `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，已接入`DiscoveryService`)；JSON-lines格式 + 自动清理过期文件 |
+| `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、设备指纹持久化(`DeviceIdentity`/`PairedDeviceStore`)。**`DiscoveryProtocol.cs` 是本仓库自定义的协议草案，不是PLANNING.md规定的格式**——见该文件顶部说明 |
 
 ## 已知风险 / 待验证事项
 
@@ -57,6 +59,17 @@
     很小，没考虑过性能。`VideoContentController` 后台播放线程里的解码异常现在会被捕获并通过新增的
     `PlaybackFailed` 事件上报给 `PlaybackEngine`（记入 `LogAbnormalInterruption`），但恢复行为
     （重试/跳到下一项/停留）PLANNING.md 没有定义，目前是原地不动，不代表这是正确的产品行为。
+11. **`Devices/DiscoveryProtocol.cs` 整个协议都是本仓库自己拍的草案**，不是"未验证的实现细节"这个
+    级别的风险，而是"另一端（投屏机）根本还不存在，没人能确认这套字段/端口/消息类型真的可用"——
+    等 Caster 项目开始写的时候，大概率需要回来改这个文件（含 `DiscoveryProtocol.Port = 47990` 这个
+    随手选的端口号，没检查过是否与常见软件冲突）。
+12. **`DiscoveryService` 的具体 API 细节**：`UdpClient.ReceiveAsync(CancellationToken)` 重载、
+    `UdpClient.SendAsync(byte[], int, IPEndPoint)` 重载都是 .NET 6+ 的标准API，比D3D11/MF那套风险
+    低很多，但仍未在真实网络环境跑过——尤其是"同一局域网多网卡/多网段时广播地址怎么选"完全没处理，
+    当前用的是全局 `IPAddress.Broadcast`（255.255.255.255），部分路由器/网络配置下可能收不到。
+13. **配对确认流程完全没有UI**：`DiscoveryService.PairingRequested` 事件、`RespondToPairing` 方法
+    都已就绪，但没有任何东西订阅前者或调用后者——现在的实际效果是"每个非信任设备的配对请求都会在
+    2分钟后超时并记入日志"，而不是真的支持配对。这是预期中的半成品状态，不是bug。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -64,9 +77,9 @@
   和设备投屏请求处理准备好的挂载点，两者都还不存在。
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
-- 设备发现/配对、传输接收端（阶段2/3）——`Logging/DeviceConnectionLogger.cs` 已经准备好接收调用，
-  但没有任何设备发现/配对代码去调用它
-- 正式UI（四大面板 + 悬浮预览窗，阶段4）
+- 传输接收端（阶段2：真正的RTP/H.264接收解码，`Devices/`目前只做发现和配对握手，不涉及媒体流）
+- 设备发现/配对UI：`DiscoveryService.PairingRequested` 需要一个能弹窗/显示PIN码的界面去订阅它
+- 正式UI（四大面板 + 悬浮预览窗，阶段4），包括"设备"面板要用到的 `PairedDeviceStore.All`
 - `FileOperationLogger` 的方法（方案/活动创建/修改/删除、文件导入/删除、播放属性变更）目前没有调用方
   ——`ScenarioRepository` 只有整存整取的 `Load`/`Save`，没有细粒度的"添加一个活动"之类的操作方法，
   这些日志调用要等 Phase 4 UI（或别的编辑入口）真正执行这些操作时才有地方挂

@@ -1,6 +1,8 @@
 using EveryStage.Terminal.Audio;
 using EveryStage.Terminal.Data;
+using EveryStage.Terminal.Devices;
 using EveryStage.Terminal.Display;
+using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
 using EveryStage.Terminal.Tray;
@@ -37,6 +39,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private readonly OutputStateMachine _stateMachine = new();
     private readonly AudioTakeoverService _audioTakeover = new();
     private readonly TrayIconController _tray;
+    private readonly DiscoveryService _discovery;
     private OverlayWindow? _overlay;
     private PlaybackEngine? _playback;
 
@@ -59,6 +62,15 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // to tolerate _playback being null until a display shows up.
 
         _stateMachine.StateChanged += OnOutputStateChanged;
+
+        var identity = DeviceIdentity.LoadOrCreate();
+        var pairedDevices = new PairedDeviceStore();
+        _discovery = new DiscoveryService(identity, pairedDevices, new DeviceConnectionLogger());
+        // PairingRequested has no subscriber yet — there is no UI to show the §7 confirmation
+        // popup/PIN prompt. Every non-trusted pairing request currently just sits until it times
+        // out (DiscoveryService.PruneExpiredPendingRequests), at which point it's logged as a
+        // timed-out pairing attempt rather than vanishing without a trace.
+        _discovery.Start();
 
         _tray = new TrayIconController(_stateMachine);
         _tray.ExitRequested += OnExitRequested;
@@ -84,6 +96,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _stateMachine.Disconnect(); // ensure audio is restored / overlay hidden before teardown.
 
         _tray.Dispose();
+        _discovery.Dispose();
         _playback?.Dispose();
         _overlay?.Dispose();
         _audioTakeover.Dispose();
