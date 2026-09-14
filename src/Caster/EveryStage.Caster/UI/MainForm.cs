@@ -1,3 +1,4 @@
+using EveryStage.Caster.Capture;
 using EveryStage.Caster.Discovery;
 using EveryStage.Discovery;
 
@@ -6,16 +7,19 @@ namespace EveryStage.Caster.UI;
 /// <summary>
 /// The Caster's whole UI (PLANNING.md §12): "单一任务导向，不做复杂功能堆叠" — a standby panel
 /// (target terminal list + start button + privacy notice) and, once paired, a second panel showing
-/// what's targeted. This implements the discovery + pairing handshake for real; it does NOT
-/// implement actual screen capture/encode/transport (Phase 2's capture pipeline — DDA, H.264,
-/// RTP — doesn't exist anywhere in this repo yet), so the "paired" panel says so plainly instead of
+/// what's targeted. This implements the discovery + pairing handshake for real, plus a screen-
+/// capture self-test (see <see cref="CaptureSelfTestRunner"/>) that proves Desktop Duplication
+/// capture works — but it does NOT implement actual encode/transport (Phase 2's H.264/RTP half
+/// doesn't exist anywhere in this repo yet), so the "paired" panel says so plainly instead of
 /// pretending a live stream exists. See this project's README.
 /// </summary>
 public sealed class MainForm : Form
 {
     private readonly TerminalDiscoveryClient _discoveryClient;
     private readonly DeviceIdentity _identity;
+    private readonly CaptureSelfTestRunner _captureSelfTest = new();
     private readonly System.Windows.Forms.Timer _listRefreshTimer;
+    private readonly System.Windows.Forms.Timer _captureStatsTimer;
 
     private readonly Panel _standbyPanel;
     private readonly ListBox _terminalListBox;
@@ -23,6 +27,8 @@ public sealed class MainForm : Form
 
     private readonly Panel _pairedPanel;
     private readonly Label _pairedWithLabel;
+    private readonly Button _captureSelfTestButton;
+    private readonly Label _captureStatsLabel;
 
     private DiscoveredTerminal? _pairedTerminal;
 
@@ -32,7 +38,7 @@ public sealed class MainForm : Form
         _identity = identity;
 
         Text = "EveryStage 投屏机";
-        ClientSize = new Size(320, 280);
+        ClientSize = new Size(320, 320);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -63,19 +69,27 @@ public sealed class MainForm : Form
         _standbyPanel = new Panel { Dock = DockStyle.Fill };
         _standbyPanel.Controls.AddRange(new Control[] { _terminalListBox, privacyLabel, _startButton });
 
-        // --- 投屏中态 (currently: "已配对，等待推流功能实现" — see class doc comment) ---
-        _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 60) };
+        // --- 投屏中态 (currently: "已配对，等待编码/推流实现" — see class doc comment) ---
+        _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 40) };
         var notImplementedLabel = new Label
         {
-            Text = "屏幕捕获与推流尚未实现（阶段2）。此处仅验证了设备发现与配对握手。",
+            Text = "H.264编码与RTP推流尚未实现（阶段2）。下面的按钮只验证屏幕捕获本身能不能跑通，\n捕获到的画面不会发送到任何地方。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(12, 80, 296, 60),
+            Bounds = new Rectangle(12, 54, 296, 56),
         };
-        var backButton = new Button { Text = "返回", Bounds = new Rectangle(12, 226, 296, 32) };
+
+        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 118, 296, 32) };
+        _captureSelfTestButton.Click += OnCaptureSelfTestClick;
+        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 156, 296, 60), ForeColor = Color.DimGray };
+
+        var backButton = new Button { Text = "返回", Bounds = new Rectangle(12, 266, 296, 32) };
         backButton.Click += (_, _) => ShowStandby();
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
-        _pairedPanel.Controls.AddRange(new Control[] { _pairedWithLabel, notImplementedLabel, backButton });
+        _pairedPanel.Controls.AddRange(new Control[]
+        {
+            _pairedWithLabel, notImplementedLabel, _captureSelfTestButton, _captureStatsLabel, backButton,
+        });
 
         Controls.Add(_pairedPanel);
         Controls.Add(_standbyPanel);
@@ -83,6 +97,44 @@ public sealed class MainForm : Form
         _listRefreshTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _listRefreshTimer.Tick += (_, _) => RefreshTerminalList();
         _listRefreshTimer.Start();
+
+        _captureStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _captureStatsTimer.Tick += (_, _) => RefreshCaptureStats();
+    }
+
+    private void OnCaptureSelfTestClick(object? sender, EventArgs e)
+    {
+        if (_captureSelfTest.IsRunning)
+        {
+            _captureSelfTest.Stop();
+            _captureStatsTimer.Stop();
+            _captureSelfTestButton.Text = "开始屏幕捕获自检";
+            _captureStatsLabel.Text = "";
+        }
+        else
+        {
+            _captureSelfTest.Start();
+            _captureStatsTimer.Start();
+            _captureSelfTestButton.Text = "停止屏幕捕获自检";
+            RefreshCaptureStats();
+        }
+    }
+
+    private void RefreshCaptureStats()
+    {
+        if (_captureSelfTest.LastError != null)
+        {
+            _captureStatsLabel.ForeColor = Color.DarkRed;
+            _captureStatsLabel.Text = $"捕获出错：{_captureSelfTest.LastError}";
+            _captureStatsTimer.Stop();
+            _captureSelfTestButton.Text = "开始屏幕捕获自检";
+            return;
+        }
+
+        _captureStatsLabel.ForeColor = Color.DimGray;
+        _captureStatsLabel.Text =
+            $"分辨率: {_captureSelfTest.Width}x{_captureSelfTest.Height}\n" +
+            $"已捕获帧数: {_captureSelfTest.FrameCount}    近1秒帧率: {_captureSelfTest.Fps:F1}";
     }
 
     private void RefreshTerminalList()
@@ -140,6 +192,14 @@ public sealed class MainForm : Form
 
     private void ShowStandby()
     {
+        if (_captureSelfTest.IsRunning)
+        {
+            _captureSelfTest.Stop();
+            _captureStatsTimer.Stop();
+            _captureSelfTestButton.Text = "开始屏幕捕获自检";
+            _captureStatsLabel.Text = "";
+        }
+
         _pairedTerminal = null;
         _pairedPanel.Visible = false;
         _standbyPanel.Visible = true;
@@ -147,7 +207,12 @@ public sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _listRefreshTimer.Dispose();
+        if (disposing)
+        {
+            _listRefreshTimer.Dispose();
+            _captureStatsTimer.Dispose();
+            _captureSelfTest.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

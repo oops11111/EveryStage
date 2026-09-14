@@ -17,6 +17,11 @@
     <!-- The LAN discovery/pairing wire format, shared with EveryStage.Terminal so both sides
          always agree on it by construction. -->
     <ProjectReference Include="..\..\Shared\EveryStage.Discovery\EveryStage.Discovery.csproj" />
+    <!-- Shares D3D11Device with the Terminal/Phase-0-demo side purely for the device-creation
+         boilerplate (Capture/ScreenCaptureSource.cs needs an ID3D11Device to call
+         IDXGIOutput1.DuplicateOutput against) — Caster doesn't touch the MF/video-processor half
+         of that library, only the device setup. -->
+    <ProjectReference Include="..\..\Shared\EveryStage.Rendering\EveryStage.Rendering.csproj" />
   </ItemGroup>
 
 </Project>
