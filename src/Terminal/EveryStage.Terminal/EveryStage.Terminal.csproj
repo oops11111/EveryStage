@@ -31,6 +31,9 @@
     <!-- The zero-copy D3D11/Media Foundation video pipeline (see VideoContentController), shared
          with the Phase 0 validation demo. -->
     <ProjectReference Include="..\..\Shared\EveryStage.Rendering\EveryStage.Rendering.csproj" />
+    <!-- The LAN discovery/pairing wire format, shared with EveryStage.Caster so both sides always
+         agree on it by construction. -->
+    <ProjectReference Include="..\..\Shared\EveryStage.Discovery\EveryStage.Discovery.csproj" />
   </ItemGroup>
 
 </Project>

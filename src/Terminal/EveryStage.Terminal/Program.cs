@@ -1,3 +1,4 @@
+using EveryStage.Discovery;
 using EveryStage.Terminal.Audio;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Devices;
@@ -78,7 +79,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         _stateMachine.StateChanged += OnOutputStateChanged;
 
-        var identity = DeviceIdentity.LoadOrCreate();
+        var identity = DeviceIdentity.LoadOrCreate("terminal");
         var pairedDevices = new PairedDeviceStore();
         _discovery = new DiscoveryService(identity, pairedDevices, new DeviceConnectionLogger());
         _discovery.PairingRequested += OnPairingRequested;

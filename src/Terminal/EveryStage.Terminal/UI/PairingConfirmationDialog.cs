@@ -1,3 +1,4 @@
+using EveryStage.Discovery;
 using EveryStage.Terminal.Devices;
 
 namespace EveryStage.Terminal.UI;

@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using EveryStage.Discovery;
 using EveryStage.Terminal.Logging;
 
 namespace EveryStage.Terminal.Devices;

@@ -2,19 +2,17 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
-namespace EveryStage.Terminal.Devices;
+namespace EveryStage.Discovery;
 
 /// <summary>
 /// Wire format for LAN discovery/pairing (PLANNING.md §7: "发现：局域网UDP广播/mDNS"; UDP broadcast
 /// chosen over mDNS here as the simpler, lower-risk option the doc explicitly allows either of).
 ///
-/// This is THIS REPOSITORY'S OWN DRAFT, not a specification from PLANNING.md — the doc says
-/// discovery/pairing should exist and broadly how (UDP broadcast or mDNS; PIN/popup confirmation;
-/// remembered device fingerprint; independent cast/monitor permissions), but never defines a wire
-/// format, since the Caster side that must speak the same protocol doesn't exist as code yet
-/// anywhere in this repo. Treat every field/port/message shape here as a placeholder to be
-/// reconciled once Caster development actually starts — whichever side is built second should
-/// adapt to real constraints discovered building the first, not assume this file is final.
+/// This is THIS REPOSITORY'S OWN DRAFT, not a specification from PLANNING.md. It lives in this
+/// shared project (rather than inside Terminal, where it started) because it now has two real
+/// consumers that must agree on it byte-for-byte: EveryStage.Terminal (receiver/responder) and
+/// EveryStage.Caster (sender/requester). Changing anything here changes both sides at once — that
+/// coupling is the whole point of not letting each project keep its own copy.
 /// </summary>
 public static class DiscoveryProtocol
 {

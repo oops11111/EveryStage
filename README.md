@@ -16,7 +16,8 @@ EveryStage/
 │   ├── Terminal/    终端机主程序（C#，覆盖式全屏窗口 + Content Engine + 传输接收端）
 │   ├── Caster/      投屏机轻量工具（C#，屏幕捕获 + 编码 + 推流）
 │   ├── Shared/
-│   │   └── EveryStage.Rendering/  D3D11/Media Foundation零拷贝解码渲染管线，Terminal与阶段0 Demo共用
+│   │   ├── EveryStage.Rendering/  D3D11/Media Foundation零拷贝解码渲染管线，Terminal与阶段0 Demo共用
+│   │   └── EveryStage.Discovery/  局域网发现/配对协议 + 设备身份持久化，Terminal与Caster共用
 │   └── Poc/         阶段前置技术验证Demo（不属于正式产品代码）
 │       ├── ZeroCopyRenderDemo/    阶段0：D3D11零拷贝渲染管线验证（详见其 README.md）
 │       └── WpsComInteropSpike/    阶段1：WPS COM互操作静默/翻页验证脚本（详见其 README.md）
@@ -45,11 +46,14 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   /断)——`PlaybackEngine` 终于有了真实调用方，尽管还只是这一个小窗口，不是完整的四大面板主界面。
   还缺WPS COM互操作的正式集成，详见该项目的 README.md；WPS互操作已有一个独立验证脚本
   `src/Poc/WpsComInteropSpike/`，用于尽早摸清静默模式与翻页是否可行。
-- **阶段3的设备发现/配对**部分（§7）也已提前实现：`Devices/DiscoveryService` 用UDP广播发现终端机、
-  处理配对请求、分离"允许被投放/被监看"权限，配上一个配对确认弹窗(`UI/PairingConfirmationDialog`)。
-  **协议格式是本仓库自定义的草案**，因为投屏机(Caster)项目还没有任何代码——两边协议真正对齐要等
-  Caster 开发启动之后。
-- 其余阶段（阶段2 传输接收端的媒体流部分、阶段4 正式四大面板主界面）尚未开始。
+- **阶段3的设备发现/配对**部分（§7）也已提前实现，且两端都有了：终端机侧
+  `Terminal/.../Devices/DiscoveryService` 广播、响应配对、分离"允许被投放/被监看"权限，配一个配对
+  确认弹窗；投屏机侧 `src/Caster/EveryStage.Caster/` 监听终端机列表、发起配对请求。两边共用的协议
+  定义搬到了 `src/Shared/EveryStage.Discovery/`——**协议格式仍是本仓库自定义的草案**，现在有了
+  两个独立实现，但从未在真实网络上互相验证过。
+- **阶段2的捕获/编码/传输**（DDA屏幕捕获、H.264硬件编码、RTP推流）完全没有开始——`Caster` 项目目前
+  只做了发现与配对握手，点"开始投屏"配对成功后会如实告知"推流尚未实现"，而不是假装已经在投屏。
+- **阶段4正式四大面板主界面**尚未开始（Terminal目前只有悬浮预览窗和配对弹窗两个小窗口）。
 
 ## License
 
