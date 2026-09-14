@@ -1,6 +1,7 @@
 using EveryStage.Terminal.ContentEngine;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Display;
+using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.StateMachine;
 
 namespace EveryStage.Terminal.Playback;
@@ -29,6 +30,7 @@ public sealed class PlaybackEngine : IDisposable
     private readonly OverlayWindow _overlay;
     private readonly ImageContentRenderer _imageRenderer = new();
     private readonly PdfContentRenderer _pdfRenderer = new();
+    private readonly PlaybackLogger _playbackLogger = new();
     private VideoContentController? _videoController;
 
     private Activity? _currentActivity;
@@ -56,42 +58,42 @@ public sealed class PlaybackEngine : IDisposable
     /// <summary>"点文件" from within an activity's file list — establishes the auto-advance/manual-
     /// skip context that <see cref="NextManual"/>/<see cref="PreviousManual"/> and
     /// <see cref="CompletionAction.NextItem"/> use.</summary>
-    public void RequestPlay(Activity activity, int fileIndex)
+    public void RequestPlay(Activity activity, int fileIndex, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
     {
         if (fileIndex < 0 || fileIndex >= activity.Files.Count) return;
         _currentActivity = activity;
         _currentFileIndex = fileIndex;
-        PlayFile(activity.Files[fileIndex]);
+        PlayFile(activity.Files[fileIndex], trigger);
     }
 
     /// <summary>"点文件" with no activity context (e.g. directly from a future 文件 panel). With no
     /// activity list to advance through, <see cref="CompletionAction.NextItem"/> degrades to
     /// holding on the last frame — nothing in PLANNING.md defines "next" without an activity.</summary>
-    public void RequestPlay(MediaFile file)
+    public void RequestPlay(MediaFile file, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
     {
         _currentActivity = null;
         _currentFileIndex = -1;
-        PlayFile(file);
+        PlayFile(file, trigger);
     }
 
     /// <summary>Floating-preview-window "下一项" (PLANNING.md §8.3). Returns false at the end of
     /// the current activity's file list or with no activity context.</summary>
-    public bool NextManual() => TryAdvance(1);
+    public bool NextManual() => TryAdvance(1, PlaybackTrigger.ManualSkip);
 
     /// <summary>Floating-preview-window "上一项". Returns false at the start of the list.</summary>
-    public bool PreviousManual() => TryAdvance(-1);
+    public bool PreviousManual() => TryAdvance(-1, PlaybackTrigger.ManualSkip);
 
-    private bool TryAdvance(int delta)
+    private bool TryAdvance(int delta, PlaybackTrigger trigger)
     {
         if (_currentActivity == null) return false;
         int next = _currentFileIndex + delta;
         if (next < 0 || next >= _currentActivity.Files.Count) return false;
         _currentFileIndex = next;
-        PlayFile(_currentActivity.Files[_currentFileIndex]);
+        PlayFile(_currentActivity.Files[_currentFileIndex], trigger);
         return true;
     }
 
-    private void PlayFile(MediaFile file)
+    private void PlayFile(MediaFile file, PlaybackTrigger trigger)
     {
         _stayDurationTimer?.Stop();
         _stayDurationTimer?.Dispose();
@@ -108,6 +110,7 @@ public sealed class PlaybackEngine : IDisposable
         }
 
         _currentFile = file;
+        _playbackLogger.LogPlaybackStarted(file.Id, file.SourcePath, trigger);
 
         switch (file.Kind)
         {
@@ -125,8 +128,12 @@ public sealed class PlaybackEngine : IDisposable
 
             case MediaKind.Video:
                 _overlay.ShowVideoSurface();
-                VideoController.PlaybackCompleted -= OnVideoCompleted; // avoid stacking subscriptions across plays.
+                // -= before += on both, every time: avoids stacking subscriptions across plays
+                // without needing a separate "first time?" flag.
+                VideoController.PlaybackCompleted -= OnVideoCompleted;
                 VideoController.PlaybackCompleted += OnVideoCompleted;
+                VideoController.PlaybackFailed -= OnVideoFailed;
+                VideoController.PlaybackFailed += OnVideoFailed;
                 VideoController.Play(file.SourcePath);
                 break;
 
@@ -178,17 +185,33 @@ public sealed class PlaybackEngine : IDisposable
         _overlay.BeginInvoke(new Action(() => HandleCompletion(file)));
     }
 
+    private void OnVideoFailed(Exception ex)
+    {
+        var file = _currentFile;
+        if (file == null) return;
+        // Also raised from the background playback thread.
+        _overlay.BeginInvoke(new Action(() =>
+        {
+            if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
+            _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
+            // No documented recovery behavior for a decode failure (retry? skip to the next item?
+            // PLANNING.md doesn't say) — leave whatever's on screen as-is rather than guess at one.
+        }));
+    }
+
     private void HandleCompletion(MediaFile file)
     {
         if (!ReferenceEquals(file, _currentFile)) return; // stale callback from a file we've since left.
 
+        _playbackLogger.LogPlaybackEnded(file.Id, file.OnCompletion.ToString());
+
         switch (file.OnCompletion)
         {
             case CompletionAction.NextItem:
-                TryAdvance(1); // no-op (holds) if there's nothing further — see class doc comment.
+                TryAdvance(1, PlaybackTrigger.ActivityAuto); // no-op (holds) if nothing further — see class doc comment.
                 break;
             case CompletionAction.Loop:
-                PlayFile(file);
+                PlayFile(file, PlaybackTrigger.ActivityAuto);
                 break;
             case CompletionAction.HoldOnLastFrame:
                 break; // leave the current frame/video's last frame displayed.
@@ -203,6 +226,11 @@ public sealed class PlaybackEngine : IDisposable
         // the video swap chain/device (PLANNING.md §9.2's "预先创建并常驻" applies to the whole
         // video pipeline, not just the overlay window). Resuming after "断" starts over via a new
         // RequestPlay; there is no documented "resume from where it left off" behavior.
+        if (_currentFile != null)
+        {
+            _playbackLogger.LogPlaybackEnded(_currentFile.Id, "disconnected");
+            _currentFile = null;
+        }
         _stayDurationTimer?.Stop();
         _videoController?.Stop();
     }

@@ -45,6 +45,12 @@ public sealed class VideoContentController : IDisposable
     /// handler touches UI) when both the video and audio streams reach end-of-stream.</summary>
     public event Action? PlaybackCompleted;
 
+    /// <summary>Raised (same background-thread caveat as <see cref="PlaybackCompleted"/>) when the
+    /// decode/present loop dies from an unhandled exception — a bad file, a decoder error, a lost
+    /// GPU device, etc. Without this, that thread would just exit silently and the last frame would
+    /// stay frozen on screen forever with no record of why.</summary>
+    public event Action<Exception>? PlaybackFailed;
+
     public VideoContentController(IntPtr hostHandle, Size initialSize)
     {
         _gpu = new D3D11Device();
@@ -98,6 +104,22 @@ public sealed class VideoContentController : IDisposable
     }
 
     private void RunPlaybackLoop(VideoDecodeSource source, AudioPlaybackClock audioClock, CancellationToken token)
+    {
+        try
+        {
+            RunPlaybackLoopCore(source, audioClock, token);
+        }
+        catch (Exception ex)
+        {
+            // A decode error, a lost GPU device, a corrupt file — whatever it is, the thread must
+            // not just vanish: PLANNING.md §14.4 explicitly wants abnormal interruptions recorded,
+            // and silently freezing on the last frame with no signal anywhere would be worse than
+            // reporting the error and stopping.
+            PlaybackFailed?.Invoke(ex);
+        }
+    }
+
+    private void RunPlaybackLoopCore(VideoDecodeSource source, AudioPlaybackClock audioClock, CancellationToken token)
     {
         var frameStopwatch = Stopwatch.StartNew();
         bool audioDone = false, videoDone = false;

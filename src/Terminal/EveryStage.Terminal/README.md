@@ -21,6 +21,7 @@
 | `Tray/TrayIconController.cs` | §10 | 托盘图标 + 开关菜单 + 退出（"关闭程序"的唯一入口） |
 | `ContentEngine/` | §3 | 图片(GDI+，WIC编解码器) + PDF(PdfiumViewer) 渲染器、画面呈现控件（等比缩放、黑边）、视频播放控制器(`VideoContentController`，复用 `EveryStage.Rendering` 的D3D11零拷贝管线，直接对接 `OverlayWindow.VideoHost` 的独立SwapChain) |
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
+| `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，尚无调用方)；JSON-lines格式 + 自动清理过期文件 |
 
 ## 已知风险 / 待验证事项
 
@@ -52,6 +53,10 @@
    一个活动的文件列表播完最后一项后 `NextItem` 该不该自动跳到下一个活动；投屏开关关闭时"仅本地预览"
    应该渲染到哪个界面（Phase 4 UI 的文件/活动面板还不存在）；音频类文件(`MediaKind.Audio`)的播放
    目前完全没接（§6"音频特殊性"的背景音轨叠加规则本身在文档§16第3项里也还标着"待细化"）。
+10. **`Logging/`**：`DailyRollingLogWriter` 用反射把匿名对象的属性摊平进日志行，日志量在这个阶段
+    很小，没考虑过性能。`VideoContentController` 后台播放线程里的解码异常现在会被捕获并通过新增的
+    `PlaybackFailed` 事件上报给 `PlaybackEngine`（记入 `LogAbnormalInterruption`），但恢复行为
+    （重试/跳到下一项/停留）PLANNING.md 没有定义，目前是原地不动，不代表这是正确的产品行为。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -59,7 +64,9 @@
   和设备投屏请求处理准备好的挂载点，两者都还不存在。
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
-- 设备发现/配对、传输接收端（阶段2/3）
+- 设备发现/配对、传输接收端（阶段2/3）——`Logging/DeviceConnectionLogger.cs` 已经准备好接收调用，
+  但没有任何设备发现/配对代码去调用它
 - 正式UI（四大面板 + 悬浮预览窗，阶段4）
-- 三类日志系统（§14.4）——当前完全没有实现，`ScenarioRepository` 目前只是把损坏的旧文件重命名保留，
-  不构成正式的"文件操作日志"
+- `FileOperationLogger` 的方法（方案/活动创建/修改/删除、文件导入/删除、播放属性变更）目前没有调用方
+  ——`ScenarioRepository` 只有整存整取的 `Load`/`Save`，没有细粒度的"添加一个活动"之类的操作方法，
+  这些日志调用要等 Phase 4 UI（或别的编辑入口）真正执行这些操作时才有地方挂
