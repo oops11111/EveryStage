@@ -55,6 +55,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private OverlayWindow? _overlay;
     private PlaybackEngine? _playback;
     private FloatingPreviewWindow? _previewWindow;
+    private readonly MainWindow _mainWindow;
 
     public TerminalApplicationContext(ScenarioStore store, ScenarioRepository repository)
     {
@@ -74,8 +75,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // display bound" UX beyond implying it's a real, visible configuration state — the tray
         // tooltip below reflects it, but there is nothing further to build here until Phase 4 UI
         // exists to surface a proper "未检测到扩展屏" notice. No overlay also means no
-        // PlaybackEngine/preview window yet; whatever eventually drives "点文件" (Phase 4 UI, or a
-        // device-request handler) needs to tolerate _playback being null until a display shows up.
+        // PlaybackEngine/preview window yet; MainWindow's file panel tolerates _playback being null
+        // (RequestPlay just never gets called) until a display shows up.
 
         _stateMachine.StateChanged += OnOutputStateChanged;
 
@@ -85,8 +86,13 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _discovery.PairingRequested += OnPairingRequested;
         _discovery.Start();
 
+        var library = new FileLibraryStore();
+        _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices);
+        _mainWindow.Show();
+
         _tray = new TrayIconController(_stateMachine);
         _tray.ExitRequested += OnExitRequested;
+        _tray.MainWindowRequested += () => { _mainWindow.Show(); _mainWindow.Activate(); };
     }
 
     private void OnOutputStateChanged(OutputState state)
@@ -128,6 +134,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _playback?.Dispose();
         _overlay?.Dispose();
         _audioTakeover.Dispose();
+        _mainWindow.Dispose();
 
         Application.Exit();
     }

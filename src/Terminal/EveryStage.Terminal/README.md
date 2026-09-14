@@ -1,22 +1,20 @@
-# EveryStage.Terminal — 终端机主程序框架 + 本地内容引擎 + 设备发现配对（阶段1 + 阶段3一部分）
+# EveryStage.Terminal — 终端机主程序框架 + 本地内容引擎 + 设备发现配对 + 部分主界面
 
 对应 `docs/PLANNING.md` 第15章阶段1的前两项："终端机主程序框架（覆盖式窗口、投屏开关/断状态机、
-数据持久化）"+"本地内容引擎（图片/视频/PDF）"，以及阶段3的"设备发现/配对"部分（§7）。**不包含**
-WPS正式集成（有独立验证脚本，见下）、传输接收端（阶段2，实际推流数据的接收解码）、正式UI四大面板与
-悬浮预览窗（阶段4）。
+数据持久化）"+"本地内容引擎（图片/视频/PDF）"，阶段3的"设备发现/配对"部分（§7），以及阶段4正式
+四大面板主界面（§8.2）里的**文件**和**设备**两个面板。**不包含**WPS正式集成（有独立验证脚本，
+见下）、传输接收端（阶段2，实际推流数据的接收解码）、活动/设置两个面板、正式视觉设计（阶段5）。
 
-当前是一个托盘图标 + 悬浮预览窗 + 配对确认弹窗的最小宿主（**不是**PLANNING.md §8.2描述的正式四大
-面板主界面，那部分完全没有开始）：能开关"投屏开关"、能进出"待机中/扩展屏输出中"两个状态、有了状态
-就会显示/隐藏绑定的扩展屏覆盖窗口 + 悬浮预览窗并接管/归还系统音频；图片/PDF/视频都能渲染到覆盖窗口上
-（`PlaybackEngine` 把这些渲染器接到 Scenario/Activity 数据模型和状态机上）；局域网设备发起配对请求时
-会弹出确认对话框。`PlaybackEngine.RequestPlay(Activity, int)` 目前仍然没有真实调用方——悬浮预览窗
-只用得到"上一项/下一项/暂停/断"，真正"点文件开始播放"要等文件/活动面板（阶段4）存在才有入口。
+现在有一个真正意义上的操作界面（`UI/MainWindow.cs`）：左侧固定导航（投屏开关、断、文件/活动/设备/
+设置四个入口、状态指示）+ 右侧内容区。文件面板能导入/拖拽文件、按类型筛选、双击播放——这是
+`PlaybackEngine.RequestPlay(MediaFile)` 第一次有真实调用方。设备面板能看已配对设备列表并移除配对。
+活动和设置两个面板还是占位（见下）。覆盖窗口 + 悬浮预览窗 + 配对确认弹窗这些阶段1/3的产出维持不变。
 
 ## 已实现
 
 | 模块 | 对应 PLANNING.md | 说明 |
 |---|---|---|
-| `Data/` | §6 数据结构 | Scenario/Activity/MediaFile 模型 + JSON持久化（原子写，损坏时降级为空白方案而不是崩溃循环） |
+| `Data/` | §6 数据结构 | Scenario/Activity/MediaFile 模型 + JSON持久化（原子写，损坏时降级为空白方案而不是崩溃循环）；`FileLibraryStore` 是这次新加的——独立于任何活动之外的"文件库"，§6原模型没有覆盖，文件面板需要它 |
 | `Display/MonitorService.cs` | §5, §7 | 用 WinForms `Screen` 枚举显示器，选取非主屏作为"绑定扩展屏" |
 | `Display/OverlayWindow.cs` | §5, §9.2 | 无边框置顶覆盖窗口，常驻创建、仅隐藏/显示，定期重申TOPMOST z-order |
 | `StateMachine/OutputStateMachine.cs` | §9, §10 | 投屏开关与待机/输出状态两个独立维度；设备请求不受开关约束；"断"不改变开关状态 |
@@ -28,6 +26,10 @@ WPS正式集成（有独立验证脚本，见下）、传输接收端（阶段2�
 | `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套 |
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
+| `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
+| `UI/Panels/FilesPanel.cs` | §8.2 | 文件面板：`ListView`缩略图网格 + 类型筛选(全部/图片/视频/文档/音频) + 导入对话框 + 从资源管理器拖拽导入 + 双击播放(`PlaybackEngine.RequestPlay`) |
+| `UI/Panels/DevicesPanel.cs` | §8.2 | 设备面板：已配对设备列表(信任状态/被投放/被监看/配对时间) + 移除配对 |
+| `UI/Panels/NotImplementedPanel.cs` | — | 活动、设置两个面板的占位符，写明缺什么而不是空白一片 |
 
 ## 已知风险 / 待验证事项
 
@@ -57,8 +59,10 @@ WPS正式集成（有独立验证脚本，见下）、传输接收端（阶段2�
    需要重新审视（`ContentSurface.SetFrame`/`System.Windows.Forms.Timer` 都要求UI线程）。
 9. **PlaybackEngine 里没有定义的产品行为**（照 PLANNING.md 现状，这些确实没写清楚，不是漏做）：
    一个活动的文件列表播完最后一项后 `NextItem` 该不该自动跳到下一个活动；投屏开关关闭时"仅本地预览"
-   应该渲染到哪个界面（Phase 4 UI 的文件/活动面板还不存在）；音频类文件(`MediaKind.Audio`)的播放
-   目前完全没接（§6"音频特殊性"的背景音轨叠加规则本身在文档§16第3项里也还标着"待细化"）。
+   应该渲染到哪个界面——文件面板现在存在了，双击文件仍然会正确遵守开关状态(`RequestLocalFilePlayback`
+   返回`false`就不播)，但关闭状态下双击目前是彻底无反馈的静默无操作，用户会以为点击没生效，这本身
+   也是需要在真正实现"本地预览"之前先解决的可用性问题；音频类文件(`MediaKind.Audio`)的播放目前完全
+   没接（§6"音频特殊性"的背景音轨叠加规则本身在文档§16第3项里也还标着"待细化"）。
 10. **`Logging/`**：`DailyRollingLogWriter` 用反射把匿名对象的属性摊平进日志行，日志量在这个阶段
     很小，没考虑过性能。`VideoContentController` 后台播放线程里的解码异常现在会被捕获并通过新增的
     `PlaybackFailed` 事件上报给 `PlaybackEngine`（记入 `LogAbnormalInterruption`），但恢复行为
@@ -86,16 +90,32 @@ WPS正式集成（有独立验证脚本，见下）、传输接收端（阶段2�
 16. **配对确认弹窗只做了"接受/拒绝"，没有PIN码**：PLANNING.md §7 原话是"弹窗/PIN码"（二选一的口吻），
     这里只实现了弹窗那一半——`DiscoveryProtocol` 的 `PairRequestMessage` 也没有PIN字段，要加PIN需要
     先扩展协议本身，而协议本身还是草案（见上面第11条），不适合在弹窗UI里单方面加。
+17. **`FilesPanel` 的视频/文档/音频缩略图都是同一个占位图标**（`SystemIcons.Application`），不是真的
+    解码出来的预览画面——视频需要解一帧、PDF需要渲染首页、音频没有画面概念，这些都不是"标准WinForms
+    风险"而是明确没做的功能，等真正做缩略图时优先级最高的应该是视频（用户最容易靠缩略图分辨内容）。
+18. **`FileLibraryStore.InferKind` 是一个写死的扩展名列表**，不认识的扩展名会被拒绝导入而不是猜测——
+    这是有意的（宁可拒绝也不要把 `.heic` 之类的当成`Image`结果渲染器加载失败），但意味着列表本身需要
+    随着产品实际支持的格式范围维护，目前只覆盖了最常见的几种。
+19. **`MainWindow` 关闭窗口只隐藏、`Dispose()` 才真正释放**：这个"隐藏而不是销毁"的模式在本仓库里已经
+    用过好几次(`OverlayWindow`、`FloatingPreviewWindow`)，`MainWindow`延续同样的做法是一致的，但
+    `FormClosing` 里判断 `CloseReason != ApplicationExitCall` 才拦截关闭这一行为，具体触发时机
+    （尤其是 Windows 关机/注销时系统会用什么 `CloseReason` 广播关闭）没有在真实环境验证过。
+20. **`FilesPanel` 用标准 `ListView`(`View.LargeIcon`) + `ImageList` + `AllowDrop`/`DragEnter`/
+    `DragDrop`**：这些是非常成熟、低风险的WinForms API（比D3D11/MF那一类风险低得多），但同样没有
+    在真实Windows环境跑过，第一次使用时仍然值得跑一遍：导入对话框多选、拖拽多文件、切换分类筛选、
+    双击播放各种文件类型。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
-- `PlaybackEngine.RequestPlay(Activity, int)` / `RequestPlay(MediaFile)` 仍然没有真实调用方——
-  悬浮预览窗只用得到手动上一项/下一项/暂停/断，"点文件开始播放"要等文件/活动面板（阶段4）存在。
+- `PlaybackEngine.RequestPlay(Activity, int)` 仍然没有真实调用方——`RequestPlay(MediaFile)`
+  已经被文件面板用上了，但"活动"面板（选一个活动、按顺序播放里面的文件）还是占位符。
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
 - 传输接收端（阶段2：真正的RTP/H.264接收解码，`Devices/`目前只做发现和配对握手，不涉及媒体流）
-- 正式UI四大面板（文件/活动/设备/设置，阶段4）——目前只有悬浮预览窗和配对弹窗这两个小窗口，
-  "设备"面板要用到的 `PairedDeviceStore.All` 已经有数据源，缺的是界面本身
-- `FileOperationLogger` 的方法（方案/活动创建/修改/删除、文件导入/删除、播放属性变更）目前没有调用方
-  ——`ScenarioRepository` 只有整存整取的 `Load`/`Save`，没有细粒度的"添加一个活动"之类的操作方法，
-  这些日志调用要等 Phase 4 UI（或别的编辑入口）真正执行这些操作时才有地方挂
+- 活动面板、设置面板（§8.2 剩余两个面板）——数据源(`Scenario`/`Activity`)和播放能力都已就绪，
+  缺的是界面：活动的创建/编辑/拖拽排序，以及通用/显示/播放行为/网络与设备四个设置分类
+- 悬浮预览窗与主界面文件面板之间没有联动（比如从悬浮预览窗"下一项"切换后，文件面板不会自动高亮
+  对应的缩略图）——PLANNING.md §16第5项本身也把这类交互细节列为"待验证"
+- `FileOperationLogger` 的方法（方案/活动创建/修改/删除、文件导入/删除、播放属性变更）仍然没有
+  调用方——现在有了"添加一个活动"这类操作的天然位置（就是即将要做的活动面板），只是还没接上；
+  文件面板的导入/移除倒是有了地方接，但目前还没接（见风险清单）

@@ -4,11 +4,10 @@ using EveryStage.Terminal.StateMachine;
 namespace EveryStage.Terminal.Tray;
 
 /// <summary>
-/// Minimal tray presence for the always-on-background Terminal service. Full UI (four main
-/// panels, floating preview window) is Phase 4 (PLANNING.md §15) and lives elsewhere — this is
-/// just enough to (a) prove the process is alive, (b) toggle the cast switch, and (c) exit, since
-/// "关闭程序...是待机状态下的次要分支（托盘菜单主动退出）" (§10) is explicitly the only planned way
-/// to quit a device meant to run unattended.
+/// Tray presence for the always-on-background Terminal service: proves the process is alive,
+/// toggles the cast switch, reopens the main window (<c>UI/MainWindow</c>) if it's been hidden, and
+/// exits — "关闭程序...是待机状态下的次要分支（托盘菜单主动退出）" (§10) is explicitly the only
+/// planned way to quit a device meant to run unattended.
 /// </summary>
 public sealed class TrayIconController : IDisposable
 {
@@ -17,10 +16,13 @@ public sealed class TrayIconController : IDisposable
     private readonly OutputStateMachine _stateMachine;
 
     public event Action? ExitRequested;
+    public event Action? MainWindowRequested;
 
     public TrayIconController(OutputStateMachine stateMachine)
     {
         _stateMachine = stateMachine;
+
+        var openMainWindowItem = new ToolStripMenuItem("打开主界面", null, (_, _) => MainWindowRequested?.Invoke());
 
         _castSwitchItem = new ToolStripMenuItem("投屏开关") { CheckOnClick = true, Checked = stateMachine.CastSwitchOn };
         _castSwitchItem.CheckedChanged += (_, _) => stateMachine.SetCastSwitch(_castSwitchItem.Checked);
@@ -28,6 +30,7 @@ public sealed class TrayIconController : IDisposable
         var exitItem = new ToolStripMenuItem("退出", null, (_, _) => ExitRequested?.Invoke());
 
         var menu = new ContextMenuStrip();
+        menu.Items.Add(openMainWindowItem);
         menu.Items.Add(_castSwitchItem);
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
@@ -39,6 +42,8 @@ public sealed class TrayIconController : IDisposable
             ContextMenuStrip = menu,
             Visible = true,
         };
+
+        _notifyIcon.DoubleClick += (_, _) => MainWindowRequested?.Invoke();
 
         stateMachine.StateChanged += OnOutputStateChanged;
         stateMachine.CastSwitchChanged += OnCastSwitchChanged;
