@@ -1,5 +1,6 @@
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Devices;
+using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
 using EveryStage.Terminal.UI.Panels;
@@ -12,10 +13,9 @@ namespace EveryStage.Terminal.UI;
 /// whatever display the operator is actually sitting at — this is NOT the <c>OverlayWindow</c>,
 /// which covers the bound extended display with actual content output.
 ///
-/// Only 文件 and 设备 are real (§8.2) — both had a working data source ready to hang UI on
-/// (<see cref="FileLibraryStore"/>, <see cref="PairedDeviceStore"/>). 活动 and 设置 are honest
-/// placeholders (<see cref="NotImplementedPanel"/>); see this project's README for what's missing
-/// and why building all four fully wasn't attempted in one pass.
+/// 文件、活动、设备 are real (§8.2) — all three had (or, for 活动, needed only) a working data
+/// source to hang UI on. 设置 is an honest placeholder (<see cref="NotImplementedPanel"/>); see
+/// this project's README for what's missing there and why.
 ///
 /// The 投屏开关 here is a plain <see cref="CheckBox"/>, not the slide-switch visual PLANNING.md §8.1
 /// calls for ("滑动开关，非按钮") — that's a Phase 5 visual-design concern (themes, Acrylic/Mica,
@@ -30,10 +30,12 @@ public sealed class MainWindow : Form
     private readonly Label _statusLabel;
     private readonly FilesPanel _filesPanel;
     private readonly DevicesPanel _devicesPanel;
-    private readonly NotImplementedPanel _activitiesPanel;
+    private readonly ActivitiesPanel _activitiesPanel;
     private readonly NotImplementedPanel _settingsPanel;
 
-    public MainWindow(OutputStateMachine stateMachine, PlaybackEngine? playback, FileLibraryStore library, PairedDeviceStore pairedDevices)
+    public MainWindow(
+        OutputStateMachine stateMachine, PlaybackEngine? playback, FileLibraryStore library,
+        PairedDeviceStore pairedDevices, ScenarioStore scenarioStore, ScenarioRepository scenarioRepository)
     {
         _stateMachine = stateMachine;
         _playback = playback;
@@ -76,8 +78,8 @@ public sealed class MainWindow : Form
         _filesPanel.FilePlayRequested += file => _playback?.RequestPlay(file);
 
         _devicesPanel = new DevicesPanel(pairedDevices);
-        _activitiesPanel = new NotImplementedPanel("活动",
-            "方案/活动的编辑、拖拽排序、播放属性设置尚未实现——数据模型(Scenario/Activity)已经存在，\n缺的是这层UI。PlaybackEngine.RequestPlay(Activity, int) 已经就绪，等待这里调用。");
+        _activitiesPanel = new ActivitiesPanel(
+            scenarioStore, scenarioRepository, library, _playback, new FileOperationLogger(), stateMachine);
         _settingsPanel = new NotImplementedPanel("设置", "通用/显示/播放行为/网络与设备等分类设置尚未实现。");
 
         filesButton.Click += (_, _) => ShowPanel(_filesPanel);
@@ -115,6 +117,7 @@ public sealed class MainWindow : Form
 
         if (panel == _filesPanel) _filesPanel.Refresh_();
         else if (panel == _devicesPanel) _devicesPanel.Refresh_();
+        else if (panel == _activitiesPanel) _activitiesPanel.RefreshTree();
     }
 
     private void OnStateChanged(OutputState state) => UpdateStatusLabel();
@@ -124,7 +127,20 @@ public sealed class MainWindow : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _stateMachine.StateChanged -= OnStateChanged;
+        if (disposing)
+        {
+            _stateMachine.StateChanged -= OnStateChanged;
+
+            // ShowPanel() only ever keeps the *currently active* panel inside _contentHost.Controls
+            // (Clear() detaches the rest without disposing them) — the inactive three would
+            // otherwise never get Dispose()d, and ActivitiesPanel in particular unsubscribes
+            // PlaybackEngine/OutputStateMachine event handlers in its own Dispose override, so
+            // skipping this would leak those subscriptions for the process's lifetime.
+            _filesPanel.Dispose();
+            _devicesPanel.Dispose();
+            _activitiesPanel.Dispose();
+            _settingsPanel.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

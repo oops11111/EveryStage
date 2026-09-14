@@ -37,11 +37,10 @@ internal static class Program
 }
 
 /// <summary>
-/// Wires the Phase 1 framework pieces together: state machine <-> overlay window <-> audio
-/// takeover <-> tray icon <-> device discovery. This is deliberately not the full Phase 4 UI (four
-/// main panels) — just enough surrounding UI (the floating preview window, a pairing confirmation
-/// dialog) to give <c>PlaybackEngine</c> and <c>DiscoveryService</c> real callers instead of sitting
-/// completely unused, per PLANNING.md §10's "待机中/扩展屏输出中" loop and §7's pairing flow.
+/// Wires the framework pieces together: state machine, overlay window, audio takeover, device
+/// discovery, the main window (with its 文件/活动/设备 panels), the floating preview window, and
+/// the pairing confirmation dialog. 设置 is still a placeholder inside MainWindow — see that
+/// project's README for what's left.
 /// </summary>
 internal sealed class TerminalApplicationContext : ApplicationContext
 {
@@ -87,7 +86,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _discovery.Start();
 
         var library = new FileLibraryStore();
-        _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices);
+        _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository);
         _mainWindow.Show();
 
         _tray = new TrayIconController(_stateMachine);

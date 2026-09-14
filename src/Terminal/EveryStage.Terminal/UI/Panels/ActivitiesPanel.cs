@@ -1,0 +1,391 @@
+using EveryStage.Terminal.Data;
+using EveryStage.Terminal.Logging;
+using EveryStage.Terminal.Playback;
+using EveryStage.Terminal.StateMachine;
+
+namespace EveryStage.Terminal.UI.Panels;
+
+/// <summary>
+/// PLANNING.md §8.2's 活动面板: "方案选择器（切换/另存为/新建）+ 活动列表（可折叠、拖拽排序、滚动）+
+/// 输出状态条". Uses a <see cref="TreeView"/> for the activity/file hierarchy — collapse/expand and
+/// scrolling come for free from the control; drag-to-reorder is NOT implemented (see this project's
+/// README), only explicit 上移/下移 (move up/down) buttons, which get the same end result with far
+/// less WinForms drag-and-drop-over-a-TreeView complexity to get wrong on a first, uncompiled pass.
+///
+/// "添加文件到活动" doesn't work by dragging from the 文件 panel (§11's "拖拽添加") because
+/// <see cref="MainWindow"/> only shows one panel at a time — there's no moment where both panels are
+/// visible to drag between. Instead this has its own "添加文件..." button that opens a picker over
+/// the same <see cref="FileLibraryStore"/> the 文件 panel reads from.
+/// </summary>
+public sealed class ActivitiesPanel : UserControl
+{
+    private readonly ScenarioStore _store;
+    private readonly ScenarioRepository _repository;
+    private readonly FileLibraryStore _library;
+    private readonly PlaybackEngine? _playback;
+    private readonly FileOperationLogger _fileOpLog;
+    private readonly OutputStateMachine _stateMachine;
+
+    private readonly ComboBox _scenarioCombo;
+    private readonly TreeView _tree;
+    private readonly Button _addFileButton;
+    private readonly Button _removeButton;
+    private readonly Button _moveUpButton;
+    private readonly Button _moveDownButton;
+    private readonly Label _statusBar;
+
+    public ActivitiesPanel(
+        ScenarioStore store, ScenarioRepository repository, FileLibraryStore library,
+        PlaybackEngine? playback, FileOperationLogger fileOpLog, OutputStateMachine stateMachine)
+    {
+        _store = store;
+        _repository = repository;
+        _library = library;
+        _playback = playback;
+        _fileOpLog = fileOpLog;
+        _stateMachine = stateMachine;
+
+        Dock = DockStyle.Fill;
+        EnsureAtLeastOneScenario();
+
+        // --- 方案选择器 ---
+        var scenarioBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32 };
+        _scenarioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+        _scenarioCombo.SelectedIndexChanged += OnScenarioComboChanged;
+        var newScenarioButton = new Button { Text = "新建方案", AutoSize = true };
+        newScenarioButton.Click += (_, _) => OnNewScenario();
+        var saveAsButton = new Button { Text = "另存为...", AutoSize = true };
+        saveAsButton.Click += (_, _) => OnSaveAsScenario();
+        var deleteScenarioButton = new Button { Text = "删除方案", AutoSize = true };
+        deleteScenarioButton.Click += (_, _) => OnDeleteScenario();
+        scenarioBar.Controls.AddRange(new Control[] { _scenarioCombo, newScenarioButton, saveAsButton, deleteScenarioButton });
+
+        // --- 活动列表工具栏 ---
+        var activityBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32 };
+        var newActivityButton = new Button { Text = "新建活动", AutoSize = true };
+        newActivityButton.Click += (_, _) => OnNewActivity();
+        var renameActivityButton = new Button { Text = "重命名活动", AutoSize = true };
+        renameActivityButton.Click += (_, _) => OnRenameActivity();
+        var deleteActivityButton = new Button { Text = "删除活动", AutoSize = true };
+        deleteActivityButton.Click += (_, _) => OnDeleteActivity();
+        _addFileButton = new Button { Text = "添加文件...", AutoSize = true, Enabled = false };
+        _addFileButton.Click += (_, _) => OnAddFile();
+        _removeButton = new Button { Text = "移除文件", AutoSize = true, Enabled = false };
+        _removeButton.Click += (_, _) => OnRemoveFile();
+        _moveUpButton = new Button { Text = "上移", AutoSize = true, Enabled = false };
+        _moveUpButton.Click += (_, _) => MoveSelectedFile(-1);
+        _moveDownButton = new Button { Text = "下移", AutoSize = true, Enabled = false };
+        _moveDownButton.Click += (_, _) => MoveSelectedFile(1);
+        activityBar.Controls.AddRange(new Control[]
+        {
+            newActivityButton, renameActivityButton, deleteActivityButton,
+            _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
+        });
+
+        _tree = new TreeView { Dock = DockStyle.Fill };
+        _tree.AfterSelect += (_, _) => UpdateButtonStates();
+        _tree.NodeMouseDoubleClick += OnNodeDoubleClick;
+
+        _statusBar = new Label { Dock = DockStyle.Bottom, Height = 24, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DimGray };
+
+        Controls.Add(_tree);
+        Controls.Add(activityBar);
+        Controls.Add(scenarioBar);
+        Controls.Add(_statusBar);
+
+        if (_playback != null) _playback.FileStarted += OnFileStarted;
+        _stateMachine.StateChanged += OnStateChanged;
+        UpdateStatusBar(null);
+
+        RefreshScenarioCombo();
+        RefreshTree();
+    }
+
+    private void EnsureAtLeastOneScenario()
+    {
+        if (_store.Scenarios.Count > 0) return;
+
+        var scenario = new Scenario { Name = "默认方案" };
+        _store.Scenarios.Add(scenario);
+        _store.CurrentScenarioId = scenario.Id;
+        _repository.Save(_store);
+    }
+
+    private Scenario? CurrentScenario =>
+        _store.Scenarios.FirstOrDefault(s => s.Id == _store.CurrentScenarioId) ?? _store.Scenarios.FirstOrDefault();
+
+    private void RefreshScenarioCombo()
+    {
+        _scenarioCombo.SelectedIndexChanged -= OnScenarioComboChanged;
+        _scenarioCombo.Items.Clear();
+        foreach (var scenario in _store.Scenarios) _scenarioCombo.Items.Add(scenario);
+        _scenarioCombo.DisplayMember = nameof(Scenario.Name);
+        _scenarioCombo.SelectedItem = CurrentScenario;
+        _scenarioCombo.SelectedIndexChanged += OnScenarioComboChanged;
+    }
+
+    private void OnScenarioComboChanged(object? sender, EventArgs e)
+    {
+        if (_scenarioCombo.SelectedItem is not Scenario scenario) return;
+        _store.CurrentScenarioId = scenario.Id;
+        _repository.Save(_store);
+        RefreshTree();
+    }
+
+    private void OnNewScenario()
+    {
+        string? name = TextInputDialog.Prompt(this, "新建方案", "方案名称：");
+        if (name == null) return;
+
+        var scenario = new Scenario { Name = name };
+        _store.Scenarios.Add(scenario);
+        _store.CurrentScenarioId = scenario.Id;
+        _fileOpLog.LogScenarioCreated(scenario.Id, scenario.Name);
+        _repository.Save(_store);
+        RefreshScenarioCombo();
+        RefreshTree();
+    }
+
+    private void OnSaveAsScenario()
+    {
+        var current = CurrentScenario;
+        if (current == null) return;
+
+        string? name = TextInputDialog.Prompt(this, "另存为", "新方案名称：", current.Name + " 副本");
+        if (name == null) return;
+
+        // Deep-clone activities/files so editing the copy never mutates the original scenario —
+        // sharing MediaFile instances between two scenarios would make "another modified" quietly
+        // change both.
+        var clone = new Scenario
+        {
+            Name = name,
+            Activities = current.Activities.Select(CloneActivity).ToList(),
+        };
+        _store.Scenarios.Add(clone);
+        _store.CurrentScenarioId = clone.Id;
+        _fileOpLog.LogScenarioCreated(clone.Id, clone.Name);
+        _repository.Save(_store);
+        RefreshScenarioCombo();
+        RefreshTree();
+    }
+
+    private static Activity CloneActivity(Activity source)
+    {
+        var clone = new Activity
+        {
+            Name = source.Name,
+            IsCollapsed = source.IsCollapsed,
+            DefaultPlayMode = source.DefaultPlayMode,
+        };
+        clone.Files.AddRange(source.Files.Select(CloneFile));
+        return clone;
+    }
+
+    private static MediaFile CloneFile(MediaFile source) => new()
+    {
+        SourcePath = source.SourcePath,
+        Kind = source.Kind,
+        PlayModeOverride = source.PlayModeOverride,
+        StayDuration = source.StayDuration,
+        FadeDuration = source.FadeDuration,
+        VolumeFollowsFade = source.VolumeFollowsFade,
+        OnCompletion = source.OnCompletion,
+        AllowManualSkip = source.AllowManualSkip,
+        IsBackgroundAudio = source.IsBackgroundAudio,
+        BackgroundAudioVisual = source.BackgroundAudioVisual,
+    };
+
+    private void OnDeleteScenario()
+    {
+        var current = CurrentScenario;
+        if (current == null || _store.Scenarios.Count <= 1) return; // always keep at least one.
+
+        var confirm = MessageBox.Show(this, $"确定要删除方案 \"{current.Name}\" 吗？其中的活动也会一并删除。",
+            "删除方案", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (confirm != DialogResult.Yes) return;
+
+        _store.Scenarios.Remove(current);
+        _store.CurrentScenarioId = _store.Scenarios.First().Id;
+        _fileOpLog.LogScenarioDeleted(current.Id, current.Name);
+        _repository.Save(_store);
+        RefreshScenarioCombo();
+        RefreshTree();
+    }
+
+    private void OnNewActivity()
+    {
+        var scenario = CurrentScenario;
+        if (scenario == null) return;
+
+        string? name = TextInputDialog.Prompt(this, "新建活动", "活动名称：");
+        if (name == null) return;
+
+        var activity = new Activity { Name = name };
+        scenario.Activities.Add(activity);
+        _fileOpLog.LogActivityCreated(scenario.Id, activity.Id, activity.Name);
+        _repository.Save(_store);
+        RefreshTree();
+    }
+
+    private void OnRenameActivity()
+    {
+        var (scenario, activity, _) = GetSelection();
+        if (scenario == null || activity == null) return;
+
+        string? name = TextInputDialog.Prompt(this, "重命名活动", "活动名称：", activity.Name);
+        if (name == null) return;
+
+        activity.Name = name;
+        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        _repository.Save(_store);
+        RefreshTree();
+    }
+
+    private void OnDeleteActivity()
+    {
+        var (scenario, activity, _) = GetSelection();
+        if (scenario == null || activity == null) return;
+
+        var confirm = MessageBox.Show(this, $"确定要删除活动 \"{activity.Name}\" 吗？",
+            "删除活动", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (confirm != DialogResult.Yes) return;
+
+        scenario.Activities.Remove(activity);
+        _fileOpLog.LogActivityDeleted(scenario.Id, activity.Id, activity.Name);
+        _repository.Save(_store);
+        RefreshTree();
+    }
+
+    private void OnAddFile()
+    {
+        var (scenario, activity, _) = GetSelection();
+        if (scenario == null || activity == null) return;
+
+        using var picker = new LibraryFilePickerDialog(_library.Files);
+        if (picker.ShowDialog(this) != DialogResult.OK || picker.Selected == null) return;
+
+        activity.Files.Add(CloneFile(picker.Selected));
+        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        _repository.Save(_store);
+        RefreshTree();
+    }
+
+    private void OnRemoveFile()
+    {
+        var (scenario, activity, file) = GetSelection();
+        if (scenario == null || activity == null || file == null) return;
+
+        activity.Files.Remove(file);
+        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        _repository.Save(_store);
+        RefreshTree();
+    }
+
+    private void MoveSelectedFile(int delta)
+    {
+        var (scenario, activity, file) = GetSelection();
+        if (scenario == null || activity == null || file == null) return;
+
+        int index = activity.Files.IndexOf(file);
+        int newIndex = index + delta;
+        if (newIndex < 0 || newIndex >= activity.Files.Count) return;
+
+        (activity.Files[index], activity.Files[newIndex]) = (activity.Files[newIndex], activity.Files[index]);
+        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        _repository.Save(_store);
+        RefreshTree();
+        SelectFileNode(activity, file);
+    }
+
+    private void OnNodeDoubleClick(object? sender, TreeNodeMouseClickEventArgs e)
+    {
+        var scenario = CurrentScenario;
+        if (scenario == null || _playback == null) return;
+
+        if (e.Node.Tag is Activity activity)
+        {
+            if (activity.Files.Count > 0) _playback.RequestPlay(activity, 0);
+        }
+        else if (e.Node.Tag is MediaFile file && e.Node.Parent?.Tag is Activity owningActivity)
+        {
+            int index = owningActivity.Files.IndexOf(file);
+            if (index >= 0) _playback.RequestPlay(owningActivity, index);
+        }
+    }
+
+    private (Scenario? scenario, Activity? activity, MediaFile? file) GetSelection()
+    {
+        var scenario = CurrentScenario;
+        var node = _tree.SelectedNode;
+        if (scenario == null || node == null) return (scenario, null, null);
+
+        if (node.Tag is Activity activity) return (scenario, activity, null);
+        if (node.Tag is MediaFile file && node.Parent?.Tag is Activity owningActivity) return (scenario, owningActivity, file);
+        return (scenario, null, null);
+    }
+
+    private void UpdateButtonStates()
+    {
+        var (_, activity, file) = GetSelection();
+        _addFileButton.Enabled = activity != null;
+        _removeButton.Enabled = file != null;
+        _moveUpButton.Enabled = file != null;
+        _moveDownButton.Enabled = file != null;
+    }
+
+    private void SelectFileNode(Activity activity, MediaFile file)
+    {
+        foreach (TreeNode activityNode in _tree.Nodes)
+        {
+            if (activityNode.Tag != activity) continue;
+            foreach (TreeNode fileNode in activityNode.Nodes)
+            {
+                if (fileNode.Tag == file) { _tree.SelectedNode = fileNode; return; }
+            }
+        }
+    }
+
+    /// <summary>Call after the scenario store changes from outside this control.</summary>
+    public void RefreshTree()
+    {
+        _tree.Nodes.Clear();
+        var scenario = CurrentScenario;
+        if (scenario == null) return;
+
+        foreach (var activity in scenario.Activities)
+        {
+            var activityNode = new TreeNode(activity.Name) { Tag = activity };
+            foreach (var file in activity.Files)
+                activityNode.Nodes.Add(new TreeNode(Path.GetFileName(file.SourcePath)) { Tag = file });
+            activityNode.Expand();
+            _tree.Nodes.Add(activityNode);
+        }
+        UpdateButtonStates();
+    }
+
+    private void OnFileStarted(MediaFile file) => UpdateStatusBar(file);
+
+    private void OnStateChanged(OutputState state) => UpdateStatusBar(state == OutputState.Idle ? null : _lastStartedFile);
+
+    private MediaFile? _lastStartedFile;
+
+    private void UpdateStatusBar(MediaFile? file)
+    {
+        _lastStartedFile = file ?? _lastStartedFile;
+        bool active = _stateMachine.State == OutputState.Active;
+        _statusBar.Text = active && file != null
+            ? $"● 输出中 — {Path.GetFileName(file.SourcePath)}"
+            : active ? "● 输出中" : "○ 待机中";
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            if (_playback != null) _playback.FileStarted -= OnFileStarted;
+            _stateMachine.StateChanged -= OnStateChanged;
+        }
+        base.Dispose(disposing);
+    }
+}
