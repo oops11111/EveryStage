@@ -1,0 +1,30 @@
+# Visual Studio / .NET
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.dll
+*.pdb
+
+# Rider / VSCode
+.idea/
+.vscode/
+
+# Build output
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+
+# NuGet
+*.nupkg
+packages/
+
+# Logs (应用运行时日志，不入库)
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
