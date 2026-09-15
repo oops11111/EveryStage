@@ -22,6 +22,10 @@
          IDXGIOutput1.DuplicateOutput against) — Caster doesn't touch the MF/video-processor half
          of that library, only the device setup. -->
     <ProjectReference Include="..\..\Shared\EveryStage.Rendering\EveryStage.Rendering.csproj" />
+    <!-- RTP packet framing / H.264 payload packetization — not driving real encoded video yet
+         (see TransportSelfTest), but exercised here as a loopback self-test alongside the screen
+         capture one. -->
+    <ProjectReference Include="..\..\Shared\EveryStage.Transport\EveryStage.Transport.csproj" />
   </ItemGroup>
 
 </Project>

@@ -18,7 +18,7 @@ EveryStage/
 │   ├── Shared/
 │   │   ├── EveryStage.Rendering/  D3D11/Media Foundation零拷贝解码渲染管线，Terminal与阶段0 Demo共用
 │   │   ├── EveryStage.Discovery/  局域网发现/配对协议 + 设备身份持久化，Terminal与Caster共用
-│   │   └── EveryStage.Transport/  RTP包帧 + H.264 NAL单元打包/拆包(RFC 3550/6184)，暂无调用方
+│   │   └── EveryStage.Transport/  RTP包帧 + H.264 NAL单元打包/拆包(RFC 3550/6184) + 收发会话，Caster自检已接入
 │   └── Poc/         阶段前置技术验证Demo（不属于正式产品代码）
 │       ├── ZeroCopyRenderDemo/    阶段0：D3D11零拷贝渲染管线验证（详见其 README.md）
 │       └── WpsComInteropSpike/    阶段1：WPS COM互操作静默/翻页验证脚本（详见其 README.md）
@@ -57,13 +57,15 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   确认弹窗；投屏机侧 `src/Caster/EveryStage.Caster/` 监听终端机列表、发起配对请求。两边共用的协议
   定义搬到了 `src/Shared/EveryStage.Discovery/`——**协议格式仍是本仓库自定义的草案**，现在有了
   两个独立实现，但从未在真实网络上互相验证过。
-- **阶段2的捕获/编码/传输**：屏幕捕获这一块已经用 Desktop Duplication API 实现并接入UI
-  (`Caster/Capture/`)——配对成功后有一个"屏幕捕获自检"按钮，真的能捕获屏幕并实时显示分辨率/帧数/
-  帧率，但只到这一步为止：不编码、不发送，画面不会离开这台机器。传输层的协议打包/拆包逻辑
-  （RTP包帧 + H.264 NAL单元的分片/重组，`src/Shared/EveryStage.Transport/`）也写好了，但还没有
-  接到真实的socket收发或H.264编码器上——这块是纯字节层面的协议实现，风险比DirectX/COM那一档低很多，
-  靠人工逐字节推演验证过编解码往返一致。H.264硬件编码本身（Media Foundation异步编码器）仍然完全
-  没有开始，所以"开始投屏"配对成功后的界面仍然如实告知"推流尚未实现"，而不是假装已经在投屏。
+- **阶段2的捕获/传输**：屏幕捕获用 Desktop Duplication API 实现并接入UI(`Caster/Capture/`)——
+  配对成功后有一个"屏幕捕获自检"按钮，真的能捕获屏幕并实时显示分辨率/帧数/帧率。传输层
+  (`src/Shared/EveryStage.Transport/`：RTP包帧、H.264 NAL单元的FU-A分片/重组、发送/接收会话)也
+  完整实现了，并且有这个仓库**第一个真正跑得起来的端到端自检**——不需要Windows/GPU，只需要.NET
+  运行时：通过本机回环UDP把一批人造的NAL形状数据走一遍发送→接收→重组，逐字节核对一致，Caster的
+  "运行传输自检"按钮已经接入。这两块目前还没有互相连通（画面不会被编码，也就没有真实数据可传），
+  中间缺的正是**H.264硬件编码**（Media Foundation异步编码器）——这是PLANNING.md §15"第二大技术
+  风险区"里唯一还完全没开始、也是风险最高的一块，"开始投屏"配对成功后的界面仍然如实告知"推流尚未
+  实现"，而不是假装已经在投屏。
 
 ## License
 

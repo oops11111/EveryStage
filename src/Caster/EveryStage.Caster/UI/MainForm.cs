@@ -1,17 +1,19 @@
 using EveryStage.Caster.Capture;
 using EveryStage.Caster.Discovery;
 using EveryStage.Discovery;
+using EveryStage.Transport;
 
 namespace EveryStage.Caster.UI;
 
 /// <summary>
 /// The Caster's whole UI (PLANNING.md §12): "单一任务导向，不做复杂功能堆叠" — a standby panel
 /// (target terminal list + start button + privacy notice) and, once paired, a second panel showing
-/// what's targeted. This implements the discovery + pairing handshake for real, plus a screen-
-/// capture self-test (see <see cref="CaptureSelfTestRunner"/>) that proves Desktop Duplication
-/// capture works — but it does NOT implement actual encode/transport (Phase 2's H.264/RTP half
-/// doesn't exist anywhere in this repo yet), so the "paired" panel says so plainly instead of
-/// pretending a live stream exists. See this project's README.
+/// what's targeted. This implements the discovery + pairing handshake for real, plus two
+/// self-tests: screen capture (<see cref="CaptureSelfTestRunner"/>, real Desktop Duplication
+/// output) and RTP transport (<see cref="TransportSelfTest"/>, a real loopback UDP round-trip with
+/// synthetic NAL-shaped payloads). Neither is wired to the other, and there is still no H.264
+/// encoder anywhere in this repo to connect them for real — so the "paired" panel says so plainly
+/// instead of pretending a live stream exists. See this project's README.
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -29,6 +31,8 @@ public sealed class MainForm : Form
     private readonly Label _pairedWithLabel;
     private readonly Button _captureSelfTestButton;
     private readonly Label _captureStatsLabel;
+    private readonly Button _transportSelfTestButton;
+    private readonly Label _transportStatsLabel;
 
     private DiscoveredTerminal? _pairedTerminal;
 
@@ -38,7 +42,7 @@ public sealed class MainForm : Form
         _identity = identity;
 
         Text = "EveryStage 投屏机";
-        ClientSize = new Size(320, 320);
+        ClientSize = new Size(320, 360);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -82,13 +86,18 @@ public sealed class MainForm : Form
         _captureSelfTestButton.Click += OnCaptureSelfTestClick;
         _captureStatsLabel = new Label { Bounds = new Rectangle(12, 156, 296, 60), ForeColor = Color.DimGray };
 
-        var backButton = new Button { Text = "返回", Bounds = new Rectangle(12, 266, 296, 32) };
+        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 220, 296, 32) };
+        _transportSelfTestButton.Click += OnTransportSelfTestClick;
+        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 254, 296, 40), ForeColor = Color.DimGray };
+
+        var backButton = new Button { Text = "返回", Bounds = new Rectangle(12, 306, 296, 32) };
         backButton.Click += (_, _) => ShowStandby();
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
         {
-            _pairedWithLabel, notImplementedLabel, _captureSelfTestButton, _captureStatsLabel, backButton,
+            _pairedWithLabel, notImplementedLabel, _captureSelfTestButton, _captureStatsLabel,
+            _transportSelfTestButton, _transportStatsLabel, backButton,
         });
 
         Controls.Add(_pairedPanel);
@@ -135,6 +144,34 @@ public sealed class MainForm : Form
         _captureStatsLabel.Text =
             $"分辨率: {_captureSelfTest.Width}x{_captureSelfTest.Height}\n" +
             $"已捕获帧数: {_captureSelfTest.FrameCount}    近1秒帧率: {_captureSelfTest.Fps:F1}";
+    }
+
+    private async void OnTransportSelfTestClick(object? sender, EventArgs e)
+    {
+        _transportSelfTestButton.Enabled = false;
+        _transportStatsLabel.ForeColor = Color.DimGray;
+        _transportStatsLabel.Text = "运行中...";
+
+        try
+        {
+            var result = await TransportSelfTest.RunAsync();
+            _transportStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
+            _transportStatsLabel.Text = result.Success
+                ? $"通过：{result.NalUnitsSent} 个NAL单元全部往返一致（含FU-A分片重组）。"
+                : $"失败（发送{result.NalUnitsSent}个/收到{result.NalUnitsReceived}个）：{result.FailureReason}";
+        }
+        catch (Exception ex)
+        {
+            // A self-test throwing outright (e.g. couldn't bind the loopback socket at all) is
+            // itself a real, reportable finding — surface it the same as a logical failure rather
+            // than let an unhandled exception on the UI thread take the whole app down.
+            _transportStatsLabel.ForeColor = Color.DarkRed;
+            _transportStatsLabel.Text = $"自检本身出错：{ex.Message}";
+        }
+        finally
+        {
+            _transportSelfTestButton.Enabled = true;
+        }
     }
 
     private void RefreshTerminalList()
@@ -199,6 +236,7 @@ public sealed class MainForm : Form
             _captureSelfTestButton.Text = "开始屏幕捕获自检";
             _captureStatsLabel.Text = "";
         }
+        _transportStatsLabel.Text = "";
 
         _pairedTerminal = null;
         _pairedPanel.Visible = false;
