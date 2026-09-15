@@ -304,6 +304,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         var status = new DiscoveryProtocol.CastStatusMessage
         {
             DeviceId = _identity.DeviceId,
+            SentAtUtc = DateTimeOffset.UtcNow,
             FramesDecoded = _castReceiver.FramesDecoded,
             VideoBytesReceived = _castReceiver.BytesReceived,
             VideoError = _castReceiver.LastError,

@@ -222,10 +222,16 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     因为某种原因被防火墙/网络设备限速或丢包率更高，会造成"画面音频都在正常播放，但Caster却显示
     未确认"这种误导性的状态——状态回报的健康程度不代表媒体流的健康程度，这个仓库现在把两者放在
     UI上却没有特别提醒用户这个区别。
-36. **`LastStatusReceivedAt`用`DateTime.UtcNow`而不是收到状态包里某个时间戳字段**：
-    `CastStatusMessage`本身不携带发送时的时间戳，纯粹依赖"Caster收到的那一刻"来判断新鲜度——如果
-    未来要精确计算"状态从终端机产生到Caster收到经过了多久"（比如用来估计网络延迟），需要在消息里
-    加一个时间戳字段，目前没有。
+36. **【已实现，原为已知缺口】`CastStatusMessage`现在带了发送时刻**：新增`SentAtUtc`字段
+    （Terminal端`SendCastStatus()`填成`DateTimeOffset.UtcNow`），`LiveCastSession.OnCastStatusReceived`
+    收到后计算`DateTimeOffset.UtcNow - status.SentAtUtc`存进新增的只读属性
+    `LastStatusLatencyEstimate`，`MainForm`的"终端机确认"那一行现在会带一个"延迟估算"数字。
+    **这个数字只在两台机器时钟大致同步时才有意义**——这个协议本身完全没有时钟偏移协商，如果
+    Terminal和Caster的系统时钟本身就差得远，算出来的"延迟"主要反映的是时钟偏差而不是真实网络
+    延迟；这个仓库没有办法从沙箱里验证真实局域网环境下两台Windows机器实际的时钟同步情况，所以
+    UI上和doc comment里都没有把这个数字包装成"精确延迟"，而是明确标注为"估算"并解释了这个前提。
+    `LastStatusReceivedAt`本身（"Caster收到的那一刻"）没有变，两个字段现在并存，各自服务不同的
+    问题："新鲜度判断"继续用收到时刻，"延迟估算"才用这个新时间戳。
 37. **【已实现，原为已知缺口】持续解码/播放出错现在会由Terminal自己决定断开**：这个产品决策
     （是否要在解码/播放持续出错时自动断开）已经做出并实现——见
     `src/Terminal/EveryStage.Terminal/README.md`"已知风险"第48-51条：`CastReceiver`新增连续

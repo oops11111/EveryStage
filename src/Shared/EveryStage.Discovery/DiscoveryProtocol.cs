@@ -121,6 +121,19 @@ public static class DiscoveryProtocol
         /// tell whose status this is, and lets <c>LiveCastSession</c> ignore a stray report from a
         /// terminal it isn't currently casting to.</summary>
         public Guid DeviceId { get; set; }
+
+        /// <summary>The Terminal's own clock at the moment it built this message (not when the
+        /// socket actually put it on the wire, and not adjusted for how long <c>SendCastStatusAsync</c>
+        /// itself takes) — added so a receiving Caster can estimate one-way latency/staleness instead
+        /// of only knowing "a status arrived just now" (<c>LiveCastSession.LastStatusReceivedAt</c>
+        /// already covered that half). NOTE: this is only a meaningful latency estimate if the
+        /// Terminal's and Caster's system clocks are reasonably synchronized (e.g. both on the same
+        /// NTP-synced LAN) — this protocol has no clock-offset negotiation of its own, so a Caster
+        /// computing <c>DateTimeOffset.UtcNow - SentAtUtc</c> against an unsynchronized Terminal
+        /// clock would get a number that reflects clock skew, not network delay, with no way to tell
+        /// the two apart from this field alone.</summary>
+        public DateTimeOffset SentAtUtc { get; set; }
+
         public long FramesDecoded { get; set; }
         public long VideoBytesReceived { get; set; }
         public string? VideoError { get; set; }

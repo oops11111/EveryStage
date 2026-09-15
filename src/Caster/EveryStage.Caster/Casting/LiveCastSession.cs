@@ -181,6 +181,18 @@ public sealed class LiveCastSession : IDisposable
     /// never actually accepted this cast at all", this class can't tell those apart).</summary>
     public DateTime? LastStatusReceivedAt { get; private set; }
 
+    /// <summary>How stale the most recent status report was by the time it got here —
+    /// <c>DateTimeOffset.UtcNow - CastStatusMessage.SentAtUtc</c>, computed the moment it arrives.
+    /// Null until the first report arrives (mirrors <see cref="LastStatusReceivedAt"/>). NOTE: this
+    /// is a real latency estimate only if the Terminal's and this Caster's clocks are reasonably
+    /// synchronized — see <c>DiscoveryProtocol.CastStatusMessage.SentAtUtc</c>'s own doc comment.
+    /// This project has no way to verify clock sync between two machines from inside this sandbox,
+    /// so a value here that looks implausible (negative, or much larger than the ~1s report
+    /// interval) more likely reflects clock skew between the two machines than real network delay
+    /// — displayed as-is rather than clamped, since hiding an implausible value would also hide the
+    /// clock-skew signal itself.</summary>
+    public TimeSpan? LastStatusLatencyEstimate { get; private set; }
+
     // A status report is expected roughly every second (TerminalApplicationContext's timer) —
     // several missed in a row is a reasonable "the Terminal's gone quiet" signal without being
     // trigger-happy about one lost UDP datagram, same reasoning TerminalDiscoveryClient's own
@@ -221,6 +233,7 @@ public sealed class LiveCastSession : IDisposable
         TerminalAudioBytesReceived = status.AudioBytesReceived;
         TerminalAudioError = status.AudioError;
         LastStatusReceivedAt = DateTime.UtcNow;
+        LastStatusLatencyEstimate = DateTimeOffset.UtcNow - status.SentAtUtc;
         StatsUpdated?.Invoke();
     }
 
@@ -246,6 +259,7 @@ public sealed class LiveCastSession : IDisposable
         TerminalAudioBytesReceived = 0;
         TerminalAudioError = null;
         LastStatusReceivedAt = null;
+        LastStatusLatencyEstimate = null;
 
         _discoveryClient.CastStatusReceived += OnCastStatusReceived;
 

@@ -598,9 +598,17 @@ public sealed class MainForm : Form
         // The one line in this panel that isn't a purely local claim — see LiveCastSession's doc
         // comment on CastStatusMessage. "未确认" covers both "never heard from the terminal at all"
         // and "used to hear from it, not anymore" on purpose: this UI can't tell those apart, and
-        // shouldn't pretend to.
+        // shouldn't pretend to. This "确认" is specifically the discovery-socket status channel's
+        // health, not the RTP media streams' — they travel independently (see this project's README
+        // "已知风险" on why a healthy media stream and a healthy status channel aren't the same
+        // thing), so this line can say "确认" while video/audio are actually struggling, or vice
+        // versa; the "延迟估算" figure below is likewise only meaningful if this machine's and the
+        // Terminal's clocks are reasonably in sync, which this protocol never verifies.
+        string latencyNote = _liveCastSession.LastStatusLatencyEstimate is { } latency
+            ? $"，延迟估算: {latency.TotalMilliseconds:F0}ms"
+            : "";
         string terminalLine = _liveCastSession.IsTerminalAlive
-            ? $"终端机确认: 已解码 {_liveCastSession.TerminalFramesDecoded} 帧" +
+            ? $"终端机确认: 已解码 {_liveCastSession.TerminalFramesDecoded} 帧{latencyNote}" +
               (_liveCastSession.TerminalVideoError != null ? $"（终端机视频出错：{_liveCastSession.TerminalVideoError}）" : "") +
               (_liveCastSession.TerminalAudioError != null ? $"（终端机音频出错：{_liveCastSession.TerminalAudioError}）" : "")
             : "终端机确认: 未确认（尚未收到或已停止收到终端机的状态回报）";
