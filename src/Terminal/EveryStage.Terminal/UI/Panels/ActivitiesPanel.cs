@@ -36,6 +36,7 @@ public sealed class ActivitiesPanel : UserControl
     private readonly ComboBox _scenarioCombo;
     private readonly TreeView _tree;
     private readonly Button _addFileButton;
+    private readonly Button _playModeButton;
     private readonly Button _removeButton;
     private readonly Button _moveUpButton;
     private readonly Button _moveDownButton;
@@ -77,6 +78,10 @@ public sealed class ActivitiesPanel : UserControl
         deleteActivityButton.Click += (_, _) => OnDeleteActivity();
         _addFileButton = new Button { Text = "添加文件...", AutoSize = true, Enabled = false };
         _addFileButton.Click += (_, _) => OnAddFile();
+        // Editing PlayMode is new this round (see PlaybackEngine.EffectivePlayMode's doc comment on
+        // why it previously had nothing to edit — the enum had no runtime effect at all until now).
+        _playModeButton = new Button { Text = "播放方式...", AutoSize = true, Enabled = false };
+        _playModeButton.Click += (_, _) => OnEditPlayMode();
         _removeButton = new Button { Text = "移除文件", AutoSize = true, Enabled = false };
         _removeButton.Click += (_, _) => OnRemoveFile();
         _moveUpButton = new Button { Text = "上移", AutoSize = true, Enabled = false };
@@ -85,7 +90,7 @@ public sealed class ActivitiesPanel : UserControl
         _moveDownButton.Click += (_, _) => MoveSelectedFile(1);
         activityBar.Controls.AddRange(new Control[]
         {
-            newActivityButton, renameActivityButton, deleteActivityButton,
+            newActivityButton, renameActivityButton, deleteActivityButton, _playModeButton,
             _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
         });
 
@@ -278,6 +283,20 @@ public sealed class ActivitiesPanel : UserControl
         RefreshTree();
     }
 
+    private void OnEditPlayMode()
+    {
+        var (scenario, activity, _) = GetSelection();
+        if (scenario == null || activity == null) return;
+
+        using var dialog = new PlayModeDialog($"活动播放方式 — {activity.Name}", activity.DefaultPlayMode);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (dialog.SelectedPlayMode == activity.DefaultPlayMode) return; // no actual change — nothing to log/save.
+
+        activity.DefaultPlayMode = dialog.SelectedPlayMode;
+        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        _repository.Save(_store);
+    }
+
     private void OnRemoveFile()
     {
         var (scenario, activity, file) = GetSelection();
@@ -336,6 +355,7 @@ public sealed class ActivitiesPanel : UserControl
     {
         var (_, activity, file) = GetSelection();
         _addFileButton.Enabled = activity != null;
+        _playModeButton.Enabled = activity != null;
         _removeButton.Enabled = file != null;
         _moveUpButton.Enabled = file != null;
         _moveDownButton.Enabled = file != null;

@@ -23,6 +23,11 @@ namespace EveryStage.Terminal.Playback;
 /// after the last file in an activity under NextItem (cross-activity auto-advance isn't specified
 /// anywhere in PLANNING.md), and rendering a local-only preview when the cast switch is off (that
 /// preview surface belongs to the Phase 4 UI's file/activity panels, which don't exist yet).
+///
+/// <see cref="MediaFile.PlayModeOverride"/>/<see cref="Activity.DefaultPlayMode"/> (via
+/// <see cref="EffectivePlayMode"/>) and <see cref="MediaFile.AllowManualSkip"/> (via
+/// <see cref="TryAdvance"/>) DO have real effect here, unlike the properties listed above — see
+/// those two methods for exactly what each one gates.
 /// </summary>
 public sealed class PlaybackEngine : IDisposable
 {
@@ -123,12 +128,28 @@ public sealed class PlaybackEngine : IDisposable
     private bool TryAdvance(int delta, PlaybackTrigger trigger)
     {
         if (_currentActivity == null) return false;
+        // MediaFile.AllowManualSkip gates only the floating-preview-window buttons (ManualSkip) —
+        // an activity's own NextItem/auto-advance is a separate trigger and was never meant to be
+        // blocked by "don't let the operator skip past this one manually" (see AllowManualSkip's
+        // own doc comment: it says nothing about auto-advance, and conflating the two would make a
+        // "no manual skip" file also stall CompletionAction.NextItem, which isn't what either
+        // property is documented to mean).
+        if (trigger == PlaybackTrigger.ManualSkip && _currentFile?.AllowManualSkip == false) return false;
         int next = _currentFileIndex + delta;
         if (next < 0 || next >= _currentActivity.Files.Count) return false;
         _currentFileIndex = next;
         PlayFile(_currentActivity.Files[_currentFileIndex], trigger);
         return true;
     }
+
+    /// <summary>A per-file override wins; otherwise falls back to the owning activity's default —
+    /// see <see cref="MediaFile.PlayModeOverride"/>/<see cref="Activity.DefaultPlayMode"/>'s own doc
+    /// comments. With no activity context at all (<see cref="RequestPlay(MediaFile, PlaybackTrigger)"/>),
+    /// there's no default to fall back to beyond <see cref="PlayMode.SequentialAuto"/> itself — which
+    /// is moot anyway since <see cref="TryAdvance"/> already refuses to advance with
+    /// <see cref="_currentActivity"/> null, regardless of play mode.</summary>
+    private PlayMode EffectivePlayMode(MediaFile file) =>
+        file.PlayModeOverride ?? _currentActivity?.DefaultPlayMode ?? PlayMode.SequentialAuto;
 
     private void PlayFile(MediaFile file, PlaybackTrigger trigger)
     {
@@ -304,7 +325,14 @@ public sealed class PlaybackEngine : IDisposable
         switch (file.OnCompletion)
         {
             case CompletionAction.NextItem:
-                TryAdvance(1, PlaybackTrigger.ActivityAuto); // no-op (holds) if nothing further — see class doc comment.
+                // PlayMode.ManualSelect means the operator picks what plays next, not
+                // CompletionAction.NextItem — so this holds on the current frame exactly like
+                // HoldOnLastFrame instead of auto-advancing, until a manual NextManual()/
+                // PreviousManual() (from the floating preview window) or a fresh RequestPlay moves
+                // on. This is the first real behavior PlayMode/PlayModeOverride/DefaultPlayMode
+                // have ever had — previously nothing in this class read them at all.
+                if (EffectivePlayMode(file) == PlayMode.SequentialAuto)
+                    TryAdvance(1, PlaybackTrigger.ActivityAuto); // no-op (holds) if nothing further — see class doc comment.
                 break;
             case CompletionAction.Loop:
                 PlayFile(file, PlaybackTrigger.ActivityAuto);

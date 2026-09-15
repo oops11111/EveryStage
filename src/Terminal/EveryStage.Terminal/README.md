@@ -367,6 +367,31 @@ Caster知道终端机确实收到了东西。
     第53条只做了活动面板这一半，文件面板完全没有改动，PLANNING.md §16第5项本身也把这类交互细节
     列为"待验证"，不是这个仓库单方面决定简化的。
 
+### `PlayMode`/`AllowManualSkip` 第一次有了真正的运行时效果 — 这次新加的部分
+
+55. **【已实现，原为已知缺口】`PlayMode`不再是一个没有任何行为的枚举**：`Activity.DefaultPlayMode`/
+    `MediaFile.PlayModeOverride`这两个字段从数据模型加进来那一轮起就没有任何代码读过它们——
+    `CompletionAction.NextItem`一直是无条件自动前进，跟这两个字段的值完全无关。这一轮
+    `PlaybackEngine`新增`EffectivePlayMode(file)`（文件级`PlayModeOverride`优先，否则回退到所属
+    活动的`DefaultPlayMode`），`HandleCompletion`处理`NextItem`时先查一下有效播放方式：
+    `SequentialAuto`才自动前进，`ManualSelect`则停在当前这一项，直到用户通过悬浮预览窗手动点
+    "下一项"或直接点选别的文件/活动。这是这个仓库第一次真正区分"顺序自动播放"和"手动点选"这两个
+    模式的实际含义。
+56. **【已实现，原为已知缺口】`MediaFile.AllowManualSkip`也第一次有了效果**：`PlaybackEngine.TryAdvance`
+    在触发来源是`PlaybackTrigger.ManualSkip`（也就是悬浮预览窗的上一项/下一项按钮）时，如果当前
+    文件的`AllowManualSkip`是`false`就直接拒绝前进——特意只挡`ManualSkip`这一种触发来源，不影响
+    `CompletionAction.NextItem`自身的自动前进（`ActivityAuto`触发），因为这个字段的doc comment
+    从一开始描述的就是"是否允许手动跳过"，不是"是否允许自动前进"，两者是不同的产品概念，不应该
+    被同一次改动混在一起。
+57. **`ActivitiesPanel`新增"播放方式..."按钮 + `UI/PlayModeDialog.cs`**：选中一个活动（或活动
+    内的某个文件，两种情况按钮都会启用，因为编辑的对象永远是这个文件所属的活动）就能编辑
+    `Activity.DefaultPlayMode`，是这个仓库第一次给`PlayMode`配上编辑UI——上面第55-56条先让这个
+    枚举有了真正的行为，这里才跟进补上编辑入口，避免重蹈"UI能设置一个完全不影响任何行为的值"
+    这类反面例子的覆辙（另见风险#9关于本仓库对"没有行为支撑的UI"这类东西的一贯态度）。**刻意
+    没有做的**：`MediaFile.PlayModeOverride`（单个文件覆盖活动默认值）仍然没有编辑入口——这个
+    对话框只编辑活动级别的默认值，单文件覆盖这个仓库判断值得留到需要的时候再做，目前只能通过
+    保持`null`（"跟随活动默认"）这一种状态。
+
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
 - 音视频同步的残余误差补偿（见"已知风险"第39-40条）——基础的"音频为主时钟+呈现线程等待"已经实现，
@@ -376,8 +401,10 @@ Caster知道终端机确实收到了东西。
 - 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35条）——`OverlayWindow.Rebind`存在但从未被
   调用过，`VideoSurface`/`PlaybackEngine`也没有为"运行中途换显示器"设计
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
-- `FileOperationLogger.LogPlaybackPropertyChanged` 仍然没有调用方——单个 `MediaFile` 播放属性
-  （停留时长、淡入淡出等）在活动面板里还没有UI能编辑（见下一条），自然也没有变更可记；"文件
-  导入/移除"和"方案/活动创建/修改/删除"这两类已经都接上了（见"已知风险"第47条、`ActivitiesPanel`）。
-- `Activity.DefaultPlayMode`(顺序自动/手动点选) 和 `MediaFile` 的播放属性（停留时长、淡入淡出、
-  完成动作等）在活动面板里完全没有编辑入口——目前"添加文件到活动"用的都是 `MediaFile` 的默认值。
+- `MediaFile.PlayModeOverride`（单文件覆盖活动默认播放方式）没有编辑入口（见风险#57）——活动级别
+  的`DefaultPlayMode`已经有了
+- `FileOperationLogger.LogPlaybackPropertyChanged` 仍然没有调用方——`StayDuration`/`OnCompletion`
+  已经在活动面板／设置面板路径上生效并有真实行为，但`FadeDuration`/`VolumeFollowsFade`/
+  `IsBackgroundAudio`/`BackgroundAudioVisual`这几个字段仍然完全没有任何代码读取过（见
+  `PlaybackEngine`类doc comment"deliberately out of scope"那一段），在这几个字段本身有真正的
+  播放行为之前，这个仓库不打算为它们加编辑UI——同样的"先做行为、再做UI"的顺序，见风险#55-57。
