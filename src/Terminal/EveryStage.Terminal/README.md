@@ -316,6 +316,31 @@ Caster知道终端机确实收到了东西。
     本身的设计就是"写失败不崩溃、直接吞掉"，所以不会是一次崩溃，但会是一条丢失的日志）——共享一个
     实例、也就共享同一把锁，从根上排除这个可能性，而不是继续接受这个小概率风险。
 
+### `CastReceiver`/`Program.cs` 的持续解码/播放出错处理 — 这次新加的部分
+
+48. **【已实现，原为已知缺口】持续解码/播放出错现在会自动断开投屏了**：`CastReceiver`新增
+    `ConsecutiveVideoDecodeErrors`/`ConsecutiveAudioPlaybackErrors`两个计数器，分别在
+    `OnNalUnitReceived`/`OnAudioPayloadReceived`里失败时`+1`、成功时清零；`Program.cs`新增
+    `CheckDecodeHealth()`，跟`CheckCastLiveness()`共用同一个1秒定时器，任一计数器连续达到90次
+    （按30fps估算约3秒）就`StopCasting()`+`_stateMachine.Disconnect()`，回到待机态而不是让一个
+    卡死的解码器永远显示冻结/花屏的最后一帧——之前这仓库明确说过这是一个还没做出的产品决策，
+    现在做出的选择是"自动降级到待机"，理由是Terminal本来就是无人值守设备，没有人在旁边看到出错
+    信息去手动点"断"。
+49. **顺带修复了一个此前没有被单独列为风险的真实bug：`LastError`/`AudioError`原来是"曾经出过错"
+    就永久非空**：只在出错时被赋值，从来没有在成功时清空过，导致哪怕只是最初几帧解码失败、之后
+    完全恢复正常，`CastStatusMessage`也会永远把"投屏出错"报给Caster——`LiveCastSession`那边的
+    `TerminalVideoError`/`TerminalAudioError`本身是"每次状态包直接覆盖"（不是自己累积的），所以
+    这个修复不需要改Caster那一侧任何代码就能生效。现在这两个属性反映的是"最近一次尝试是否成功"，
+    真正代表"是否处于持续失败状态"的是新增的两个`Consecutive*Errors`计数器。
+50. **`OnAudioPayloadReceived`之前完全没有try/catch**：`AudioPlaybackClock.Enqueue`如果抛出，
+    异常会一路冒到`RawRtpReceiver.ReceiveLoopAsync`所在的`Task.Run`里变成一个没人观察的task
+    异常——不会让进程崩溃，但会让整个音频接收循环从此静默死掉，且没有任何地方报告过这件事。这次
+    顺带补上了这层try/catch，让它跟视频侧的`OnNalUnitReceived`一样，把失败转成`AudioError`+
+    `ConsecutiveAudioPlaybackErrors`而不是让接收线程无声消失。
+51. **90次这个阈值本身没有真机验证过**：按"典型30fps编码"倒推出"约3秒"，但真实编码帧率、解码器
+    真正的故障模式（是会连续每帧都失败，还是间歇性失败）都是这个沙箱没法观察的——如果真机上出现
+    "解码器偶尔失败但很快自愈"的模式，90这个阈值可能太宽松或太严格，目前完全是估算值。
+
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
 - 音视频同步的残余误差补偿（见"已知风险"第39-40条）——基础的"音频为主时钟+呈现线程等待"已经实现，

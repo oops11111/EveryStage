@@ -113,10 +113,12 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // see DiscoveryProtocol.CastStatusMessage for why this exists — plus the reverse check
         // (CheckCastLiveness): a Caster that crashes or loses network never gets to send
         // CastStopMessage, and without this a CastReceiver would keep "casting" a frozen last frame
-        // forever. Both started/stopped alongside _castReceiver in StopCasting()/
-        // OnCastStartRequested, never left running with nothing to report or check.
+        // forever. CheckDecodeHealth is the third, previously-missing policy check this same timer
+        // now also drives (see its own doc comment) — all three started/stopped alongside
+        // _castReceiver in StopCasting()/OnCastStartRequested, never left running with nothing to
+        // report or check.
         _castStatusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
-        _castStatusTimer.Tick += (_, _) => { CheckCastLiveness(); SendCastStatus(); };
+        _castStatusTimer.Tick += (_, _) => { CheckCastLiveness(); CheckDecodeHealth(); SendCastStatus(); };
 
         var library = new FileLibraryStore();
         _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity);
@@ -261,6 +263,36 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // Disconnect() also hides the overlay and restores audio takeover via
         // OnOutputStateChanged's Idle branch, same as a manual "断" — a silently frozen last frame
         // with the overlay still up would be worse than falling back to standby.
+        StopCasting();
+        _stateMachine.Disconnect();
+    }
+
+    // Roughly 3 seconds' worth of access units at a typical 30fps encode — this was previously an
+    // open product-behavior question this repo explicitly hadn't decided (see this project's
+    // README's history): CastReceiver.LastError/AudioError got reported every second via
+    // SendCastStatus, but nothing on this side ever acted on persistent failure, so a decoder stuck
+    // failing every single frame (a corrupted decoder state, not a one-off bad access unit) would
+    // sit there forever showing a frozen/corrupted last frame while dutifully reporting "投屏出错"
+    // to a Caster that has no way to fix it remotely. Picked, like CastTimeout above, without any
+    // real-network/real-hardware measurement — generous enough that an isolated decode hiccup (a
+    // single dropped/corrupt access unit, which CastReceiver's own counters reset back to zero on
+    // the very next successful decode) can never trip this, short enough that a genuinely broken
+    // decode pipeline doesn't leave a bad frame on screen for an unreasonable amount of time.
+    private const int MaxConsecutiveDecodeErrorsBeforeDisconnect = 90;
+
+    private void CheckDecodeHealth()
+    {
+        if (_castReceiver == null) return;
+        if (_castReceiver.ConsecutiveVideoDecodeErrors < MaxConsecutiveDecodeErrorsBeforeDisconnect
+            && _castReceiver.ConsecutiveAudioPlaybackErrors < MaxConsecutiveDecodeErrorsBeforeDisconnect)
+        {
+            return;
+        }
+
+        // Same StopCasting()+Disconnect() policy CheckCastLiveness already applies for a Caster
+        // that's gone silent — Terminal is meant to run unattended (PLANNING.md's whole framing), so
+        // there's nobody watching to notice a stuck decoder and manually hit "断"; falling back to
+        // standby on its own is better than staying "connected" to a stream it can no longer render.
         StopCasting();
         _stateMachine.Disconnect();
     }

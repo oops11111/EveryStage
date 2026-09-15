@@ -223,10 +223,14 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     `CastStatusMessage`本身不携带发送时的时间戳，纯粹依赖"Caster收到的那一刻"来判断新鲜度——如果
     未来要精确计算"状态从终端机产生到Caster收到经过了多久"（比如用来估计网络延迟），需要在消息里
     加一个时间戳字段，目前没有。
-37. **只有Caster一侧读了`LastError`/`AudioError`就认为该丢弃/停止**：Terminal那边`CastReceiver`
-    出错(`LastError`/`AudioError`非空)后仍然会继续把这些错误信息塞进下一次的状态包里上报，但不会
-    自己停止接收——是否要在解码/播放持续出错时自动断开，这个仓库还没做出决定，属于产品行为层面
-    的空白，不是这次实现遗漏的。
+37. **【已实现，原为已知缺口】持续解码/播放出错现在会由Terminal自己决定断开**：这个产品决策
+    （是否要在解码/播放持续出错时自动断开）已经做出并实现——见
+    `src/Terminal/EveryStage.Terminal/README.md`"已知风险"第48-51条：`CastReceiver`新增连续
+    失败计数器，`Program.cs`新增`CheckDecodeHealth()`，连续约3秒（90次）解码/播放失败就自动
+    `StopCasting()`回到待机态。这一侧（Caster）不需要跟着改任何代码——`LiveCastSession`早就是
+    "每次状态包直接覆盖`TerminalVideoError`/`TerminalAudioError`"，Terminal那边一旦停止发送
+    状态包（因为它自己已经断开了），Caster这边`IsTerminalAlive`超时机制会自然接管，跟Caster自己
+    的Terminal崩溃场景走的是同一条路径。
 
 ### 音视频同步 — 这次新加的部分
 
@@ -285,7 +289,6 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
   Media Foundation的AAC编码器MFT，跟视频编码器同一类风险，这一轮为了先接通链路特意绕开了）
 - 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
   真正的往返延迟测量
-- 持续解码/播放出错时是否应该自动断开（见风险37）——目前完全没有这个产品决策
 - 选择捕获哪个显示器（`ScreenCaptureSource` 目前固定捕获 `outputIndex=0`，多显示器场景没有UI选择）
 - `H264HardwareEncoder` 里"编码器不提供自己的输出sample"这条分支（见上方风险16）
 - 编码器的丢帧/背压策略、以及`LiveCastSession`两个发送队列（视频/音频）的背压策略（同一类问题，

@@ -91,18 +91,45 @@ public sealed class CastReceiver : IDisposable
     public int Height { get; }
     public long FramesDecoded { get; private set; }
     public long BytesReceived { get; private set; }
+
+    /// <summary>The most recent video decode attempt's error, or null if it succeeded — cleared back
+    /// to null on the very next successful <see cref="H264HardwareDecoder.SubmitAccessUnit"/> call,
+    /// NOT sticky for the receiver's whole lifetime the way an earlier version of this class left it
+    /// (a single transient decode hiccup used to leave this permanently non-null, and therefore
+    /// permanently reported as "投屏出错" in <c>CastStatusMessage</c>, even after decoding fully
+    /// recovered). See <see cref="ConsecutiveVideoDecodeErrors"/> for the value that actually tracks
+    /// an ongoing run of failures, which this single latest-error string cannot distinguish from "one
+    /// isolated failure a while ago that happened to be the last one so far".</summary>
     public string? LastError { get; private set; }
+
+    /// <summary>How many <see cref="H264HardwareDecoder.SubmitAccessUnit"/> calls have failed in a
+    /// row, reset to 0 by the next success — see <see cref="TerminalApplicationContext.CheckDecodeHealth"/>
+    /// (Program.cs) for the policy that watches this to decide when persistent decode failure should
+    /// disconnect the cast entirely, the same way <c>CheckCastLiveness</c> already does for a Caster
+    /// that's gone silent.</summary>
+    public int ConsecutiveVideoDecodeErrors { get; private set; }
 
     public bool HasAudio { get; private set; }
     public long AudioBytesReceived { get; private set; }
 
-    /// <summary>Set when audio construction fails — unlike a video-side failure (which fails this
-    /// whole constructor, since there's no cast without video), an audio failure here degrades to
+    /// <summary>Two distinct failure modes share this one property, never at the same time: set once
+    /// at construction if audio setup itself fails (unlike a video-side failure, which fails this
+    /// whole constructor since there's no cast without video, an audio setup failure here degrades to
     /// video-only, matching <c>LiveCastSession</c>'s own audio-is-best-effort handling on the Caster
-    /// side. Video-only mode presents each decoded frame immediately (see <see cref="OnFrameDecoded"/>)
-    /// rather than routing it through the audio-paced presentation thread, since there's no audio
-    /// clock left to pace against.</summary>
+    /// side — see <see cref="HasAudio"/>); or, once <see cref="HasAudio"/> is true, set/cleared per
+    /// <see cref="OnAudioPayloadReceived"/> call the same latest-error-not-sticky way
+    /// <see cref="LastError"/> works for video (see that property's own doc comment on why sticky was
+    /// a bug). The two modes never overlap in practice: a setup failure sets <see cref="HasAudio"/> to
+    /// false, which means <see cref="OnAudioPayloadReceived"/> is never wired up to run at all. Video-
+    /// only mode presents each decoded frame immediately (see <see cref="OnFrameDecoded"/>) rather
+    /// than routing it through the audio-paced presentation thread, since there's no audio clock left
+    /// to pace against.</summary>
     public string? AudioError { get; private set; }
+
+    /// <summary>Same role as <see cref="ConsecutiveVideoDecodeErrors"/>, for the audio side — counts
+    /// consecutive <see cref="OnAudioPayloadReceived"/> failures (currently, only
+    /// <c>AudioPlaybackClock.Enqueue</c> throwing), reset to 0 by the next successful enqueue.</summary>
+    public int ConsecutiveAudioPlaybackErrors { get; private set; }
 
     /// <summary>UTC time of the most recent video OR audio packet actually received — initialized
     /// to construction time (not <c>DateTime.MinValue</c>) so a brand-new receiver gets a grace
@@ -198,7 +225,23 @@ public sealed class CastReceiver : IDisposable
         // than blocking, so a burst of late packets thins itself out instead of building unbounded
         // latency; a dropped/reordered RTP packet here just becomes an audible gap/glitch, the same
         // "no loss recovery" limitation the video side already has and documents.
-        _audioClock!.Enqueue(pcm);
+        try
+        {
+            _audioClock!.Enqueue(pcm);
+            AudioError = null;
+            ConsecutiveAudioPlaybackErrors = 0;
+        }
+        catch (Exception ex)
+        {
+            // Previously unhandled here entirely — a throw from Enqueue would have propagated out
+            // of this event handler, up through RawRtpReceiver's ReceiveLoopAsync, and silently
+            // killed that background Task with no error surfaced anywhere (an unobserved task
+            // exception, not a crash). Caught here the same way OnNalUnitReceived already catches
+            // decode failures, so it becomes a reportable AudioError instead of a silently dead
+            // audio receive loop.
+            AudioError = ex.Message;
+            ConsecutiveAudioPlaybackErrors++;
+        }
     }
 
     private void OnNalUnitReceived(byte[] nalUnit, bool isLastNalOfAccessUnit, uint timestamp)
@@ -219,10 +262,13 @@ public sealed class CastReceiver : IDisposable
             // as presentationTicks, and what RunPresentLoop paces against the audio clock.
             long presentationTicks = RtpVideoClock.ToElapsedTicks(timestamp, RtpVideoClock.ClockRate);
             _decoder.SubmitAccessUnit(accessUnit, presentationTicks);
+            LastError = null;
+            ConsecutiveVideoDecodeErrors = 0;
         }
         catch (Exception ex)
         {
             LastError = ex.Message;
+            ConsecutiveVideoDecodeErrors++;
         }
     }
 
