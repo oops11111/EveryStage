@@ -383,14 +383,22 @@ Caster知道终端机确实收到了东西。
     `CompletionAction.NextItem`自身的自动前进（`ActivityAuto`触发），因为这个字段的doc comment
     从一开始描述的就是"是否允许手动跳过"，不是"是否允许自动前进"，两者是不同的产品概念，不应该
     被同一次改动混在一起。
-57. **`ActivitiesPanel`新增"播放方式..."按钮 + `UI/PlayModeDialog.cs`**：选中一个活动（或活动
-    内的某个文件，两种情况按钮都会启用，因为编辑的对象永远是这个文件所属的活动）就能编辑
-    `Activity.DefaultPlayMode`，是这个仓库第一次给`PlayMode`配上编辑UI——上面第55-56条先让这个
-    枚举有了真正的行为，这里才跟进补上编辑入口，避免重蹈"UI能设置一个完全不影响任何行为的值"
-    这类反面例子的覆辙（另见风险#9关于本仓库对"没有行为支撑的UI"这类东西的一贯态度）。**刻意
-    没有做的**：`MediaFile.PlayModeOverride`（单个文件覆盖活动默认值）仍然没有编辑入口——这个
-    对话框只编辑活动级别的默认值，单文件覆盖这个仓库判断值得留到需要的时候再做，目前只能通过
-    保持`null`（"跟随活动默认"）这一种状态。
+57. **【已实现，原为已知缺口】`ActivitiesPanel`新增"播放方式..."按钮，`Activity.DefaultPlayMode`
+    和`MediaFile.PlayModeOverride`现在都有编辑入口了**：是这个仓库第一次给`PlayMode`配上编辑
+    UI——上面第55-56条先让这个枚举有了真正的行为，这里才跟进补上编辑入口，避免重蹈"UI能设置一个
+    完全不影响任何行为的值"这类反面例子的覆辙（另见风险#9关于本仓库对"没有行为支撑的UI"这类东西
+    的一贯态度）。按钮是上下文相关的：选中一个活动节点本身，编辑的是这个活动的`DefaultPlayMode`；
+    选中活动内的某个文件节点，编辑的是这个文件自己的`PlayModeOverride`（带一个"覆盖活动默认播放
+    方式"复选框，取消勾选就是显式设回`null`即"跟随活动默认"，勾选后才能选具体的播放方式，这个
+    复选框+下拉框联动的写法复用了`SettingsPanel`"启用默认停留时长"已经用过的同一个约定）。
+    `UI/PlayModeDialog.cs`一开始只支持编辑活动级别（非空）的`DefaultPlayMode`，后来同一轮里扩展
+    成同时支持这个可空的文件级别场景，而不是另开一个几乎重复的对话框类。
+58. **【已实现，原为已知缺口】`FileOperationLogger.LogPlaybackPropertyChanged`终于有了第一个
+    真正的调用方**：编辑`MediaFile.PlayModeOverride`时用的是这个方法，而不是文件列表增删/移动
+    操作一直在用的`LogActivityModified`——这次改动前这个方法从这个仓库存在以来就没人调用过，
+    是专门为"记录单个文件的某个播放属性从什么值变成了什么值"设计的，这次是它第一次真正被用在
+    它本来的用途上（`propertyName`传的是`nameof(MediaFile.PlayModeOverride)`，`oldValue`/
+    `newValue`是`PlayMode?.ToString()`，null会原样记成`null`而不是字符串"null"）。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -401,10 +409,8 @@ Caster知道终端机确实收到了东西。
 - 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35条）——`OverlayWindow.Rebind`存在但从未被
   调用过，`VideoSurface`/`PlaybackEngine`也没有为"运行中途换显示器"设计
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
-- `MediaFile.PlayModeOverride`（单文件覆盖活动默认播放方式）没有编辑入口（见风险#57）——活动级别
-  的`DefaultPlayMode`已经有了
-- `FileOperationLogger.LogPlaybackPropertyChanged` 仍然没有调用方——`StayDuration`/`OnCompletion`
-  已经在活动面板／设置面板路径上生效并有真实行为，但`FadeDuration`/`VolumeFollowsFade`/
-  `IsBackgroundAudio`/`BackgroundAudioVisual`这几个字段仍然完全没有任何代码读取过（见
-  `PlaybackEngine`类doc comment"deliberately out of scope"那一段），在这几个字段本身有真正的
-  播放行为之前，这个仓库不打算为它们加编辑UI——同样的"先做行为、再做UI"的顺序，见风险#55-57。
+- `FadeDuration`/`VolumeFollowsFade`/`IsBackgroundAudio`/`BackgroundAudioVisual`这几个字段仍然
+  完全没有任何代码读取过（见`PlaybackEngine`类doc comment"deliberately out of scope"那一段），
+  在它们本身有真正的播放行为之前，这个仓库不打算为它们加编辑UI——同样的"先做行为、再做UI"的顺序，
+  见风险#55-57（`PlayMode`/`AllowManualSkip`/`FileOperationLogger.LogPlaybackPropertyChanged`已经
+  按这个顺序做完了）

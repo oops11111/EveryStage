@@ -78,8 +78,10 @@ public sealed class ActivitiesPanel : UserControl
         deleteActivityButton.Click += (_, _) => OnDeleteActivity();
         _addFileButton = new Button { Text = "添加文件...", AutoSize = true, Enabled = false };
         _addFileButton.Click += (_, _) => OnAddFile();
-        // Editing PlayMode is new this round (see PlaybackEngine.EffectivePlayMode's doc comment on
-        // why it previously had nothing to edit — the enum had no runtime effect at all until now).
+        // Editing PlayMode is new (see PlaybackEngine.EffectivePlayMode's doc comment on why it
+        // previously had nothing to edit — the enum had no runtime effect at all until it did).
+        // Context-sensitive: edits the selected FILE's PlayModeOverride if one is selected, else the
+        // selected ACTIVITY's own DefaultPlayMode — see OnEditPlayMode.
         _playModeButton = new Button { Text = "播放方式...", AutoSize = true, Enabled = false };
         _playModeButton.Click += (_, _) => OnEditPlayMode();
         _removeButton = new Button { Text = "移除文件", AutoSize = true, Enabled = false };
@@ -285,14 +287,37 @@ public sealed class ActivitiesPanel : UserControl
 
     private void OnEditPlayMode()
     {
-        var (scenario, activity, _) = GetSelection();
+        var (scenario, activity, file) = GetSelection();
         if (scenario == null || activity == null) return;
+
+        // A file node selected within the activity edits that FILE's PlayModeOverride (with an
+        // "inherit" option); selecting just the activity node itself (file == null) edits the
+        // activity's own DefaultPlayMode instead — same GetSelection() distinction UpdateButtonStates
+        // already uses elsewhere in this class.
+        if (file != null)
+        {
+            using var fileDialog = new PlayModeDialog(
+                $"文件播放方式 — {Path.GetFileName(file.SourcePath)}", file.PlayModeOverride, allowInherit: true);
+            if (fileDialog.ShowDialog(this) != DialogResult.OK) return;
+            if (fileDialog.SelectedPlayMode == file.PlayModeOverride) return; // no actual change.
+
+            // LogPlaybackPropertyChanged, not LogActivityModified — this is the first real caller
+            // this method has ever had (see this project's README "已知风险"): a per-file property
+            // value changing is exactly what it exists to record, more precisely than the generic
+            // "activity modified" log the file-list-membership operations above use.
+            string? oldValue = file.PlayModeOverride?.ToString();
+            string? newValue = fileDialog.SelectedPlayMode?.ToString();
+            file.PlayModeOverride = fileDialog.SelectedPlayMode;
+            _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.PlayModeOverride), oldValue, newValue);
+            _repository.Save(_store);
+            return;
+        }
 
         using var dialog = new PlayModeDialog($"活动播放方式 — {activity.Name}", activity.DefaultPlayMode);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         if (dialog.SelectedPlayMode == activity.DefaultPlayMode) return; // no actual change — nothing to log/save.
 
-        activity.DefaultPlayMode = dialog.SelectedPlayMode;
+        activity.DefaultPlayMode = dialog.SelectedPlayMode!.Value; // never null — allowInherit defaults false above.
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
         _repository.Save(_store);
     }
