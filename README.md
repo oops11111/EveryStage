@@ -67,9 +67,12 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   解码器MFT + `CastReceiver` 接收RTP、用marker位重组Annex-B访问单元、解码后通过
   `EveryStage.Rendering` 的 `SwapChainPresenter` 显示到覆盖窗口），配合 `DiscoveryService` 新增的
   `CastStartMessage`/`CastStopMessage`处理（只信任已配对且`AllowCast`的设备）驱动
-  `OutputStateMachine`/`OverlayWindow`。**这条链路完全没有应答机制**——Caster不知道Terminal是否
-  真的收到并显示了画面，也没有处理"本地正在播放视频时来了投屏请求"的打断场景，这些都是明确记录、
-  留到之后解决的空白，不是被忽略的问题（见两个项目各自的README"已知风险"）。屏幕捕获、H.264编码、
+  `OutputStateMachine`/`OverlayWindow`。本地播放与设备投屏共享覆盖窗口`VideoHost`的问题
+  （新增 `Terminal/.../Display/VideoSurface.cs`，两者现在用同一个D3D11设备/交换链而不是各自建一
+  个绑到同一HWND，并靠`PlaybackEngine.StopForDeviceCast`/`LocalPlaybackStarting`互相抢占）已经在
+  后续一轮修复，详见 `src/Terminal/EveryStage.Terminal/README.md`。**这条链路仍然完全没有应答
+  机制**——Caster不知道Terminal是否真的收到并显示了画面，这是明确记录、留到之后解决的空白，不是
+  被忽略的问题（见两个项目各自的README"已知风险"）。屏幕捕获、H.264编码、
   RTP传输三块各自的独立自检（Caster侧的"屏幕捕获自检"/"编码自检"/"传输自检"三个按钮，
   `EveryStage.Transport`的`TransportSelfTest`是这个仓库第一个不需要Windows/GPU就能跑通的端到端
   自检）仍然保留，作为跟真实投屏管线互不干扰的独立诊断工具。

@@ -1,4 +1,4 @@
-using EveryStage.Rendering;
+using EveryStage.Terminal.Display;
 using EveryStage.Transport;
 using Vortice.Direct3D11;
 
@@ -9,15 +9,18 @@ namespace EveryStage.Terminal.Receiving;
 /// (<c>RtpReceiver</c>, EveryStage.Transport), reassembles NAL units back into Annex-B access units
 /// using the RTP marker bit (the inverse of <c>AnnexBNalSplitter</c>, which the Caster side used to
 /// strip start codes before packetizing), decodes each with <see cref="H264HardwareDecoder"/>, and
-/// presents the result onto the overlay window's video surface via <c>SwapChainPresenter</c> — the
-/// same presenter class <c>VideoContentController</c> already uses for local file playback, here fed
-/// from a live network stream instead of a file.
+/// presents the result through the shared <see cref="VideoSurface"/> bound to the overlay window's
+/// video HWND — the same surface <c>ContentEngine.VideoContentController</c> uses for local file
+/// playback, here fed from a live network stream instead of a file.
 ///
-/// Owns its own <see cref="D3D11Device"/> rather than sharing one with <c>VideoContentController</c>
-/// — PLANNING.md's model has local file playback and device casting as mutually exclusive on a
-/// given Terminal at any moment (the overlay shows one or the other), so nothing here needs to
-/// coordinate GPU state with local video playback; a future revision could consider consolidating
-/// devices if that assumption changes.
+/// Takes the <see cref="VideoSurface"/> from its caller rather than creating its own — see that
+/// class's doc comment for why two independent D3D11 devices/swap chains bound to the same HWND was
+/// a real bug, not a hypothetical one. This class still does not enforce mutual exclusion with
+/// <c>VideoContentController</c> by itself: the caller (<c>Program.cs</c>'s
+/// <c>TerminalApplicationContext</c>) is responsible for making sure local playback is stopped
+/// (<c>PlaybackEngine.StopForDeviceCast</c>) before constructing a <see cref="CastReceiver"/>, and
+/// for stopping this receiver before local playback resumes
+/// (<c>PlaybackEngine.LocalPlaybackStarting</c>).
 ///
 /// All decode/present calls happen synchronously on whatever thread invokes
 /// <see cref="RtpReceiver.NalUnitReceived"/> — that event fires from `RtpReceiver`'s own single
@@ -26,8 +29,7 @@ namespace EveryStage.Terminal.Receiving;
 /// </summary>
 public sealed class CastReceiver : IDisposable
 {
-    private readonly D3D11Device _gpu;
-    private readonly SwapChainPresenter _presenter;
+    private readonly VideoSurface _surface;
     private readonly H264HardwareDecoder _decoder;
     private readonly RtpReceiver _rtpReceiver;
     private readonly List<byte[]> _pendingNals = new();
@@ -38,14 +40,13 @@ public sealed class CastReceiver : IDisposable
     public long BytesReceived { get; private set; }
     public string? LastError { get; private set; }
 
-    public CastReceiver(IntPtr videoHostHandle, int width, int height, int listenPort)
+    public CastReceiver(VideoSurface surface, int width, int height, int listenPort)
     {
         Width = width;
         Height = height;
 
-        _gpu = new D3D11Device();
-        _presenter = new SwapChainPresenter(_gpu, videoHostHandle, width, height);
-        _decoder = new H264HardwareDecoder(_gpu, width, height);
+        _surface = surface;
+        _decoder = new H264HardwareDecoder(_surface.Gpu, width, height);
         _decoder.FrameDecoded += OnFrameDecoded;
 
         _rtpReceiver = new RtpReceiver(listenPort);
@@ -102,17 +103,17 @@ public sealed class CastReceiver : IDisposable
     {
         using (texture)
         {
-            _presenter.PresentFrame(texture, arraySlice, width, height, vsync: false);
+            _surface.Presenter.PresentFrame(texture, arraySlice, width, height, vsync: false);
         }
         FramesDecoded++;
     }
 
     public void Dispose()
     {
+        // Does NOT dispose _surface — shared with VideoContentController, owned by
+        // TerminalApplicationContext (see VideoSurface's doc comment).
         _rtpReceiver.Dispose();
         _decoder.FrameDecoded -= OnFrameDecoded;
         _decoder.Dispose();
-        _presenter.Dispose();
-        _gpu.Dispose();
     }
 }

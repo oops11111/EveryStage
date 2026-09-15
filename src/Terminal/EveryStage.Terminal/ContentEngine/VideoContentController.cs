@@ -3,6 +3,7 @@ using System.Drawing;
 using EveryStage.Rendering;
 using EveryStage.Rendering.Audio;
 using EveryStage.Rendering.Decode;
+using EveryStage.Terminal.Display;
 
 namespace EveryStage.Terminal.ContentEngine;
 
@@ -11,14 +12,15 @@ namespace EveryStage.Terminal.ContentEngine;
 /// pipeline validated in Phase 0 (<c>EveryStage.Rendering</c>). Deliberately NOT an
 /// <see cref="IContentRenderer"/>: that interface hands callers a <see cref="Bitmap"/> to draw via
 /// GDI+, which is exactly the CPU round-trip the zero-copy pipeline exists to avoid. Instead this
-/// owns its own D3D11 swap chain attached directly to the overlay window's HWND — the same
-/// approach <c>ZeroCopyRenderDemo</c> validates, just wrapped as a start/stop-able component
-/// instead of a one-shot CLI loop.
+/// presents through a <see cref="VideoSurface"/> attached directly to the overlay window's HWND —
+/// the same approach <c>ZeroCopyRenderDemo</c> validates, just wrapped as a start/stop-able
+/// component instead of a one-shot CLI loop.
 ///
-/// The swap chain and D3D11 device are created once and kept for this controller's lifetime
-/// (matching the "断不销毁窗口/SwapChain" principle from §9.2 — the D3D11 device here plays the
-/// same role for video that the overlay window itself plays for the picture as a whole);
-/// <see cref="Play"/> only swaps out the decode source underneath it.
+/// The <see cref="VideoSurface"/> is owned by whoever constructs this controller (see that class's
+/// doc comment for why: it's now shared with <c>Receiving.CastReceiver</c>, since only one of them
+/// is ever supposed to be actively presenting at a time) — this class does not create or dispose
+/// it, only presents through it while playing. <see cref="Play"/> only swaps out the decode source
+/// underneath it.
 ///
 /// Runs its decode/present loop on its own background thread rather than the WinForms UI thread,
 /// since the Terminal's UI thread is busy running the tray icon / (eventually) the Phase 4 UI
@@ -32,9 +34,8 @@ public sealed class VideoContentController : IDisposable
     // source's actual frame rate.
     private static readonly long FrameBudgetTicks = TimeSpan.TicksPerSecond / 30;
 
-    private readonly D3D11Device _gpu;
+    private readonly VideoSurface _surface;
     private readonly object _presenterLock = new();
-    private readonly SwapChainPresenter _presenter;
 
     private CancellationTokenSource? _playbackCts;
     private Thread? _playbackThread;
@@ -51,17 +52,17 @@ public sealed class VideoContentController : IDisposable
     /// stay frozen on screen forever with no record of why.</summary>
     public event Action<Exception>? PlaybackFailed;
 
-    public VideoContentController(IntPtr hostHandle, Size initialSize)
+    public VideoContentController(VideoSurface surface)
     {
-        _gpu = new D3D11Device();
-        _presenter = new SwapChainPresenter(_gpu, hostHandle, initialSize.Width, initialSize.Height);
+        _surface = surface;
     }
 
     /// <summary>Call when the host window's size changes (e.g. after an <c>OverlayWindow.Rebind</c>
-    /// to a different-resolution monitor).</summary>
+    /// to a different-resolution monitor). Resizes the shared <see cref="VideoSurface"/> — if a
+    /// device cast is also using it, this affects that too, which is correct: they share one HWND.</summary>
     public void Resize(int width, int height)
     {
-        lock (_presenterLock) _presenter.Resize(width, height);
+        lock (_presenterLock) _surface.Resize(width, height);
     }
 
     /// <summary>Stops whatever is currently playing (if anything) and starts <paramref
@@ -70,7 +71,7 @@ public sealed class VideoContentController : IDisposable
     {
         Stop();
 
-        var source = new VideoDecodeSource(path, _gpu);
+        var source = new VideoDecodeSource(path, _surface.Gpu);
         var audioClock = new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
         _source = source;
         _audioClock = audioClock;
@@ -162,7 +163,7 @@ public sealed class VideoContentController : IDisposable
 
                 lock (_presenterLock)
                 {
-                    _presenter.PresentFrame(frame.Value.Texture, frame.Value.ArraySlice, frame.Value.Width, frame.Value.Height, vsync: false);
+                    _surface.Presenter.PresentFrame(frame.Value.Texture, frame.Value.ArraySlice, frame.Value.Width, frame.Value.Height, vsync: false);
                 }
             }
             finally
@@ -176,8 +177,9 @@ public sealed class VideoContentController : IDisposable
 
     public void Dispose()
     {
+        // Does NOT dispose _surface — it's owned by whoever constructed this controller (see
+        // VideoSurface's doc comment), since it's now shared with a live device cast's
+        // CastReceiver rather than belonging exclusively to this controller.
         Stop();
-        _presenter.Dispose();
-        _gpu.Dispose();
     }
 }

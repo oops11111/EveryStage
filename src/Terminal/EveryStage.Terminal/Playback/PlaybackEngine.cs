@@ -28,6 +28,7 @@ public sealed class PlaybackEngine : IDisposable
 {
     private readonly OutputStateMachine _stateMachine;
     private readonly OverlayWindow _overlay;
+    private readonly VideoSurface _videoSurface;
     private readonly ImageContentRenderer _imageRenderer = new();
     private readonly PdfContentRenderer _pdfRenderer = new();
     private readonly PlaybackLogger _playbackLogger = new();
@@ -43,6 +44,16 @@ public sealed class PlaybackEngine : IDisposable
     /// <summary>Raised after a file actually starts casting to the extended display (never raised
     /// when the cast switch declined the request).</summary>
     public event Action<MediaFile>? FileStarted;
+
+    /// <summary>Raised right before local playback actually touches the shared
+    /// <see cref="VideoSurface"/> (i.e. after the cast-switch check passes, immediately before
+    /// showing the overlay's image/video surface) — <c>TerminalApplicationContext</c> (Program.cs)
+    /// listens for this to stop any active device-cast <c>CastReceiver</c> first, since the two
+    /// share one D3D11 device/swap chain bound to the overlay's video HWND and must never present
+    /// concurrently (see <see cref="VideoSurface"/>'s doc comment). Not raised when the cast switch
+    /// declines the request, same as <see cref="FileStarted"/> — nothing is about to touch the
+    /// surface in that case.</summary>
+    public event Action? LocalPlaybackStarting;
 
     /// <summary>What's currently on the extended display, for the floating preview window
     /// (PLANNING.md §8.3) to show — null when nothing is casting.</summary>
@@ -64,18 +75,20 @@ public sealed class PlaybackEngine : IDisposable
         _ => null,
     };
 
-    public PlaybackEngine(OutputStateMachine stateMachine, OverlayWindow overlay)
+    public PlaybackEngine(OutputStateMachine stateMachine, OverlayWindow overlay, VideoSurface videoSurface)
     {
         _stateMachine = stateMachine;
         _overlay = overlay;
+        _videoSurface = videoSurface;
         _stateMachine.StateChanged += OnOutputStateChanged;
     }
 
-    // Created lazily rather than in the constructor: needs a real HWND (VideoHost.Handle forces
-    // one into existence), and there's no reason to spin up a D3D11 device before this app has
-    // ever been asked to play a video.
+    // Created lazily rather than in the constructor: there's no reason to construct a
+    // VideoContentController before this app has ever been asked to play a video, even though the
+    // shared VideoSurface itself is constructed eagerly by TerminalApplicationContext (a live
+    // device cast can need it before any local video ever plays).
     private VideoContentController VideoController =>
-        _videoController ??= new VideoContentController(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize);
+        _videoController ??= new VideoContentController(_videoSurface);
 
     /// <summary>"点文件" from within an activity's file list — establishes the auto-advance/manual-
     /// skip context that <see cref="NextManual"/>/<see cref="PreviousManual"/> and
@@ -131,6 +144,11 @@ public sealed class PlaybackEngine : IDisposable
             // guessing at a substitute surface.
             return;
         }
+
+        // A device cast (if any) is about to be preempted by local content — see this event's doc
+        // comment and VideoSurface's for why this has to happen before ShowImageSurface/
+        // ShowVideoSurface/VideoController below touch the shared surface.
+        LocalPlaybackStarting?.Invoke();
 
         _currentFile = file;
         _playbackLogger.LogPlaybackStarted(file.Id, file.SourcePath, trigger);
@@ -281,6 +299,28 @@ public sealed class PlaybackEngine : IDisposable
             case CompletionAction.HoldOnLastFrame:
                 break; // leave the current frame/video's last frame displayed.
         }
+    }
+
+    /// <summary>Stops any current local-file playback so an incoming device cast can safely start
+    /// presenting through the shared <see cref="VideoSurface"/> — called by
+    /// <c>TerminalApplicationContext</c> before constructing a <c>CastReceiver</c>. Unlike
+    /// <see cref="OnOutputStateChanged"/>'s Idle handling, this deliberately does NOT go through
+    /// <c>OutputStateMachine</c> at all: PLANNING.md treats an incoming device cast as continuing to
+    /// output (§9.1 "设备投屏请求不受此开关影响"), not a transition back to Idle, so the state
+    /// machine's state must stay Active — only the video surface's owner is changing. Safe to call
+    /// when nothing is currently playing.</summary>
+    public void StopForDeviceCast()
+    {
+        if (_currentFile != null)
+        {
+            _playbackLogger.LogPlaybackEnded(_currentFile.Id, "preempted_by_device_cast");
+            _currentFile = null;
+        }
+        _stayDurationTimer?.Stop();
+        _stayDurationTimer?.Dispose();
+        _stayDurationTimer = null;
+        IsPaused = false;
+        _videoController?.Stop();
     }
 
     private void OnOutputStateChanged(OutputState state)

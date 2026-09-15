@@ -53,6 +53,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private readonly DiscoveryService _discovery;
     private readonly SynchronizationContext _uiContext;
     private OverlayWindow? _overlay;
+    private VideoSurface? _videoSurface;
     private PlaybackEngine? _playback;
     private FloatingPreviewWindow? _previewWindow;
     private readonly MainWindow _mainWindow;
@@ -70,14 +71,20 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         if (extendedDisplay != null)
         {
             _overlay = new OverlayWindow(extendedDisplay);
-            _playback = new PlaybackEngine(_stateMachine, _overlay);
+            // One D3D11 device/swap chain for the overlay's video HWND, shared between local video
+            // playback and a live device cast — see VideoSurface's doc comment for why this can't
+            // be two independent ones anymore.
+            _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
+            _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface);
+            _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
             _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
         }
         // extendedDisplay == null: no second monitor attached yet. §5/§7 don't specify a "no
         // display bound" UX beyond implying it's a real, visible configuration state — the tray
         // tooltip below reflects it, but there is nothing further to build here until Phase 4 UI
         // exists to surface a proper "未检测到扩展屏" notice. No overlay also means no
-        // PlaybackEngine/preview window yet; MainWindow's file panel tolerates _playback being null
+        // VideoSurface/PlaybackEngine/preview window yet, and OnCastStartRequested below already
+        // no-ops when _overlay is null; MainWindow's file panel tolerates _playback being null
         // (RequestPlay just never gets called) until a display shows up.
 
         _stateMachine.StateChanged += OnOutputStateChanged;
@@ -112,6 +119,12 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _overlay?.HideOverlay();
             _previewWindow?.HideForIdleOutput();
             _audioTakeover.Restore();
+            // "断" must also stop an active device cast — without this, a CastReceiver keeps
+            // receiving/decoding/presenting to a now-hidden overlay indefinitely instead of being
+            // torn down. This does not notify the Caster (no cast_stop goes back) — same one-way
+            // acknowledgment limitation as OnLocalPlaybackStarting above and this project's README.
+            _castReceiver?.Dispose();
+            _castReceiver = null;
         }
     }
 
@@ -134,13 +147,18 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // UI thread.
         _uiContext.Post(_ =>
         {
-            if (_overlay == null) return; // no extended display bound — nothing to show a cast on.
+            if (_overlay == null || _videoSurface == null) return; // no extended display bound — nothing to show a cast on.
+
+            // Stop any local video playback FIRST — it shares _videoSurface's D3D11 device/swap
+            // chain with the CastReceiver about to be constructed, and the two must never present
+            // concurrently (see VideoSurface's doc comment). This does not touch OutputStateMachine.
+            _playback?.StopForDeviceCast();
 
             _castReceiver?.Dispose();
             _castReceiver = null;
             try
             {
-                _castReceiver = new CastReceiver(_overlay.VideoHost.Handle, info.Width, info.Height, DiscoveryProtocol.VideoRtpPort);
+                _castReceiver = new CastReceiver(_videoSurface, info.Width, info.Height, DiscoveryProtocol.VideoRtpPort);
                 _castReceiver.Start();
             }
             catch (Exception)
@@ -172,6 +190,20 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         }, null);
     }
 
+    private void OnLocalPlaybackStarting()
+    {
+        // PlaybackEngine is about to present local content through the shared VideoSurface — any
+        // active device cast must stop first, for the same mutual-exclusion reason as
+        // OnCastStartRequested stopping local playback in the other direction. This intentionally
+        // does not call _stateMachine.Disconnect(): OutputStateMachine.State stays Active (local
+        // content is replacing device content, not ending output), and there is no message back to
+        // the Caster telling it its stream is being ignored now — a one-way limitation already
+        // recorded in this project's README alongside CastStartRequested/CastStopRequested's own
+        // lack of acknowledgment.
+        _castReceiver?.Dispose();
+        _castReceiver = null;
+    }
+
     private void OnExitRequested()
     {
         _repository.Save(_store);
@@ -182,6 +214,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _castReceiver?.Dispose();
         _previewWindow?.Dispose();
         _playback?.Dispose();
+        // _videoSurface after _playback/_castReceiver, never before — both present through it and
+        // must be torn down first (see VideoSurface's doc comment).
+        _videoSurface?.Dispose();
         _overlay?.Dispose();
         _audioTakeover.Dispose();
         _mainWindow.Dispose();
