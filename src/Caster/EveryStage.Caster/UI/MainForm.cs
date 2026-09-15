@@ -128,9 +128,11 @@ public sealed class MainForm : Form
         _pairedTerminals = pairedTerminals;
 
         Text = "EveryStage 投屏机";
-        // Grown from the previous 506 to fit a fourth self-test section (audio capture) added below
-        // the existing capture/encode/transport three — see this class's doc comment.
-        ClientSize = new Size(320, 600);
+        // Grown from an original 506: first to 600 to fit a fourth self-test section (audio
+        // capture) below the existing capture/encode/transport three, then to 630 to give
+        // _liveCastStatsLabel enough extra height for its new always-visible "确认≠健康" caveat
+        // line — see this class's doc comment and _liveCastStatsLabel's own Bounds comment below.
+        ClientSize = new Size(320, 630);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -202,9 +204,12 @@ public sealed class MainForm : Form
             Bounds = new Rectangle(12, 44, 296, 20),
         };
 
-        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 70, 296, 90), ForeColor = Color.DimGray };
+        // Height grown from 90 to 108 (+18) to fit RefreshLiveCastStats' new always-visible
+        // "（仅代表状态通道送达...）" caveat line without clipping the 5 lines already packed in
+        // here — every control below this one shifted down by that same 18px.
+        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 70, 296, 108), ForeColor = Color.DimGray };
 
-        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 164, 296, 32) };
+        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 182, 296, 32) };
         _stopCastButton.Click += (_, _) => ShowStandby();
 
         var diagnosticsNoteLabel = new Label
@@ -212,24 +217,24 @@ public sealed class MainForm : Form
             Text = "以下四个按钮各自独立、互不影响，是采集/编码/传输/音频采集各环节各自的自检工具，\n" +
                    "用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(12, 208, 296, 40),
+            Bounds = new Rectangle(12, 226, 296, 40),
         };
 
-        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 252, 296, 32) };
+        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 270, 296, 32) };
         _captureSelfTestButton.Click += OnCaptureSelfTestClick;
-        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 286, 296, 50), ForeColor = Color.DimGray };
+        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 304, 296, 50), ForeColor = Color.DimGray };
 
-        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 340, 296, 32) };
+        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 358, 296, 32) };
         _encodeSelfTestButton.Click += OnEncodeSelfTestClick;
-        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 374, 296, 50), ForeColor = Color.DimGray };
+        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 392, 296, 50), ForeColor = Color.DimGray };
 
-        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 428, 296, 32) };
+        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 446, 296, 32) };
         _transportSelfTestButton.Click += OnTransportSelfTestClick;
-        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 462, 296, 40), ForeColor = Color.DimGray };
+        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 480, 296, 40), ForeColor = Color.DimGray };
 
-        _audioCaptureSelfTestButton = new Button { Text = "开始音频采集自检 (WASAPI loopback)", Bounds = new Rectangle(12, 506, 296, 32) };
+        _audioCaptureSelfTestButton = new Button { Text = "开始音频采集自检 (WASAPI loopback)", Bounds = new Rectangle(12, 524, 296, 32) };
         _audioCaptureSelfTestButton.Click += OnAudioCaptureSelfTestClick;
-        _audioCaptureStatsLabel = new Label { Bounds = new Rectangle(12, 540, 296, 50), ForeColor = Color.DimGray };
+        _audioCaptureStatsLabel = new Label { Bounds = new Rectangle(12, 558, 296, 50), ForeColor = Color.DimGray };
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
@@ -607,10 +612,21 @@ public sealed class MainForm : Form
         string latencyNote = _liveCastSession.LastStatusLatencyEstimate is { } latency
             ? $"，延迟估算: {latency.TotalMilliseconds:F0}ms"
             : "";
+        // The trailing "（仅代表状态通道...）" caveat is the one piece of this project's README risk
+        // #35 that's actually user-facing rather than just a code comment: it directly answers that
+        // risk's own complaint ("这个仓库现在把两者放在UI上却没有特别提醒用户这个区别") without
+        // attempting the harder, still-unsolved problem of actually correlating status-channel
+        // health with media-stream health (see risk #35 for why that's not attempted here — a
+        // Caster whose own screen content is simply static legitimately sends no new access units
+        // for seconds at a time under this project's adaptive-frame-rate DDA capture, so "Terminal
+        // hasn't reported a new decoded frame recently" is not on its own a reliable "media stream
+        // stalled" signal, and a heuristic built on it risked crying wolf during completely normal
+        // static-content casting — worse than the plain caveat this settles for instead).
         string terminalLine = _liveCastSession.IsTerminalAlive
             ? $"终端机确认: 已解码 {_liveCastSession.TerminalFramesDecoded} 帧{latencyNote}" +
               (_liveCastSession.TerminalVideoError != null ? $"（终端机视频出错：{_liveCastSession.TerminalVideoError}）" : "") +
-              (_liveCastSession.TerminalAudioError != null ? $"（终端机音频出错：{_liveCastSession.TerminalAudioError}）" : "")
+              (_liveCastSession.TerminalAudioError != null ? $"（终端机音频出错：{_liveCastSession.TerminalAudioError}）" : "") +
+              "\n（仅代表状态通道送达，不代表画面/声音本身一定在正常播放）"
             : "终端机确认: 未确认（尚未收到或已停止收到终端机的状态回报）";
 
         // Only shown once something has actually been dropped — on a healthy LAN both counters
