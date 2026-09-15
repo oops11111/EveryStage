@@ -32,7 +32,11 @@ namespace EveryStage.Terminal.Receiving;
 /// sequential background receive loop (see its doc comment), so calls into this class are never
 /// concurrent with each other and no additional locking is needed here. The audio side runs on its
 /// own, entirely independent <c>RawRtpReceiver</c> background loop — video and audio share no state
-/// beyond both presenting into resources this class owns.
+/// beyond both presenting into resources this class owns (and both bump
+/// <see cref="LastPacketReceivedAt"/>, which <c>TerminalApplicationContext.CheckCastLiveness</c>
+/// polls to notice a Caster that's gone silent without ever sending
+/// <c>DiscoveryProtocol.CastStopMessage</c> — UDP doesn't guarantee that message arrives, and a
+/// crashed Caster never gets to send it at all).
 /// </summary>
 public sealed class CastReceiver : IDisposable
 {
@@ -58,6 +62,13 @@ public sealed class CastReceiver : IDisposable
     /// video-only, matching <c>LiveCastSession</c>'s own audio-is-best-effort handling on the Caster
     /// side.</summary>
     public string? AudioError { get; private set; }
+
+    /// <summary>UTC time of the most recent video OR audio packet actually received — initialized
+    /// to construction time (not <c>DateTime.MinValue</c>) so a brand-new receiver gets a grace
+    /// period before <c>TerminalApplicationContext.CheckCastLiveness</c> can consider it stale;
+    /// otherwise the very first liveness check (which can run before the Caster's first RTP packet
+    /// has even arrived) would immediately look like a timeout.</summary>
+    public DateTime LastPacketReceivedAt { get; private set; } = DateTime.UtcNow;
 
     public CastReceiver(VideoSurface surface, int width, int height, int listenPort,
         bool hasAudio = false, int audioSampleRate = 0, int audioChannels = 0, int audioListenPort = 0)
@@ -110,6 +121,7 @@ public sealed class CastReceiver : IDisposable
 
     private void OnAudioPayloadReceived(byte[] pcm)
     {
+        LastPacketReceivedAt = DateTime.UtcNow;
         AudioBytesReceived += pcm.Length;
         // No jitter buffer, no A/V sync — enqueued straight into WASAPI playback as it arrives.
         // BufferedWaveProvider (inside AudioPlaybackClock) discards on overflow rather than
@@ -121,6 +133,7 @@ public sealed class CastReceiver : IDisposable
 
     private void OnNalUnitReceived(byte[] nalUnit, bool isLastNalOfAccessUnit)
     {
+        LastPacketReceivedAt = DateTime.UtcNow;
         BytesReceived += nalUnit.Length;
         _pendingNals.Add(nalUnit);
         if (!isLastNalOfAccessUnit) return;

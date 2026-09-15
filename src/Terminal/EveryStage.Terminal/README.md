@@ -32,7 +32,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
 | `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，已接入`DiscoveryService`)；JSON-lines格式 + 自动清理过期文件 |
 | `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/`；新增 `SendCastStatusAsync`，配合 `Program.cs` 里每秒一次的 `SendCastStatus()` 把接收状态报回给正在投屏的Caster（`DiscoveryProtocol.CastStatusMessage`，见该README"已知风险"新增小节） |
-| `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收PCM，喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，构造失败会独立降级成纯视频（不影响视频侧） |
+| `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收PCM，喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，构造失败会独立降级成纯视频（不影响视频侧）；新增`LastPacketReceivedAt`，配合`Program.cs`的`CheckCastLiveness()`在Caster连续10秒无数据包时自动断开 |
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
 | `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
@@ -174,10 +174,15 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
     README）——在真实局域网上（不像 `TransportSelfTest` 的本机回环）确实可能丢包，`BuildAnnexBAccessUnit`
     会因此偶尔拼出"缺了一个或几个NAL"的访问单元喂给解码器；解码器大概率能容忍这种情况（跳过/输出
     带伪影的一帧），但没有实测过会不会直接报错整个会话崩掉。
-31. **没有超时自动断开**：如果 Caster 端异常退出/断网、没能发出 `cast_stop`（UDP不保证送达，
-    `LiveCastSession.Stop()`本身也只是尽力而为），Terminal 会一直停在"正在显示画面"的状态、
-    冻结在最后一帧，`OutputStateMachine` 也不会自动回到 `Idle`——PLANNING.md 没有规定这种情况下
-    该等多久自动断开，目前完全没做这个兜底。
+31. **【已实现，原为已知缺口】现在有超时自动断开了**：`CastReceiver` 新增
+    `LastPacketReceivedAt`（视频NAL单元和音频payload收到时都会更新），`Program.cs` 的
+    `CheckCastLiveness()` 跟着状态回报同一个1秒定时器一起跑，超过10秒没收到任何视频或音频数据包
+    就视为"Caster已经消失"（崩溃/断网/被强制结束，没来得及发`cast_stop`），自动调用`StopCasting()`
+    +`_stateMachine.Disconnect()`回到待机，而不是永远冻结在最后一帧。10秒这个数字是凭感觉定的、
+    没有真机测过（同类问题见本文件其他"随手定的"数字），够容忍几秒网络抖动，又不至于让用户等太久。
+    这解决的是"Caster消失了Terminal却不知道"，跟`CastStatusMessage`解决的"Caster不知道Terminal是否
+    收到了"是反方向的两个问题——现在两个方向都有兜底了，尽管都只是尽力而为的超时/心跳，不是真正的
+    连接状态协议。
 32. **同一时间只支持一路投屏**：`RtpReceiver` 绑定固定端口 `DiscoveryProtocol.VideoRtpPort`，
     `Program.cs` 也只维护一个 `_castReceiver` 字段——第二个设备的 `cast_start` 到达时会直接顶掉
     第一个（`_castReceiver?.Dispose()` 后新建），没有排队或拒绝逻辑，也没有UI提示"已经有人在投屏"。
@@ -256,21 +261,26 @@ Caster知道终端机确实收到了东西。
     新增`SendCastStatusAsync`直接复用了已有的`_socket`和`SendAsync`私有方法——这跟发beacon/配对
     响应用的是同一个逻辑通道，如果discovery协议以后要加更多"高频周期性消息"，可能需要重新考虑
     要不要跟低频的beacon/配对消息分开，现在还看不出真的有必要。
-44. **`_castStatusTimer`只在`_castReceiver`存在时才发送，但`SendCastStatus`本身没有验证
-    `_castingCasterEndPoint`是否还指向一个真实在线的Caster**：如果Caster进程本身已经崩溃/被强制
-    结束（没有机会走`LiveCastSession.Stop()`发送`cast_stop`），Terminal会一直定时往一个不再存在
-    的地址发状态包，直到用户手动"断"或者来了另一个`cast_start`/`cast_stop`——这是本身就没有的
-    "对方是否还在"检测，状态回报本身不解决这个问题，只是让*Caster*那一侧能检测*Terminal*是否还在，
-    反过来（Terminal检测Caster是否还在）目前完全没有。
+44. **【已实现，原为已知缺口】`SendCastStatus`本身仍然不知道`_castingCasterEndPoint`是否还指向
+    一个真实在线的Caster，但反方向的检测现在由下面第46条`CheckCastLiveness()`补上了**：Caster
+    进程崩溃/被强制结束后，Terminal确实还是会往一个不存在的地址空发几次状态包（最多约10秒，直到
+    `CheckCastLiveness`的超时触发），但不会再无限期发下去——这条残留的"最多浪费10秒状态包"本身
+    不值得单独修，是超时机制生效前的正常延迟，不是一个独立的bug。
 45. **`StopCasting()`重构消除了"三处重复的清理逻辑各自维护"的风险，但这次修改没有为此新增任何
     自动化验证**：这类"把重复逻辑收敛到一个方法"的重构在没有编译器/测试的环境下，风险是重构本身
     引入新bug（比如某个调用点其实需要跳过其中一步）而没有被发现——这次审查过三个调用点(§9.1"设备
     投屏"接管、`cast_stop`收到、"断"点击)确实都应该做完全一样的清理，但这个判断本身没有测试佐证。
+46. **【已实现，原为已知缺口】`CheckCastLiveness()` 补上了反方向的超时检测**：Terminal现在会在
+    连续10秒收不到任何视频/音频包时自动断开——跟Caster端`LiveCastSession.IsTerminalAlive`的5秒
+    窗口是两个独立选的数字，没有共享定义或互相校准，纯粹因为分别针对不同问题（这边判断"媒体流是否
+    还在流动"，那边判断"状态回报是否还在到达"，本来就是不同性质的信号，数字不同本身不是bug，但
+    两个数字都是凭感觉定的，没有依据支撑10秒/5秒这两个具体值本身，也没考虑过它们要不要保持某种
+    比例关系。`CheckCastLiveness`和`SendCastStatus`共用同一个`_castStatusTimer`（1秒一次）—这个
+    设计选择本身没问题，但意味着以后如果要分别调整"状态回报频率"和"超时检测频率"，需要先把两者
+    从共享的定时器里拆开。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
-- Terminal检测Caster是否还在线（见"已知风险"第44条）——现在只有反方向（Caster靠`CastStatusMessage`
-  判断Terminal是否还在），Caster掉线/崩溃时Terminal会一直空发状态包直到手动"断"或收到新的cast消息
 - 音视频同步（见"已知风险"第39-40条）——目前音频收到就播、视频独立解码呈现，长时间投屏后可能明显
   不同步
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，

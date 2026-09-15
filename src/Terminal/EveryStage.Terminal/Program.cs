@@ -110,11 +110,13 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _discovery.Start();
 
         // Periodic acknowledgment back to whichever Caster is currently casting to this Terminal —
-        // see DiscoveryProtocol.CastStatusMessage for why this exists. Started/stopped alongside
-        // _castReceiver in StopCasting()/OnCastStartRequested, never left running with nothing to
-        // report.
+        // see DiscoveryProtocol.CastStatusMessage for why this exists — plus the reverse check
+        // (CheckCastLiveness): a Caster that crashes or loses network never gets to send
+        // CastStopMessage, and without this a CastReceiver would keep "casting" a frozen last frame
+        // forever. Both started/stopped alongside _castReceiver in StopCasting()/
+        // OnCastStartRequested, never left running with nothing to report or check.
         _castStatusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
-        _castStatusTimer.Tick += (_, _) => SendCastStatus();
+        _castStatusTimer.Tick += (_, _) => { CheckCastLiveness(); SendCastStatus(); };
 
         var library = new FileLibraryStore();
         _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity);
@@ -240,6 +242,27 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _castingCasterEndPoint = null;
         _castReceiver?.Dispose();
         _castReceiver = null;
+    }
+
+    // Picked without any real-network measurement, same as every other timing constant in this
+    // repo lacking a Windows machine to tune against (see this project's README) — generous enough
+    // to survive a few seconds of network hiccup given there's no jitter buffer on either media
+    // stream, short enough that a genuinely-gone Caster doesn't leave a frozen frame on screen for
+    // an unreasonable amount of time.
+    private static readonly TimeSpan CastTimeout = TimeSpan.FromSeconds(10);
+
+    private void CheckCastLiveness()
+    {
+        if (_castReceiver == null) return;
+        if (DateTime.UtcNow - _castReceiver.LastPacketReceivedAt < CastTimeout) return;
+
+        // Neither video nor audio has produced a single packet in CastTimeout — the Caster is gone
+        // (crashed, lost network, or the process was killed before it could send CastStopMessage).
+        // Disconnect() also hides the overlay and restores audio takeover via
+        // OnOutputStateChanged's Idle branch, same as a manual "断" — a silently frozen last frame
+        // with the overlay still up would be worse than falling back to standby.
+        StopCasting();
+        _stateMachine.Disconnect();
     }
 
     private void SendCastStatus()

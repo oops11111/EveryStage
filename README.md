@@ -84,9 +84,12 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   `DiscoveryProtocol`新增`CastStatusMessage`，Terminal每秒把已解码帧数/收到的音视频字节数/两侧
   各自的出错信息报回给正在投屏的Caster（`Program.cs`的`SendCastStatus()`发送，
   `LiveCastSession`接收并暴露`IsTerminalAlive`），Caster的UI上第一次出现了"终端机确认"这行不是
-  纯本地自说自话的状态。这只是一个尽力而为、约5秒容忍窗口的心跳，不是逐包确认或流控，也**没有
-  反方向的检测**（Terminal目前无法判断Caster是否还在线）；**仍然没有音视频同步**——视频和音频走
-  完全独立的时钟（RTP时间戳分别来自墙钟和采样计数），长时间投屏可能明显不同步。这些都是明确记录、
+  纯本地自说自话的状态。反方向也补上了：`CastReceiver`新增`LastPacketReceivedAt`，
+  `Program.cs`的`CheckCastLiveness()`在连续10秒收不到视频/音频数据包时判断Caster已经消失（崩溃/
+  断网，没来得及发`cast_stop`），自动断开而不是永远冻结在最后一帧。两个方向都只是尽力而为的超时/
+  心跳（Caster端约5秒容忍窗口，Terminal端约10秒），不是逐包确认或真正的连接状态协议，两个数字也
+  互相独立、没有校准过。**仍然没有音视频同步**——视频和音频走完全独立的时钟（RTP时间戳分别来自
+  墙钟和采样计数），长时间投屏可能明显不同步。这些都是明确记录、
   留到之后解决的空白，不是被忽略的问题（见两个项目各自的README"已知风险"）。屏幕捕获、H.264编码、
   RTP传输三块各自的独立自检（Caster侧的"屏幕捕获自检"/"编码自检"/"传输自检"三个按钮，
   `EveryStage.Transport`的`TransportSelfTest`是这个仓库第一个不需要Windows/GPU就能跑通的端到端
