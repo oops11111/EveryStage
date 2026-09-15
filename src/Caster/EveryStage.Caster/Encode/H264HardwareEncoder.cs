@@ -224,16 +224,15 @@ public sealed class H264HardwareEncoder : IDisposable
     private void HandleHaveOutput()
     {
         var outputBuffer = new MFTOutputDataBuffer { StreamID = OutputStreamId };
-        IMFSample? ownedSample = null;
 
         if (!_outputProvidesOwnSamples)
         {
-            // We must allocate the output sample ourselves — size it from GetOutputStreamInfo's
-            // reported buffer size (not implemented here: this path is a documented gap, since
-            // every hardware encoder this was written against expectation-wise reportedly *does*
-            // set MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, making this branch untested by construction).
-            throw new NotSupportedException(
-                "This H.264 MFT does not provide its own output samples, and self-allocating one isn't implemented — see H264HardwareEncoder's HandleHaveOutput.");
+            // Self-allocate the output sample from GetOutputStreamInfo's reported buffer size —
+            // every hardware encoder this was written against is expected to set
+            // MFT_OUTPUT_STREAM_PROVIDES_SAMPLES (see README risk #16), so this branch remains
+            // untested by construction, but a machine whose encoder MFT doesn't set that flag no
+            // longer hard-fails outright.
+            outputBuffer.Sample = CreateOutputSample(_encoder);
         }
 
         var buffers = new[] { outputBuffer };
@@ -242,8 +241,16 @@ public sealed class H264HardwareEncoder : IDisposable
         // NOTE: MF_E_TRANSFORM_NEED_MORE_INPUT is a normal, expected outcome here (the MFT raised
         // METransformHaveOutput speculatively but isn't actually ready) — verify this comparison
         // against however Vortice surfaces that specific failure HRESULT.
-        if (result.Failure) return;
+        if (result.Failure)
+        {
+            // A self-allocated sample (if any) was never consumed on this path — release it rather
+            // than leaking it; buffers[0].Sample is the same object as outputBuffer.Sample here
+            // since ProcessOutput failed before it could have replaced it.
+            outputBuffer.Sample?.Dispose();
+            return;
+        }
 
+        IMFSample? ownedSample = null;
         try
         {
             ownedSample = buffers[0].Sample;
@@ -259,8 +266,47 @@ public sealed class H264HardwareEncoder : IDisposable
         }
         finally
         {
+            // Correct either way: when _outputProvidesOwnSamples is true this is an MFT-allocated
+            // sample we now own; when false it's the same self-allocated sample CreateOutputSample
+            // returned above (buffers[0].Sample, unchanged by a successful ProcessOutput in this
+            // mode — the caller-supplied sample is filled in place, not replaced).
             ownedSample?.Dispose();
         }
+    }
+
+    /// <summary>Builds the caller-allocated output sample <see cref="HandleHaveOutput"/> needs when
+    /// <see cref="_outputProvidesOwnSamples"/> is false — see that field and README risk #16. Takes
+    /// the encoder itself rather than a pre-fetched <c>GetOutputStreamInfo</c> result, so this
+    /// method doesn't have to name that return type explicitly — <see cref="OutputProvidesOwnSamples"/>
+    /// already gets away with just <c>var</c>, and there's no need to guess a type name here that
+    /// Vortice may not actually call this.</summary>
+    private static IMFSample CreateOutputSample(IMFTransform encoder)
+    {
+        var info = encoder.GetOutputStreamInfo(OutputStreamId);
+
+        // NOTE: exact Vortice property names for MFT_OUTPUT_STREAM_INFO::cbSize/cbAlignment are
+        // unverified — guessed as Size/Alignment following the same "drop the cb/dw prefix" pattern
+        // OutputProvidesOwnSamples's own NOTE already flags for info.Flags (native: dwFlags). Native
+        // cbAlignment's documented meaning is "required alignment minus 1, or 0 for none" (e.g. 15
+        // for 16-byte alignment) — MFCreateAlignedMemoryBuffer's alignment parameter uses the exact
+        // same "minus 1" convention, so it's passed straight through with no conversion.
+        IMFMediaBuffer buffer;
+        if (info.Alignment > 0)
+            MediaFactory.MFCreateAlignedMemoryBuffer(info.Size, info.Alignment, out buffer).CheckError();
+        else
+            MediaFactory.MFCreateMemoryBuffer(info.Size, out buffer).CheckError();
+
+        MediaFactory.MFCreateSample(out var sample).CheckError();
+        // Same "using (buffer) { sample.AddBuffer(buffer); }" pattern HandleNeedInput already uses:
+        // AddBuffer shares ownership via its own COM AddRef, so this method's own reference to
+        // buffer can (and must) be released right after — unlike HandleNeedInput's sample, this
+        // method's sample itself must NOT be wrapped in a using here, since it needs to survive
+        // this method returning it to the caller (HandleHaveOutput), which owns disposing it.
+        using (buffer)
+        {
+            sample.AddBuffer(buffer);
+        }
+        return sample;
     }
 
     private static IMFTransform ActivateFirstHardwareEncoder()

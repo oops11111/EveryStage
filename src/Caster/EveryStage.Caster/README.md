@@ -110,10 +110,11 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     （`BindDeviceManager`）：原生第二参数是 `ULONG_PTR`，指向设备管理器的裸 `IUnknown` 指针；这里
     假设 `gpu.DeviceManager` 上有一个 `.NativePointer` 属性能拿到这个指针，未核实。这一步如果绑定
     失败，编码器仍可能工作，但会退化成走系统内存拷贝而不是直接消费D3D11纹理——零拷贝的意义就没了。
-16. **`OutputProvidesOwnSamples` 恒为假时的分支完全没实现**（直接抛 `NotSupportedException`）：
-    这个仓库写这段代码时的假设是"主流硬件编码器都会设置 `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES`"，
-    但这个假设本身也未经真机验证——如果某个编码器MFT不这样，`H264HardwareEncoder` 现在完全用不了，
-    需要补一个"按 `GetOutputStreamInfo` 报告的大小自己分配输出sample"的分支。
+16. **【已实现，原为已知缺口】`OutputProvidesOwnSamples` 恒为假时的分支完全没实现**（直接抛
+    `NotSupportedException`）：这个仓库写这段代码时的假设是"主流硬件编码器都会设置
+    `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES`"，但这个假设本身也未经真机验证——如果某个编码器MFT不
+    这样，`H264HardwareEncoder` 现在完全用不了，需要补一个"按 `GetOutputStreamInfo` 报告的大小
+    自己分配输出sample"的分支。**更新（见第52条）**：这个分支已经实现——不再是硬失败。
 17. **【已实现，原为已知缺口】`HandleNeedInput` 里的背压策略是占位的**：队列空了就 `Thread.Sleep(1)`
     再返回，而不是阻塞等待下一帧——这在真实负载下会造成事件循环忙等，且没有实现任何"编码器跟不上
     时该丢帧还是该等"的策略，只是刻意没有在无法测试的前提下假装选了一个"正确"策略。**更新（见
@@ -380,6 +381,21 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     本身完全不响应这个token——如果事件循环恰好卡在`GetEvent`里而不是`HandleNeedInput`的
     `Wait`里，`Dispose`里的取消依然可能要等到下一次真的收到MFT事件才能真正退出，这是这个文件
     原本就有、这次没有解决的既有限制。
+52. **【已实现，原为已知缺口】`H264HardwareEncoder.HandleHaveOutput`补上了`OutputProvidesOwnSamples`
+    恒为假时自己分配输出sample的分支**（见上方第16条）：新增`CreateOutputSample`——按
+    `GetOutputStreamInfo`报告的`Size`/`Alignment`（原生`cbSize`/`cbAlignment`，具体命名的猜测
+    理由见该方法自己的NOTE注释）创建一个内存缓冲区（`Alignment > 0`时用
+    `MFCreateAlignedMemoryBuffer`，否则`MFCreateMemoryBuffer`，`cbAlignment`原生语义就是"对齐值
+    减一"，跟`MFCreateAlignedMemoryBuffer`的对齐参数是同一套约定，不需要转换），`AddBuffer`进一个
+    新建的`IMFSample`，赋给`outputBuffer.Sample`后再调用`ProcessOutput`——这个模式下MFT是往调用方
+    提供的sample里原地写数据，不会替换掉它，所以`ProcessOutput`成功之后`buffers[0].Sample`跟这里
+    自己创建、赋值的是同一个对象，跟`_outputProvidesOwnSamples`为真时"MFT自己分配、这里只是接手
+    所有权"的路径共用同一段`finally { ownedSample?.Dispose(); }`清理逻辑，两条路径都对。
+    `ProcessOutput`失败（比如正常的`MF_E_TRANSFORM_NEED_MORE_INPUT`）时，自己分配的sample从未被
+    消费，这里额外加了`outputBuffer.Sample?.Dispose()`释放它，避免泄漏。**这个分支本身依然完全
+    没有真机验证**（第16条本来就说明这里假设的"主流硬件编码器都会设置
+    `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES`"没有核实过）——这次改动只是把"这个假设不成立时直接
+    `NotSupportedException`硬失败"换成"这个假设不成立时也能跑"，不代表这条路径本身被验证过。
 
 ## 尚未开始
 
@@ -387,4 +403,3 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
   Media Foundation的AAC编码器MFT，跟视频编码器同一类风险，这一轮为了先接通链路特意绕开了）
 - 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
   真正的往返延迟测量
-- `H264HardwareEncoder` 里"编码器不提供自己的输出sample"这条分支（见上方风险16）
