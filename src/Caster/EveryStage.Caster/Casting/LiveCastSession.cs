@@ -145,6 +145,13 @@ public sealed class LiveCastSession : IDisposable
     private Task? _loopTask;
     private Task? _sendLoopTask;
     private Task? _audioSendLoopTask;
+    private Task? _pingLoopTask;
+
+    // How often RunPingLoop measures RealRoundTripEstimate — arbitrary, picked the same way every
+    // other timing constant in this repo lacking a real network to tune against is (see this
+    // project's README): frequent enough that the displayed number stays reasonably current, far
+    // less often than actual media traffic so it can't meaningfully compete with it for bandwidth.
+    private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(2);
 
     // Set at the start of each OnPcmCaptured call, read/advanced by OnAacAccessUnitEncoded — see
     // that method's own doc comment for why these need to be per-batch state rather than computed
@@ -239,6 +246,23 @@ public sealed class LiveCastSession : IDisposable
     /// clock-skew signal itself.</summary>
     public TimeSpan? LastStatusLatencyEstimate { get; private set; }
 
+    /// <summary>Real round-trip time to this session's Terminal, measured via
+    /// <see cref="TerminalDiscoveryClient.PingAsync"/> (see <see cref="DiscoveryProtocol.PingMessage"/>'s
+    /// own doc comment) roughly every 2 seconds while this session runs (<see cref="RunPingLoop"/>) —
+    /// unlike <see cref="LastStatusLatencyEstimate"/>, this never touches the Terminal's clock at
+    /// all, so it can't be confounded by clock skew between the two machines. Keeps its last
+    /// successful measurement rather than reverting to null after one missed ping cycle (see
+    /// <see cref="RunPingLoop"/>) — the same "don't be trigger-happy about a single lost UDP
+    /// datagram" reasoning <see cref="IsTerminalAlive"/>'s own staleness window uses, just applied to
+    /// a value instead of a boolean. Null until the first successful ping completes.</summary>
+    public TimeSpan? RealRoundTripEstimate { get; private set; }
+
+    /// <summary>UTC time of the last successful ping/pong round trip — null until the first one
+    /// completes. Same role as <see cref="LastStatusReceivedAt"/>, for <see cref="RealRoundTripEstimate"/>:
+    /// lets a caller judge how stale that estimate might be, since <see cref="RunPingLoop"/> keeps the
+    /// last successful value around indefinitely rather than clearing it on a single missed cycle.</summary>
+    public DateTime? LastRttMeasuredAt { get; private set; }
+
     // A status report is expected roughly every second (TerminalApplicationContext's timer) —
     // several missed in a row is a reasonable "the Terminal's gone quiet" signal without being
     // trigger-happy about one lost UDP datagram, same reasoning TerminalDiscoveryClient's own
@@ -306,6 +330,8 @@ public sealed class LiveCastSession : IDisposable
         TerminalAudioError = null;
         LastStatusReceivedAt = null;
         LastStatusLatencyEstimate = null;
+        RealRoundTripEstimate = null;
+        LastRttMeasuredAt = null;
 
         _discoveryClient.CastStatusReceived += OnCastStatusReceived;
 
@@ -370,6 +396,7 @@ public sealed class LiveCastSession : IDisposable
         _cts = new CancellationTokenSource();
         _loopTask = Task.Run(() => RunLoop(_gpu, _capture, _converter, _encoder, _cts.Token));
         _sendLoopTask = Task.Run(() => RunSendLoop(_rtpSession, _cts.Token));
+        _pingLoopTask = Task.Run(() => RunPingLoop(_cts.Token));
 
         if (HasAudio)
         {
@@ -597,6 +624,41 @@ public sealed class LiveCastSession : IDisposable
         }
     }
 
+    /// <summary>Measures <see cref="RealRoundTripEstimate"/> roughly every <see cref="PingInterval"/>
+    /// for as long as this session runs — see that property's own doc comment. Runs independently of
+    /// <see cref="HasAudio"/> (unlike <see cref="RunAudioSendLoop"/>): RTT is a general network
+    /// diagnostic, not something that depends on this session's own audio state.</summary>
+    private async Task RunPingLoop(CancellationToken token)
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                var rtt = await _discoveryClient.PingAsync(_terminal, TimeSpan.FromSeconds(3));
+                if (rtt.HasValue)
+                {
+                    // Only updated on success — a single missed ping keeps showing the last real
+                    // measurement rather than flickering to "no data" (see RealRoundTripEstimate's
+                    // own doc comment), the same "don't be trigger-happy about one lost UDP datagram"
+                    // reasoning IsTerminalAlive's staleness window already uses elsewhere in this
+                    // class.
+                    RealRoundTripEstimate = rtt;
+                    LastRttMeasuredAt = DateTime.UtcNow;
+                    StatsUpdated?.Invoke();
+                }
+            }
+            catch (Exception)
+            {
+                // Best-effort, like every other discovery-protocol interaction in this repo — a
+                // transient failure here (e.g. the socket briefly unavailable) shouldn't kill this
+                // loop or the cast itself; just try again next cycle.
+            }
+
+            try { await Task.Delay(PingInterval, token); }
+            catch (OperationCanceledException) { }
+        }
+    }
+
     public void Stop()
     {
         bool wasRunning = IsRunning;
@@ -622,9 +684,12 @@ public sealed class LiveCastSession : IDisposable
         catch (AggregateException) { }
         try { _audioSendLoopTask?.Wait(TimeSpan.FromSeconds(2)); }
         catch (AggregateException) { }
+        try { _pingLoopTask?.Wait(TimeSpan.FromSeconds(4)); } // PingAsync's own 3s timeout can be mid-flight.
+        catch (AggregateException) { }
         _loopTask = null;
         _sendLoopTask = null;
         _audioSendLoopTask = null;
+        _pingLoopTask = null;
         _cts?.Dispose();
         _cts = null;
 

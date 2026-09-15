@@ -26,12 +26,15 @@ public static class DiscoveryProtocol
     /// there is nothing that needs disambiguating by a dynamically-chosen port.</summary>
     public const int VideoRtpPort = 47991;
 
-    /// <summary>Well-known, fixed UDP port for the raw-PCM audio stream that accompanies a cast
+    /// <summary>Well-known, fixed UDP port for the audio stream that accompanies a cast
     /// (<c>EveryStage.Transport</c>'s <c>RtpSession.SendRawPayloadAsync</c>/<c>RawRtpReceiver</c>) —
     /// a separate port from <see cref="VideoRtpPort"/> rather than muxing both onto one RTP session,
     /// since this project has no RTP session multiplexing (SSRC-based demuxing on one port) and
     /// audio/video use different payload framing (H.264 NAL/FU-A vs. a plain continuous byte
-    /// stream) anyway.</summary>
+    /// stream) anyway. Carries raw 16-bit PCM or ADTS-framed AAC access units depending on
+    /// <see cref="CastStartMessage.AudioIsAac"/> — same port either way, since only one is ever
+    /// active per cast and the receiving side already has to be told which framing to expect
+    /// out-of-band via that field regardless of which port the bytes arrive on.</summary>
     public const int AudioRtpPort = 47992;
 
     public abstract class Message
@@ -153,6 +156,34 @@ public static class DiscoveryProtocol
         public string? AudioError { get; set; }
     }
 
+    /// <summary>Sent unicast, Caster -> Terminal, purely to measure real network round-trip time —
+    /// added alongside <see cref="CastStatusMessage.SentAtUtc"/>'s latency estimate to give a second,
+    /// clock-skew-immune number: that estimate reads <c>DateTimeOffset.UtcNow - SentAtUtc</c> across
+    /// two machines' independent clocks, which conflates real network delay with however far apart
+    /// those two clocks' wall time actually is (this repo has no way to verify real-world clock sync
+    /// between two Windows machines from this sandbox, and the receiving side's own doc comment
+    /// already says so). A ping/pong round trip instead measures elapsed time entirely on the
+    /// Caster's own clock (send, then time until the matching <see cref="PongMessage"/> arrives) —
+    /// no cross-machine clock comparison at all, so it can't be skewed by one. Unauthenticated like
+    /// every other message here (see this project's README): a Terminal echoes any ping addressed to
+    /// it, paired or not, which adds no new attack surface beyond what this protocol's existing
+    /// cleartext, no-signature design already accepts.</summary>
+    public sealed class PingMessage : Message
+    {
+        public override string Type => "ping";
+        public string RequestId { get; set; } = "";
+    }
+
+    /// <summary>Sent unicast, Terminal -> Caster, immediately upon receiving a <see cref="PingMessage"/>
+    /// — see that class's own doc comment. Deliberately carries nothing but the correlating
+    /// <see cref="RequestId"/>: this measures round-trip transport time, not anything about the
+    /// Terminal's own state (that's <see cref="CastStatusMessage"/>'s job).</summary>
+    public sealed class PongMessage : Message
+    {
+        public override string Type => "pong";
+        public string RequestId { get; set; } = "";
+    }
+
     public static byte[] Encode(Message message)
     {
         // Flatten to {"type": "...", ...the message's own fields} in one object, so a hand-written
@@ -178,6 +209,8 @@ public static class DiscoveryProtocol
             "cast_start" => doc.RootElement.Deserialize<CastStartMessage>(),
             "cast_stop" => doc.RootElement.Deserialize<CastStopMessage>(),
             "cast_status" => doc.RootElement.Deserialize<CastStatusMessage>(),
+            "ping" => doc.RootElement.Deserialize<PingMessage>(),
+            "pong" => doc.RootElement.Deserialize<PongMessage>(),
             _ => null,
         };
     }

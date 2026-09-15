@@ -258,7 +258,9 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     延迟；这个仓库没有办法从沙箱里验证真实局域网环境下两台Windows机器实际的时钟同步情况，所以
     UI上和doc comment里都没有把这个数字包装成"精确延迟"，而是明确标注为"估算"并解释了这个前提。
     `LastStatusReceivedAt`本身（"Caster收到的那一刻"）没有变，两个字段现在并存，各自服务不同的
-    问题："新鲜度判断"继续用收到时刻，"延迟估算"才用这个新时间戳。
+    问题："新鲜度判断"继续用收到时刻，"延迟估算"才用这个新时间戳。**更新（见第56条）**：这个
+    "只在两台机器时钟大致同步时才有意义"的限制现在有了一个不受时钟同步影响的补充指标——见第56条
+    新增的`RealRoundTripEstimate`，两个数字并存、互不替代。
 37. **【已实现，原为已知缺口】持续解码/播放出错现在会由Terminal自己决定断开**：这个产品决策
     （是否要在解码/播放持续出错时自动断开）已经做出并实现——见
     `src/Terminal/EveryStage.Terminal/README.md`"已知风险"第48-51条：`CastReceiver`新增连续
@@ -485,8 +487,30 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     (b) 没有做A/B测试或任何形式的"先用PCM验证问题不是这次改动引入的"回退开关——AAC现在是唯一的
     音频发送路径，不像H.264视频编码器那样从一开始就没有"发送方式"这个选择，音频这条路径倒退回
     PCM当前唯一的办法是回退这次提交。
+56. **【已实现，原为已知缺口】新增真正的、不受时钟同步影响的RTT测量**（对应第36条"这个数字只在
+    两台机器时钟大致同步时才有意义"的限制）：`DiscoveryProtocol`新增`PingMessage`/`PongMessage`
+    ——Caster单播一个`PingMessage`，Terminal收到后立即原样回一个带同样`RequestId`的`PongMessage`
+    （Terminal端`DiscoveryService.HandlePing`，无条件回应，不检查配对/信任状态——这个协议本身
+    已经完全没有认证，见`EveryStage.Discovery`README，多一个无害的echo不增加新的攻击面）。
+    `TerminalDiscoveryClient.PingAsync`用一个`Stopwatch`：紧贴在实际发送前`Start()`，收到匹配
+    `RequestId`的pong那一刻读`Elapsed`——全程只用Caster自己这一台机器的时钟，完全不比较两台机器
+    的时钟，因此不会像`CastStatusMessage.SentAtUtc`那个估算值一样被时钟偏差污染。`_pendingPings`
+    的匹配机制照抄`RequestPairingAsync`/`_pendingPairRequests`已经在用的"按RequestId关联
+    TaskCompletionSource"模式，一字不差地复用同一套写法。`LiveCastSession`新增`RunPingLoop`
+    后台循环，投屏运行期间每2秒ping一次，成功时更新`RealRoundTripEstimate`/`LastRttMeasuredAt`
+    ——单次ping超时（3秒）不会把这两个值清空，而是保留上一次成功测量的结果，跟`IsTerminalAlive`
+    的5秒容忍窗口同一个"别因为丢一个UDP包就翻脸"的态度。这个循环故意不依赖`HasAudio`：RTT是
+    通用的网络诊断信息，不是音频链路的一部分。`MainForm`新增一行"真实RTT估算"，跟原有的"延迟
+    估算"那行故意保持独立——不挂在`IsTerminalAlive`分支下面，因为这两个信号走的是完全不同的
+    通道（ping/pong vs. `CastStatusMessage`discovery socket），理论上可能出现"RTT正常但状态
+    通道确认失联"或反过来的情况，这本身就是有价值的诊断信息，不应该被合并掩盖。**仍未解决**：
+    第34条"状态回报本身没有重传"这个问题本身完全没有触碰——这次加的是一个独立的、按需的RTT
+    测量机制，不是给`CastStatusMessage`加重传；`_liveCastStatsLabel`的Bounds高度本来就是已知
+    偏紧（见该控件构造处的注释），这次又加了一行，跟已有的丢包警告行同时出现时是否会被裁剪没有
+    验证过，也没有借这次机会去修。
 
 ## 尚未开始
 
-- 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
-  真正的往返延迟测量
+- 状态回报本身的重传（见"已知风险"第34条）——`CastStatusMessage`依然是最简单的"定时报告+新鲜度
+  窗口"，丢了就等下一次，没有任何重传机制；真正的往返延迟测量已经在第56条用独立的ping/pong
+  机制解决了，不再是这条的一部分

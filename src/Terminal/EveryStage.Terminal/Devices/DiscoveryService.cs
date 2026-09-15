@@ -172,10 +172,19 @@ public sealed class DiscoveryService : IDisposable
             case DiscoveryProtocol.CastStopMessage stop:
                 HandleCastStop(stop);
                 break;
+            case DiscoveryProtocol.PingMessage ping:
+                HandlePing(ping, remoteEndPoint);
+                break;
             // BeaconMessage: this is the Terminal side, which only ever sends beacons, never needs
             // to react to one — that's Caster-side discovery UI's job.
         }
     }
+
+    /// <summary>Echoes any ping addressed to this Terminal, unconditionally — see
+    /// <see cref="DiscoveryProtocol.PingMessage"/>'s own doc comment on why no pairing/trust check
+    /// gates this (this whole protocol is already unauthenticated).</summary>
+    private void HandlePing(DiscoveryProtocol.PingMessage ping, IPEndPoint remoteEndPoint) =>
+        _ = SendAsync(new DiscoveryProtocol.PongMessage { RequestId = ping.RequestId }, remoteEndPoint);
 
     private void HandleCastStart(DiscoveryProtocol.CastStartMessage msg, IPEndPoint remoteEndPoint)
     {

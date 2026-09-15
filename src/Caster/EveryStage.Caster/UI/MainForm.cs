@@ -702,6 +702,20 @@ public sealed class MainForm : Form
               "\n（仅代表状态通道送达，不代表画面/声音本身一定在正常播放）"
             : "终端机确认: 未确认（尚未收到或已停止收到终端机的状态回报）";
 
+        // Independent of terminalLine/IsTerminalAlive on purpose — RealRoundTripEstimate comes from
+        // its own ping/pong exchange (DiscoveryProtocol.PingMessage), not the CastStatusMessage
+        // channel terminalLine reports on, so this can show a real number even if the status channel
+        // has gone quiet (or vice versa) — that divergence would itself be a useful diagnostic signal
+        // this UI shouldn't hide by only showing RTT alongside a "confirmed" status line. Only shown
+        // once at least one ping has ever succeeded — same "don't show a permanent placeholder" logic
+        // as backpressureLine/encoderBackpressureLine below. NOTE: this label's Bounds height (108)
+        // was already a known tight fit before this line existed (see the label's own construction
+        // comment) — this can clip on top of an already-showing backpressure warning; not fixed this
+        // round, same accepted-but-unverified risk that comment already flags.
+        string rttLine = _liveCastSession.RealRoundTripEstimate is { } rtt
+            ? $"\n真实RTT估算: {rtt.TotalMilliseconds:F0}ms（不受两台机器时钟是否同步的影响）"
+            : "";
+
         // Only shown once something has actually been dropped — on a healthy LAN both counters
         // should stay at 0 forever, and a permanent "已丢弃: 0" line would just be noise. See
         // LiveCastSession.OnAccessUnitEncoded/OnPcmCaptured for the backpressure policy this reports.
@@ -721,6 +735,7 @@ public sealed class MainForm : Form
             $"已发送字节数: {_liveCastSession.BytesSent}\n" +
             audioLine + "\n" +
             terminalLine +
+            rttLine +
             backpressureLine +
             encoderBackpressureLine;
     }

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
@@ -25,6 +26,13 @@ public sealed class TerminalDiscoveryClient : IDisposable
     private readonly object _gate = new();
     private readonly Dictionary<Guid, DiscoveredTerminal> _terminals = new();
     private readonly Dictionary<string, TaskCompletionSource<DiscoveryProtocol.PairResponseMessage>> _pendingPairRequests = new();
+
+    // Same correlation-by-RequestId pattern as _pendingPairRequests, for PingAsync/HandlePong — see
+    // PingMessage's own doc comment for why this exists alongside CastStatusMessage.SentAtUtc's
+    // clock-skew-sensitive latency estimate. The Stopwatch is started right before the ping is sent
+    // and read (Elapsed) the moment the matching pong arrives — entirely on this machine's own
+    // clock, never compared against the Terminal's.
+    private readonly Dictionary<string, (TaskCompletionSource<TimeSpan> Tcs, Stopwatch Stopwatch)> _pendingPings = new();
 
     private Task? _receiveLoop;
 
@@ -91,6 +99,43 @@ public sealed class TerminalDiscoveryClient : IDisposable
         finally
         {
             lock (_gate) _pendingPairRequests.Remove(requestId);
+        }
+    }
+
+    /// <summary>Measures real round-trip time to <paramref name="terminal"/> — see
+    /// <see cref="DiscoveryProtocol.PingMessage"/>'s own doc comment for why this exists alongside
+    /// <see cref="DiscoveryProtocol.CastStatusMessage.SentAtUtc"/>'s clock-skew-sensitive estimate.
+    /// Returns null on timeout, same "no distinction from a lost packet" reasoning as
+    /// <see cref="RequestPairingAsync"/> — a single missed ping isn't meaningful on its own, callers
+    /// expecting to ping periodically (e.g. <c>Casting.LiveCastSession</c>) should just try again
+    /// next cycle rather than treat one null as "the Terminal is unreachable".</summary>
+    public async Task<TimeSpan?> PingAsync(DiscoveredTerminal terminal, TimeSpan? timeout = null)
+    {
+        string requestId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<TimeSpan>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopwatch = new Stopwatch();
+        lock (_gate) _pendingPings[requestId] = (tcs, stopwatch);
+
+        try
+        {
+            var ping = new DiscoveryProtocol.PingMessage { RequestId = requestId };
+            byte[] payload = DiscoveryProtocol.Encode(ping);
+            stopwatch.Start(); // started as close to the actual send as practical, not at method entry.
+            await _socket.SendAsync(payload, payload.Length, new IPEndPoint(terminal.Address, DiscoveryProtocol.Port));
+
+            using var timeoutCts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(3));
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return null; // Terminal never answered (offline, this ping or its pong got lost).
+            }
+        }
+        finally
+        {
+            lock (_gate) _pendingPings.Remove(requestId);
         }
     }
 
@@ -174,6 +219,9 @@ public sealed class TerminalDiscoveryClient : IDisposable
             case DiscoveryProtocol.CastStatusMessage status:
                 CastStatusReceived?.Invoke(status);
                 break;
+            case DiscoveryProtocol.PongMessage pong:
+                HandlePong(pong);
+                break;
         }
     }
 
@@ -196,6 +244,19 @@ public sealed class TerminalDiscoveryClient : IDisposable
         TaskCompletionSource<DiscoveryProtocol.PairResponseMessage>? tcs;
         lock (_gate) _pendingPairRequests.TryGetValue(response.RequestId, out tcs);
         tcs?.TrySetResult(response);
+    }
+
+    private void HandlePong(DiscoveryProtocol.PongMessage pong)
+    {
+        (TaskCompletionSource<TimeSpan> Tcs, Stopwatch Stopwatch)? entry = null;
+        lock (_gate)
+        {
+            if (_pendingPings.TryGetValue(pong.RequestId, out var found)) entry = found;
+        }
+        // Elapsed read here, at the moment the pong actually arrives — not inside PingAsync after
+        // WaitAsync returns, which would also include whatever delay TaskCompletionSource's
+        // continuation scheduling adds on top of the real network round trip.
+        if (entry != null) entry.Value.Tcs.TrySetResult(entry.Value.Stopwatch.Elapsed);
     }
 
     // Called with _gate already held (from GetTerminals()) — deliberately doesn't raise

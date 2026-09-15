@@ -31,7 +31,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `ContentEngine/` | §3 | 图片(GDI+，WIC编解码器) + PDF(PdfiumViewer) 渲染器、画面呈现控件（等比缩放、黑边）、视频播放控制器(`VideoContentController`，复用 `EveryStage.Rendering` 的D3D11零拷贝管线，通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`) |
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
 | `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，已接入`DiscoveryService`)；JSON-lines格式 + 自动清理过期文件 |
-| `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/`；新增 `SendCastStatusAsync`，配合 `Program.cs` 里每秒一次的 `SendCastStatus()` 把接收状态报回给正在投屏的Caster（`DiscoveryProtocol.CastStatusMessage`，见该README"已知风险"新增小节） |
+| `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/`；新增 `SendCastStatusAsync`，配合 `Program.cs` 里每秒一次的 `SendCastStatus()` 把接收状态报回给正在投屏的Caster（`DiscoveryProtocol.CastStatusMessage`，见该README"已知风险"新增小节）；新增 `HandlePing`，无条件echo任何收到的 `PingMessage`（不检查配对状态，见"已知风险"第65条），供Caster端测量真实RTT |
 | `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收到的payload按`AudioIsAac`分两条路径——PCM直接喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，AAC先经过`EveryStage.Rendering.Decode.AacAudioDecoder`解码回PCM再喂给它（见"已知风险"第64条），构造失败会独立降级成纯视频（不影响视频侧）；新增`LastPacketReceivedAt`，配合`Program.cs`的`CheckCastLiveness()`在Caster连续10秒无数据包时自动断开 |
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
@@ -497,6 +497,14 @@ Caster知道终端机确实收到了东西。
     自动获得了这个既有的恢复策略——但这个既有阈值本身是照PCM路径的失败模式（`AudioPlaybackClock`
     偶发的WASAPI写入失败）估的，从未针对"AAC解码器本身持续失败"这种新失败模式重新核实过是否
     仍然合适。
+65. **【新增】`DiscoveryService.HandlePing`无条件echo任何`PingMessage`，不检查配对/信任状态**：
+    Caster端新增了真正的RTT测量（不依赖两台机器时钟同步，见`EveryStage.Caster`README第56条），
+    这一侧对应的实现就是收到`PingMessage`立刻原样回一个带同样`RequestId`的`PongMessage`——没有
+    检查发送方是否已配对、是否被允许投屏，纯粹是网络层面的echo。这跟这个协议本身"不含任何安全/
+    认证机制"是同一个已经接受的产品决策（见`EveryStage.Discovery`README），但确实意味着局域网
+    里任何人都可以用这两个消息类型探测一个Terminal是否在线、测出到它的往返时延，即使从未跟它
+    配对过——这个仓库认为这个额外的探测能力不比协议本身已有的明文/无认证风险更严重，选择不为
+    这一个消息类型单独加一层配对检查。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
