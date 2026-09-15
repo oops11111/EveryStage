@@ -16,6 +16,13 @@ namespace EveryStage.Terminal.UI.Panels;
 /// <see cref="MainWindow"/> only shows one panel at a time — there's no moment where both panels are
 /// visible to drag between. Instead this has its own "添加文件..." button that opens a picker over
 /// the same <see cref="FileLibraryStore"/> the 文件 panel reads from.
+///
+/// Tracks playback as it advances (PLANNING.md §16第5项 "联动"): <see cref="OnFileStarted"/>
+/// selects whichever tree node corresponds to the file <see cref="PlaybackEngine"/> just started
+/// playing, so switching "下一项"/"上一项" from the floating preview window (or anything else that
+/// advances playback) visibly moves the selection here too, instead of this panel silently staying
+/// wherever it was last clicked — see <see cref="TryHighlightPlayingFile"/> for what this does and
+/// doesn't cover.
 /// </summary>
 public sealed class ActivitiesPanel : UserControl
 {
@@ -364,7 +371,57 @@ public sealed class ActivitiesPanel : UserControl
         UpdateButtonStates();
     }
 
-    private void OnFileStarted(MediaFile file) => UpdateStatusBar(file);
+    private void OnFileStarted(MediaFile file)
+    {
+        UpdateStatusBar(file);
+        TryHighlightPlayingFile(file);
+    }
+
+    /// <summary>PLANNING.md §16第5项's "悬浮预览窗/文件面板/活动面板联动" (previously listed in this
+    /// project's README as entirely unimplemented) — the activity-panel half of it: whenever
+    /// playback advances to a new file, by any route (floating preview window's 上一项/下一项,
+    /// double-clicking a file/activity node here, `CompletionAction.NextItem` auto-advancing), select
+    /// that file's tree node so this panel visibly tracks what's actually playing rather than staying
+    /// wherever the user last clicked. All of those routes funnel through
+    /// <c>PlaybackEngine.PlayFile</c>, which raises <see cref="PlaybackEngine.FileStarted"/> with the
+    /// SAME <see cref="MediaFile"/> instance stored in <c>Activity.Files</c> (never a clone) — the
+    /// reference-equality check below relies on that.
+    ///
+    /// Clears the selection instead when the playing file isn't a node in the tree this panel
+    /// currently shows: either it was started via
+    /// <c>PlaybackEngine.RequestPlay(MediaFile)</c> with no activity context at all (e.g. a direct
+    /// double-click from <c>FilesPanel</c> — see that overload's own doc comment), or it belongs to a
+    /// scenario other than the one currently selected in <see cref="_scenarioCombo"/>. Clearing the
+    /// selection in that case (rather than leaving a stale one) avoids the tree appearing to still
+    /// point at whatever the user clicked before playback moved on to something this tree can't
+    /// represent.
+    ///
+    /// Deliberately doesn't also try to highlight anything in <c>FilesPanel</c> (the other half
+    /// PLANNING.md's §16第5项 gestures at) — an activity's files are deep copies of library entries
+    /// (see risk #22), not the same object nor even the same <c>MediaFile.Id</c>, so there is no
+    /// reference-equality check available there the way there is here; the only available signal
+    /// would be matching by <c>SourcePath</c>, which is a weaker, more ambiguous link (the same
+    /// source file could appear in the library once but be added to several activities, or removed
+    /// from the library entirely while still playing from an activity) than this method's exact
+    /// object-identity match. Left as a known, explicitly-scoped-out gap rather than built on that
+    /// weaker foundation this round.</summary>
+    private void TryHighlightPlayingFile(MediaFile? file)
+    {
+        if (file != null)
+        {
+            foreach (TreeNode activityNode in _tree.Nodes)
+            {
+                foreach (TreeNode fileNode in activityNode.Nodes)
+                {
+                    if (fileNode.Tag != file) continue;
+                    _tree.SelectedNode = fileNode;
+                    return;
+                }
+            }
+        }
+
+        _tree.SelectedNode = null;
+    }
 
     private void OnStateChanged(OutputState state) => UpdateStatusBar(state == OutputState.Idle ? null : _lastStartedFile);
 
