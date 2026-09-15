@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Pure byte-manipulation/networking (RFC 3550 RTP header, RFC 6184 H.264 payload format) —
+         no Windows-specific API surface, like EveryStage.Discovery. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+    <RootNamespace>EveryStage.Transport</RootNamespace>
+  </PropertyGroup>
+
+</Project>
