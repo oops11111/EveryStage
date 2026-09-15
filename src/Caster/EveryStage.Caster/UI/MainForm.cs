@@ -31,7 +31,9 @@ namespace EveryStage.Caster.UI;
 /// IP address to try anyway). A successful pairing upserts into the store from
 /// <see cref="ShowPaired"/>, so the next time this Caster starts (or the Terminal temporarily drops
 /// off beacon range and comes back), the entry is either already there offline or gets refreshed by
-/// the next beacon.
+/// the next beacon. A "移除配对" button undoes that — <see cref="OnRemovePairingClick"/> deletes the
+/// persisted record for whichever entry is selected (online or offline), so a terminal that will
+/// never come back doesn't sit in the offline half of this list forever with no way to clear it.
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -48,6 +50,7 @@ public sealed class MainForm : Form
     private readonly Panel _standbyPanel;
     private readonly ListBox _terminalListBox;
     private readonly Button _startButton;
+    private readonly Button _removePairingButton;
 
     private readonly Panel _pairedPanel;
     private readonly Label _pairedWithLabel;
@@ -98,7 +101,14 @@ public sealed class MainForm : Form
         // entry is shown for visibility (PLANNING.md §12 "已配对直显") but can't be selected to
         // start anything until a fresh beacon from it turns it back into a live entry.
         _terminalListBox.SelectedIndexChanged += (_, _) =>
+        {
             _startButton.Enabled = _terminalListBox.SelectedItem is TerminalListEntry { Live: not null };
+            // Enabled for either an online or offline entry, as long as it actually has a
+            // persisted record — a live entry from a terminal this Caster has never successfully
+            // paired with (just currently broadcasting) has nothing to remove.
+            _removePairingButton.Enabled = _terminalListBox.SelectedItem is TerminalListEntry entry
+                && _pairedTerminals.Find(entry.DeviceId) != null;
+        };
 
         var privacyLabel = new Label
         {
@@ -115,8 +125,16 @@ public sealed class MainForm : Form
         };
         _startButton.Click += OnStartButtonClick;
 
+        _removePairingButton = new Button
+        {
+            Text = "移除配对",
+            Enabled = false,
+            Bounds = new Rectangle(12, 264, 296, 28),
+        };
+        _removePairingButton.Click += OnRemovePairingClick;
+
         _standbyPanel = new Panel { Dock = DockStyle.Fill };
-        _standbyPanel.Controls.AddRange(new Control[] { _terminalListBox, privacyLabel, _startButton });
+        _standbyPanel.Controls.AddRange(new Control[] { _terminalListBox, privacyLabel, _startButton, _removePairingButton });
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
         _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 32) };
@@ -299,6 +317,22 @@ public sealed class MainForm : Form
             if (stillPresent != null) _terminalListBox.SelectedItem = stillPresent;
         }
         _terminalListBox.EndUpdate();
+    }
+
+    private void OnRemovePairingClick(object? sender, EventArgs e)
+    {
+        if (_terminalListBox.SelectedItem is not TerminalListEntry entry) return;
+
+        var confirm = MessageBox.Show(this,
+            $"确定要移除与 \"{entry.DeviceName}\" 的配对记录吗？\n" +
+            (entry.Live != null
+                ? "这不会立即影响它当前的在线状态（还是能看到它，因为它仍在广播）——只是它下次\n离线后不会再出现在这个列表里，除非重新配对一次。"
+                : "这个终端机会从待机列表里彻底消失，直到它重新广播并再次配对成功。"),
+            "移除配对", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes) return;
+
+        _pairedTerminals.Remove(entry.DeviceId);
+        RefreshTerminalList();
     }
 
     private async void OnStartButtonClick(object? sender, EventArgs e)

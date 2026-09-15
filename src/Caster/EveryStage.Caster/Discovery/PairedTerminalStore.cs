@@ -37,6 +37,8 @@ public sealed class PairedTerminalStore
 
     public IReadOnlyList<PairedTerminal> All => _terminals;
 
+    public PairedTerminal? Find(Guid deviceId) => _terminals.FirstOrDefault(t => t.DeviceId == deviceId);
+
     public void Upsert(PairedTerminal terminal)
     {
         _terminals.RemoveAll(t => t.DeviceId == terminal.DeviceId);
