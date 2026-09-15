@@ -13,18 +13,22 @@ namespace EveryStage.Caster.UI;
 /// (target terminal list + start button + privacy notice) and, once paired, a second panel that now
 /// really streams: picking a terminal and pairing successfully immediately starts a real
 /// <see cref="LiveCastSession"/> (capture -> NV12 -> H.264 -> RTP, sent to the Terminal). Below that,
-/// four independent self-tests remain available as standalone diagnostics for isolating which stage
-/// (capture, encode, transport, or audio capture) is at fault if live casting misbehaves: screen
-/// capture (<see cref="CaptureSelfTestRunner"/>), H.264 encoding (<see cref="EncodeSelfTestRunner"/>,
+/// five independent self-tests remain available as standalone diagnostics for isolating which stage
+/// (capture, encode, transport, audio capture, or AAC encode) is at fault if live casting misbehaves:
+/// screen capture (<see cref="CaptureSelfTestRunner"/>), H.264 encoding (<see cref="EncodeSelfTestRunner"/>,
 /// capture -> NV12 -> hardware encoder), RTP transport (<see cref="TransportSelfTest"/>, a real
-/// loopback UDP round-trip with synthetic NAL-shaped payloads), and audio capture
+/// loopback UDP round-trip with synthetic NAL-shaped payloads), audio capture
 /// (<see cref="AudioCaptureSelfTestRunner"/>, added a round after the other three — see this
-/// project's README on why WASAPI loopback capture had no independent self-test until now). None of
-/// the four self-tests touch the live cast session or each other — including the audio one running
-/// concurrently with a live cast's own <c>AudioCaptureSource</c>, which this repo has never verified
-/// on a real machine but expects to work since WASAPI loopback capture (unlike exclusive-mode
-/// rendering) is inherently a shared, read-only tap on the render stream, not something one capture
-/// client can lock out another from. The "终端机确认" line in the paired panel is the Terminal's
+/// project's README on why WASAPI loopback capture had no independent self-test until now), and AAC
+/// encoding (<see cref="AacEncodeSelfTestRunner"/>, capture -> <see cref="AacAudioEncoder"/> — this
+/// repo's first audio-encoding MFT, not yet wired into the live cast session's own audio path, which
+/// still sends uncompressed PCM; see this project's README). None of the five self-tests touch the
+/// live cast session or each other — including the two audio-capturing ones (WASAPI loopback and AAC
+/// encode) running concurrently with a live cast's own <c>AudioCaptureSource</c> and each other,
+/// which this repo has never verified on a real machine but expects to work since WASAPI loopback
+/// capture (unlike exclusive-mode rendering) is inherently a shared, read-only tap on the render
+/// stream, not something one capture client can lock out another from. The "终端机确认" line in the
+/// paired panel is the Terminal's
 /// own periodic status report (<see cref="LiveCastSession.IsTerminalAlive"/>) — see this project's
 /// README for what that does and doesn't guarantee (it's a lightweight heartbeat, not per-packet
 /// acknowledgment, and it can't distinguish "never confirmed" from "confirmed once, then the
@@ -69,10 +73,12 @@ public sealed class MainForm : Form
     private readonly CaptureSelfTestRunner _captureSelfTest = new();
     private readonly EncodeSelfTestRunner _encodeSelfTest = new();
     private readonly AudioCaptureSelfTestRunner _audioCaptureSelfTest = new();
+    private readonly AacEncodeSelfTestRunner _aacEncodeSelfTest = new();
     private readonly System.Windows.Forms.Timer _listRefreshTimer;
     private readonly System.Windows.Forms.Timer _captureStatsTimer;
     private readonly System.Windows.Forms.Timer _encodeStatsTimer;
     private readonly System.Windows.Forms.Timer _audioCaptureStatsTimer;
+    private readonly System.Windows.Forms.Timer _aacEncodeStatsTimer;
     private readonly System.Windows.Forms.Timer _liveCastStatsTimer;
 
     private readonly Panel _standbyPanel;
@@ -94,6 +100,8 @@ public sealed class MainForm : Form
     private readonly Label _transportStatsLabel;
     private readonly Button _audioCaptureSelfTestButton;
     private readonly Label _audioCaptureStatsLabel;
+    private readonly Button _aacEncodeSelfTestButton;
+    private readonly Label _aacEncodeStatsLabel;
 
     private DiscoveredTerminal? _pairedTerminal;
     private LiveCastSession? _liveCastSession;
@@ -131,8 +139,9 @@ public sealed class MainForm : Form
         // Grown from an original 506: first to 600 to fit a fourth self-test section (audio
         // capture) below the existing capture/encode/transport three, then to 630 to give
         // _liveCastStatsLabel enough extra height for its new always-visible "确认≠健康" caveat
-        // line — see this class's doc comment and _liveCastStatsLabel's own Bounds comment below.
-        ClientSize = new Size(320, 630);
+        // line, then to 718 to fit a fifth self-test section (AAC encode) below the audio capture
+        // one — see this class's doc comment and _liveCastStatsLabel's own Bounds comment below.
+        ClientSize = new Size(320, 718);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -214,8 +223,8 @@ public sealed class MainForm : Form
 
         var diagnosticsNoteLabel = new Label
         {
-            Text = "以下四个按钮各自独立、互不影响，是采集/编码/传输/音频采集各环节各自的自检工具，\n" +
-                   "用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
+            Text = "以下五个按钮各自独立、互不影响，是采集/编码/传输/音频采集/AAC音频编码各环节各自的\n" +
+                   "自检工具，用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
             ForeColor = Color.DimGray,
             Bounds = new Rectangle(12, 226, 296, 40),
         };
@@ -236,6 +245,13 @@ public sealed class MainForm : Form
         _audioCaptureSelfTestButton.Click += OnAudioCaptureSelfTestClick;
         _audioCaptureStatsLabel = new Label { Bounds = new Rectangle(12, 558, 296, 50), ForeColor = Color.DimGray };
 
+        // AacAudioEncoder/AacEncodeSelfTestRunner (see their own doc comments) — this repo's first
+        // audio-encoding MFT, not yet wired into LiveCastSession's own audio path (which still sends
+        // uncompressed PCM), so this self-test is currently the only way to exercise it at all.
+        _aacEncodeSelfTestButton = new Button { Text = "开始AAC编码自检 (WASAPI loopback→AAC)", Bounds = new Rectangle(12, 612, 296, 32) };
+        _aacEncodeSelfTestButton.Click += OnAacEncodeSelfTestClick;
+        _aacEncodeStatsLabel = new Label { Bounds = new Rectangle(12, 646, 296, 50), ForeColor = Color.DimGray };
+
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
         {
@@ -243,6 +259,7 @@ public sealed class MainForm : Form
             _captureSelfTestButton, _captureStatsLabel,
             _encodeSelfTestButton, _encodeStatsLabel, _transportSelfTestButton, _transportStatsLabel,
             _audioCaptureSelfTestButton, _audioCaptureStatsLabel,
+            _aacEncodeSelfTestButton, _aacEncodeStatsLabel,
         });
 
         Controls.Add(_pairedPanel);
@@ -260,6 +277,9 @@ public sealed class MainForm : Form
 
         _audioCaptureStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _audioCaptureStatsTimer.Tick += (_, _) => RefreshAudioCaptureStats();
+
+        _aacEncodeStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _aacEncodeStatsTimer.Tick += (_, _) => RefreshAacEncodeStats();
 
         _liveCastStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _liveCastStatsTimer.Tick += (_, _) => RefreshLiveCastStats();
@@ -374,6 +394,42 @@ public sealed class MainForm : Form
         _audioCaptureStatsLabel.Text =
             $"采样率: {_audioCaptureSelfTest.SampleRate}Hz   声道数: {_audioCaptureSelfTest.Channels}\n" +
             $"已捕获字节数: {_audioCaptureSelfTest.TotalBytesCaptured}    近1秒吞吐量: {_audioCaptureSelfTest.BytesPerSecond / 1024.0:F1} KB/s";
+    }
+
+    private void OnAacEncodeSelfTestClick(object? sender, EventArgs e)
+    {
+        if (_aacEncodeSelfTest.IsRunning)
+        {
+            _aacEncodeSelfTest.Stop();
+            _aacEncodeStatsTimer.Stop();
+            _aacEncodeSelfTestButton.Text = "开始AAC编码自检 (WASAPI loopback→AAC)";
+            _aacEncodeStatsLabel.Text = "";
+        }
+        else
+        {
+            _aacEncodeSelfTest.Start();
+            _aacEncodeStatsTimer.Start();
+            _aacEncodeSelfTestButton.Text = "停止AAC编码自检";
+            RefreshAacEncodeStats();
+        }
+    }
+
+    private void RefreshAacEncodeStats()
+    {
+        if (_aacEncodeSelfTest.LastError != null)
+        {
+            _aacEncodeStatsLabel.ForeColor = Color.DarkRed;
+            _aacEncodeStatsLabel.Text = $"AAC编码出错：{_aacEncodeSelfTest.LastError}";
+            _aacEncodeStatsTimer.Stop();
+            _aacEncodeSelfTestButton.Text = "开始AAC编码自检 (WASAPI loopback→AAC)";
+            return;
+        }
+
+        _aacEncodeStatsLabel.ForeColor = Color.DimGray;
+        _aacEncodeStatsLabel.Text =
+            $"采样率: {_aacEncodeSelfTest.SampleRate}Hz   声道数: {_aacEncodeSelfTest.Channels}\n" +
+            $"PCM输入字节数: {_aacEncodeSelfTest.TotalPcmBytesIn}\n" +
+            $"已编码访问单元数: {_aacEncodeSelfTest.AccessUnitsEncoded}   编码总字节数: {_aacEncodeSelfTest.TotalEncodedBytes}";
     }
 
     private async void OnTransportSelfTestClick(object? sender, EventArgs e)
@@ -688,6 +744,13 @@ public sealed class MainForm : Form
             _audioCaptureSelfTestButton.Text = "开始音频采集自检 (WASAPI loopback)";
             _audioCaptureStatsLabel.Text = "";
         }
+        if (_aacEncodeSelfTest.IsRunning)
+        {
+            _aacEncodeSelfTest.Stop();
+            _aacEncodeStatsTimer.Stop();
+            _aacEncodeSelfTestButton.Text = "开始AAC编码自检 (WASAPI loopback→AAC)";
+            _aacEncodeStatsLabel.Text = "";
+        }
         _transportStatsLabel.Text = "";
 
         _pairedTerminal = null;
@@ -711,6 +774,8 @@ public sealed class MainForm : Form
             _encodeSelfTest.Dispose();
             _audioCaptureStatsTimer.Dispose();
             _audioCaptureSelfTest.Dispose();
+            _aacEncodeStatsTimer.Dispose();
+            _aacEncodeSelfTest.Dispose();
             _liveCastStatsTimer.Dispose();
             _liveCastSession?.Dispose();
         }

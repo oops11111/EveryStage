@@ -23,9 +23,30 @@ internal static class EncoderGuids
     public static readonly Guid MFVideoFormat_NV12 = new("3231564e-0000-0010-8000-00aa00389b71");
     public static readonly Guid MFVideoFormat_H264 = new("34363248-0000-0010-8000-00aa00389b71");
 
+    // --- Audio major type / subtypes + MF_MT_AUDIO_* attribute keys (mfapi.h) — used by
+    // AacAudioEncoder, this repo's first audio-encoding MFT (see that file's own doc comment for
+    // why it's meaningfully lower-risk than H264HardwareEncoder despite being new territory). Same
+    // "00000001/00001610-0000-0010-8000-00aa00389b71" wFormatTag-derived pattern
+    // EveryStage.Rendering.Decode.WellKnownGuids.MFAudioFormat_PCM already uses for PCM — AAC's is
+    // the registered WAVE_FORMAT_MPEG_HEAAC (0x1610) tag in the same position.
+    public static readonly Guid MFMediaType_Audio = new("73647561-0000-0010-8000-00aa00389b71");
+    public static readonly Guid MFAudioFormat_PCM = new("00000001-0000-0010-8000-00aa00389b71");
+    public static readonly Guid MFAudioFormat_AAC = new("00001610-0000-0010-8000-00aa00389b71");
+    public static readonly Guid MF_MT_AUDIO_NUM_CHANNELS = new("37e48bf5-645e-4c5b-89de-ada9e29b696a");
+    public static readonly Guid MF_MT_AUDIO_SAMPLES_PER_SECOND = new("5faeeae7-0290-4c31-9e8a-c534f68d9dba");
+    public static readonly Guid MF_MT_AUDIO_AVG_BYTES_PER_SECOND = new("1aab75c8-cfef-451c-ab95-ac034b8e1731");
+    public static readonly Guid MF_MT_AUDIO_BLOCK_ALIGNMENT = new("322de230-9eeb-43bd-ab7a-ff412251541d");
+    public static readonly Guid MF_MT_AUDIO_BITS_PER_SAMPLE = new("f2deb57f-40fa-4764-aa33-ed4f2d1ff669");
+    // Selects raw (headerless) AAC access units rather than ADTS/LOAS framing — 0 = raw. This repo
+    // has no RTP packetizer for AAC yet (see AacAudioEncoder's doc comment), but raw access units
+    // are the right output shape for one, per RFC 3640's AAC-hbr mode, whenever that gets built.
+    public static readonly Guid MF_MT_AAC_PAYLOAD_TYPE = new("bfbabe79-7434-4d1c-94f0-72a3b9e17491");
+
     // --- MFT category / async-unlock (mfobjects.h / mftransform.h) ---
     // The "video encoder" MFT category GUID used with MFTEnumEx to find candidate transforms.
     public static readonly Guid MFT_CATEGORY_VIDEO_ENCODER = new("f79eac7d-e545-4387-bdee-d647d7bde42a");
+    // Same role, for the built-in AAC encoder MFT.
+    public static readonly Guid MFT_CATEGORY_AUDIO_ENCODER = new("91c64bd0-f91e-4d8c-9276-db248279d975");
     // Attribute set (to UINT32 1) on an async MFT's own attribute store before use, per the
     // Windows 8+ MFT async-unlock requirement — without this, ProcessInput/ProcessOutput on an
     // async MFT fail with MF_E_TRANSFORM_ASYNC_LOCKED.

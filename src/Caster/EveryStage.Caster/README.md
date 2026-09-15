@@ -34,13 +34,19 @@ PLANNING.md §15 把整个捕获/编码/传输称为"第二大技术风险区"�
 6. 面板上还有一个"运行传输自检"按钮——用一批人造的、形状像H.264 NAL单元的随机数据走一遍
    `RtpSession → 本机回环UDP → RtpReceiver → H264RtpDepacketizer`（`EveryStage.Transport`），
    逐字节核对收发是否一致，包括FU-A分片重组是否正确，同样不涉及真实投屏、不影响正在进行的投屏。
-7. **【这次新加】面板上还有一个"开始音频采集自检 (WASAPI loopback)"按钮**——
+7. 面板上还有一个"开始音频采集自检 (WASAPI loopback)"按钮——
    `Capture/AudioCaptureSelfTestRunner.cs` 独立驱动 `AudioCaptureSource`，显示采样率/声道数/
    已捕获字节数/近1秒吞吐量，不经过RTP发送、不涉及`LiveCastSession`，同样不影响正在进行的投屏。
+8. **【这次新加】面板上还有一个"开始AAC编码自检 (WASAPI loopback→AAC)"按钮**——
+   `Encode/AacEncodeSelfTestRunner.cs` 把 `AudioCaptureSource` 接到新增的 `Encode/AacAudioEncoder.cs`
+   （这个仓库第一个音频编码MFT，见下方"已知风险"第53条），显示PCM输入字节数/已编码AAC访问单元数/
+   编码总字节数，同样不经过RTP发送、不涉及`LiveCastSession`真正的投屏路径——`LiveCastSession`
+   目前依然只发送未压缩PCM，AAC编码器还没有RTP打包器、还没有接进真正的发送路径，这个自检是目前
+   唯一能独立验证它的方式。
 
-这四个自检的角色从"补上还没接通的功能"变成了纯粹的独立诊断工具——真实投屏管线已经接通后，它们的
-价值是在投屏出问题时帮助判断问题出在采集、编码、传输、还是音频采集哪一步，而不是必须先跑通它们
-才能投屏。
+这五个自检的角色从"补上还没接通的功能"变成了纯粹的独立诊断工具（AAC编码除外——它还没有真正接入
+投屏发送路径，见上方第8点和下方"尚未开始"）——真实投屏管线已经接通后，它们的价值是在投屏出问题时
+帮助判断问题出在采集、编码、传输、音频采集、还是AAC编码哪一步，而不是必须先跑通它们才能投屏。
 
 ## 已知风险 / 待验证事项
 
@@ -396,10 +402,38 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     没有真机验证**（第16条本来就说明这里假设的"主流硬件编码器都会设置
     `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES`"没有核实过）——这次改动只是把"这个假设不成立时直接
     `NotSupportedException`硬失败"换成"这个假设不成立时也能跑"，不代表这条路径本身被验证过。
+53. **新增`Encode/AacAudioEncoder.cs`——这个仓库第一个音频编码MFT**：解决"尚未开始"里长期挂着的
+    "音频压缩"缺口的第一步。跟`H264HardwareEncoder`同一类"从未编译/从未在真机跑过"的风险等级，
+    但结构性风险更低的两个原因：(1) 不需要在多个硬件厂商实现里挑一个——Windows只内置一个AAC编码
+    MFT（`MFT_CATEGORY_AUDIO_ENCODER`/AAC子类型），`ActivateFirstAacEncoder`因此比
+    `ActivateFirstHardwareEncoder`"在可能有好几个硬件厂商MFT里挑最合适的"简单；(2) 这个内置AAC
+    编码MFT文档/社区经验普遍认为是**同步**transform，不像硬件视频编码器那样是异步的——这个类因此
+    完全没有`IMFMediaEventGenerator`事件循环、没有async-unlock要求、没有任何后台线程，直接同步调用
+    `ProcessInput`/`ProcessOutput`。**这个同步假设是这个文件最大的风险点**：这个沙箱完全没办法
+    在真机上验证——如果某台机器激活出来的AAC编码器实际上是异步的，下面每一次`ProcessInput`/
+    `ProcessOutput`调用都会直接失败，这个类需要按`H264HardwareEncoder`已经在用的同一套异步事件
+    循环模式重写。为防御这个假设不成立，构造函数里仍然照抄了`UnlockAsyncProcessing`（对同步MFT
+    设置这个属性无害但没用，跟`H264HardwareEncoder.UnlockAsyncProcessing`自己的doc comment
+    同样的理由）。另一个只有这个文件才有的新风险点：内置AAC编码器对输出媒体类型（尤其码率）
+    出了名地只接受一小组固定组合，不能像H.264那样直接`SetOutputType`一个任意的
+    `MF_MT_AVG_BYTES_PER_SECOND`——这里用`GetOutputAvailableType`枚举、直接取第0个候选，而不是
+    搜索一个"最接近目标码率"的——真正做码率搜索需要额外的`IMFAttributes.CopyAllItems`（把
+    枚举出来的候选克隆到枚举调用之外还能存活的另一个`IMFMediaType`），这个方法本身也没验证过，
+    这一轮选择不在一个已经足够新的路径上再叠加一层不确定性。**明确没有做的部分**：(a) 没有
+    任何AAC的RTP打包器（RFC 3640），完全没有集成进`LiveCastSession`真正的发送路径——
+    `LiveCastSession`依然发送未压缩PCM，这个编码器只能通过新增的
+    `Encode/AacEncodeSelfTestRunner.cs`（`MainForm`新增第五个自检按钮"开始AAC编码自检"）独立验证；
+    (b) 输出的AAC码率完全由编码器自己第0个候选决定，不可配置（`AacAudioEncoder`构造函数因此没有
+    `bitrateBps`参数——不像`H264HardwareEncoder`那样可以指定，加一个当前不生效的参数会违反这个
+    仓库自己的"没有真实行为支撑就不加"的一贯态度）。
 
 ## 尚未开始
 
-- 音频压缩（当前是未压缩16-bit PCM，带宽明显高于H.264视频——真要做流畅的低延迟音频编码需要走
-  Media Foundation的AAC编码器MFT，跟视频编码器同一类风险，这一轮为了先接通链路特意绕开了）
+- 音频压缩接入真正的投屏发送路径（见"已知风险"第53条）——`AacAudioEncoder`本身已经实现并能通过
+  独立自检验证，但`LiveCastSession`依然发送未压缩PCM；接进去还需要：AAC的RTP打包器（RFC 3640，
+  完全没有实现）、`CastStartMessage`协议加一个音频编码方式字段（PCM/AAC）、Terminal端对应的AAC
+  解码（`CastReceiver`目前只认PCM）——这三块都完全没有开始
+- 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
+  真正的往返延迟测量
 - 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
   真正的往返延迟测量
