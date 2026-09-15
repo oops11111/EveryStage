@@ -102,12 +102,13 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
             // Runtime display-configuration changes (PLANNING.md §5, this project's README "已知
             // 风险" on OverlayWindow.Rebind/VideoSurface.Resize previously existing but never having
-            // a caller) — narrowly scoped to "the extended display this Terminal already bound at
-            // startup moved or changed resolution", NOT "a display was plugged in or unplugged after
-            // startup" (see HandleDisplaySettingsChanged's own doc comment for why those two cases
-            // are still explicitly out of scope). Only subscribed when an overlay actually exists —
-            // with no bound display at startup there is nothing here for a later display change to
-            // rebind anyway (see the "no display bound" case below).
+            // a caller) — covers "the extended display this Terminal already bound at startup moved
+            // or changed resolution" (Rebind/Resize) and "that same display got unplugged entirely"
+            // (a clean Disconnect(), see HandleDisplaySettingsChanged's own doc comment for exactly
+            // what each branch does and what is still NOT handled — a display being plugged in for
+            // the first time when none was bound at startup). Only subscribed when an overlay
+            // actually exists — with no bound display at startup there is nothing here for a later
+            // display change to rebind anyway (see the "no display bound" case below).
             SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         }
         // extendedDisplay == null: no second monitor attached yet. §5/§7 don't specify a "no
@@ -402,26 +403,34 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _uiContext.Post(_ => HandleDisplaySettingsChanged(), null);
     }
 
-    /// <summary>Narrowly scoped to one case: the extended display this Terminal already bound at
-    /// startup (<see cref="_overlay"/> non-null) moved position or changed resolution/orientation —
-    /// <see cref="OverlayWindow.Rebind"/> and <see cref="VideoSurface.Resize"/> both already existed
-    /// for exactly this (this project's README used to flag them as written but never called by
-    /// anything). Deliberately does NOT handle: a display being plugged in for the first time after
-    /// this Terminal already started with none bound (<see cref="_overlay"/> stays null forever once
-    /// decided at startup — building/tearing down the whole <see cref="_overlay"/>/
-    /// <see cref="_videoSurface"/>/<see cref="_playback"/>/<see cref="_previewWindow"/> graph at
-    /// runtime is a substantially bigger change this round doesn't attempt), or the bound display
-    /// being unplugged entirely (falls through to the last-known bounds silently rather than tearing
-    /// anything down — Windows simply clips an off-screen borderless window rather than erroring, so
-    /// this isn't a crash risk, just a "nothing looks right until it's replugged or the process
-    /// restarts" gap). See this project's README "已知风险" for both being recorded, intentional
-    /// scope limits rather than oversights.</summary>
+    /// <summary>Two cases for the extended display this Terminal already bound at startup
+    /// (<see cref="_overlay"/> non-null): it moved position or changed resolution/orientation
+    /// (<see cref="OverlayWindow.Rebind"/>/<see cref="VideoSurface.Resize"/> — this project's README
+    /// used to flag both as written but never called by anything), or it got unplugged entirely
+    /// (<see cref="OutputStateMachine.Disconnect"/> — the same clean "断" a user clicking it manually
+    /// would trigger: restores audio, hides the now-nowhere-to-be-seen overlay, and stops any active
+    /// device cast; a no-op if output was already Idle). Disconnecting rather than tearing down
+    /// <see cref="_overlay"/>/<see cref="_videoSurface"/>/<see cref="_playback"/> themselves is
+    /// deliberate — that graph stays alive so a later replug is just another
+    /// <see cref="OnDisplaySettingsChanged"/> firing, handled by whichever of these two branches
+    /// applies then (same monitor identity back -> no-op via the structural-equality check below;
+    /// different bounds/position -> Rebind/Resize, already covered). Deliberately does NOT handle: a
+    /// display being plugged in for the first time after this Terminal already started with none
+    /// bound (<see cref="_overlay"/> stays null forever once decided at startup — building the whole
+    /// <see cref="_overlay"/>/<see cref="_videoSurface"/>/<see cref="_playback"/>/
+    /// <see cref="_previewWindow"/> graph at runtime is a substantially bigger change this round
+    /// doesn't attempt). See this project's README "已知风险" for that remaining scope limit being
+    /// recorded as intentional, not an oversight.</summary>
     private void HandleDisplaySettingsChanged()
     {
         if (_overlay == null || _videoSurface == null) return;
 
         var updated = MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName);
-        if (updated == null) return; // the bound display disappeared entirely — not handled, see this method's own doc comment.
+        if (updated == null)
+        {
+            _stateMachine.Disconnect(); // the bound display disappeared entirely — see this method's own doc comment.
+            return;
+        }
         if (updated == _overlay.Monitor) return; // MonitorInfo is a record — structural equality catches "nothing actually changed".
 
         _overlay.Rebind(updated);

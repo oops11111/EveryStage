@@ -416,10 +416,10 @@ Caster知道终端机确实收到了东西。
     启动时完全没有扩展屏绑定的，`_overlay`/`_videoSurface`永远是`null`，运行中途插入新显示器
     也不会凭空生出一整套`_overlay`/`_videoSurface`/`_playback`/`_previewWindow`——这需要的对象
     生命周期改动比这次大得多，尤其是"正在播放本地视频或正在接收设备投屏时显示器被拔掉"这类并发
-    场景在这个沙箱里完全没办法验证，属于有意暂缓而不是遗漏；(b) 已绑定的显示器运行中途被完全拔掉，
-    `HandleDisplaySettingsChanged`在`GetBoundExtendedDisplay`返回`null`时直接返回，`OverlayWindow`
-    停留在最后已知的位置/尺寸——Windows会把这块离屏的无边框窗口简单裁剪掉而不会报错，所以这不是
-    崩溃风险，只是"重新插回或者重启进程之前画面不对"这个已知的、可接受的缺口。另外`SystemEvents`
+    场景在这个沙箱里完全没办法验证，属于有意暂缓而不是遗漏；(b) 已绑定的显示器运行中途被完全拔掉
+    ——**更新（见第67条）**：这个场景后来被解决了，`HandleDisplaySettingsChanged`在
+    `GetBoundExtendedDisplay`返回`null`时不再直接返回，而是调用`OutputStateMachine.Disconnect()`。
+    另外`SystemEvents`
     在真实Windows机器上到底从哪个线程触发这个事件，这个沙箱没有dotnet/Windows SDK，完全没办法
     验证——`OnDisplaySettingsChanged`因此防御性地用构造函数里捕获的`_uiContext.Post`把
     `HandleDisplaySettingsChanged`转回UI线程执行，而不是假设它已经在UI线程上。
@@ -524,6 +524,22 @@ Caster知道终端机确实收到了东西。
     `EveryStage.Transport`README第9条），`PingAsync`往返测量的也是discovery socket的RTT，不是
     RTP媒体流本身的延迟——跟`EveryStage.Caster`第35条已经说明的"状态通道健康不代表媒体流健康"
     是同一类需要牢记的区别。
+67. **【部分实现，原为已知缺口】第59条(b)"已绑定的显示器运行中途被完全拔掉"这个场景现在会
+    干净地"断"，不再是静默什么都不做**：`HandleDisplaySettingsChanged`里
+    `MonitorService.GetBoundExtendedDisplay`返回`null`（找不到那块已绑定的扩展屏了）时，这次改成
+    调用`OutputStateMachine.Disconnect()`——跟用户手动点"断"完全同一条路径：恢复音频、隐藏（反正
+    也没地方看得见的）overlay窗口、停掉任何正在进行的设备投屏；如果当时本来就是Idle状态，
+    `Disconnect()`本身是no-op，不会有任何多余动作。选择调用`Disconnect()`而不是把
+    `_overlay`/`_videoSurface`/`_playback`整个销毁重建：这套对象图仍然保留着，为的是显示器之后
+    被重新插回时，下一次`OnDisplaySettingsChanged`触发能直接落进已有的两个分支之一处理——识别成
+    同一块显示器（`MonitorInfo`结构相等）就什么都不用做，识别成位置/分辨率变了就走已有的
+    `Rebind`/`Resize`路径，不需要为"重新插回"单独写一条新逻辑。**仍然没有解决的部分**：`Disconnect()`
+    不会主动通知正在投屏的Caster——这跟`OnOutputStateChanged`里其他"断"路径的既有约定一致
+    （Caster靠`CastStatusMessage`报告的消失自己发现），不是这次遗漏；第59条(a)"启动时没绑定、
+    运行中途插入新显示器"仍然完全没有处理，原因不变（需要的对象生命周期改动大得多，见第59条）。
+    这个改动本身完全没有真实Windows机器/真实显示器拔插可以验证，只是让"逻辑上应该发生什么"这件事
+    从"完全没写"变成"照抄一条已经存在、已经被其他调用方用过很多次的`Disconnect()`路径"，属于
+    降低风险而不是消除风险。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -531,9 +547,11 @@ Caster知道终端机确实收到了东西。
   但采集延迟差、RTP时间戳回绕、解码器FIFO假设这几项仍然是接受的已知限制，没有计划中的进一步方案
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
-- 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35、59条）——"已绑定的扩展屏运行中途改分辨率
-  /位置"这一种场景已经在第59条实现；"启动时没绑定、运行中途插入新显示器"和"已绑定的显示器运行
-  中途被整个拔掉"这两种场景仍然完全没有处理，见第59条列出的具体理由
+- 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35、59、67条）——"已绑定的扩展屏运行中途改
+  分辨率/位置"在第59条实现，"已绑定的显示器运行中途被整个拔掉"在第67条实现（干净地"断"，而不是
+  静默什么都不做）；"启动时没绑定、运行中途插入新显示器"这一种场景仍然完全没有处理，见第59条(a)
+  列出的具体理由（需要在运行时凭空搭建整套`_overlay`/`_videoSurface`/`_playback`/`_previewWindow`
+  对象图，改动规模比这两条大得多）
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
 - 背景音轨叠加播放（`IsBackgroundAudio == true`，见"已知风险"第61条）——需要`PlaybackEngine`支持
   真正的多轨并发播放，目前完全没有实现；非背景音频（第61条已实现的那一半）不受影响
