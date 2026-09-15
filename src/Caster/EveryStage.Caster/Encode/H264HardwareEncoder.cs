@@ -39,7 +39,19 @@ public sealed class H264HardwareEncoder : IDisposable
     private readonly bool _outputProvidesOwnSamples;
     private readonly long _sampleDurationTicks; // 100ns units.
 
+    // Bounded, drop-oldest input queue (README risk #17's second half: "没有实现任何编码器跟不上时
+    // 该丢帧还是该等的策略"). Frames are fully independent units (unlike the NAL units in
+    // LiveCastSession's send queue, splitting one access unit across a drop boundary would corrupt
+    // it) — dropping the oldest queued frame outright, GPU texture and all, is the natural low-
+    // latency choice: an encoder that's falling behind gains nothing from eventually encoding a
+    // stale frame, and holding more than a couple of NV12 textures here just burns GPU memory
+    // without buying anything. _frameAvailable's count is kept exactly in sync with
+    // _pendingFrames.Count: SubmitFrame only calls Release when a drop did NOT happen (net queue
+    // depth actually grew), since a drop-then-enqueue leaves the depth unchanged.
+    private const int MaxPendingFrames = 3;
     private readonly ConcurrentQueue<(ID3D11Texture2D Texture, int ArraySlice)> _pendingFrames = new();
+    private readonly SemaphoreSlim _frameAvailable = new(0);
+    private int _framesDroppedForBackpressure;
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _eventLoopTask;
     private long _nextSampleTime;
@@ -48,6 +60,13 @@ public sealed class H264HardwareEncoder : IDisposable
     /// access unit — not yet split into RTP-sized packets, that's <c>AnnexBNalSplitter</c> +
     /// <c>H264RtpPacketizer</c>'s job (EveryStage.Transport).</summary>
     public event Action<byte[]>? AccessUnitEncoded;
+
+    /// <summary>Frames dropped whole (GPU texture disposed, never handed to the encoder) because
+    /// <see cref="_pendingFrames"/> was already <see cref="MaxPendingFrames"/> deep when
+    /// <see cref="SubmitFrame"/> was called — see that method for the drop policy. Should stay at 0
+    /// whenever the encoder can keep up with the capture rate; a climbing count means this machine's
+    /// hardware encoder is the pipeline's bottleneck, not the network.</summary>
+    public int FramesDroppedForBackpressure => Volatile.Read(ref _framesDroppedForBackpressure);
 
     /// <summary>Raised from the background event-loop thread if it dies from an unhandled
     /// exception — same "don't let a background thread vanish silently" reasoning as
@@ -82,9 +101,25 @@ public sealed class H264HardwareEncoder : IDisposable
 
     /// <summary>Queues one NV12 frame for encoding. Ownership of <paramref name="texture"/> passes
     /// to this encoder — do not dispose it yourself; the event loop disposes it after
-    /// <c>ProcessInput</c> accepts it (or immediately, on shutdown, if it never gets that far).</summary>
-    public void SubmitFrame(ID3D11Texture2D texture, int arraySlice = 0) =>
+    /// <c>ProcessInput</c> accepts it (or immediately, on shutdown, or on a backpressure drop, if it
+    /// never gets that far). Called from the capture loop's thread (see <c>LiveCastSession.RunLoop</c>
+    /// / <c>EncodeSelfTestRunner.RunLoop</c>), never blocks.</summary>
+    public void SubmitFrame(ID3D11Texture2D texture, int arraySlice = 0)
+    {
+        bool dropped = false;
+        if (_pendingFrames.Count >= MaxPendingFrames && _pendingFrames.TryDequeue(out var stale))
+        {
+            stale.Texture.Dispose();
+            dropped = true;
+            Interlocked.Increment(ref _framesDroppedForBackpressure);
+        }
+
         _pendingFrames.Enqueue((texture, arraySlice));
+
+        // Only signal a net increase in queue depth — a drop-then-enqueue leaves depth (and
+        // therefore how many permits HandleNeedInput should be able to Wait for) unchanged.
+        if (!dropped) _frameAvailable.Release();
+    }
 
     private void RunEventLoop(CancellationToken token)
     {
@@ -105,7 +140,7 @@ public sealed class H264HardwareEncoder : IDisposable
 
                 if (eventType == MediaEventTypes.TransformNeedInput)
                 {
-                    HandleNeedInput();
+                    HandleNeedInput(token);
                 }
                 else if (eventType == MediaEventTypes.TransformHaveOutput)
                 {
@@ -127,14 +162,36 @@ public sealed class H264HardwareEncoder : IDisposable
         }
     }
 
-    private void HandleNeedInput()
+    // Bounded rather than unbounded wait: if capture ever stops calling SubmitFrame altogether
+    // (session stopping, capture already failed) this must not block the event-loop thread forever
+    // — it just returns and waits for the MFT to raise another METransformNeedInput later, or for
+    // Dispose's cancellation to be observed on the loop's next iteration. 200ms is comfortably
+    // longer than one frame interval at any realistic capture rate (33ms at 30fps) without being so
+    // long it meaningfully delays shutdown.
+    private static readonly TimeSpan NeedInputWaitTimeout = TimeSpan.FromMilliseconds(200);
+
+    private void HandleNeedInput(CancellationToken token)
     {
+        // Blocks for a bounded time instead of the previous Thread.Sleep(1) busy-poll (README risk
+        // #17's first half) — _frameAvailable's count exactly tracks _pendingFrames.Count (see
+        // SubmitFrame), so a successful Wait means TryDequeue below should essentially always
+        // succeed; this remains a single-consumer (this event-loop thread), single-producer
+        // (whichever thread calls SubmitFrame) relationship, so there's no other consumer that could
+        // race this dequeue out from under it.
+        try
+        {
+            if (!_frameAvailable.Wait(NeedInputWaitTimeout, token)) return;
+        }
+        catch (OperationCanceledException)
+        {
+            return; // shutting down — the outer loop's token check ends RunEventLoop next iteration.
+        }
+
         if (!_pendingFrames.TryDequeue(out var frame))
         {
-            // No frame ready yet. A production implementation would block/wait here instead of
-            // busy-looping; left as a documented gap rather than guessing at the right backpressure
-            // strategy (drop vs. wait vs. re-request) without being able to test any of them.
-            Thread.Sleep(1);
+            // Should not normally happen given the semaphore accounting above; if it ever does
+            // (e.g. a future change adds a second SubmitFrame caller), there's simply nothing to
+            // encode this round rather than a reason to crash the event loop.
             return;
         }
 
@@ -334,6 +391,7 @@ public sealed class H264HardwareEncoder : IDisposable
         _cts.Dispose();
 
         while (_pendingFrames.TryDequeue(out var frame)) frame.Texture.Dispose();
+        _frameAvailable.Dispose();
 
         _events.Dispose();
         _encoder.Dispose();

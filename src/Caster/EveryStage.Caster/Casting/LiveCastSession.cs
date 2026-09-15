@@ -145,6 +145,15 @@ public sealed class LiveCastSession : IDisposable
     /// climbing count means the network send side can't keep up with the encoder.</summary>
     public long AccessUnitsDroppedForBackpressure { get; private set; }
 
+    /// <summary>Forwards <see cref="H264HardwareEncoder.FramesDroppedForBackpressure"/> — a
+    /// different bottleneck than <see cref="AccessUnitsDroppedForBackpressure"/> (that one is the
+    /// network send side falling behind the encoder; this one is the encoder itself falling behind
+    /// capture). Read directly from the encoder rather than cached/summed here, since the encoder is
+    /// the single source of truth for its own drop count and this class doesn't need to reset it
+    /// mid-session (it already resets to 0 inside a fresh <see cref="H264HardwareEncoder"/> each
+    /// <see cref="Start"/>). Reads as 0 before <see cref="Start"/> has constructed an encoder.</summary>
+    public int EncoderFramesDroppedForBackpressure => _encoder?.FramesDroppedForBackpressure ?? 0;
+
     public string? LastError { get; private set; }
 
     /// <summary>Whether audio capture actually started for this session — false means this cast is

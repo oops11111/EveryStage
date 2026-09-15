@@ -329,10 +329,16 @@ public sealed class MainForm : Form
             return;
         }
 
+        // Same "only shown once non-zero" convention as RefreshLiveCastStats's backpressure lines.
+        string droppedLine = _encodeSelfTest.FramesDroppedForBackpressure > 0
+            ? $"\n⚠ 因编码器跟不上采集而丢弃: {_encodeSelfTest.FramesDroppedForBackpressure} 帧"
+            : "";
+
         _encodeStatsLabel.ForeColor = Color.DimGray;
         _encodeStatsLabel.Text =
             $"已编码访问单元数: {_encodeSelfTest.AccessUnitsEncoded}\n" +
-            $"编码总字节数: {_encodeSelfTest.TotalEncodedBytes}";
+            $"编码总字节数: {_encodeSelfTest.TotalEncodedBytes}" +
+            droppedLine;
     }
 
     private void OnAudioCaptureSelfTestClick(object? sender, EventArgs e)
@@ -636,6 +642,11 @@ public sealed class MainForm : Form
             ? $"\n⚠ 因网络发送跟不上而丢弃: 视频 {_liveCastSession.AccessUnitsDroppedForBackpressure} 个访问单元" +
               $"，音频 {_liveCastSession.AudioChunksDroppedForBackpressure} 个分片"
             : "";
+        // A different bottleneck from backpressureLine above (那是网络发送跟不上编码器，这是编码器
+        // 本身跟不上屏幕采集) — see H264HardwareEncoder.SubmitFrame's drop policy and README风险#17。
+        string encoderBackpressureLine = _liveCastSession.EncoderFramesDroppedForBackpressure > 0
+            ? $"\n⚠ 因编码器跟不上采集而丢弃: {_liveCastSession.EncoderFramesDroppedForBackpressure} 帧"
+            : "";
 
         _liveCastStatsLabel.Text =
             $"分辨率: {_liveCastSession.Width}x{_liveCastSession.Height}\n" +
@@ -643,7 +654,8 @@ public sealed class MainForm : Form
             $"已发送字节数: {_liveCastSession.BytesSent}\n" +
             audioLine + "\n" +
             terminalLine +
-            backpressureLine;
+            backpressureLine +
+            encoderBackpressureLine;
     }
 
     private void ShowStandby()

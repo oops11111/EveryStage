@@ -114,9 +114,12 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     这个仓库写这段代码时的假设是"主流硬件编码器都会设置 `MFT_OUTPUT_STREAM_PROVIDES_SAMPLES`"，
     但这个假设本身也未经真机验证——如果某个编码器MFT不这样，`H264HardwareEncoder` 现在完全用不了，
     需要补一个"按 `GetOutputStreamInfo` 报告的大小自己分配输出sample"的分支。
-17. **`HandleNeedInput` 里的背压策略是占位的**：队列空了就 `Thread.Sleep(1)` 再返回，而不是阻塞
-    等待下一帧——这在真实负载下会造成事件循环忙等，且没有实现任何"编码器跟不上时该丢帧还是该等"
-    的策略，只是刻意没有在无法测试的前提下假装选了一个"正确"策略。
+17. **【已实现，原为已知缺口】`HandleNeedInput` 里的背压策略是占位的**：队列空了就 `Thread.Sleep(1)`
+    再返回，而不是阻塞等待下一帧——这在真实负载下会造成事件循环忙等，且没有实现任何"编码器跟不上
+    时该丢帧还是该等"的策略，只是刻意没有在无法测试的前提下假装选了一个"正确"策略。**更新（见
+    第51条）**：两半都已经实现——`Thread.Sleep(1)`忙等换成了`SemaphoreSlim.Wait`（带超时+
+    CancellationToken）真正阻塞等待，"编码器跟不上"选的是丢弃最旧那一帧（连GPU纹理一起释放），
+    详见第51条。
 18. **`MFCreateDXGISurfaceBuffer` / `sample.SetSampleTime` / `SetSampleDuration` 的确切签名**未核
     实，尤其 `SetSampleTime`/`SetSampleDuration` 有意写成方法调用而不是C#属性赋值（本回合的一处自
     我修正，理由见文件内注释），以匹配这个代码库其他地方对不确定COM setter的处理约定。
@@ -355,6 +358,28 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     测"的时间常数一样，只是"生成速率×大约2秒/1秒"倒推出来的数字——`H264HardwareEncoder`是否真的
     稳定在30fps、WASAPI回调是否真的稳定在约10ms一个缓冲区，这两个假设本身都没有核实过，真机上如果
     编码帧率明显不同，这两个阈值背后代表的真实缓冲时长也会相应偏离"2秒/1秒"这个估算。
+51. **【已实现，原为已知缺口】`H264HardwareEncoder`的输入队列现在有真正的背压策略，事件循环也
+    不再忙等**（见上方第17条）：`SubmitFrame`（捕获线程调用）改成有界丢弃——`_pendingFrames`满了
+    （`MaxPendingFrames = 3`）就先丢弃并释放最旧那一帧的GPU纹理，再入队新的一帧，而不是无限增长；
+    `HandleNeedInput`（事件循环线程调用）改成`SemaphoreSlim.Wait(200ms超时, CancellationToken)`
+    真正阻塞等待下一帧，而不是`Thread.Sleep(1)`忙轮询。`_frameAvailable`这个信号量的计数被刻意
+    维持成跟`_pendingFrames.Count`完全一致：`SubmitFrame`只在"净队列深度真的增加了"（没有触发丢弃）
+    时才`Release`一次——丢一帧、入队一帧，深度不变，就不`Release`，避免信号量计数和队列实际深度
+    脱节导致`HandleNeedInput`要么错误地立刻醒来发现队列其实是空的、要么该醒的时候不醒。跟
+    `LiveCastSession`第25条(`_sendQueue`)的策略选了不同的丢弃粒度——那边必须"整个访问单元一起丢"
+    （NAL单元之间有依赖，撕开会产生解不出来的残缺访问单元），这里的NV12帧彼此完全独立，直接丢弃
+    最旧的单帧就是最自然的低延迟选择：编码器已经跟不上了，再去编码一帧陈旧的画面没有任何意义。
+    新增`FramesDroppedForBackpressure`计数器，`LiveCastSession.EncoderFramesDroppedForBackpressure`
+    和`EncodeSelfTestRunner.FramesDroppedForBackpressure`分别转发它，跟第48条已经在做的"只在大于0
+    时才多显示一行警告"是同一个UI约定（`MainForm`的投屏面板和编码自检面板各自新增了一行）——这是
+    一个和第48条(`AccessUnitsDroppedForBackpressure`，网络发送跟不上编码器)完全不同的瓶颈信号
+    (`EncoderFramesDroppedForBackpressure`，编码器本身跟不上屏幕采集)，两者理论上可以同时出现，
+    UI上是两条独立的行，不会互相覆盖。**仍未验证/仍是限制**：`MaxPendingFrames = 3`和200ms超时
+    都是没有真机可测的估算值（同第50条那类数字一样的处境）；`SemaphoreSlim.Wait`带
+    `CancellationToken`重载本身是成熟的BCL API、风险很低，但`_events.GetEvent`这个原生阻塞调用
+    本身完全不响应这个token——如果事件循环恰好卡在`GetEvent`里而不是`HandleNeedInput`的
+    `Wait`里，`Dispose`里的取消依然可能要等到下一次真的收到MFT事件才能真正退出，这是这个文件
+    原本就有、这次没有解决的既有限制。
 
 ## 尚未开始
 
@@ -363,5 +388,3 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
 - 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
   真正的往返延迟测量
 - `H264HardwareEncoder` 里"编码器不提供自己的输出sample"这条分支（见上方风险16）
-- 编码器`HandleNeedInput`自己的背压策略仍然是占位的（见上方风险17）——这次解决的是编码完成之后
-  发送队列这一段，MFT异步事件循环内部输入队列满时该怎么办仍然完全没有实现

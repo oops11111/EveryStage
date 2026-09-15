@@ -25,6 +25,13 @@ public sealed class EncodeSelfTestRunner : IDisposable
     public bool IsRunning => _loopTask != null;
     public int AccessUnitsEncoded { get; private set; }
     public long TotalEncodedBytes { get; private set; }
+
+    /// <summary>Forwards <see cref="H264HardwareEncoder.FramesDroppedForBackpressure"/> — see that
+    /// property's doc comment. A self-test is exactly where seeing this climb matters most: it's
+    /// direct local evidence of whether this machine's hardware encoder can keep up with its own
+    /// screen capture rate, with no network involved to blame instead.</summary>
+    public int FramesDroppedForBackpressure => _encoder?.FramesDroppedForBackpressure ?? 0;
+
     public string? LastError { get; private set; }
 
     /// <summary>Raised from the background loop or the encoder's own event loop — marshal to the
