@@ -37,6 +37,7 @@ public sealed class ActivitiesPanel : UserControl
     private readonly TreeView _tree;
     private readonly Button _addFileButton;
     private readonly Button _playModeButton;
+    private readonly Button _audioPropertiesButton;
     private readonly Button _removeButton;
     private readonly Button _moveUpButton;
     private readonly Button _moveDownButton;
@@ -84,6 +85,13 @@ public sealed class ActivitiesPanel : UserControl
         // selected ACTIVITY's own DefaultPlayMode — see OnEditPlayMode.
         _playModeButton = new Button { Text = "播放方式...", AutoSize = true, Enabled = false };
         _playModeButton.Click += (_, _) => OnEditPlayMode();
+        // Only ever enabled for a selected file whose Kind == MediaKind.Audio — see
+        // UpdateButtonStates. New the same round PlaybackEngine.PlayStandaloneAudio/ApplyAudioVisual
+        // first gave MediaFile.IsBackgroundAudio/BackgroundAudioVisual any runtime effect at all
+        // (see this project's README risk #61), following the same "先做行为、再做UI" order
+        // PlayMode's editor above already established.
+        _audioPropertiesButton = new Button { Text = "音频属性...", AutoSize = true, Enabled = false };
+        _audioPropertiesButton.Click += (_, _) => OnEditAudioProperties();
         _removeButton = new Button { Text = "移除文件", AutoSize = true, Enabled = false };
         _removeButton.Click += (_, _) => OnRemoveFile();
         _moveUpButton = new Button { Text = "上移", AutoSize = true, Enabled = false };
@@ -93,7 +101,7 @@ public sealed class ActivitiesPanel : UserControl
         activityBar.Controls.AddRange(new Control[]
         {
             newActivityButton, renameActivityButton, deleteActivityButton, _playModeButton,
-            _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
+            _audioPropertiesButton, _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
         });
 
         _tree = new TreeView { Dock = DockStyle.Fill };
@@ -322,6 +330,40 @@ public sealed class ActivitiesPanel : UserControl
         _repository.Save(_store);
     }
 
+    /// <summary>Only reachable when a selected file's <c>Kind == MediaKind.Audio</c> — see
+    /// <see cref="UpdateButtonStates"/>. Unlike <see cref="OnEditPlayMode"/> this has no
+    /// activity-level counterpart: <c>IsBackgroundAudio</c>/<c>BackgroundAudioVisual</c> are only
+    /// meaningful per-file (see <c>MediaFile</c>'s own doc comments), there's no equivalent
+    /// activity-wide default to fall back to editing when nothing is selected.</summary>
+    private void OnEditAudioProperties()
+    {
+        var (_, activity, file) = GetSelection();
+        if (activity == null || file == null || file.Kind != MediaKind.Audio) return;
+
+        using var dialog = new AudioPropertiesDialog(
+            $"音频属性 — {Path.GetFileName(file.SourcePath)}", file.IsBackgroundAudio, file.BackgroundAudioVisual);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (dialog.IsBackgroundAudio == file.IsBackgroundAudio && dialog.BackgroundAudioVisual == file.BackgroundAudioVisual)
+            return; // no actual change — nothing to log/save.
+
+        // Two separate LogPlaybackPropertyChanged calls rather than one combined entry — same
+        // per-property granularity OnEditPlayMode already uses, so the log can show exactly which
+        // of the two properties actually changed rather than always recording both regardless.
+        if (dialog.IsBackgroundAudio != file.IsBackgroundAudio)
+        {
+            _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.IsBackgroundAudio),
+                file.IsBackgroundAudio.ToString(), dialog.IsBackgroundAudio.ToString());
+            file.IsBackgroundAudio = dialog.IsBackgroundAudio;
+        }
+        if (dialog.BackgroundAudioVisual != file.BackgroundAudioVisual)
+        {
+            _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.BackgroundAudioVisual),
+                file.BackgroundAudioVisual.ToString(), dialog.BackgroundAudioVisual.ToString());
+            file.BackgroundAudioVisual = dialog.BackgroundAudioVisual;
+        }
+        _repository.Save(_store);
+    }
+
     private void OnRemoveFile()
     {
         var (scenario, activity, file) = GetSelection();
@@ -381,6 +423,7 @@ public sealed class ActivitiesPanel : UserControl
         var (_, activity, file) = GetSelection();
         _addFileButton.Enabled = activity != null;
         _playModeButton.Enabled = activity != null;
+        _audioPropertiesButton.Enabled = file != null && file.Kind == MediaKind.Audio;
         _removeButton.Enabled = file != null;
         _moveUpButton.Enabled = file != null;
         _moveDownButton.Enabled = file != null;

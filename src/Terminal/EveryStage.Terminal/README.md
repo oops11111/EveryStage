@@ -452,6 +452,16 @@ Caster知道终端机确实收到了东西。
     后台线程直接生成/`BeginInvoke`一个新`Bitmap`，因为PCM块到达的频率完全由Media Foundation
     决定、可能远高于任何显示器需要的帧率，真这样做等于把大量GDI+ `Bitmap`分配和UI线程封送堆在
     解码热路径上。
+62. **【已实现，原为已知缺口】`ActivitiesPanel`新增"音频属性..."按钮，`MediaFile.IsBackgroundAudio`/
+    `BackgroundAudioVisual`现在都有编辑入口了**：跟上面第57条`PlayModeDialog`一样的"先做行为、
+    再做UI"顺序——上面第61条先让这两个字段有了真正的行为，这里跟进补上编辑入口。新增
+    `UI/AudioPropertiesDialog.cs`，只在选中一个`MediaFile.Kind == MediaKind.Audio`的文件节点时才
+    启用（`UpdateButtonStates`），跟活动级别没有对应关系——不像`PlayModeOverride`，
+    `IsBackgroundAudio`/`BackgroundAudioVisual`只在文件级别有意义，没有活动级别的默认值可以退化
+    到。对话框里"作为背景音频叠加播放"这个复选框刻意带了一条红色警示文字（勾选后才显示）：
+    第61条已经说明背景音轨叠加目前是文档化的no-op，勾选这个复选框现在的真实效果是"这个文件完全
+    不会播放"而不是"作为背景叠加播放"，UI在这里选择诚实告知而不是让复选框看起来像是已经实现的
+    功能——同样的"复选框做的事不能超过实际实现"的原则，参见Caster项目"确认≠健康"那条提醒。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -468,8 +478,6 @@ Caster知道终端机确实收到了东西。
 - `FadeDuration`/`VolumeFollowsFade`这两个字段仍然完全没有任何代码读取过（见`PlaybackEngine`类doc
   comment"deliberately out of scope"那一段；`IsBackgroundAudio`/`BackgroundAudioVisual`这两个
   字段已经在第61条里有真正的行为了，从这条移出）——在`FadeDuration`/`VolumeFollowsFade`本身有真正
-  的播放行为之前，这个仓库不打算为它们加编辑UI，同样的"先做行为、再做UI"的顺序，见风险#55-57、61
-  （`PlayMode`/`AllowManualSkip`/`FileOperationLogger.LogPlaybackPropertyChanged`/音频播放已经按
-  这个顺序做完了）
-- 标准音频文件的编辑UI（`IsBackgroundAudio`/`BackgroundAudioVisual`目前只有行为、没有编辑入口，
-  `ActivitiesPanel`里还没有类似`PlayModeDialog`那样的音频属性对话框）
+  的播放行为之前，这个仓库不打算为它们加编辑UI，同样的"先做行为、再做UI"的顺序，见风险#55-57、
+  61-62（`PlayMode`/`AllowManualSkip`/`FileOperationLogger.LogPlaybackPropertyChanged`/音频播放
+  行为+编辑UI已经按这个顺序做完了）
