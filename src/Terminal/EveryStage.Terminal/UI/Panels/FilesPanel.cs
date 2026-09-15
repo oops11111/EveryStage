@@ -1,11 +1,23 @@
 using EveryStage.Terminal.Data;
+using EveryStage.Terminal.Logging;
 
 namespace EveryStage.Terminal.UI.Panels;
 
 /// <summary>
 /// PLANNING.md §8.2's 文件面板 ("默认首页"): thumbnail grid, category tabs (全部/图片/视频/文档/音频),
 /// click a file to play it. Supports both an "导入" file picker and dragging files in from Explorer
-/// (§11 "拖拽添加") for getting content into the library in the first place.
+/// (§11 "拖拽添加") for getting content into the library in the first place, plus a "移除" button for
+/// taking a file back out of the library — the counterpart operation, previously entirely absent
+/// from this panel (see this project's README's history on `FileOperationLogger` having a
+/// `LogFileRemoved` method with no caller anywhere in the repo; there was no UI path to actually
+/// remove a library file at all, not just a missing log call).
+///
+/// Removing a library entry never touches any <see cref="Activity"/> that already contains a copy of
+/// it: <c>ActivitiesPanel</c>'s "添加文件到活动" deep-copies a <see cref="MediaFile"/>
+/// (<c>ActivitiesPanel.CloneFile</c>) rather than referencing the library entry by
+/// <see cref="MediaFile.Id"/>, so an activity's files have no dependency on the library entry they
+/// originated from still existing — see this project's README ("已知风险" #22) on this copy-not-
+/// reference behavior being a deliberate, previously-documented choice, not something decided here.
 ///
 /// Not implemented (see this project's README for the full list): real video/PDF/audio thumbnails
 /// (video and document items show a generic placeholder icon — building a real one means decoding a
@@ -18,8 +30,10 @@ namespace EveryStage.Terminal.UI.Panels;
 public sealed class FilesPanel : UserControl
 {
     private readonly FileLibraryStore _library;
+    private readonly FileOperationLogger _fileOpLog;
     private readonly ListView _listView;
     private readonly ImageList _thumbnails;
+    private readonly Button _removeButton;
     private MediaKind? _activeFilter;
 
     /// <summary>Raised when the user double-clicks a file to play it standalone (no activity
@@ -27,9 +41,10 @@ public sealed class FilesPanel : UserControl
     /// means for completion actions).</summary>
     public event Action<MediaFile>? FilePlayRequested;
 
-    public FilesPanel(FileLibraryStore library)
+    public FilesPanel(FileLibraryStore library, FileOperationLogger fileOpLog)
     {
         _library = library;
+        _fileOpLog = fileOpLog;
         Dock = DockStyle.Fill;
         AllowDrop = true;
 
@@ -44,6 +59,10 @@ public sealed class FilesPanel : UserControl
         importButton.Click += (_, _) => ImportViaDialog();
         toolbar.Controls.Add(importButton);
 
+        _removeButton = new Button { Text = "移除", AutoSize = true, Enabled = false };
+        _removeButton.Click += OnRemoveClick;
+        toolbar.Controls.Add(_removeButton);
+
         _thumbnails = new ImageList { ImageSize = new Size(96, 96), ColorDepth = ColorDepth.Depth32Bit };
         _listView = new ListView
         {
@@ -52,6 +71,7 @@ public sealed class FilesPanel : UserControl
             LargeImageList = _thumbnails,
             MultiSelect = false, // batch selection (§11) isn't implemented yet — see class doc comment.
         };
+        _listView.SelectedIndexChanged += (_, _) => _removeButton.Enabled = _listView.SelectedItems.Count > 0;
         _listView.DoubleClick += (_, _) =>
         {
             if (_listView.SelectedItems.Count > 0 && _listView.SelectedItems[0].Tag is MediaFile file)
@@ -95,12 +115,29 @@ public sealed class FilesPanel : UserControl
             ImportPaths(paths);
     }
 
+    private void OnRemoveClick(object? sender, EventArgs e)
+    {
+        if (_listView.SelectedItems.Count == 0 || _listView.SelectedItems[0].Tag is not MediaFile file) return;
+
+        var confirm = MessageBox.Show(this,
+            $"确定要从文件库中移除 \"{Path.GetFileName(file.SourcePath)}\" 吗？\n" +
+            "已经添加到某个活动里的副本不受影响——活动保存的是独立拷贝，不是对这个文件库条目的引用。",
+            "移除文件", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes) return;
+
+        _library.Remove(file.Id);
+        _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
+        Refresh_();
+    }
+
     private void ImportPaths(IEnumerable<string> paths)
     {
         var rejected = new List<string>();
         foreach (var path in paths)
         {
-            if (_library.Import(path) == null) rejected.Add(Path.GetFileName(path));
+            var imported = _library.Import(path);
+            if (imported == null) rejected.Add(Path.GetFileName(path));
+            else _fileOpLog.LogFileImported(imported.Id, imported.SourcePath);
         }
         Refresh_();
 

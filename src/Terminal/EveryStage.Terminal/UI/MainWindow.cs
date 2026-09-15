@@ -77,12 +77,21 @@ public sealed class MainWindow : Form
 
         _contentHost = new Panel { Dock = DockStyle.Fill };
 
-        _filesPanel = new FilesPanel(library);
+        // One shared instance rather than a separate `new FileOperationLogger()` per panel: both
+        // panels' loggers ultimately append to the same physical file
+        // (`file-operations/file-ops-{date}.log`, see `DailyRollingLogWriter`), and that class's own
+        // append lock is per-instance — two independent instances writing concurrently would each
+        // lock against themselves only, not each other, reopening a small chance of one write
+        // failing with a sharing violation right as the other holds the file open. Sharing one
+        // instance (and therefore one lock) removes that risk entirely rather than just accepting it.
+        var fileOpLog = new FileOperationLogger();
+
+        _filesPanel = new FilesPanel(library, fileOpLog);
         _filesPanel.FilePlayRequested += file => _playback?.RequestPlay(file);
 
         _devicesPanel = new DevicesPanel(pairedDevices);
         _activitiesPanel = new ActivitiesPanel(
-            scenarioStore, scenarioRepository, library, _playback, new FileOperationLogger(), stateMachine);
+            scenarioStore, scenarioRepository, library, _playback, fileOpLog, stateMachine);
         _settingsPanel = new SettingsPanel(settingsStore, identity);
 
         filesButton.Click += (_, _) => ShowPanel(_filesPanel);

@@ -36,7 +36,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
 | `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
-| `UI/Panels/FilesPanel.cs` | §8.2 | 文件面板：`ListView`缩略图网格 + 类型筛选(全部/图片/视频/文档/音频) + 导入对话框 + 从资源管理器拖拽导入 + 双击播放(`PlaybackEngine.RequestPlay`) |
+| `UI/Panels/FilesPanel.cs` | §8.2 | 文件面板：`ListView`缩略图网格 + 类型筛选(全部/图片/视频/文档/音频) + 导入对话框 + 从资源管理器拖拽导入 + 移除(二次确认) + 双击播放(`PlaybackEngine.RequestPlay`)，导入/移除都接入`FileOperationLogger` |
 | `UI/Panels/DevicesPanel.cs` | §8.2 | 设备面板：已配对设备列表(信任状态/被投放/被监看/配对时间) + 移除配对 |
 | `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(可折叠) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改 |
 | `UI/TextInputDialog.cs`, `UI/LibraryFilePickerDialog.cs` | — | 活动面板用到的两个小弹窗：单行文本输入(方案/活动命名)、从文件库选一个文件 |
@@ -298,6 +298,24 @@ Caster知道终端机确实收到了东西。
     设计选择本身没问题，但意味着以后如果要分别调整"状态回报频率"和"超时检测频率"，需要先把两者
     从共享的定时器里拆开。
 
+### `FilesPanel.cs` 的"移除"按钮 — 这次新加的部分
+
+47. **【已实现，原为已知缺口】文件面板现在有真正的"移除"操作了，`FileOperationLogger`的
+    `LogFileImported`/`LogFileRemoved`也终于有了调用方**：之前`FilesPanel`只有"导入"，完全没有
+    从文件库移除文件的UI入口——`FileLibraryStore.Remove(Guid)`这个方法本身早就存在，只是没人调用
+    它，这比"漏记日志"更严重，是一个完整功能缺失。这次新增的"移除"按钮跟`DevicesPanel`的"移除配对"
+    是同一个交互模式：选中一项才启用、点击后二次确认、确认后调用`_library.Remove`并刷新列表。
+    确认提示里特意说明"活动里的副本不受影响"，因为这依赖`ActivitiesPanel.CloneFile`深拷贝而非
+    按`MediaFile.Id`引用库条目这个前提（见风险#22）——这次没有改这个前提本身，只是第一次真正利用
+    了它：如果以后"添加文件到活动"改成按引用而不是深拷贝，这里的移除操作和confirm文案都需要重新
+    评估是否还安全。
+    另外把`MainWindow`里原来"每个面板各自`new FileOperationLogger()`"的写法改成了一个共享实例
+    传给`FilesPanel`和`ActivitiesPanel`两个面板——两者最终都写同一个物理日志文件
+    （`file-operations/file-ops-{日期}.log`），而`DailyRollingLogWriter`的追加锁是每个实例各自
+    持有的，两个独立实例同时写同一个文件理论上有小概率因为共享冲突导致某次追加静默失败（这个类
+    本身的设计就是"写失败不崩溃、直接吞掉"，所以不会是一次崩溃，但会是一条丢失的日志）——共享一个
+    实例、也就共享同一把锁，从根上排除这个可能性，而不是继续接受这个小概率风险。
+
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
 - 音视频同步的残余误差补偿（见"已知风险"第39-40条）——基础的"音频为主时钟+呈现线程等待"已经实现，
@@ -308,9 +326,8 @@ Caster知道终端机确实收到了东西。
   调用过，`VideoSurface`/`PlaybackEngine`也没有为"运行中途换显示器"设计
 - 悬浮预览窗、文件面板、活动面板三者之间没有联动（比如从悬浮预览窗"下一项"切换后，文件/活动面板
   不会自动高亮对应的缩略图/树节点）——PLANNING.md §16第5项本身也把这类交互细节列为"待验证"。
-- `FileOperationLogger` 里"文件导入/删除"这两个方法仍然没有调用方——`FilesPanel.ImportPaths`
-  调用了 `FileLibraryStore.Import` 但没有配套记日志；"方案/活动创建/修改/删除"和"播放属性变更"
-  已经接到 `ActivitiesPanel` 上了（除了单个 `MediaFile` 播放属性——停留时长/淡入淡出这些字段本身
-  还没有UI能编辑，自然也没有变更可记）。
+- `FileOperationLogger.LogPlaybackPropertyChanged` 仍然没有调用方——单个 `MediaFile` 播放属性
+  （停留时长、淡入淡出等）在活动面板里还没有UI能编辑（见下一条），自然也没有变更可记；"文件
+  导入/移除"和"方案/活动创建/修改/删除"这两类已经都接上了（见"已知风险"第47条、`ActivitiesPanel`）。
 - `Activity.DefaultPlayMode`(顺序自动/手动点选) 和 `MediaFile` 的播放属性（停留时长、淡入淡出、
   完成动作等）在活动面板里完全没有编辑入口——目前"添加文件到活动"用的都是 `MediaFile` 的默认值。
