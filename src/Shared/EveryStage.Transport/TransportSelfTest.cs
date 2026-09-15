@@ -28,7 +28,7 @@ public static class TransportSelfTest
         var gate = new object();
         var allReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        receiver.NalUnitReceived += nal =>
+        receiver.NalUnitReceived += (nal, _) =>
         {
             lock (gate)
             {

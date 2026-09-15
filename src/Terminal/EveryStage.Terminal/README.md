@@ -1,9 +1,10 @@
-# EveryStage.Terminal — 终端机主程序框架 + 本地内容引擎 + 设备发现配对 + 部分主界面
+# EveryStage.Terminal — 终端机主程序框架 + 本地内容引擎 + 设备发现配对/投屏接收 + 部分主界面
 
 对应 `docs/PLANNING.md` 第15章阶段1的前两项："终端机主程序框架（覆盖式窗口、投屏开关/断状态机、
-数据持久化）"+"本地内容引擎（图片/视频/PDF）"，阶段3的"设备发现/配对"部分（§7），以及阶段4正式
-四大面板主界面（§8.2）里的**文件**、**活动**、**设备**三个面板。**不包含**WPS正式集成（有独立
-验证脚本，见下）、传输接收端（阶段2，实际推流数据的接收解码）、设置面板、正式视觉设计（阶段5）。
+数据持久化）"+"本地内容引擎（图片/视频/PDF）"，阶段3的"设备发现/配对"部分（§7），阶段2"传输接收端"
+（真正接收Caster的RTP/H.264流并解码显示，见下方 `Receiving/`），以及阶段4正式四大面板主界面（§8.2）
+里的**文件**、**活动**、**设备**三个面板。**不包含**WPS正式集成（有独立验证脚本，见下）、设置面板、
+正式视觉设计（阶段5）。
 
 现在有一个真正意义上的操作界面（`UI/MainWindow.cs`）：左侧固定导航（投屏开关、断、文件/活动/设备/
 设置四个入口、状态指示）+ 右侧内容区。文件面板能导入/拖拽文件、按类型筛选、双击播放——这是
@@ -26,7 +27,8 @@
 | `ContentEngine/` | §3 | 图片(GDI+，WIC编解码器) + PDF(PdfiumViewer) 渲染器、画面呈现控件（等比缩放、黑边）、视频播放控制器(`VideoContentController`，复用 `EveryStage.Rendering` 的D3D11零拷贝管线，直接对接 `OverlayWindow.VideoHost` 的独立SwapChain) |
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
 | `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，已接入`DiscoveryService`)；JSON-lines格式 + 自动清理过期文件 |
-| `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套 |
+| `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/` |
+| `Receiving/` | 阶段2"传输接收端" | 这次新加的：`H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再用 `SwapChainPresenter` 呈现到 `OverlayWindow.VideoHost`——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检） |
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
 | `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
@@ -125,11 +127,55 @@
     对`PlaybackEngine`/`OutputStateMachine`的事件订阅会永远不被取消），但这类"容器控件切换导致遗漏
     Dispose"的模式，以后如果加更多面板需要留意同样的坑。
 
+### `Receiving/` — 投屏接收/解码，这次新加的部分
+
+25. **`CastStartRequested` 完全没有处理"本地正在播放视频、这时来了设备投屏请求"的场景**：
+    `PlaybackEngine` 没有暴露"停止当前播放并释放 `OverlayWindow.VideoHost`"这样的方法（只有
+    `Pause`/`Resume`，`Pause`对视频还是文档化的空操作，见上面第13条），而 `Program.cs` 的
+    `OnCastStartRequested` 会直接在同一个 `VideoHost` 句柄上再构造一个独立的
+    `CastReceiver`（内部是它自己的 `SwapChainPresenter`）——如果这时 `VideoContentController` 也
+    正持有一个绑定到同一个HWND的swap chain，两者同时存在、行为未定义（`CreateSwapChainForHwnd`
+    是否允许对同一HWND创建第二个swap chain本身也没有核实过，见下一条）。PLANNING.md §9.1"设备投屏
+    请求不受此开关影响"暗示设备请求应该能打断本地播放，但打断的具体机制（停止哪个组件、以什么顺序
+    释放GPU资源）目前完全没有实现，这是本轮遗留的一个已知、明确标注的空白，不是疏漏。
+26. **`CastReceiver` 与 `VideoContentController` 各自独立创建 `D3D11Device`**：目前两者从未被设计
+    为同时存在（见上一条），所以没有共享设备的必要性问题；但如果以后要修复上一条的打断逻辑，两个独立
+    `ID3D11Device` 之间没有共享资源的机制，值得在那时一并重新考虑。
+27. **`H264HardwareDecoder` 假设目标H.264解码器MFT是同步的**（该类doc comment里详细写了这个假设
+    的依据和风险）——如果真机上遇到的是异步解码器MFT，这个类的整个控制流（没有事件循环、没有后台
+    线程）都是错的，需要按 `H264HardwareEncoder` 的异步模式重写。
+28. **`H264HardwareDecoder.ConfigureNv12OutputType` 用 `GetOutputAvailableType` 循环查找NV12
+    类型，用广义 `catch (Exception)` 判断"枚举完了"**：真实失败信号应该是HRESULT
+    `MF_E_NO_MORE_TYPES`，但这个仓库无法核实Vortice对失败HRESULT具体抛出什么异常类型（甚至是否
+    抛异常而不是返回值），所以用了broad catch——如果解码器MFT真的支持NV12输出但顺序靠后、
+    异常发生在还没枚举到它之前的某次调用，这个循环会误判为"没有NV12输出"而提前失败。
+29. **`IMFMediaType.Get<Guid>(MF_MT_SUBTYPE)` 的类型参数未经验证**：`VideoDecodeSource` 已经验证
+    过（至少是"跟着抄"过）`Get<uint>`/`Get<ulong>`的用法，这里外推到 `Get<Guid>`，是否是同一个
+    泛型方法支持的类型参数完全没有把握。
+30. **`MFT_CATEGORY_VIDEO_DECODER` GUID 是凭记忆重构的**（`DecoderGuids.cs` 里已经标注），置信度
+    低于本文件其他从 `WellKnownGuids`/`EncoderGuids` 抄来的字面量——如果 `MFTEnumEx` 找不到任何
+    解码器MFT，这个GUID是第一嫌疑对象。
+31. **`CastReceiver` 完全没有处理丢包/乱序**：直接依赖 `RtpReceiver`/`H264RtpDepacketizer` 已有的
+    行为（丢包会导致该NAL被丢弃，不会拼出损坏帧，但也不会恢复，见 `EveryStage.Transport` 的
+    README）——在真实局域网上（不像 `TransportSelfTest` 的本机回环）确实可能丢包，`BuildAnnexBAccessUnit`
+    会因此偶尔拼出"缺了一个或几个NAL"的访问单元喂给解码器；解码器大概率能容忍这种情况（跳过/输出
+    带伪影的一帧），但没有实测过会不会直接报错整个会话崩掉。
+32. **没有超时自动断开**：如果 Caster 端异常退出/断网、没能发出 `cast_stop`（UDP不保证送达，
+    `LiveCastSession.Stop()`本身也只是尽力而为），Terminal 会一直停在"正在显示画面"的状态、
+    冻结在最后一帧，`OutputStateMachine` 也不会自动回到 `Idle`——PLANNING.md 没有规定这种情况下
+    该等多久自动断开，目前完全没做这个兜底。
+33. **同一时间只支持一路投屏**：`RtpReceiver` 绑定固定端口 `DiscoveryProtocol.VideoRtpPort`，
+    `Program.cs` 也只维护一个 `_castReceiver` 字段——第二个设备的 `cast_start` 到达时会直接顶掉
+    第一个（`_castReceiver?.Dispose()` 后新建），没有排队或拒绝逻辑，也没有UI提示"已经有人在投屏"。
+34. **投屏接收端完全没有音频**：`CastReceiver`/`H264HardwareDecoder` 只处理视频轨——Caster端本身
+    也还没做音频采集（见 `EveryStage.Caster` 的README"尚未开始"），所以这不是Terminal单方面的缺口，
+    但记录在这里以免以后误以为只差Terminal这一侧。
+
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
-- 传输接收端（阶段2：真正的RTP/H.264接收解码，`Devices/`目前只做发现和配对握手，不涉及媒体流）
+- 设备投屏打断本地播放的正确处理（见"已知风险"第25条）——目前两者能共存构造但语义未定义
 - 设置面板（§8.2 最后一个面板）——通用/显示/播放行为/网络与设备四个分类，且目前没有任何"设置"的
   数据模型（不像活动面板那样已经有 `Scenario`/`Activity` 可以直接接），这块基本从零开始。
 - 悬浮预览窗、文件面板、活动面板三者之间没有联动（比如从悬浮预览窗"下一项"切换后，文件/活动面板

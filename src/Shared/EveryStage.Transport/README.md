@@ -1,28 +1,30 @@
 # EveryStage.Transport
 
 RTP packet framing and H.264-over-RTP packetization for PLANNING.md §4.2's "传输：UDP + RTP" —
-shared between `src/Caster/EveryStage.Caster/`(sender, via `RtpSession`) and eventually
-`src/Terminal/EveryStage.Terminal/`(receiver, via `RtpReceiver`), the same way `EveryStage.Discovery`
-is shared for the pairing protocol.
+shared between `src/Caster/EveryStage.Caster/`(sender, via `RtpSession`, now driven for real by
+`Casting/LiveCastSession.cs`) and `src/Terminal/EveryStage.Terminal/`(receiver, via `RtpReceiver`,
+now driven for real by `Receiving/CastReceiver.cs`), the same way `EveryStage.Discovery` is shared
+for the pairing protocol.
 
-## 现状：协议+收发都写了，但还没有接上真实的H.264数据
+## 现状：协议+收发都写了，现在两端都真的在用了
 
 - `RtpPacket`：RFC 3550 的RTP包头编解码（固定12字节头，不支持CSRC列表之外的扩展头）
 - `AnnexBNalSplitter` / `H264RtpPacketizer` / `H264RtpDepacketizer`：RFC 6184 的H.264 NAL单元与
   RTP载荷之间的转换（Single NAL Unit包 + FU-A分片/重组）
 - `RtpSession` / `RtpReceiver`：分别是发送端和接收端的会话封装——`RtpSession`管理SSRC、递增的
   序列号，把NAL单元打包成RTP包通过 `UdpClient` 发出去；`RtpReceiver`监听UDP端口、解出RTP包、喂给
-  `H264RtpDepacketizer`，重组出完整NAL单元时触发事件。
-- `TransportSelfTest`：**这个仓库第一个真正跑得起来的端到端验证**——用一批人造的、形状像NAL单元
+  `H264RtpDepacketizer`，重组出完整NAL单元时触发 `NalUnitReceived`。这个事件现在还带上了完成该
+  NAL单元的那个RTP包的Marker位（RFC 6184 §5.3"是不是这个访问单元/编码帧的最后一个NAL单元"）——
+  `Caster`的`LiveCastSession`发送时设置它，`Terminal`的`CastReceiver`接收时用它判断"这一帧的所有
+  NAL单元到齐了，可以拼成一个Annex-B访问单元喂给解码器了"，不用另外发明一套"帧边界"信令。
+- `TransportSelfTest`：这个仓库第一个真正跑得起来的端到端验证——用一批人造的、形状像NAL单元
   的随机字节数据（含一个刻意超过MTU、会触发FU-A分片的），通过本机回环UDP走一遍
-  `RtpSession → UDP → RtpReceiver → H264RtpDepacketizer`，逐字节比对收到的和发出的是否一致。已经
-  接入 `src/Caster/EveryStage.Caster` 的UI（配对成功页面的"运行传输自检"按钮）。
+  `RtpSession → UDP → RtpReceiver → H264RtpDepacketizer`，逐字节比对收到的和发出的是否一致。接入
+  `src/Caster/EveryStage.Caster` 的UI（"运行传输自检"按钮），跟真实投屏管线互不影响。
 
-之所以先做传输层而不是先做H.264硬件编码：这是纯字节操作+标准协议实现+`UdpClient`标准API，不依赖
-任何还不存在的其他组件就能把逻辑写对、而且**真的能跑起来验证**（`TransportSelfTest`是这个仓库第一个
-不需要Windows/GPU、只需要一个能跑.NET的环境就能验证正确性的自检）；H.264编码需要驱动 Media
-Foundation 的硬件编码器（异步MFT，事件驱动状态机），是这个仓库目前风险最高、最容易出错又最难在
-没有编译环境时哪怕靠自检验证正确性的一块，值得放到最后。
+`RtpReceiver`/`RtpSession`现在都有了真实的生产调用方（`CastReceiver`/`LiveCastSession`），不再只是
+`TransportSelfTest`自己跟自己对话——这是这两个类第一次真正参与端到端投屏，而不仅仅是被自检验证过
+协议逻辑本身正确。
 
 ## 已知风险 / 待验证事项
 
@@ -40,10 +42,12 @@ Foundation 的硬件编码器（异步MFT，事件驱动状态机），是这个
    检测到（整个NAL被丢弃，不会拼出损坏的帧）但不会尝试恢复。真正的丢包恢复(NACK/FEC，PLANNING.md
    §4.2提到的"WebRTC媒体传输能力"部分)完全没有实现——`TransportSelfTest`走的是本机回环，不会真的
    丢包，所以这条完全没有被自检覆盖到。
-4. **RTP的 PayloadType 数值**目前只在 `TransportSelfTest` 里硬编码了一个占位值(96，动态负载类型
-   范围内的常见选择)——发送端和接收端要事先约定好这个数值（类似SDP协商的内容，但本项目没有做任何
-   协商机制），等真正把 Caster 发送端和 Terminal 接收端接起来时需要选定并双方硬编码或通过配对
-   握手协商。
+4. **RTP的 PayloadType 数值**：`TransportSelfTest` 和 `LiveCastSession` 都硬编码了同一个占位值
+   (96，动态负载类型范围内的常见选择)——`DiscoveryProtocol.CastStartMessage` 现在确实携带了一个
+   `PayloadType` 字段，但 `RtpReceiver`/`RtpPacket.TryDecode` 完全不检查收到的包的PayloadType是否
+   跟预期一致（目前也没有多路复用的需要——`EveryStage.Caster`的README记录了"同一时间只支持一路
+   投屏"这个限制），所以这个字段目前只是传过去但没有被真正校验或使用——类似SDP协商的内容，本项目
+   仍然没有做任何真正的协商/校验机制。
 5. **`TransportSelfTest` 用一次性 `UdpClient(0)` 探测空闲端口再关闭、`RtpReceiver` 再重新绑定
    同一个端口号**：两次绑定之间存在（概率很低的）端口被别的进程抢先占用的竞态，对本机自检这个用途
    可以接受，不是生产级的端口分配方式。
@@ -54,7 +58,8 @@ Foundation 的硬件编码器（异步MFT，事件驱动状态机），是这个
 
 ## 尚未开始
 
-- 真正驱动 H.264 硬件编码器产出 Annex-B 比特流，接到 `RtpSession.SendNalUnitAsync` 上
-- Terminal 接收端：`RtpReceiver` 目前只在 Caster 的自检里被使用，Terminal 侧还没有任何代码调用它
-- 丢包恢复、拥塞控制、抖动缓冲（乱序重排）
-- RTP参数（PayloadType数值、时钟基准以外的更多元数据）的协商机制——目前完全靠硬编码假设双方一致
+- 丢包恢复、拥塞控制、抖动缓冲（乱序重排）——`CastReceiver`（Terminal）现在是这个限制第一次在真实
+  场景下有实际后果的地方：局域网上偶发丢包会让某个访问单元被丢弃/解码出瑕疵帧，而不是本机回环自检
+  那种几乎不丢包的环境
+- RTP参数（PayloadType数值本身的校验、时钟基准以外的更多元数据）的协商/校验机制——目前完全靠硬
+  编码假设双方一致，`CastStartMessage.PayloadType` 传了但没被消费端真正拿来做任何检查

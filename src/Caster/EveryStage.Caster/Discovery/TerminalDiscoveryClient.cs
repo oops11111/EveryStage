@@ -87,6 +87,35 @@ public sealed class TerminalDiscoveryClient : IDisposable
         }
     }
 
+    /// <summary>Tells the Terminal a live RTP/H.264 stream is about to start on
+    /// <see cref="DiscoveryProtocol.VideoRtpPort"/>, and at what resolution/payload type — see
+    /// <see cref="DiscoveryProtocol.CastStartMessage"/> for why this exists instead of the Terminal
+    /// inferring a stream's parameters purely from incoming RTP packets. Best-effort, fire-and-forget
+    /// like every other send in this class — there's no acknowledgment or retry.</summary>
+    public Task SendCastStartAsync(DiscoveredTerminal terminal, DeviceIdentity myIdentity, int width, int height, byte payloadType) =>
+        SendControlMessageAsync(terminal, new DiscoveryProtocol.CastStartMessage
+        {
+            DeviceId = myIdentity.DeviceId,
+            Width = width,
+            Height = height,
+            PayloadType = payloadType,
+        });
+
+    /// <summary>Tells the Terminal the live stream has ended — see
+    /// <see cref="DiscoveryProtocol.CastStopMessage"/>.</summary>
+    public Task SendCastStopAsync(DiscoveredTerminal terminal, DeviceIdentity myIdentity) =>
+        SendControlMessageAsync(terminal, new DiscoveryProtocol.CastStopMessage { DeviceId = myIdentity.DeviceId });
+
+    private async Task SendControlMessageAsync(DiscoveredTerminal terminal, DiscoveryProtocol.Message message)
+    {
+        try
+        {
+            byte[] payload = DiscoveryProtocol.Encode(message);
+            await _socket.SendAsync(payload, payload.Length, new IPEndPoint(terminal.Address, DiscoveryProtocol.Port));
+        }
+        catch (SocketException) { } // best-effort — same reasoning as every other send in this class.
+    }
+
     private async Task ReceiveLoopAsync(CancellationToken token)
     {
         while (!token.IsCancellationRequested)

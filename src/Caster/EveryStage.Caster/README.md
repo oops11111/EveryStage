@@ -1,36 +1,36 @@
-# EveryStage.Caster — 投屏机（阶段2：发现/配对 + 屏幕捕获 + H.264硬件编码 + 传输层）
+# EveryStage.Caster — 投屏机（阶段2：发现/配对 + 屏幕捕获 + H.264硬件编码 + 传输层，端到端已接通）
 
 对应 `docs/PLANNING.md` §12 的UI描述、§7 的设备发现/配对流程的**投屏机一侧**，以及阶段2"屏幕捕获：
-Desktop Duplication API (DDA)"、"视频编码：H.264 硬件编码"和"传输：UDP + RTP"三项的独立实现/自检。
-PLANNING.md §15 把整个捕获/编码/传输称为"第二大技术风险区"——现在三块都各自写完并有自检了，但**互相
-之间还没有接起来**：捕获自检不喂给编码，编码自检不喂给传输，见下方"尚未开始"。其中编码
-（`Encode/H264HardwareEncoder.cs`）是这三块里风险最高、最难验证的一块，原因见该文件自己的doc
-comment和下面"已知风险"的专门小节。
+Desktop Duplication API (DDA)"、"视频编码：H.264 硬件编码"和"传输：UDP + RTP"三项。PLANNING.md
+§15 把整个捕获/编码/传输称为"第二大技术风险区"——现在这三块不但各自写完并有自检，还被
+`Casting/LiveCastSession.cs` 接成了一条真正的端到端投屏管线：配对成功后立即开始真的采集/编码/
+发送，Terminal侧（`src/Terminal/EveryStage.Terminal/Receiving/`）也有了对应的接收/解码/显示。
+其中编码（`Encode/H264HardwareEncoder.cs`）仍然是这几块里风险最高、最难验证的一块，原因见该文件
+自己的doc comment和下面"已知风险"的专门小节。
 
 ## 现在能做什么
 
 1. 启动后监听终端机的UDP广播beacon，标准的"待机态：目标终端机列表"（§12）
 2. 选中一个终端机，点"开始投屏"——真的会发送配对请求（`DiscoveryProtocol.PairRequestMessage`）
    并等待终端机的响应
-3. 配对成功后切到第二个面板，**如实告知"H.264编码与RTP推流尚未实现"**，而不是假装开始投屏
-4. 面板上有一个"屏幕捕获自检"按钮——这个是真的：点击后用 Desktop Duplication API (`Capture/`)
-   实际捕获屏幕，实时显示分辨率/已捕获帧数/帧率。**捕获到的画面不会编码、不会发送到任何地方**，
-   纯粹是为了在真正接上编码/传输之前，先单独确认捕获这一步本身能不能跑通。
-5. 面板上还有一个"开始编码自检 (捕获→NV12→H.264)"按钮——`Encode/EncodeSelfTestRunner.cs` 把
-   `ScreenCaptureSource`（BGRA纹理）→ `BgraToNv12Converter`（GPU视频处理器转NV12）→
-   `H264HardwareEncoder`（异步MFT，硬件H.264编码）串起来，实时显示已编码访问单元数/编码总字节数。
-   这是这个仓库里捕获和编码第一次真正接在一起跑；**编码出来的H.264数据目前不会发送到任何地方**，
-   自检只关心这条链路能不能建立、跑不跑得动。
-6. 面板上还有一个"运行传输自检"按钮——用一批人造的、形状像H.264 NAL单元的随机数据，走一遍
+3. **配对成功后立即真的开始投屏**：`Casting/LiveCastSession.cs` 启动完整链路——
+   `ScreenCaptureSource`(BGRA) → `BgraToNv12Converter`(NV12) → `H264HardwareEncoder`(H.264访问
+   单元) → `AnnexBNalSplitter`(拆NAL单元) → `RtpSession`(RTP/UDP)，发送到终端机固定的
+   `DiscoveryProtocol.VideoRtpPort`；同时通过新增的 `DiscoveryProtocol.CastStartMessage`/
+   `CastStopMessage`（单播）告诉终端机"我要开始/停止投屏了，分辨率是多少"，终端机据此启动/停止
+   自己的 `Receiving/CastReceiver`。面板上实时显示分辨率/已捕获帧数/已发送访问单元数/已发送字节
+   数，出错时如实显示错误而不是假装成功。**没有任何应答机制**——Caster完全不知道终端机是否真的
+   收到并显示了画面，见下方"已知风险"。
+4. 面板上有一个"屏幕捕获自检"按钮——用 Desktop Duplication API (`Capture/`) 独立验证捕获本身，
+   跟正在进行的投屏互不影响，用于定位问题出在哪一步。
+5. 面板上还有一个"开始编码自检 (捕获→NV12→H.264)"按钮——`Encode/EncodeSelfTestRunner.cs`
+   独立跑一遍捕获→转换→编码，同样不影响正在进行的投屏。
+6. 面板上还有一个"运行传输自检"按钮——用一批人造的、形状像H.264 NAL单元的随机数据走一遍
    `RtpSession → 本机回环UDP → RtpReceiver → H264RtpDepacketizer`（`EveryStage.Transport`），
-   逐字节核对收发是否一致，包括FU-A分片重组是否正确。同样**不涉及真实视频数据，不发送到任何其他
-   设备**，只是本机内部的协议正确性自检。
+   逐字节核对收发是否一致，包括FU-A分片重组是否正确，同样不涉及真实投屏、不影响正在进行的投屏。
 
-"如实告知"是有意的设计选择：PLANNING.md §12 描述的"投屏中态"包含时长、隐私提醒条、停止投屏按钮，
-这些都是围绕一个真实存在的视频流设计的UI。在完整管线接通之前，搭建这些UI元素只是在为不存在的功能
-画界面，所以这里的"投屏中"面板只做了协议握手结果的诚实反馈 + 三个独立的自检工具（捕获、编码、
-传输）。这三个自检目前互不相通——编码自检自己内部有捕获→转换→编码这条链路，但它编码出来的数据不会
-喂给传输自检；把编码自检的输出接到传输自检的输入，才是真正端到端投屏的最后一段。
+这三个自检的角色从"补上还没接通的功能"变成了纯粹的独立诊断工具——真实投屏管线已经接通后，它们的
+价值是在投屏出问题时帮助判断问题出在采集、编码、还是传输哪一步，而不是必须先跑通它们才能投屏。
 
 ## 已知风险 / 待验证事项
 
@@ -121,14 +121,43 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
 22. **`frameRateNumerator` 假设整数帧率**：不支持 29.97 这类需要真分数表示的帧率，构造函数的doc
     comment里已注明这是简化，不是遗漏。
 
+### `Casting/LiveCastSession.cs` — 端到端投屏，这次新加的部分
+
+23. **完全没有应答/心跳机制**：`LiveCastSession` 发出RTP包和 `CastStartMessage`/
+    `CastStopMessage` 之后就不再关心终端机的反应——UI上的"投屏中"只代表"本地采集/编码/发送没有
+    报错"，不代表终端机真的收到、解码、显示了画面。如果终端机没有配对权限（`AllowCast=false`）、
+    没有绑定扩展屏、或者解码器构造失败，Caster这边会显示得一切正常，用户不会得到任何反馈。这是
+    有意先接通主链路、把应答机制列为明确的后续工作，不是遗漏。
+24. **`CastStartMessage` 用UDP尽力发送，可能先于/后于第一批RTP包到达，也可能直接丢失**：
+    `LiveCastSession.Start()` 是"先fire-and-forget发cast_start，再立刻启动采集循环"，两者之间没有
+    任何握手等待——正常局域网延迟下控制消息（走discovery socket）应该比D3D设备创建+编码器协商
+    快得多，但这只是经验判断，没有验证过竞态情况（比如终端机那一侧`GetOutputAvailableType`循环
+    卡住导致解码器创建很慢，而RTP包已经开始到达却无处安放）。
+25. **`OnAccessUnitEncoded` 通过一个单读者 `Channel` 把NAL单元交给专门的 `RunSendLoop` 任务顺序
+    发送**，而不是直接在编码器事件循环线程上 fire-and-forget：最早的写法是每个NAL单元各自
+    `_ = SendNalUnitAsync(...)`，写完之后自我审查发现这样并发的多个"发送任务"之间的实际完成顺序
+    不受保证（`RtpSession`内部递增的序列号是同步分配的没问题，但字节真正送上网线的顺序可能跟分配
+    顺序不一致）——RTP接收端`RtpReceiver`/`H264RtpDepacketizer`不做乱序重排（见
+    `EveryStage.Transport`README），顺序颠倒可能导致FU-A分片重组失败。改成单读者Channel后，
+    "按编码顺序发送"是结构上保证的，不再依赖多个并发`Task`凑巧按顺序完成。**残留风险**：Channel是
+    无界的——如果网络发送速度长期跟不上编码速度（不太可能发生在真实局域网上，但没有验证过），
+    队列会无限增长，没有背压或丢弃策略；这属于跟`H264HardwareEncoder`风险17"背压策略是占位的"
+    同一类、有意先不解决的问题。
+26. **只支持单一目标**：`LiveCastSession` 构造时绑定一个 `DiscoveredTerminal`，`RtpSession` 内部
+    只有一个 `IPEndPoint`——不支持同时投屏给多个终端机（PLANNING.md 没有明确要求这个能力，但也
+    没有明确排除）。
+27. **`Stop()` 依赖 `IsRunning` 判断"是否要发cast_stop"**：如果 `Start()` 因为异常提前失败
+    （`LastError`非空但从未真正开始循环），`Stop()`不会发送`cast_stop`——这是对的（cast_start本身
+    也从未发出），但如果调用方在`LastError`非空时误以为"投屏已经开始，需要停止"而调用`Stop()`，
+    行为上是安全的空操作，只是没有额外提示"其实什么都没开始过"。
+
 ## 尚未开始
 
-- 把编码自检的输出接到传输自检的输入（当前两者各自独立跑，见"现在能做什么"最后一段）
-- 把整条 `捕获 → NV12转换 → H.264编码 → RTP打包 → UDP发送` 链路和终端机侧的
-  `UDP接收 → RTP解包 → 解码 → 显示` 接起来，实现真正的端到端投屏
-- 音频采集与同步
+- 应答/心跳机制：让Caster真正知道终端机是否收到、显示了画面（见风险23）
+- 音频采集与同步（Terminal端的`Receiving/`同样完全没有音频，两边都缺）
 - 已配对设备的持久化列表
-- 真正的"投屏中"状态（时长显示、隐私提醒条、停止投屏——这些要等真实推流存在才有意义去做）
+- 真正的"投屏中"状态里的时长显示、隐私提醒条（PLANNING.md §12 提到的UI细节，目前只有停止按钮和
+  统计数字）
 - 选择捕获哪个显示器（`ScreenCaptureSource` 目前固定捕获 `outputIndex=0`，多显示器场景没有UI选择）
 - `H264HardwareEncoder` 里"编码器不提供自己的输出sample"这条分支（见上方风险16）
-- 编码器的丢帧/背压策略（见上方风险17）
+- 编码器的丢帧/背压策略、以及`LiveCastSession`发送队列的背压策略（同一类问题，见上方风险17、25）

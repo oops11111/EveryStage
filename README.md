@@ -13,12 +13,12 @@ Windows 内网投屏 / 扩展显示程序。支持图片、视频、音频、可
 EveryStage/
 ├── docs/            产品规划与设计文档
 ├── src/
-│   ├── Terminal/    终端机主程序（C#，覆盖式全屏窗口 + Content Engine + 传输接收端）
-│   ├── Caster/      投屏机轻量工具（C#，屏幕捕获 + 编码 + 推流）
+│   ├── Terminal/    终端机主程序（C#，覆盖式全屏窗口 + Content Engine + 传输接收端，含投屏接收/解码）
+│   ├── Caster/      投屏机轻量工具（C#，屏幕捕获 + 编码 + 推流，端到端投屏已接通）
 │   ├── Shared/
 │   │   ├── EveryStage.Rendering/  D3D11/Media Foundation零拷贝解码渲染管线，Terminal与阶段0 Demo共用
 │   │   ├── EveryStage.Discovery/  局域网发现/配对协议 + 设备身份持久化，Terminal与Caster共用
-│   │   └── EveryStage.Transport/  RTP包帧 + H.264 NAL单元打包/拆包(RFC 3550/6184) + 收发会话，Caster自检已接入
+│   │   └── EveryStage.Transport/  RTP包帧 + H.264 NAL单元打包/拆包(RFC 3550/6184) + 收发会话，Caster/Terminal两端现在都是真实调用方
 │   └── Poc/         阶段前置技术验证Demo（不属于正式产品代码）
 │       ├── ZeroCopyRenderDemo/    阶段0：D3D11零拷贝渲染管线验证（详见其 README.md）
 │       └── WpsComInteropSpike/    阶段1：WPS COM互操作静默/翻页验证脚本（详见其 README.md）
@@ -57,19 +57,22 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   确认弹窗；投屏机侧 `src/Caster/EveryStage.Caster/` 监听终端机列表、发起配对请求。两边共用的协议
   定义搬到了 `src/Shared/EveryStage.Discovery/`——**协议格式仍是本仓库自定义的草案**，现在有了
   两个独立实现，但从未在真实网络上互相验证过。
-- **阶段2的捕获/编码/传输**三块现在都各自写完并接入UI了：屏幕捕获用 Desktop Duplication API 实现
-  (`Caster/Capture/`)，配对成功后有一个"屏幕捕获自检"按钮，真的能捕获屏幕并实时显示分辨率/帧数/
-  帧率。**H.264硬件编码**（`Caster/Encode/`：`BgraToNv12Converter` 用GPU视频处理器把BGRA转NV12，
-  `H264HardwareEncoder` 驱动一个异步Media Foundation编码器MFT）也写完了并接入了自己的自检——
-  "开始编码自检 (捕获→NV12→H.264)"按钮把捕获→转换→编码这条链路真的跑起来，实时显示已编码访问单元
-  数/字节数。这是PLANNING.md §15"第二大技术风险区"里风险最高的一块（异步MFT协议比阶段0用过的同步
-  `IMFSourceReader` 更容易出错），详细风险清单见 `src/Caster/EveryStage.Caster/README.md`。传输层
-  (`src/Shared/EveryStage.Transport/`：RTP包帧、H.264 NAL单元的FU-A分片/重组、发送/接收会话)也
-  完整实现了，并且有这个仓库**第一个真正跑得起来的端到端自检**——不需要Windows/GPU，只需要.NET
-  运行时：通过本机回环UDP把一批人造的NAL形状数据走一遍发送→接收→重组，逐字节核对一致，Caster的
-  "运行传输自检"按钮已经接入。这三块目前还没有互相全部连通——编码自检自己内部有完整的捕获→转换→
-  编码链路，但编码出来的数据还没有接到传输自检的输入上，"开始投屏"配对成功后的界面仍然如实告知
-  "推流尚未实现"，而不是假装已经在投屏。
+- **阶段2的捕获/编码/传输现在端到端接通了**：Caster侧新增的 `Casting/LiveCastSession.cs` 把屏幕
+  捕获(Desktop Duplication API，`Caster/Capture/`)→ NV12转换 → **H.264硬件编码**
+  (`Caster/Encode/`：`BgraToNv12Converter` 用GPU视频处理器转NV12，`H264HardwareEncoder` 驱动一个
+  异步Media Foundation编码器MFT，这是PLANNING.md §15"第二大技术风险区"里风险最高的一块，详细风险
+  清单见 `src/Caster/EveryStage.Caster/README.md`)→ RTP打包发送(`src/Shared/EveryStage.Transport/`)
+  串成一条真正的链路：配对成功后立即真的开始采集/编码/通过RTP发往终端机，不再是占位的"尚未实现"
+  提示。Terminal侧新增 `Terminal/.../Receiving/`（`H264HardwareDecoder` 驱动一个假设为同步的H.264
+  解码器MFT + `CastReceiver` 接收RTP、用marker位重组Annex-B访问单元、解码后通过
+  `EveryStage.Rendering` 的 `SwapChainPresenter` 显示到覆盖窗口），配合 `DiscoveryService` 新增的
+  `CastStartMessage`/`CastStopMessage`处理（只信任已配对且`AllowCast`的设备）驱动
+  `OutputStateMachine`/`OverlayWindow`。**这条链路完全没有应答机制**——Caster不知道Terminal是否
+  真的收到并显示了画面，也没有处理"本地正在播放视频时来了投屏请求"的打断场景，这些都是明确记录、
+  留到之后解决的空白，不是被忽略的问题（见两个项目各自的README"已知风险"）。屏幕捕获、H.264编码、
+  RTP传输三块各自的独立自检（Caster侧的"屏幕捕获自检"/"编码自检"/"传输自检"三个按钮，
+  `EveryStage.Transport`的`TransportSelfTest`是这个仓库第一个不需要Windows/GPU就能跑通的端到端
+  自检）仍然保留，作为跟真实投屏管线互不干扰的独立诊断工具。
 
 ## License
 

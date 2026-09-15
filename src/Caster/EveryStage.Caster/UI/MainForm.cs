@@ -1,4 +1,5 @@
 using EveryStage.Caster.Capture;
+using EveryStage.Caster.Casting;
 using EveryStage.Caster.Discovery;
 using EveryStage.Caster.Encode;
 using EveryStage.Discovery;
@@ -8,14 +9,17 @@ namespace EveryStage.Caster.UI;
 
 /// <summary>
 /// The Caster's whole UI (PLANNING.md §12): "单一任务导向，不做复杂功能堆叠" — a standby panel
-/// (target terminal list + start button + privacy notice) and, once paired, a second panel showing
-/// what's targeted. This implements the discovery + pairing handshake for real, plus three
-/// self-tests: screen capture (<see cref="CaptureSelfTestRunner"/>, real Desktop Duplication
-/// output), H.264 encoding (<see cref="EncodeSelfTestRunner"/>, capture -> NV12 -> hardware
-/// encoder), and RTP transport (<see cref="TransportSelfTest"/>, a real loopback UDP round-trip
-/// with synthetic NAL-shaped payloads). None of the three are wired to each other for a real
-/// end-to-end stream yet — so the "paired" panel says so plainly instead of pretending a live
-/// stream exists. See this project's README.
+/// (target terminal list + start button + privacy notice) and, once paired, a second panel that now
+/// really streams: picking a terminal and pairing successfully immediately starts a real
+/// <see cref="LiveCastSession"/> (capture -> NV12 -> H.264 -> RTP, sent to the Terminal). Below that,
+/// three independent self-tests remain available as standalone diagnostics for isolating which stage
+/// (capture, encode, or transport) is at fault if live casting misbehaves: screen capture
+/// (<see cref="CaptureSelfTestRunner"/>), H.264 encoding (<see cref="EncodeSelfTestRunner"/>,
+/// capture -> NV12 -> hardware encoder), and RTP transport (<see cref="TransportSelfTest"/>, a real
+/// loopback UDP round-trip with synthetic NAL-shaped payloads). None of the three self-tests touch
+/// the live cast session or each other. See this project's README for what "投屏中" does and doesn't
+/// guarantee (there is no acknowledgment from the Terminal, so this UI can't tell whether the stream
+/// is actually being displayed on the other end).
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -26,6 +30,7 @@ public sealed class MainForm : Form
     private readonly System.Windows.Forms.Timer _listRefreshTimer;
     private readonly System.Windows.Forms.Timer _captureStatsTimer;
     private readonly System.Windows.Forms.Timer _encodeStatsTimer;
+    private readonly System.Windows.Forms.Timer _liveCastStatsTimer;
 
     private readonly Panel _standbyPanel;
     private readonly ListBox _terminalListBox;
@@ -33,6 +38,8 @@ public sealed class MainForm : Form
 
     private readonly Panel _pairedPanel;
     private readonly Label _pairedWithLabel;
+    private readonly Label _liveCastStatsLabel;
+    private readonly Button _stopCastButton;
     private readonly Button _captureSelfTestButton;
     private readonly Label _captureStatsLabel;
     private readonly Button _encodeSelfTestButton;
@@ -41,6 +48,7 @@ public sealed class MainForm : Form
     private readonly Label _transportStatsLabel;
 
     private DiscoveredTerminal? _pairedTerminal;
+    private LiveCastSession? _liveCastSession;
 
     public MainForm(TerminalDiscoveryClient discoveryClient, DeviceIdentity identity)
     {
@@ -48,7 +56,7 @@ public sealed class MainForm : Form
         _identity = identity;
 
         Text = "EveryStage 投屏机";
-        ClientSize = new Size(320, 440);
+        ClientSize = new Size(320, 470);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -79,35 +87,39 @@ public sealed class MainForm : Form
         _standbyPanel = new Panel { Dock = DockStyle.Fill };
         _standbyPanel.Controls.AddRange(new Control[] { _terminalListBox, privacyLabel, _startButton });
 
-        // --- 投屏中态 (currently: "已配对，等待编码/推流实现" — see class doc comment) ---
-        _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 40) };
-        var notImplementedLabel = new Label
+        // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
+        _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 32) };
+        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 46, 296, 54), ForeColor = Color.DimGray };
+
+        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 104, 296, 32) };
+        _stopCastButton.Click += (_, _) => ShowStandby();
+
+        var diagnosticsNoteLabel = new Label
         {
-            Text = "H.264编码与RTP推流尚未实现（阶段2）。下面的按钮只验证屏幕捕获本身能不能跑通，\n捕获到的画面不会发送到任何地方。",
+            Text = "以下三个按钮各自独立、互不影响，是采集/编码/传输三个环节各自的自检工具，\n" +
+                   "用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(12, 54, 296, 56),
+            Bounds = new Rectangle(12, 148, 296, 40),
         };
 
-        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 118, 296, 32) };
+        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 192, 296, 32) };
         _captureSelfTestButton.Click += OnCaptureSelfTestClick;
-        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 156, 296, 60), ForeColor = Color.DimGray };
+        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 226, 296, 50), ForeColor = Color.DimGray };
 
-        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 220, 296, 32) };
+        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 280, 296, 32) };
         _encodeSelfTestButton.Click += OnEncodeSelfTestClick;
-        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 254, 296, 50), ForeColor = Color.DimGray };
+        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 314, 296, 50), ForeColor = Color.DimGray };
 
-        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 312, 296, 32) };
+        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 368, 296, 32) };
         _transportSelfTestButton.Click += OnTransportSelfTestClick;
-        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 346, 296, 40), ForeColor = Color.DimGray };
-
-        var backButton = new Button { Text = "返回", Bounds = new Rectangle(12, 398, 296, 32) };
-        backButton.Click += (_, _) => ShowStandby();
+        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 402, 296, 40), ForeColor = Color.DimGray };
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
         {
-            _pairedWithLabel, notImplementedLabel, _captureSelfTestButton, _captureStatsLabel,
-            _encodeSelfTestButton, _encodeStatsLabel, _transportSelfTestButton, _transportStatsLabel, backButton,
+            _pairedWithLabel, _liveCastStatsLabel, _stopCastButton, diagnosticsNoteLabel,
+            _captureSelfTestButton, _captureStatsLabel,
+            _encodeSelfTestButton, _encodeStatsLabel, _transportSelfTestButton, _transportStatsLabel,
         });
 
         Controls.Add(_pairedPanel);
@@ -122,6 +134,9 @@ public sealed class MainForm : Form
 
         _encodeStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _encodeStatsTimer.Tick += (_, _) => RefreshEncodeStats();
+
+        _liveCastStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _liveCastStatsTimer.Tick += (_, _) => RefreshLiveCastStats();
     }
 
     private void OnCaptureSelfTestClick(object? sender, EventArgs e)
@@ -270,13 +285,44 @@ public sealed class MainForm : Form
     private void ShowPaired(DiscoveredTerminal terminal)
     {
         _pairedTerminal = terminal;
-        _pairedWithLabel.Text = $"已与 \"{terminal.DeviceName}\" 配对。";
+        _pairedWithLabel.Text = $"正在向 \"{terminal.DeviceName}\" 投屏...";
         _standbyPanel.Visible = false;
         _pairedPanel.Visible = true;
+
+        _liveCastSession?.Dispose();
+        _liveCastSession = new LiveCastSession(_discoveryClient, _identity, terminal);
+        _liveCastSession.Start();
+        _liveCastStatsTimer.Start();
+        RefreshLiveCastStats();
+    }
+
+    private void RefreshLiveCastStats()
+    {
+        if (_liveCastSession == null) return;
+
+        if (_liveCastSession.LastError != null)
+        {
+            _liveCastStatsLabel.ForeColor = Color.DarkRed;
+            _liveCastStatsLabel.Text = $"投屏出错：{_liveCastSession.LastError}";
+            _liveCastStatsTimer.Stop();
+            return;
+        }
+
+        _liveCastStatsLabel.ForeColor = Color.DimGray;
+        _liveCastStatsLabel.Text =
+            $"分辨率: {_liveCastSession.Width}x{_liveCastSession.Height}\n" +
+            $"已捕获帧数: {_liveCastSession.FramesCaptured}   已发送访问单元: {_liveCastSession.AccessUnitsSent}\n" +
+            $"已发送字节数: {_liveCastSession.BytesSent}";
     }
 
     private void ShowStandby()
     {
+        _liveCastStatsTimer.Stop();
+        _liveCastSession?.Stop();
+        _liveCastSession?.Dispose();
+        _liveCastSession = null;
+        _liveCastStatsLabel.Text = "";
+
         if (_captureSelfTest.IsRunning)
         {
             _captureSelfTest.Stop();
@@ -307,6 +353,8 @@ public sealed class MainForm : Form
             _captureSelfTest.Dispose();
             _encodeStatsTimer.Dispose();
             _encodeSelfTest.Dispose();
+            _liveCastStatsTimer.Dispose();
+            _liveCastSession?.Dispose();
         }
         base.Dispose(disposing);
     }

@@ -19,8 +19,12 @@ public sealed class RtpReceiver : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private Task? _receiveLoop;
 
-    /// <summary>Raised from the background receive loop — marshal to another thread/UI as needed.</summary>
-    public event Action<byte[]>? NalUnitReceived;
+    /// <summary>Raised from the background receive loop — marshal to another thread/UI as needed.
+    /// The <c>bool</c> is the completing RTP packet's Marker bit, i.e. RFC 6184 §5.3 "this was the
+    /// last NAL unit of its access unit" — passed through as-is rather than making every consumer
+    /// re-derive it, since <see cref="H264RtpPacketizer"/>/<see cref="H264RtpDepacketizer"/> already
+    /// encode/decode it symmetrically.</summary>
+    public event Action<byte[], bool>? NalUnitReceived;
 
     public RtpReceiver(int listenPort)
     {
@@ -50,7 +54,7 @@ public sealed class RtpReceiver : IDisposable
             if (!RtpPacket.TryDecode(result.Buffer, out var packet)) continue; // not one of ours — ignore.
 
             var nalUnit = _depacketizer.Process(packet.Payload);
-            if (nalUnit != null) NalUnitReceived?.Invoke(nalUnit);
+            if (nalUnit != null) NalUnitReceived?.Invoke(nalUnit, packet.Marker);
         }
     }
 

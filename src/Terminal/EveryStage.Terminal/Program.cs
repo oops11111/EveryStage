@@ -5,6 +5,7 @@ using EveryStage.Terminal.Devices;
 using EveryStage.Terminal.Display;
 using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.Playback;
+using EveryStage.Terminal.Receiving;
 using EveryStage.Terminal.StateMachine;
 using EveryStage.Terminal.Tray;
 using EveryStage.Terminal.UI;
@@ -55,6 +56,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private PlaybackEngine? _playback;
     private FloatingPreviewWindow? _previewWindow;
     private readonly MainWindow _mainWindow;
+    private CastReceiver? _castReceiver;
+    private Guid _castingDeviceId;
 
     public TerminalApplicationContext(ScenarioStore store, ScenarioRepository repository)
     {
@@ -83,6 +86,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         var pairedDevices = new PairedDeviceStore();
         _discovery = new DiscoveryService(identity, pairedDevices, new DeviceConnectionLogger());
         _discovery.PairingRequested += OnPairingRequested;
+        _discovery.CastStartRequested += OnCastStartRequested;
+        _discovery.CastStopRequested += OnCastStopRequested;
         _discovery.Start();
 
         var library = new FileLibraryStore();
@@ -122,6 +127,51 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         }, null);
     }
 
+    private void OnCastStartRequested(DiscoveryService.CastStartInfo info)
+    {
+        // Raised from DiscoveryService's background receive loop — constructing CastReceiver
+        // touches the overlay window's HWND and drives the state machine, both of which expect the
+        // UI thread.
+        _uiContext.Post(_ =>
+        {
+            if (_overlay == null) return; // no extended display bound — nothing to show a cast on.
+
+            _castReceiver?.Dispose();
+            _castReceiver = null;
+            try
+            {
+                _castReceiver = new CastReceiver(_overlay.VideoHost.Handle, info.Width, info.Height, DiscoveryProtocol.VideoRtpPort);
+                _castReceiver.Start();
+            }
+            catch (Exception)
+            {
+                // Same "don't crash, don't pretend it worked" reasoning as everywhere else in this
+                // repo lacking a dedicated cast-session log yet — leaves the Terminal at Idle rather
+                // than showing a video surface that will never receive a frame.
+                _castReceiver = null;
+                return;
+            }
+
+            _castingDeviceId = info.DeviceId;
+            _overlay.ShowVideoSurface();
+            _stateMachine.AcceptDeviceCastRequest();
+        }, null);
+    }
+
+    private void OnCastStopRequested(Guid deviceId)
+    {
+        _uiContext.Post(_ =>
+        {
+            // Ignore a stop from a device that wasn't the one currently casting — e.g. a stale/
+            // duplicated cast_stop arriving after a different device already took over the output.
+            if (_castReceiver == null || deviceId != _castingDeviceId) return;
+
+            _castReceiver.Dispose();
+            _castReceiver = null;
+            _stateMachine.Disconnect();
+        }, null);
+    }
+
     private void OnExitRequested()
     {
         _repository.Save(_store);
@@ -129,6 +179,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         _tray.Dispose();
         _discovery.Dispose();
+        _castReceiver?.Dispose();
         _previewWindow?.Dispose();
         _playback?.Dispose();
         _overlay?.Dispose();

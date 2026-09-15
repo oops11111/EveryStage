@@ -38,6 +38,18 @@ public sealed class DiscoveryService : IDisposable
     /// UI) for any pairing request from a device that isn't already trusted.</summary>
     public event Action<PairingRequest>? PairingRequested;
 
+    /// <summary>A paired device with <c>AllowCast</c> announced it's about to start streaming (see
+    /// <see cref="DiscoveryProtocol.CastStartMessage"/>). Raised from a background task — marshal to
+    /// the UI thread, since acting on it means showing the overlay and starting a decoder.</summary>
+    public event Action<CastStartInfo>? CastStartRequested;
+
+    /// <summary>The device that most recently started casting announced it stopped (see
+    /// <see cref="DiscoveryProtocol.CastStopMessage"/>). Same marshaling caveat as
+    /// <see cref="CastStartRequested"/>.</summary>
+    public event Action<Guid>? CastStopRequested;
+
+    public readonly record struct CastStartInfo(Guid DeviceId, int Width, int Height, byte PayloadType);
+
     public DiscoveryService(DeviceIdentity identity, PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog)
     {
         _identity = identity;
@@ -137,12 +149,37 @@ public sealed class DiscoveryService : IDisposable
         try { message = DiscoveryProtocol.Decode(data); }
         catch (System.Text.Json.JsonException) { return; } // not one of ours — ignore, don't crash the loop.
 
-        if (message is DiscoveryProtocol.PairRequestMessage req)
-            HandlePairRequest(req, remoteEndPoint);
-
-        // BeaconMessage: this is the Terminal side, which only ever sends beacons, never needs to
-        // react to one — that's Caster-side discovery UI's job, in a project that doesn't exist yet.
+        switch (message)
+        {
+            case DiscoveryProtocol.PairRequestMessage req:
+                HandlePairRequest(req, remoteEndPoint);
+                break;
+            case DiscoveryProtocol.CastStartMessage start:
+                HandleCastStart(start);
+                break;
+            case DiscoveryProtocol.CastStopMessage stop:
+                HandleCastStop(stop);
+                break;
+            // BeaconMessage: this is the Terminal side, which only ever sends beacons, never needs
+            // to react to one — that's Caster-side discovery UI's job.
+        }
     }
+
+    private void HandleCastStart(DiscoveryProtocol.CastStartMessage msg)
+    {
+        var device = _pairedDevices.Find(msg.DeviceId);
+        if (device is not { AllowCast: true })
+        {
+            // Not paired at all, or paired but casting was never granted (§7 "权限分离...不因配对
+            // 而默认互相授权") — silently ignore rather than start receiving/decoding a stream from
+            // a sender this Terminal never agreed to accept casts from.
+            _connectionLog.LogDisconnected(msg.DeviceId.ToString(), "cast_start_rejected_not_allowed");
+            return;
+        }
+        CastStartRequested?.Invoke(new CastStartInfo(msg.DeviceId, msg.Width, msg.Height, msg.PayloadType));
+    }
+
+    private void HandleCastStop(DiscoveryProtocol.CastStopMessage msg) => CastStopRequested?.Invoke(msg.DeviceId);
 
     private void HandlePairRequest(DiscoveryProtocol.PairRequestMessage req, IPEndPoint remoteEndPoint)
     {

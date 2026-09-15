@@ -29,11 +29,26 @@
 
   <ItemGroup>
     <!-- The zero-copy D3D11/Media Foundation video pipeline (see VideoContentController), shared
-         with the Phase 0 validation demo. -->
+         with the Phase 0 validation demo. Receiving/CastReceiver.cs also reuses SwapChainPresenter
+         to present the live cast decoder's output, the same way VideoContentController does for
+         local file playback. -->
     <ProjectReference Include="..\..\Shared\EveryStage.Rendering\EveryStage.Rendering.csproj" />
     <!-- The LAN discovery/pairing wire format, shared with EveryStage.Caster so both sides always
          agree on it by construction. -->
     <ProjectReference Include="..\..\Shared\EveryStage.Discovery\EveryStage.Discovery.csproj" />
+    <!-- RTP packet framing / H.264 payload depacketization — Receiving/CastReceiver.cs is this
+         project's first consumer of RtpReceiver (previously only exercised by Caster's transport
+         self-test). -->
+    <ProjectReference Include="..\..\Shared\EveryStage.Transport\EveryStage.Transport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Receiving/H264HardwareDecoder.cs drives the H.264 decoder MFT directly (IMFTransform,
+         MFTEnumEx) rather than through EveryStage.Rendering's higher-level source-reader usage, so
+         it references Vortice.MediaFoundation explicitly rather than relying on it flowing in
+         transitively through the EveryStage.Rendering project reference — same reasoning as
+         EveryStage.Caster's H264HardwareEncoder.cs. -->
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
   </ItemGroup>
 
 </Project>

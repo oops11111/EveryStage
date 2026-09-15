@@ -19,6 +19,13 @@ public static class DiscoveryProtocol
     /// <summary>Arbitrary, currently unregistered port picked for this draft protocol.</summary>
     public const int Port = 47990;
 
+    /// <summary>Well-known, fixed UDP port both sides send/receive the live H.264-over-RTP video
+    /// stream on (<c>EveryStage.Transport</c>'s <c>RtpSession</c>/<c>RtpReceiver</c>) — fixed
+    /// rather than negotiated via SDP or similar, same reasoning as <see cref="Port"/> itself:
+    /// simpler, and (today) there is only ever one active incoming video stream per Terminal, so
+    /// there is nothing that needs disambiguating by a dynamically-chosen port.</summary>
+    public const int VideoRtpPort = 47991;
+
     public abstract class Message
     {
         // Ignored on serialize: Encode() writes "type" itself (lowercase, once) after serializing
@@ -56,6 +63,31 @@ public static class DiscoveryProtocol
         public string? Reason { get; set; }
     }
 
+    /// <summary>Sent unicast, Caster -> Terminal, right before a live RTP/H.264 stream begins —
+    /// lets the Terminal know a stream is coming and what resolution/payload type to configure its
+    /// decoder and <c>RtpReceiver</c> for, rather than inferring "a stream started" purely from the
+    /// arrival of RTP packets on <see cref="VideoRtpPort"/> (which alone carries no resolution
+    /// information). Not something PLANNING.md specifies — this repository's own addition, needed
+    /// once the video pipeline (built well after the discovery/pairing protocol was originally
+    /// drafted) actually had to negotiate anything end to end.</summary>
+    public sealed class CastStartMessage : Message
+    {
+        public override string Type => "cast_start";
+        public Guid DeviceId { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+        public byte PayloadType { get; set; }
+    }
+
+    /// <summary>Sent unicast, Caster -> Terminal, when the user stops casting — lets the Terminal
+    /// return to standby deterministically instead of guessing "the stream stopped" from an RTP
+    /// receive timeout (which this project doesn't implement).</summary>
+    public sealed class CastStopMessage : Message
+    {
+        public override string Type => "cast_stop";
+        public Guid DeviceId { get; set; }
+    }
+
     public static byte[] Encode(Message message)
     {
         // Flatten to {"type": "...", ...the message's own fields} in one object, so a hand-written
@@ -78,6 +110,8 @@ public static class DiscoveryProtocol
             "beacon" => doc.RootElement.Deserialize<BeaconMessage>(),
             "pair_request" => doc.RootElement.Deserialize<PairRequestMessage>(),
             "pair_response" => doc.RootElement.Deserialize<PairResponseMessage>(),
+            "cast_start" => doc.RootElement.Deserialize<CastStartMessage>(),
+            "cast_stop" => doc.RootElement.Deserialize<CastStopMessage>(),
             _ => null,
         };
     }
