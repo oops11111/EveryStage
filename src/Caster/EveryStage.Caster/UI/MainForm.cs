@@ -1,5 +1,6 @@
 using EveryStage.Caster.Capture;
 using EveryStage.Caster.Discovery;
+using EveryStage.Caster.Encode;
 using EveryStage.Discovery;
 using EveryStage.Transport;
 
@@ -8,20 +9,23 @@ namespace EveryStage.Caster.UI;
 /// <summary>
 /// The Caster's whole UI (PLANNING.md §12): "单一任务导向，不做复杂功能堆叠" — a standby panel
 /// (target terminal list + start button + privacy notice) and, once paired, a second panel showing
-/// what's targeted. This implements the discovery + pairing handshake for real, plus two
+/// what's targeted. This implements the discovery + pairing handshake for real, plus three
 /// self-tests: screen capture (<see cref="CaptureSelfTestRunner"/>, real Desktop Duplication
-/// output) and RTP transport (<see cref="TransportSelfTest"/>, a real loopback UDP round-trip with
-/// synthetic NAL-shaped payloads). Neither is wired to the other, and there is still no H.264
-/// encoder anywhere in this repo to connect them for real — so the "paired" panel says so plainly
-/// instead of pretending a live stream exists. See this project's README.
+/// output), H.264 encoding (<see cref="EncodeSelfTestRunner"/>, capture -> NV12 -> hardware
+/// encoder), and RTP transport (<see cref="TransportSelfTest"/>, a real loopback UDP round-trip
+/// with synthetic NAL-shaped payloads). None of the three are wired to each other for a real
+/// end-to-end stream yet — so the "paired" panel says so plainly instead of pretending a live
+/// stream exists. See this project's README.
 /// </summary>
 public sealed class MainForm : Form
 {
     private readonly TerminalDiscoveryClient _discoveryClient;
     private readonly DeviceIdentity _identity;
     private readonly CaptureSelfTestRunner _captureSelfTest = new();
+    private readonly EncodeSelfTestRunner _encodeSelfTest = new();
     private readonly System.Windows.Forms.Timer _listRefreshTimer;
     private readonly System.Windows.Forms.Timer _captureStatsTimer;
+    private readonly System.Windows.Forms.Timer _encodeStatsTimer;
 
     private readonly Panel _standbyPanel;
     private readonly ListBox _terminalListBox;
@@ -31,6 +35,8 @@ public sealed class MainForm : Form
     private readonly Label _pairedWithLabel;
     private readonly Button _captureSelfTestButton;
     private readonly Label _captureStatsLabel;
+    private readonly Button _encodeSelfTestButton;
+    private readonly Label _encodeStatsLabel;
     private readonly Button _transportSelfTestButton;
     private readonly Label _transportStatsLabel;
 
@@ -42,7 +48,7 @@ public sealed class MainForm : Form
         _identity = identity;
 
         Text = "EveryStage 投屏机";
-        ClientSize = new Size(320, 360);
+        ClientSize = new Size(320, 440);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -86,18 +92,22 @@ public sealed class MainForm : Form
         _captureSelfTestButton.Click += OnCaptureSelfTestClick;
         _captureStatsLabel = new Label { Bounds = new Rectangle(12, 156, 296, 60), ForeColor = Color.DimGray };
 
-        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 220, 296, 32) };
-        _transportSelfTestButton.Click += OnTransportSelfTestClick;
-        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 254, 296, 40), ForeColor = Color.DimGray };
+        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 220, 296, 32) };
+        _encodeSelfTestButton.Click += OnEncodeSelfTestClick;
+        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 254, 296, 50), ForeColor = Color.DimGray };
 
-        var backButton = new Button { Text = "返回", Bounds = new Rectangle(12, 306, 296, 32) };
+        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 312, 296, 32) };
+        _transportSelfTestButton.Click += OnTransportSelfTestClick;
+        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 346, 296, 40), ForeColor = Color.DimGray };
+
+        var backButton = new Button { Text = "返回", Bounds = new Rectangle(12, 398, 296, 32) };
         backButton.Click += (_, _) => ShowStandby();
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
         {
             _pairedWithLabel, notImplementedLabel, _captureSelfTestButton, _captureStatsLabel,
-            _transportSelfTestButton, _transportStatsLabel, backButton,
+            _encodeSelfTestButton, _encodeStatsLabel, _transportSelfTestButton, _transportStatsLabel, backButton,
         });
 
         Controls.Add(_pairedPanel);
@@ -109,6 +119,9 @@ public sealed class MainForm : Form
 
         _captureStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _captureStatsTimer.Tick += (_, _) => RefreshCaptureStats();
+
+        _encodeStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _encodeStatsTimer.Tick += (_, _) => RefreshEncodeStats();
     }
 
     private void OnCaptureSelfTestClick(object? sender, EventArgs e)
@@ -144,6 +157,41 @@ public sealed class MainForm : Form
         _captureStatsLabel.Text =
             $"分辨率: {_captureSelfTest.Width}x{_captureSelfTest.Height}\n" +
             $"已捕获帧数: {_captureSelfTest.FrameCount}    近1秒帧率: {_captureSelfTest.Fps:F1}";
+    }
+
+    private void OnEncodeSelfTestClick(object? sender, EventArgs e)
+    {
+        if (_encodeSelfTest.IsRunning)
+        {
+            _encodeSelfTest.Stop();
+            _encodeStatsTimer.Stop();
+            _encodeSelfTestButton.Text = "开始编码自检 (捕获→NV12→H.264)";
+            _encodeStatsLabel.Text = "";
+        }
+        else
+        {
+            _encodeSelfTest.Start();
+            _encodeStatsTimer.Start();
+            _encodeSelfTestButton.Text = "停止编码自检";
+            RefreshEncodeStats();
+        }
+    }
+
+    private void RefreshEncodeStats()
+    {
+        if (_encodeSelfTest.LastError != null)
+        {
+            _encodeStatsLabel.ForeColor = Color.DarkRed;
+            _encodeStatsLabel.Text = $"编码出错：{_encodeSelfTest.LastError}";
+            _encodeStatsTimer.Stop();
+            _encodeSelfTestButton.Text = "开始编码自检 (捕获→NV12→H.264)";
+            return;
+        }
+
+        _encodeStatsLabel.ForeColor = Color.DimGray;
+        _encodeStatsLabel.Text =
+            $"已编码访问单元数: {_encodeSelfTest.AccessUnitsEncoded}\n" +
+            $"编码总字节数: {_encodeSelfTest.TotalEncodedBytes}";
     }
 
     private async void OnTransportSelfTestClick(object? sender, EventArgs e)
@@ -236,6 +284,13 @@ public sealed class MainForm : Form
             _captureSelfTestButton.Text = "开始屏幕捕获自检";
             _captureStatsLabel.Text = "";
         }
+        if (_encodeSelfTest.IsRunning)
+        {
+            _encodeSelfTest.Stop();
+            _encodeStatsTimer.Stop();
+            _encodeSelfTestButton.Text = "开始编码自检 (捕获→NV12→H.264)";
+            _encodeStatsLabel.Text = "";
+        }
         _transportStatsLabel.Text = "";
 
         _pairedTerminal = null;
@@ -250,6 +305,8 @@ public sealed class MainForm : Form
             _listRefreshTimer.Dispose();
             _captureStatsTimer.Dispose();
             _captureSelfTest.Dispose();
+            _encodeStatsTimer.Dispose();
+            _encodeSelfTest.Dispose();
         }
         base.Dispose(disposing);
     }

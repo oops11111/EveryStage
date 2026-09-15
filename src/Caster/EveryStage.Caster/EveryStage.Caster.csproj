@@ -17,15 +17,21 @@
     <!-- The LAN discovery/pairing wire format, shared with EveryStage.Terminal so both sides
          always agree on it by construction. -->
     <ProjectReference Include="..\..\Shared\EveryStage.Discovery\EveryStage.Discovery.csproj" />
-    <!-- Shares D3D11Device with the Terminal/Phase-0-demo side purely for the device-creation
-         boilerplate (Capture/ScreenCaptureSource.cs needs an ID3D11Device to call
-         IDXGIOutput1.DuplicateOutput against) — Caster doesn't touch the MF/video-processor half
-         of that library, only the device setup. -->
+    <!-- Shares D3D11Device with the Terminal/Phase-0-demo side for device-creation boilerplate.
+         Capture/ScreenCaptureSource.cs uses it for IDXGIOutput1.DuplicateOutput; Encode/ uses its
+         video-processor path (Capture's BGRA -> NV12 conversion) and its IMFDXGIDeviceManager
+         (bound to the H.264 encoder MFT so it can consume D3D11 textures directly). -->
     <ProjectReference Include="..\..\Shared\EveryStage.Rendering\EveryStage.Rendering.csproj" />
-    <!-- RTP packet framing / H.264 payload packetization — not driving real encoded video yet
-         (see TransportSelfTest), but exercised here as a loopback self-test alongside the screen
-         capture one. -->
+    <!-- RTP packet framing / H.264 payload packetization. -->
     <ProjectReference Include="..\..\Shared\EveryStage.Transport\EveryStage.Transport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Encode/H264HardwareEncoder.cs drives the H.264 encoder MFT directly (IMFTransform,
+         MFTEnumEx, ICodecAPI) rather than through EveryStage.Rendering's higher-level source-reader
+         usage, so it references Vortice.MediaFoundation explicitly rather than relying on it
+         flowing in transitively through the EveryStage.Rendering project reference. -->
+    <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
   </ItemGroup>
 
 </Project>
