@@ -69,6 +69,7 @@ public sealed class LiveCastSession : IDisposable
     private readonly TerminalDiscoveryClient _discoveryClient;
     private readonly DeviceIdentity _identity;
     private readonly DiscoveredTerminal _terminal;
+    private readonly int _outputIndex;
     private readonly Stopwatch _clock = new();
 
     // Unbounded, single-reader: H264HardwareEncoder's own event-loop thread (via
@@ -166,11 +167,16 @@ public sealed class LiveCastSession : IDisposable
     /// this project).</summary>
     public event Action? StatsUpdated;
 
-    public LiveCastSession(TerminalDiscoveryClient discoveryClient, DeviceIdentity identity, DiscoveredTerminal terminal)
+    /// <param name="outputIndex">Which monitor to capture — see
+    /// <see cref="ScreenCaptureSource.EnumerateOutputs"/> for the DXGI adapter-output enumeration
+    /// this index refers into. Defaults to 0 (typically the primary display) so existing callers
+    /// that don't offer a picker keep the previous behavior unchanged.</param>
+    public LiveCastSession(TerminalDiscoveryClient discoveryClient, DeviceIdentity identity, DiscoveredTerminal terminal, int outputIndex = 0)
     {
         _discoveryClient = discoveryClient;
         _identity = identity;
         _terminal = terminal;
+        _outputIndex = outputIndex;
     }
 
     private void OnCastStatusReceived(DiscoveryProtocol.CastStatusMessage status)
@@ -211,7 +217,7 @@ public sealed class LiveCastSession : IDisposable
         try
         {
             _gpu = new D3D11Device();
-            _capture = new ScreenCaptureSource(_gpu);
+            _capture = new ScreenCaptureSource(_gpu, _outputIndex);
             Width = _capture.Width;
             Height = _capture.Height;
             _converter = new BgraToNv12Converter(_gpu);

@@ -37,9 +37,9 @@ public sealed class ScreenCaptureSource : IDisposable
     public int Height { get; }
 
     /// <param name="outputIndex">Which monitor to capture, in DXGI adapter-output enumeration
-    /// order. PLANNING.md §12 doesn't specify multi-monitor Caster behavior beyond "全屏捕获" —
-    /// this defaults to output 0 (typically the primary display); picking a specific monitor to
-    /// cast is a UI concern for later, not something this class decides.</param>
+    /// order — see <see cref="EnumerateOutputs"/> for listing what's actually available before
+    /// picking one, rather than assuming index 0 is always right. Defaults to 0 (typically the
+    /// primary display) for callers (the two self-tests) that don't offer a picker at all.</param>
     public ScreenCaptureSource(D3D11Device gpu, int outputIndex = 0)
     {
         _gpu = gpu;
@@ -54,6 +54,57 @@ public sealed class ScreenCaptureSource : IDisposable
         var desc = _duplication.Description;
         Width = (int)desc.ModeDescription.Width;
         Height = (int)desc.ModeDescription.Height;
+    }
+
+    /// <summary>One entry of <see cref="EnumerateOutputs"/> — <see cref="OutputIndex"/> is exactly
+    /// what this class's own constructor expects for <c>outputIndex</c>, since both come from the
+    /// same <c>adapter.GetOutput(i)</c> enumeration rather than some other API's independently
+    /// numbered monitor list (see PLANNING.md §12's UI needing "选择捕获哪个显示器" — this exists so
+    /// that picker can show real monitors instead of a caller guessing indices blind).</summary>
+    public readonly record struct MonitorCaptureOption(int OutputIndex, string DeviceName, Rectangle Bounds);
+
+    /// <summary>Lists every DXGI output (monitor) on <paramref name="gpu"/>'s adapter that a
+    /// <see cref="ScreenCaptureSource"/> could be constructed against — the UI-facing counterpart to
+    /// this class's own constructor always defaulting to output 0. NOTE: <c>IDXGIOutput.Description</c>
+    /// (<c>OutputDescription</c>'s exact field names — <c>DeviceName</c>, <c>DesktopCoordinates</c>)
+    /// is new, unverified Vortice.DXGI surface this session has never exercised before, in the same
+    /// "guessed from how SharpDX/Vortice generally name DXGI members" risk category as
+    /// <see cref="IDXGIOutputDuplication"/>/<c>OutputDuplicateFrameInformation</c> elsewhere in this
+    /// class — see this project's README "已知风险" for what to check first on a real build. Looping
+    /// <c>adapter.GetOutput(i)</c> until it throws (rather than some dedicated output-count query) is
+    /// the same "loop until the API itself signals exhaustion" pattern
+    /// <c>H264HardwareDecoder.ConfigureNv12OutputType</c> already uses for enumerating output media
+    /// types — the real native exhaustion signal is the HRESULT <c>DXGI_ERROR_NOT_FOUND</c>, caught
+    /// broadly here since this session can't verify what shape Vortice surfaces that as.</summary>
+    public static IReadOnlyList<MonitorCaptureOption> EnumerateOutputs(D3D11Device gpu)
+    {
+        var results = new List<MonitorCaptureOption>();
+
+        using var dxgiDevice = gpu.Device.QueryInterface<IDXGIDevice>();
+        using var adapter = dxgiDevice.GetParent<IDXGIAdapter>();
+
+        for (int i = 0; ; i++)
+        {
+            IDXGIOutput output;
+            try
+            {
+                output = adapter.GetOutput(i);
+            }
+            catch (Exception)
+            {
+                break; // no more outputs on this adapter.
+            }
+
+            using (output)
+            {
+                var desc = output.Description;
+                var coords = desc.DesktopCoordinates;
+                var bounds = new Rectangle(coords.Left, coords.Top, coords.Right - coords.Left, coords.Bottom - coords.Top);
+                results.Add(new MonitorCaptureOption(i, desc.DeviceName, bounds));
+            }
+        }
+
+        return results;
     }
 
     /// <summary>

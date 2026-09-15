@@ -280,8 +280,36 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     次要问题，因为RTP 32位时间戳本身在约13.25小时就会先回绕（见风险40），这套时长显示不太可能真的
     撑到自己的24小时上限就先遇到那个更根本的限制。
     为了腾出这条新标签的位置，"投屏中"面板下方所有控件（统计文字、停止按钮、三个自检按钮及其状态
-    文字）的Y坐标都整体下移了24px——手工核对过新布局最底部的`_transportStatsLabel`仍然落在
-    `ClientSize.Height`(506)以内，不需要放大整个窗口。
+    文字）的Y坐标都整体下移了24px——手工核对过新布局最底部的`_transportStatsLabel`仍然落在当时的
+    `ClientSize.Height`(506)以内，不需要放大整个窗口（`ClientSize`后来在新增音频采集自检那一轮
+    涨到600——见风险29，这条记录的仍然是它写下时的真实状态，不追溯修改）。
+
+### 选择捕获哪个显示器 — 这次新加的部分
+
+45. **【已实现，原为已知缺口】新增显示器选择**：`ScreenCaptureSource`新增静态方法
+    `EnumerateOutputs`，循环`adapter.GetOutput(i)`直到抛出为止列出这个适配器上的所有DXGI输出
+    （用的是`H264HardwareDecoder.ConfigureNv12OutputType`已经用过的"循环到API自己报告耗尽为止"
+    同一个模式）。`MainForm`待机面板新增一个显示器下拉框（`RefreshMonitorList`），选中的
+    `outputIndex`原样传给新增的`LiveCastSession(..., outputIndex)`构造函数参数，再原样传给
+    `ScreenCaptureSource`的同名参数——三层之间不存在任何"翻译"步骤，因为它们用的是同一套DXGI
+    适配器输出枚举顺序，不是分别独立编号再互相映射。**这是全新的、未经验证的Vortice.DXGI用法**
+    （`IDXGIOutput.Description`／`OutputDescription`的`DeviceName`/`DesktopCoordinates`字段名），
+    跟这个文件里`IDXGIOutputDuplication`那部分是同一类风险，从未针对真实安装的Vortice.DXGI包
+    核实过。
+    刻意没有走"复用Terminal那边`MonitorService`（WinForms `Screen.AllScreens`）"这条更省事的
+    路——那样得到的下标是WinForms自己的显示器枚举顺序，跟DXGI的`adapter.GetOutput(i)`下标是否
+    真的一一对应完全是另一个未经验证的假设；用同一套DXGI API既枚举又消费，从设计上就不存在这层
+    映射风险，即使这意味着要多写一段新的、同样未验证的DXGI代码。
+46. **下拉框的枚举跟`RefreshMonitorList`同一个"每次回到待机态都重新枚举"约定**（构造函数里调用
+    一次，`ShowStandby()`里再调用一次）——这次特意没有重蹈上一轮才刚修过的
+    `SettingsPanel.PopulateMonitorComboBox`"只在构造时枚举一次"覆辙，选择保留（而不是像
+    `SettingsPanel.Refresh_()`那样只保留"当前选中项"）当前选中的`outputIndex`：如果对应显示器
+    被拔掉了会回退到列表第一项，而不是留着一个已经不存在的选择。
+47. **枚举显示器需要临时构造一个`D3D11Device`，用完立即释放**：这是跟`CaptureSelfTestRunner`/
+    `EncodeSelfTestRunner`已有的"自检需要自己一整套GPU资源"同一个模式，但这里纯粹是为了填一个
+    下拉框而创建/销毁一整个D3D11设备，比起真正开始投屏时才创建的那个更浪费——如果这个下拉框将来
+    需要更频繁地刷新（比如响应`WM_DISPLAYCHANGE`而不是只在回到待机态时），这个"每次都新建一个
+    设备"的开销可能需要重新评估。
 
 ## 尚未开始
 
@@ -289,7 +317,6 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
   Media Foundation的AAC编码器MFT，跟视频编码器同一类风险，这一轮为了先接通链路特意绕开了）
 - 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
   真正的往返延迟测量
-- 选择捕获哪个显示器（`ScreenCaptureSource` 目前固定捕获 `outputIndex=0`，多显示器场景没有UI选择）
 - `H264HardwareEncoder` 里"编码器不提供自己的输出sample"这条分支（见上方风险16）
 - 编码器的丢帧/背压策略、以及`LiveCastSession`两个发送队列（视频/音频）的背压策略（同一类问题，
   见上方风险17、25）

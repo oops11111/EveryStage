@@ -3,6 +3,7 @@ using EveryStage.Caster.Casting;
 using EveryStage.Caster.Discovery;
 using EveryStage.Caster.Encode;
 using EveryStage.Discovery;
+using EveryStage.Rendering;
 using EveryStage.Transport;
 
 namespace EveryStage.Caster.UI;
@@ -49,6 +50,16 @@ namespace EveryStage.Caster.UI;
 /// notice they saw once before starting. The elapsed time itself is read from
 /// <see cref="LiveCastSession.Elapsed"/> and is purely a UI display value — the same underlying
 /// <c>Stopwatch</c> also drives A/V sync's RTP timestamps, but neither reads from the other.
+///
+/// The standby panel also now has a monitor picker (PLANNING.md §12 "选择捕获哪个显示器") —
+/// <see cref="_monitorComboBox"/>, populated by <see cref="ScreenCaptureSource.EnumerateOutputs"/>
+/// and re-enumerated every time this panel becomes visible again (<see cref="RefreshMonitorList"/>,
+/// called from both the constructor and <see cref="ShowStandby"/>) rather than once ever — the exact
+/// staleness mistake this project already made and fixed once for the Terminal's own monitor picker
+/// (`SettingsPanel`'s "显示" tab). The selected <c>outputIndex</c> flows straight through
+/// <see cref="ShowPaired"/> into <see cref="LiveCastSession"/>'s constructor and from there into
+/// <see cref="ScreenCaptureSource"/>'s — previously that was hardcoded to 0 (whatever DXGI enumerates
+/// first) with no UI to change it at all.
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -68,6 +79,7 @@ public sealed class MainForm : Form
     private readonly ListBox _terminalListBox;
     private readonly Button _startButton;
     private readonly Button _removePairingButton;
+    private readonly ComboBox _monitorComboBox;
 
     private readonly Panel _pairedPanel;
     private readonly Label _pairedWithLabel;
@@ -97,6 +109,16 @@ public sealed class MainForm : Form
     private sealed record TerminalListEntry(Guid DeviceId, string DeviceName, DiscoveredTerminal? Live)
     {
         public string DisplayText => Live != null ? DeviceName : $"{DeviceName}（离线）";
+    }
+
+    /// <summary>One entry of the standby panel's monitor picker — <see cref="OutputIndex"/> is
+    /// passed straight through to <see cref="LiveCastSession"/>'s own <c>outputIndex</c> constructor
+    /// parameter, which passes it straight through to <see cref="ScreenCaptureSource"/>'s, so this
+    /// never needs its own translation step between "what the picker shows" and "what capture
+    /// actually uses" — same DXGI adapter-output index all the way through.</summary>
+    private sealed record MonitorComboItem(int OutputIndex, string Label)
+    {
+        public override string ToString() => Label; // what the ComboBox actually renders.
     }
 
     public MainForm(TerminalDiscoveryClient discoveryClient, DeviceIdentity identity, PairedTerminalStore pairedTerminals)
@@ -139,11 +161,17 @@ public sealed class MainForm : Form
             Bounds = new Rectangle(12, 178, 296, 40),
         };
 
+        // PLANNING.md §12"选择捕获哪个显示器"——之前ScreenCaptureSource固定捕获outputIndex=0，
+        // 多显示器场景完全没有UI选择。RefreshMonitorList()（下面）在构造函数末尾和每次回到待机态
+        // 时都会重新枚举，跟这一轮刚修过的SettingsPanel显示器列表是同一个"别只枚举一次"教训。
+        var monitorLabel = new Label { Text = "选择要投放的显示器：", AutoSize = true, Bounds = new Rectangle(12, 222, 296, 18) };
+        _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(12, 242, 296, 24) };
+
         _startButton = new Button
         {
             Text = "开始投屏",
             Enabled = false,
-            Bounds = new Rectangle(12, 226, 296, 32),
+            Bounds = new Rectangle(12, 274, 296, 32),
         };
         _startButton.Click += OnStartButtonClick;
 
@@ -151,12 +179,16 @@ public sealed class MainForm : Form
         {
             Text = "移除配对",
             Enabled = false,
-            Bounds = new Rectangle(12, 264, 296, 28),
+            Bounds = new Rectangle(12, 312, 296, 28),
         };
         _removePairingButton.Click += OnRemovePairingClick;
 
         _standbyPanel = new Panel { Dock = DockStyle.Fill };
-        _standbyPanel.Controls.AddRange(new Control[] { _terminalListBox, privacyLabel, _startButton, _removePairingButton });
+        _standbyPanel.Controls.AddRange(new Control[]
+        {
+            _terminalListBox, privacyLabel, monitorLabel, _monitorComboBox, _startButton, _removePairingButton,
+        });
+        RefreshMonitorList();
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
         _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 32) };
@@ -394,6 +426,67 @@ public sealed class MainForm : Form
         _terminalListBox.EndUpdate();
     }
 
+    /// <summary>Re-enumerates <see cref="ScreenCaptureSource.EnumerateOutputs"/> into
+    /// <see cref="_monitorComboBox"/>, preserving the current selection by
+    /// <see cref="MonitorComboItem.OutputIndex"/> (not list position) if that output still exists —
+    /// same reasoning <c>SettingsPanel.Refresh_()</c> on the Terminal side just applied to its own
+    /// monitor list: re-populating around the last-saved/last-picked value would silently reset an
+    /// in-progress choice, and a monitor that's genuinely gone should fall back rather than stay
+    /// selected. Called once at construction and again from <see cref="ShowStandby"/>, not just
+    /// once ever — the exact staleness mistake this project's README already flagged and fixed for
+    /// the Terminal's own monitor picker.</summary>
+    private void RefreshMonitorList()
+    {
+        int? previousSelection = (_monitorComboBox.SelectedItem as MonitorComboItem)?.OutputIndex;
+
+        IReadOnlyList<ScreenCaptureSource.MonitorCaptureOption> outputs;
+        try
+        {
+            using var gpu = new D3D11Device();
+            outputs = ScreenCaptureSource.EnumerateOutputs(gpu);
+        }
+        catch (Exception ex)
+        {
+            // Same "don't let a diagnostic/setup step take the whole form down" reasoning the self-
+            // test runners already apply to their own D3D11Device construction — if even a
+            // throwaway device can't be created here, "开始投屏" is going to fail the identical way,
+            // so there's nothing extra to gain from surfacing a separate error dialog right now.
+            _monitorComboBox.Items.Clear();
+            _monitorComboBox.Items.Add(new MonitorComboItem(0, $"默认显示器（枚举失败：{ex.Message}）"));
+            _monitorComboBox.SelectedIndex = 0;
+            return;
+        }
+
+        _monitorComboBox.BeginUpdate();
+        _monitorComboBox.Items.Clear();
+        foreach (var output in outputs)
+        {
+            string label = $"显示器 {output.OutputIndex}: {output.DeviceName} " +
+                           $"({output.Bounds.Width}x{output.Bounds.Height} @ {output.Bounds.X},{output.Bounds.Y})";
+            _monitorComboBox.Items.Add(new MonitorComboItem(output.OutputIndex, label));
+        }
+
+        if (_monitorComboBox.Items.Count == 0)
+        {
+            // Shouldn't happen on any real machine (there's always at least one display) but a
+            // combo box with nothing selectable would leave "开始投屏" silently falling back to
+            // ScreenCaptureSource's own outputIndex default without the UI ever showing that choice.
+            _monitorComboBox.Items.Add(new MonitorComboItem(0, "默认显示器"));
+        }
+
+        int selectedIndex = 0;
+        for (int i = 0; i < _monitorComboBox.Items.Count; i++)
+        {
+            if (((MonitorComboItem)_monitorComboBox.Items[i]!).OutputIndex == previousSelection)
+            {
+                selectedIndex = i;
+                break;
+            }
+        }
+        _monitorComboBox.SelectedIndex = selectedIndex;
+        _monitorComboBox.EndUpdate();
+    }
+
     private void OnRemovePairingClick(object? sender, EventArgs e)
     {
         if (_terminalListBox.SelectedItem is not TerminalListEntry entry) return;
@@ -417,6 +510,11 @@ public sealed class MainForm : Form
         // match still guards against it directly rather than trusting that invariant blindly.
         if (_terminalListBox.SelectedItem is not TerminalListEntry { Live: not null } entry) return;
         var terminal = entry.Live!; // non-null per the pattern match above.
+        // Captured now rather than read again inside ShowPaired — the combo box only ever refreshes
+        // from ShowStandby()/construction (not on a timer, unlike _terminalListBox), so there's no
+        // real race to guard against here, but reading it once at the point of the user's actual
+        // click is still the clearer place to fix "what they asked for" for this cast.
+        int outputIndex = (_monitorComboBox.SelectedItem as MonitorComboItem)?.OutputIndex ?? 0;
 
         _startButton.Enabled = false;
         _startButton.Text = "配对中...";
@@ -425,7 +523,7 @@ public sealed class MainForm : Form
             var response = await _discoveryClient.RequestPairingAsync(terminal, _identity);
             if (response is { Accepted: true })
             {
-                ShowPaired(terminal);
+                ShowPaired(terminal, outputIndex);
             }
             else
             {
@@ -448,7 +546,7 @@ public sealed class MainForm : Form
         }
     }
 
-    private void ShowPaired(DiscoveredTerminal terminal)
+    private void ShowPaired(DiscoveredTerminal terminal, int outputIndex)
     {
         // Remembered here, not just when the standby list was last built — this is the one point
         // where a pairing is actually confirmed successful, which is the right moment to persist it
@@ -462,7 +560,7 @@ public sealed class MainForm : Form
         _pairedPanel.Visible = true;
 
         _liveCastSession?.Dispose();
-        _liveCastSession = new LiveCastSession(_discoveryClient, _identity, terminal);
+        _liveCastSession = new LiveCastSession(_discoveryClient, _identity, terminal, outputIndex);
         _liveCastSession.Start();
         _liveCastStatsTimer.Start();
         RefreshLiveCastStats();
@@ -550,6 +648,11 @@ public sealed class MainForm : Form
         _pairedTerminal = null;
         _pairedPanel.Visible = false;
         _standbyPanel.Visible = true;
+
+        // Same "must not go stale for the whole app lifetime" reasoning as RefreshMonitorList's own
+        // doc comment — re-enumerate every time standby becomes visible again, not just once at
+        // startup, so a monitor unplugged/replugged while a cast was running shows up correctly.
+        RefreshMonitorList();
     }
 
     protected override void Dispose(bool disposing)
