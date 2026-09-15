@@ -25,8 +25,12 @@ public sealed class RawRtpReceiver : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private Task? _receiveLoop;
 
-    /// <summary>Raised from the background receive loop — marshal to another thread/UI as needed.</summary>
-    public event Action<byte[]>? PayloadReceived;
+    /// <summary>Raised from the background receive loop — marshal to another thread/UI as needed.
+    /// The <c>uint</c> is the packet's RTP timestamp — for the audio stream this is a wall-clock-
+    /// derived value sharing the same epoch as the video stream's timestamps (see
+    /// <c>Caster.Casting.LiveCastSession</c>'s doc comment), which is what lets
+    /// <c>Terminal.Receiving.CastReceiver</c> pace video against audio at all.</summary>
+    public event Action<byte[], uint>? PayloadReceived;
 
     public RawRtpReceiver(int listenPort)
     {
@@ -55,7 +59,7 @@ public sealed class RawRtpReceiver : IDisposable
 
             if (!RtpPacket.TryDecode(result.Buffer, out var packet)) continue; // not one of ours — ignore.
 
-            PayloadReceived?.Invoke(packet.Payload.ToArray());
+            PayloadReceived?.Invoke(packet.Payload.ToArray(), packet.Timestamp);
         }
     }
 

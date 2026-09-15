@@ -23,8 +23,11 @@ public sealed class RtpReceiver : IDisposable
     /// The <c>bool</c> is the completing RTP packet's Marker bit, i.e. RFC 6184 §5.3 "this was the
     /// last NAL unit of its access unit" — passed through as-is rather than making every consumer
     /// re-derive it, since <see cref="H264RtpPacketizer"/>/<see cref="H264RtpDepacketizer"/> already
-    /// encode/decode it symmetrically.</summary>
-    public event Action<byte[], bool>? NalUnitReceived;
+    /// encode/decode it symmetrically. The <c>uint</c> is that same packet's RTP timestamp — every
+    /// NAL unit belonging to one access unit shares the same value (the sender sets it once per
+    /// access unit, see <c>RtpSession.SendNalUnitAsync</c>'s caller), so a consumer reassembling an
+    /// access unit from multiple NAL units can take the timestamp from any one of them.</summary>
+    public event Action<byte[], bool, uint>? NalUnitReceived;
 
     public RtpReceiver(int listenPort)
     {
@@ -54,7 +57,7 @@ public sealed class RtpReceiver : IDisposable
             if (!RtpPacket.TryDecode(result.Buffer, out var packet)) continue; // not one of ours — ignore.
 
             var nalUnit = _depacketizer.Process(packet.Payload);
-            if (nalUnit != null) NalUnitReceived?.Invoke(nalUnit, packet.Marker);
+            if (nalUnit != null) NalUnitReceived?.Invoke(nalUnit, packet.Marker, packet.Timestamp);
         }
     }
 

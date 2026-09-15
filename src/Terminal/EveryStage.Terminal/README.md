@@ -230,15 +230,29 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 
 ### `Receiving/CastReceiver.cs` 的音频侧 — 这次新加的部分
 
-39. **完全没有音视频同步**：音频通过`RawRtpReceiver`收到就立即`AudioPlaybackClock.Enqueue`播放，
-    跟视频解码/呈现的时间线完全独立——两者甚至不共享同一个时钟基准（Caster端视频用墙钟时间戳，
-    音频用采样计数，见`EveryStage.Caster`的README）。长时间投屏后画面和声音很可能明显不同步，
-    这是有意先接通"能听到声音"这条链路，音画同步是明确的后续工作。
-40. **`AudioPlaybackClock`原本是为本地视频文件播放设计的**（构造函数注入`sampleRate`/`channels`，
-    `PositionTicks`用来给视频解码步调打拍子）——这里复用它纯粹是当一个"WASAPI播放缓冲区"用，
-    完全不读它的`PositionTicks`/`Start()`只是启动播放而不是启动一个真正被消费的时钟。复用本身没
-    有问题（构造函数/`Enqueue`签名完全匹配需求），但如果以后要修复上一条的音画同步问题，可能需要
-    重新设计这个类的职责边界（播放 vs. 计时该不该是同一个对象）。
+39. **【已实现，原为已知缺口】音视频同步**：`CastReceiver`不再把解码出的每一帧立即呈现——新增
+    一个专门的后台呈现线程（`RunPresentLoop`），把解码结果先放进一个队列，只有当
+    `AudioPlaybackClock.PositionTicks`（真实WASAPI硬件播放位置）追上这一帧自己的呈现时间才真正
+    调用`PresentFrame`，跟`ContentEngine.VideoContentController`本地文件播放用的是同一套"音频为
+    主时钟"模式（PLANNING.md §4.2）。两条流现在能比较，是因为Caster端`LiveCastSession`把音频的
+    RTP时间戳也改成了跟视频同一套墙钟推导方式（见`EveryStage.Caster`README）；`CastReceiver`把
+    两边的时间戳都用`RtpVideoClock.ToElapsedTicks`换算回"投屏开始后经过的时间"，再用
+    第一个音频包建立的`_audioSyncOffsetTicks`对齐两条时间线的零点。这次实现特意加了一个**墙钟
+    兜底超时**（等待循环里`waitStopwatch.Elapsed.Ticks < MaxWaitTicks`，1秒）：如果同步换算本身
+    有错，导致目标音频位置永远"看起来在未来"，这个等待循环原本会永远卡住、把视频画面冻结在原地
+    ——这比"完全不同步"这个已知缺口本身还要严重的一种回归，兜底超时保证等待循环无论如何都会在
+    1秒内放弃并把这一帧呈现出去，把最坏情况限制在"呈现时机不准"而不是"画面冻结"。这次实现仍然
+    没有解决/没有测量的：Desktop Duplication（视频）和WASAPI loopback（音频）各自从采集到真正
+    送上RTP之间的延迟差；RTP 32位时间戳约13小时后的回绕；第一个音频包本身若被延迟/丢包/乱序，
+    会让`_audioSyncOffsetTicks`从一开始就建立在一个不准的基准上，且此后永远不会重新校准。
+40. **`H264HardwareDecoder`新增的时间戳FIFO（`_pendingTimestamps`）完全依赖"解码器不重排序、
+    不缓冲超过一个访问单元"这个假设**：`SubmitAccessUnit`传入的`sampleTimeTicks`被放进一个
+    `Queue<long>`，`DrainOutput`每产出一帧就从队头取一个——这是因为这个仓库没有办法验证Media
+    Foundation的解码器MFT是否真的会把输入sample的时间戳原样保留/传递到输出sample上，只能自己维护
+    这个FIFO作为替代方案。正确性完全依赖H.264编码器（Caster端`H264HardwareEncoder`）配置的
+    "无B帧、低延迟"设置——如果解码器出于任何原因重排序、丢帧、或者在第一次产出前缓冲了不止一个
+    访问单元，这个FIFO会从那一刻起永久错位（此后每次取出的都是别的访问单元的时间戳，通常偏差不大
+    但永久存在），且这个仓库没有办法在真实硬件上验证这个假设是否成立。
 41. **`BufferedWaveProvider`(`AudioPlaybackClock`内部)的`DiscardOnBufferOverflow=true`+
     5秒缓冲区，是为本地文件播放场景调的，没有针对网络抖动重新评估过**：网络场景下包到达的节奏比
     本地文件解码更不稳定（可能成串到达而不是均匀节奏），5秒缓冲区/丢弃满溢策略是否合适，只有真机
@@ -281,8 +295,8 @@ Caster知道终端机确实收到了东西。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
-- 音视频同步（见"已知风险"第39-40条）——目前音频收到就播、视频独立解码呈现，长时间投屏后可能明显
-  不同步
+- 音视频同步的残余误差补偿（见"已知风险"第39-40条）——基础的"音频为主时钟+呈现线程等待"已经实现，
+  但采集延迟差、RTP时间戳回绕、解码器FIFO假设这几项仍然是接受的已知限制，没有计划中的进一步方案
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
 - 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35条）——`OverlayWindow.Rebind`存在但从未被

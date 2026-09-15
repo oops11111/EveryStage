@@ -42,13 +42,32 @@ public sealed class H264HardwareDecoder : IDisposable
     private readonly IMFTransform _decoder;
     private readonly bool _outputProvidesOwnSamples;
 
+    // FIFO of every sampleTimeTicks passed to SubmitAccessUnit, one dequeued per decoded frame
+    // DrainOutput produces — see FrameDecoded's own doc comment for why this assumes strict 1:1,
+    // in-order correspondence between submitted access units and decoded frames.
+    private readonly Queue<long> _pendingTimestamps = new();
+
     /// <summary>Raised synchronously, from within <see cref="SubmitAccessUnit"/>, once per decoded
     /// frame the MFT produces — zero, one, or (in principle, though not expected given this
     /// pipeline's no-B-frames encoder settings) more than one call per submitted access unit, since
     /// decoder MFTs are free to buffer internally before their first output. Texture ownership
     /// passes to the handler — same convention as <c>VideoDecodeSource.ReadNextVideoFrame</c>, the
-    /// caller must dispose it once done presenting.</summary>
-    public event Action<ID3D11Texture2D, int, int, int>? FrameDecoded; // texture, arraySlice, width, height
+    /// caller must dispose it once done presenting.
+    ///
+    /// The <c>long</c> is the <c>sampleTimeTicks</c> that was passed to whichever
+    /// <see cref="SubmitAccessUnit"/> call produced this frame — dequeued from
+    /// <see cref="_pendingTimestamps"/> on a strict FIFO basis, which is only correct if decoded
+    /// frames come out in the same order access units went in and exactly one access unit in
+    /// eventually yields exactly one frame out. Both hold for a no-B-frames, low-latency encode (see
+    /// <c>H264HardwareEncoder</c>'s own settings) under normal operation, but neither is guaranteed
+    /// by anything this class can verify — a decoder that reorders, drops, or buffers more than one
+    /// access unit before its first output would silently desynchronize this queue from reality for
+    /// the rest of the session (each dequeue would return some OTHER access unit's timestamp, not
+    /// necessarily by much, but permanently). See this project's README for why this risk is
+    /// accepted rather than solved (solving it properly needs the decoder to preserve/return the
+    /// input sample's own time on its output sample, which this session has no way to verify
+    /// Vortice's binding actually does).</summary>
+    public event Action<ID3D11Texture2D, int, int, int, long>? FrameDecoded; // texture, arraySlice, width, height, sampleTimeTicks
 
     public H264HardwareDecoder(D3D11Device gpu, int width, int height)
     {
@@ -103,6 +122,11 @@ public sealed class H264HardwareDecoder : IDisposable
             }
         }
 
+        // Enqueued only after ProcessInput actually succeeds (CheckError() above throws first
+        // otherwise) — an access unit ProcessInput rejected was never really "in", so its timestamp
+        // must not occupy a slot in the FIFO that DrainOutput's dequeues assume line up 1:1 with
+        // accepted input.
+        _pendingTimestamps.Enqueue(sampleTimeTicks);
         DrainOutput();
     }
 
@@ -141,7 +165,10 @@ public sealed class H264HardwareDecoder : IDisposable
                 var texture = dxgiBuffer.GetResource<ID3D11Texture2D>();
                 int arraySlice = (int)dxgiBuffer.GetSubresourceIndex();
                 var desc = texture.Description;
-                FrameDecoded?.Invoke(texture, arraySlice, (int)desc.Width, (int)desc.Height);
+                // See FrameDecoded's own doc comment on why this FIFO dequeue is only correct under
+                // the no-reordering, no-buffering assumption documented there.
+                long sampleTimeTicks = _pendingTimestamps.Count > 0 ? _pendingTimestamps.Dequeue() : 0;
+                FrameDecoded?.Invoke(texture, arraySlice, (int)desc.Width, (int)desc.Height, sampleTimeTicks);
             }
             finally
             {

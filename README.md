@@ -88,8 +88,16 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   `Program.cs`的`CheckCastLiveness()`在连续10秒收不到视频/音频数据包时判断Caster已经消失（崩溃/
   断网，没来得及发`cast_stop`），自动断开而不是永远冻结在最后一帧。两个方向都只是尽力而为的超时/
   心跳（Caster端约5秒容忍窗口，Terminal端约10秒），不是逐包确认或真正的连接状态协议，两个数字也
-  互相独立、没有校准过。**仍然没有音视频同步**——视频和音频走完全独立的时钟（RTP时间戳分别来自
-  墙钟和采样计数），长时间投屏可能明显不同步。这些都是明确记录、
+  互相独立、没有校准过。**【已实现，原为已知缺口】音视频同步**：音频侧的RTP时间戳不再是纯采样计数累加，而是改成跟视频同一套
+  "墙钟经过时间"推导方式（`RtpVideoClock.FromElapsed`新增了通用的`clockRate`参数重载），两条流
+  因此落在同一条时间线上；Terminal端`CastReceiver`用音频作为主时钟——新增的后台呈现线程等
+  `AudioPlaybackClock.PositionTicks`追上每一帧解码时换算回来的呈现时间才真正显示（跟
+  `ContentEngine.VideoContentController`本地播放用的是同一套"音频为主时钟"模式），并且这个等待
+  循环带了一个墙钟兜底超时（1秒），专门防止如果同步换算本身有错，视频画面卡死不动而不是退化成
+  "呈现时间不太准"。这次实现仍然没有解决的：两条流从各自采集到真正送上RTP之间的延迟差（Desktop
+  Duplication vs. WASAPI loopback）没有测量也没有补偿；RTP 32位时间戳约13小时后会回绕，这套换算
+  完全没处理；解码器MFT输出帧的顺序/数量是否真的跟输入访问单元严格一一对应也没有办法验证（详见
+  `EveryStage.Terminal`README"已知风险"）。这些都是明确记录、
   留到之后解决的空白，不是被忽略的问题（见两个项目各自的README"已知风险"）。屏幕捕获、H.264编码、
   RTP传输三块各自的独立自检（Caster侧的"屏幕捕获自检"/"编码自检"/"传输自检"三个按钮，
   `EveryStage.Transport`的`TransportSelfTest`是这个仓库第一个不需要Windows/GPU就能跑通的端到端

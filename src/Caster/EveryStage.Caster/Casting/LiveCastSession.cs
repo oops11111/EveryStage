@@ -97,7 +97,6 @@ public sealed class LiveCastSession : IDisposable
     private RtpSession? _rtpSession;
     private AudioCaptureSource? _audioCapture;
     private RtpSession? _audioRtpSession;
-    private uint _audioTimestamp;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private Task? _sendLoopTask;
@@ -228,7 +227,6 @@ public sealed class LiveCastSession : IDisposable
             _audioRtpSession = new RtpSession(new IPEndPoint(_terminal.Address, DiscoveryProtocol.AudioRtpPort), AudioPayloadType);
             _audioCapture.PcmCaptured += OnPcmCaptured;
             _audioCapture.CaptureFailed += OnAudioCaptureFailed;
-            _audioTimestamp = unchecked((uint)Random.Shared.Next()); // RFC 3550 §5.1: random initial value, same reasoning RtpSession applies to its own SSRC/sequence number.
             HasAudio = true;
             audioInfo = new TerminalDiscoveryClient.AudioStreamInfo(_audioCapture.SampleRate, _audioCapture.Channels, AudioPayloadType);
         }
@@ -363,6 +361,16 @@ public sealed class LiveCastSession : IDisposable
     {
         int bytesPerSampleFrame = 2 * _audioCapture!.Channels; // 16-bit samples, interleaved by channel.
 
+        // Derived from the SAME _clock (Stopwatch) video's RtpVideoClock.FromElapsed(_clock.Elapsed)
+        // uses, just at the audio's own sample rate instead of 90000 — this is what lets
+        // CastReceiver convert both streams' RTP timestamps back to one shared "elapsed since cast
+        // start" timeline and pace video against audio at all (see this project's README's A/V sync
+        // section). This replaces an earlier draft that accumulated a sample counter from a random
+        // RFC-3550-style initial value — sample-accurate within one stream, but with no relationship
+        // to video's wall-clock timestamps whatsoever, which made it useless for cross-stream sync.
+        uint baseTimestamp = RtpVideoClock.FromElapsed(_clock.Elapsed, (uint)_audioCapture.SampleRate);
+        int samplesEmittedSoFar = 0;
+
         int offset = 0;
         while (offset < pcm.Length)
         {
@@ -373,8 +381,10 @@ public sealed class LiveCastSession : IDisposable
 
             // Non-blocking enqueue — same reasoning as OnAccessUnitEncoded's _sendQueue.TryWrite:
             // this runs on NAudio's own capture callback thread, which must not block on network I/O.
-            _audioSendQueue.Writer.TryWrite((chunk, _audioTimestamp));
-            _audioTimestamp += (uint)(chunkBytes / bytesPerSampleFrame);
+            uint timestamp = baseTimestamp + (uint)samplesEmittedSoFar;
+            _audioSendQueue.Writer.TryWrite((chunk, timestamp));
+
+            samplesEmittedSoFar += chunkBytes / bytesPerSampleFrame;
             offset += chunkBytes;
         }
 
