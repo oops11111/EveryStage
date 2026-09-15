@@ -30,6 +30,7 @@ public sealed class MainWindow : Form
     private readonly Panel _contentHost;
     private readonly CheckBox _castSwitchCheckbox;
     private readonly Label _statusLabel;
+    private readonly System.Windows.Forms.Timer _declinedMessageTimer;
     private readonly FilesPanel _filesPanel;
     private readonly DevicesPanel _devicesPanel;
     private readonly ActivitiesPanel _activitiesPanel;
@@ -102,6 +103,21 @@ public sealed class MainWindow : Form
         Controls.Add(_contentHost);
         Controls.Add(nav);
 
+        // See PlaybackEngine.PlaybackDeclinedByCastSwitch's own doc comment (README risk #9): a
+        // "点文件" click while the cast switch is off used to be a completely silent no-op — this
+        // briefly overwrites _statusLabel (already visible on every panel, since it lives in the nav
+        // sidebar rather than inside any one panel) with an acknowledgment, then reverts to the
+        // normal state text after a few seconds. One-shot timer per declined click rather than a
+        // running one: Interval is reset and the timer restarted on every new decline, so several
+        // rapid declined clicks just keep extending the same message instead of racing each other.
+        _declinedMessageTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+        _declinedMessageTimer.Tick += (_, _) =>
+        {
+            _declinedMessageTimer.Stop();
+            UpdateStatusLabel();
+        };
+        if (_playback != null) _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
+
         _stateMachine.StateChanged += OnStateChanged;
         UpdateStatusLabel();
         ShowPanel(_filesPanel);
@@ -138,11 +154,20 @@ public sealed class MainWindow : Form
     private void UpdateStatusLabel() =>
         _statusLabel.Text = _stateMachine.State == OutputState.Active ? "● 输出中" : "○ 待机中";
 
+    private void OnPlaybackDeclinedByCastSwitch(MediaFile file)
+    {
+        _statusLabel.Text = $"⚠ 投屏开关已关闭\n未投放：{Path.GetFileName(file.SourcePath)}";
+        _declinedMessageTimer.Stop(); // restart rather than stack — see the timer's own construction comment.
+        _declinedMessageTimer.Start();
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
             _stateMachine.StateChanged -= OnStateChanged;
+            if (_playback != null) _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
+            _declinedMessageTimer.Dispose();
 
             // ShowPanel() only ever keeps the *currently active* panel inside _contentHost.Controls
             // (Clear() detaches the rest without disposing them) — the inactive three would

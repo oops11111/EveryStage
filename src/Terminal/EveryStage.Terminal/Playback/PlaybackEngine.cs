@@ -64,6 +64,14 @@ public sealed class PlaybackEngine : IDisposable
     /// when the cast switch declined the request).</summary>
     public event Action<MediaFile>? FileStarted;
 
+    /// <summary>Raised instead of <see cref="FileStarted"/> when a "点文件" request reached
+    /// <see cref="PlayFile"/> but the cast switch was off (<see cref="OutputStateMachine.RequestLocalFilePlayback"/>
+    /// returned false) — exists purely so the UI can acknowledge the click happened (README risk #9:
+    /// this used to be a completely silent no-op, which looked indistinguishable from the click not
+    /// registering at all). Still doesn't render an actual local preview — that surface doesn't
+    /// exist yet — this is only ever a brief "确认收到点击" signal, not a substitute for one.</summary>
+    public event Action<MediaFile>? PlaybackDeclinedByCastSwitch;
+
     /// <summary>Raised right before local playback actually touches the shared
     /// <see cref="VideoSurface"/> (i.e. after the cast-switch check passes, immediately before
     /// showing the overlay's image/video surface) — <c>TerminalApplicationContext</c> (Program.cs)
@@ -191,7 +199,10 @@ public sealed class PlaybackEngine : IDisposable
             // Cast switch is off: PLANNING.md §9.1 calls for local-preview-only playback here.
             // That preview lives in the Phase 4 UI's file/activity panels, which don't exist yet —
             // there is nothing to render to today, so this intentionally no-ops rather than
-            // guessing at a substitute surface.
+            // guessing at a substitute surface. It's no longer a purely SILENT no-op, though (see
+            // this project's README risk #9's "彻底无反馈" complaint) — PlaybackDeclinedByCastSwitch
+            // at least lets the UI acknowledge the click happened, even with nothing to show for it.
+            PlaybackDeclinedByCastSwitch?.Invoke(file);
             return;
         }
 
