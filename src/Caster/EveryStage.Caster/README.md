@@ -50,11 +50,16 @@ PLANNING.md §15 把整个捕获/编码/传输称为"第二大技术风险区"�
    那样受网络/丢包影响。**AAC编解码本身已经在第55条接进了真正的投屏发送路径**（`LiveCastSession`
    现在真的发送AAC、`CastReceiver`真的解码它），这个自检只是仍然保留的、跟真实投屏完全隔离的
    独立验证手段，不是这条链路唯一的验证方式了。
+9. 面板上新增了一个"运行音频传输自检 (Raw RTP, 本机回环)"按钮——`EveryStage.Transport`新增的
+   `RawTransportSelfTest`，跟第6条的视频传输自检是同一种手法（本机回环UDP、逐字节比对），但走的
+   是音频真正在用的那条路径：`RtpSession.SendRawPayloadAsync → RawRtpReceiver`，不经过H.264的
+   NAL/FU-A分片逻辑。这次改动之前，`RawRtpReceiver`/`SendRawPayloadAsync`完全没有任何自动化验证
+   过，只是"逻辑上跟视频那条路径共享同一个`RtpPacket`编解码，应该没问题"这种人工推理（见
+   `EveryStage.Transport`README风险第7条）。
 
-这五个自检的角色从"补上还没接通的功能"变成了纯粹的独立诊断工具——真实投屏管线已经接通后，它们的
-价值是在投屏出问题时帮助判断问题出在采集、编码、传输、音频采集、还是AAC编解码哪一步，而不是必须
-先跑通它们才能投屏。
-帮助判断问题出在采集、编码、传输、音频采集、还是AAC编码哪一步，而不是必须先跑通它们才能投屏。
+这六个自检的角色从"补上还没接通的功能"变成了纯粹的独立诊断工具——真实投屏管线已经接通后，它们的
+价值是在投屏出问题时帮助判断问题出在采集、编码、视频传输、音频采集、AAC编解码、还是音频传输哪一
+步，而不是必须先跑通它们才能投屏。
 
 ## 已知风险 / 待验证事项
 
@@ -508,6 +513,17 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     测量机制，不是给`CastStatusMessage`加重传；`_liveCastStatsLabel`的Bounds高度本来就是已知
     偏紧（见该控件构造处的注释），这次又加了一行，跟已有的丢包警告行同时出现时是否会被裁剪没有
     验证过，也没有借这次机会去修。
+57. **【已实现，原为已知缺口】`MainForm`新增第六个自检按钮，接上`EveryStage.Transport`新增的
+    `RawTransportSelfTest`**：见`EveryStage.Transport`README风险第7条——之前音频真正在用的
+    `RtpSession.SendRawPayloadAsync`/`RawRtpReceiver`这条RTP路径完全没有自动化验证过。
+    `OnRawTransportSelfTestClick`一字不差照抄`OnTransportSelfTestClick`（第6条那个视频传输自检）
+    的写法：禁用按钮→跑自检→按`Result.Success`显示灰色/红色文字→无论成败都重新启用按钮，两个
+    方法之间的重复没有提炼成共用helper，跟这个仓库"结构相似但服务不同路径的两小段代码，各自独立
+    比强行共享更清楚"的一贯做法一致。顺带修正了这个类doc comment和`_aacEncodeSelfTestButton`
+    构造处注释里两处已经过时的说法（"AAC还没接进`LiveCastSession`真正的投屏路径"——这句在第55条
+    做完之后就已经不对了，这次一并改成准确描述），以及"现在能做什么"那一节里一段自我复制粘贴
+    留下的重复语句（跟这个改动本身无关，顺手清理）。窗体`ClientSize`高度从733涨到813以容纳第六个
+    按钮+状态标签，是这个仓库这类增长里的第六次。
 
 ## 尚未开始
 

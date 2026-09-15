@@ -24,14 +24,21 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
   了"，不用另外发明一套"帧边界"信令
 - `RawRtpReceiver`（这次新加）：音频接收端，解出RTP包后payload直接原样交出，不经过
   `H264RtpDepacketizer`——刻意没有跟`RtpReceiver`合并成一个通用类，理由见该文件自己的doc comment
-- `TransportSelfTest`：这个仓库第一个真正跑得起来的端到端验证，只覆盖视频这条路径（人造NAL形状
-  数据 + FU-A分片），没有音频的等价自检——用一批人造的、形状像NAL单元的随机字节数据（含一个刻意
+- `TransportSelfTest`：这个仓库第一个真正跑得起来的端到端验证，覆盖视频这条路径（人造NAL形状
+  数据 + FU-A分片）——用一批人造的、形状像NAL单元的随机字节数据（含一个刻意
   超过MTU、会触发FU-A分片的），通过本机回环UDP走一遍
   `RtpSession → UDP → RtpReceiver → H264RtpDepacketizer`，逐字节比对收到的和发出的是否一致。接入
   `src/Caster/EveryStage.Caster` 的UI（"运行传输自检"按钮），跟真实投屏管线互不影响。
+- `RawTransportSelfTest`（这次新加）：`TransportSelfTest`的音频对应版本，覆盖`RtpSession.
+  SendRawPayloadAsync → UDP → RawRtpReceiver`这条之前完全没有自动化验证过的路径（见下面"已知
+  风险"第7条）——同样是本机回环、固定随机种子、逐字节比对，额外多验证一件事：在这种"根本不会真的
+  丢包"的本机回环环境下，`RawRtpReceiver.GapEvents`必须恰好是0，如果不是0说明序列号跟踪或者
+  `RtpSession`的序列号递增本身有真正的bug，不是网络运气不好，所以这里把它当成自检失败而不是
+  警告。同样接入`src/Caster/EveryStage.Caster`的UI（"运行音频传输自检"按钮）。
 
 `RtpReceiver`/`RawRtpReceiver`/`RtpSession`现在都有了真实的生产调用方（`CastReceiver`/
-`LiveCastSession`），不只是被`TransportSelfTest`自己跟自己对话验证过协议逻辑。
+`LiveCastSession`），不只是被`TransportSelfTest`/`RawTransportSelfTest`自己跟自己对话验证过协议
+逻辑。
 
 ## 已知风险 / 待验证事项
 
@@ -62,10 +69,16 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
    `dotnet test` 能跑的单元测试（本仓库目前没有任何测试项目，沙箱没有dotnet无法搭建）。第一次在
    Windows上编译成功后，把 `TransportSelfTest` 的逻辑改造成真正的自动化测试，应该优先于继续加新
    功能。
-7. **`RawRtpReceiver` 没有自己的自检**（这次新加）：`TransportSelfTest` 只覆盖
-   `RtpSession.SendNalUnitAsync`/`RtpReceiver`那条路径，`SendRawPayloadAsync`/`RawRtpReceiver`
-   这条新路径（音频用）完全靠人工推理"逻辑上和视频那条路径共享同一个`RtpPacket`编解码，应该没问题"，
-   没有像视频那样真正跑一遍本机回环验证过。
+7. **【已实现，原为已知缺口】`RawRtpReceiver` 现在有了自己的自检**：新增`RawTransportSelfTest`，
+   跟`TransportSelfTest`同样的本机回环+固定随机种子+逐字节比对手法，覆盖`RtpSession.
+   SendRawPayloadAsync → UDP → RawRtpReceiver`这条路径（音频用）——之前这条路径完全靠人工推理
+   "逻辑上和视频那条路径共享同一个`RtpPacket`编解码，应该没问题"，从未真正跑一遍验证过。这次的
+   自检额外验证了一件事`TransportSelfTest`自己没验证的：在这种本机回环、根本不该真的丢包的环境下，
+   `RawRtpReceiver.GapEvents`必须恰好是0；如果不是，说明第9条新增的序列号跟踪本身有bug，不是网络
+   运气不好，所以自检把它当成失败条件而不是仅仅记录下来。接入`src/Caster/EveryStage.Caster`的UI
+   （"运行音频传输自检"按钮），跟真实投屏管线互不影响。**跟`TransportSelfTest`一样，这个自检本身
+   也从未在真实Windows机器上跑过**——沙箱里的本机回环UDP行为预期和Windows上一致，但这终究是个
+   预期，不是验证过的事实。
 8. **音频完全没有丢包/乱序处理，比视频更脆弱**：视频丢一个NAL单元至少会被`H264RtpDepacketizer`
    检测到并丢弃整个访问单元（不会拼出损坏的帧喂给解码器）；音频这边`RawRtpReceiver`把每个payload
    都直接交给调用方，`CastReceiver`收到就直接`AudioPlaybackClock.Enqueue`——一个包丢失或乱序到达，
@@ -91,5 +104,4 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
   的爆音/跳跃（见风险第8条），而不是本机回环自检那种几乎不丢包的环境
 - RTP参数（PayloadType数值本身的校验、时钟基准以外的更多元数据）的协商/校验机制——目前完全靠硬
   编码假设双方一致，`CastStartMessage.PayloadType`/`AudioPayloadType` 传了但没被消费端真正拿来做
-  任何检查
-- `RawRtpReceiver`/`SendRawPayloadAsync`（音频路径）的自动化/端到端自检（见风险第7条）
+  任何检查（`RawRtpReceiver`/`RawTransportSelfTest`同样不检查收到的包的PayloadType，见风险第7条）

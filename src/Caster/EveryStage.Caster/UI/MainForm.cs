@@ -13,19 +13,22 @@ namespace EveryStage.Caster.UI;
 /// (target terminal list + start button + privacy notice) and, once paired, a second panel that now
 /// really streams: picking a terminal and pairing successfully immediately starts a real
 /// <see cref="LiveCastSession"/> (capture -> NV12 -> H.264 -> RTP, sent to the Terminal). Below that,
-/// five independent self-tests remain available as standalone diagnostics for isolating which stage
-/// (capture, encode, transport, audio capture, or AAC encode/decode) is at fault if live casting
-/// misbehaves: screen capture (<see cref="CaptureSelfTestRunner"/>), H.264 encoding
-/// (<see cref="EncodeSelfTestRunner"/>, capture -> NV12 -> hardware encoder), RTP transport
+/// six independent self-tests remain available as standalone diagnostics for isolating which stage
+/// (capture, encode, video transport, audio capture, AAC encode/decode, or audio transport) is at
+/// fault if live casting misbehaves: screen capture (<see cref="CaptureSelfTestRunner"/>), H.264
+/// encoding (<see cref="EncodeSelfTestRunner"/>, capture -> NV12 -> hardware encoder), RTP transport
 /// (<see cref="TransportSelfTest"/>, a real loopback UDP round-trip with synthetic NAL-shaped
 /// payloads), audio capture (<see cref="AudioCaptureSelfTestRunner"/>, added a round after the other
 /// three — see this project's README on why WASAPI loopback capture had no independent self-test
-/// until now), and AAC encode/decode (<see cref="AacEncodeSelfTestRunner"/>, capture ->
+/// until now), AAC encode/decode (<see cref="AacEncodeSelfTestRunner"/>, capture ->
 /// <see cref="AacAudioEncoder"/> -> <see cref="EveryStage.Rendering.Decode.AacAudioDecoder"/> — this
-/// repo's first audio-encoding *and* decoding MFTs, chained into a full in-process round trip, but
-/// still not wired into the live cast session's own audio path, which still sends uncompressed PCM;
-/// see this project's README). None of the five self-tests touch the live cast session or each other
-/// — including the two audio-capturing ones (WASAPI loopback and AAC encode/decode) running
+/// repo's first audio-encoding *and* decoding MFTs, chained into a full in-process round trip; the
+/// live cast session's own audio path has since been switched over to the same codec, see this
+/// project's README), and raw/audio RTP transport (<see cref="RawTransportSelfTest"/>,
+/// <see cref="TransportSelfTest"/>'s counterpart for <see cref="RtpSession.SendRawPayloadAsync"/>/
+/// <see cref="RawRtpReceiver"/> — the path audio actually uses, with no NAL/FU-A framing). None of
+/// the six self-tests touch the live cast session or each other — including the two
+/// audio-capturing ones (WASAPI loopback and AAC encode/decode) running
 /// concurrently with a live cast's own <c>AudioCaptureSource</c> and each other,
 /// which this repo has never verified on a real machine but expects to work since WASAPI loopback
 /// capture (unlike exclusive-mode rendering) is inherently a shared, read-only tap on the render
@@ -104,6 +107,8 @@ public sealed class MainForm : Form
     private readonly Label _audioCaptureStatsLabel;
     private readonly Button _aacEncodeSelfTestButton;
     private readonly Label _aacEncodeStatsLabel;
+    private readonly Button _rawTransportSelfTestButton;
+    private readonly Label _rawTransportStatsLabel;
 
     private DiscoveredTerminal? _pairedTerminal;
     private LiveCastSession? _liveCastSession;
@@ -143,9 +148,10 @@ public sealed class MainForm : Form
         // _liveCastStatsLabel enough extra height for its new always-visible "确认≠健康" caveat
         // line, then to 718 to fit a fifth self-test section (AAC encode) below the audio capture
         // one, then to 733 when that fifth section's stats label grew a 4th line once
-        // AacAudioDecoder joined the round trip — see this class's doc comment and
-        // _liveCastStatsLabel's/_aacEncodeStatsLabel's own Bounds comments below.
-        ClientSize = new Size(320, 733);
+        // AacAudioDecoder joined the round trip, then to 813 to fit a sixth section (raw/audio RTP
+        // transport self-test, see this class's doc comment and _rawTransportStatsLabel's own
+        // Bounds comment below) below the AAC one — see this class's doc comment.
+        ClientSize = new Size(320, 813);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -227,8 +233,8 @@ public sealed class MainForm : Form
 
         var diagnosticsNoteLabel = new Label
         {
-            Text = "以下五个按钮各自独立、互不影响，是采集/编码/传输/音频采集/AAC音频编码各环节各自的\n" +
-                   "自检工具，用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
+            Text = "以下六个按钮各自独立、互不影响，是采集/编码/传输/音频采集/AAC音频编码/音频传输各环节\n" +
+                   "各自的自检工具，用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
             ForeColor = Color.DimGray,
             Bounds = new Rectangle(12, 226, 296, 40),
         };
@@ -250,14 +256,24 @@ public sealed class MainForm : Form
         _audioCaptureStatsLabel = new Label { Bounds = new Rectangle(12, 558, 296, 50), ForeColor = Color.DimGray };
 
         // AacAudioEncoder/AacEncodeSelfTestRunner (see their own doc comments) — this repo's first
-        // audio-encoding MFT, not yet wired into LiveCastSession's own audio path (which still sends
-        // uncompressed PCM), so this self-test is currently the only way to exercise it at all.
+        // audio-encoding MFT. LiveCastSession's own audio path has since been switched over to real
+        // AAC encode/decode too (see this project's README), so this self-test is no longer the only
+        // way to exercise the codec, but it remains useful as an isolated check that doesn't require
+        // an active cast/paired Terminal to run.
         _aacEncodeSelfTestButton = new Button { Text = "开始AAC编解码自检 (WASAPI loopback→AAC→PCM)", Bounds = new Rectangle(12, 612, 296, 32) };
         _aacEncodeSelfTestButton.Click += OnAacEncodeSelfTestClick;
         // Height 65 (not the usual 50 the other stats labels use) — this one now packs 4 lines
         // (RefreshAacEncodeStats grew a "解码回PCM字节数" line once AacAudioDecoder joined the
         // round trip), one more than the 3-line labels elsewhere in this panel.
         _aacEncodeStatsLabel = new Label { Bounds = new Rectangle(12, 646, 296, 65), ForeColor = Color.DimGray };
+
+        // RawTransportSelfTest (see its own doc comment) — TransportSelfTest's counterpart for the
+        // raw-payload RTP path (audio) instead of the H.264/NAL path; this project's
+        // EveryStage.Transport README used to flag that path as having no automated verification of
+        // its own, only reasoned about by analogy to the already-verified video path.
+        _rawTransportSelfTestButton = new Button { Text = "运行音频传输自检 (Raw RTP, 本机回环)", Bounds = new Rectangle(12, 715, 296, 32) };
+        _rawTransportSelfTestButton.Click += OnRawTransportSelfTestClick;
+        _rawTransportStatsLabel = new Label { Bounds = new Rectangle(12, 751, 296, 40), ForeColor = Color.DimGray };
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
@@ -267,6 +283,7 @@ public sealed class MainForm : Form
             _encodeSelfTestButton, _encodeStatsLabel, _transportSelfTestButton, _transportStatsLabel,
             _audioCaptureSelfTestButton, _audioCaptureStatsLabel,
             _aacEncodeSelfTestButton, _aacEncodeStatsLabel,
+            _rawTransportSelfTestButton, _rawTransportStatsLabel,
         });
 
         Controls.Add(_pairedPanel);
@@ -468,6 +485,33 @@ public sealed class MainForm : Form
         finally
         {
             _transportSelfTestButton.Enabled = true;
+        }
+    }
+
+    private async void OnRawTransportSelfTestClick(object? sender, EventArgs e)
+    {
+        _rawTransportSelfTestButton.Enabled = false;
+        _rawTransportStatsLabel.ForeColor = Color.DimGray;
+        _rawTransportStatsLabel.Text = "运行中...";
+
+        try
+        {
+            var result = await RawTransportSelfTest.RunAsync();
+            _rawTransportStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
+            _rawTransportStatsLabel.Text = result.Success
+                ? $"通过：{result.PayloadsSent} 个payload全部往返一致，GapEvents=0（本机回环）。"
+                : $"失败（发送{result.PayloadsSent}个/收到{result.PayloadsReceived}个，GapEvents={result.GapEvents}）：{result.FailureReason}";
+        }
+        catch (Exception ex)
+        {
+            // Same "a self-test throwing outright is itself a reportable finding" reasoning as
+            // OnTransportSelfTestClick above.
+            _rawTransportStatsLabel.ForeColor = Color.DarkRed;
+            _rawTransportStatsLabel.Text = $"自检本身出错：{ex.Message}";
+        }
+        finally
+        {
+            _rawTransportSelfTestButton.Enabled = true;
         }
     }
 
