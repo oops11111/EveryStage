@@ -22,11 +22,22 @@ namespace EveryStage.Caster.UI;
 /// README for what that does and doesn't guarantee (it's a lightweight heartbeat, not per-packet
 /// acknowledgment, and it can't distinguish "never confirmed" from "confirmed once, then the
 /// Terminal went quiet").
+///
+/// The standby list is now a merge of two sources (PLANNING.md §12 "已配对直显"): terminals
+/// <see cref="TerminalDiscoveryClient"/> currently sees beacons from (immediately actionable — a real
+/// IP address is known), and terminals in <see cref="PairedTerminalStore"/> that paired successfully
+/// before but aren't currently broadcasting (shown, marked offline, but not selectable — see
+/// <see cref="TerminalListEntry"/>'s doc comment on why this class deliberately never caches an old
+/// IP address to try anyway). A successful pairing upserts into the store from
+/// <see cref="ShowPaired"/>, so the next time this Caster starts (or the Terminal temporarily drops
+/// off beacon range and comes back), the entry is either already there offline or gets refreshed by
+/// the next beacon.
 /// </summary>
 public sealed class MainForm : Form
 {
     private readonly TerminalDiscoveryClient _discoveryClient;
     private readonly DeviceIdentity _identity;
+    private readonly PairedTerminalStore _pairedTerminals;
     private readonly CaptureSelfTestRunner _captureSelfTest = new();
     private readonly EncodeSelfTestRunner _encodeSelfTest = new();
     private readonly System.Windows.Forms.Timer _listRefreshTimer;
@@ -52,10 +63,24 @@ public sealed class MainForm : Form
     private DiscoveredTerminal? _pairedTerminal;
     private LiveCastSession? _liveCastSession;
 
-    public MainForm(TerminalDiscoveryClient discoveryClient, DeviceIdentity identity)
+    /// <summary>One row of the standby list — either a live, currently-reachable terminal
+    /// (<see cref="Live"/> set, from a recent beacon) or a previously-paired terminal that isn't
+    /// broadcasting right now (<see cref="Live"/> null). Deliberately carries no address for the
+    /// offline case: see <see cref="Discovery.PairedTerminal"/>'s doc comment on why a cached address
+    /// would be actively misleading rather than merely stale. <see cref="DisplayText"/> (not
+    /// <see cref="DiscoveredTerminal"/>'s own <c>DeviceName</c>) is what <see cref="_terminalListBox"/>
+    /// binds its <c>DisplayMember</c> to, so the "（离线）" suffix shows up without needing a custom
+    /// <c>ListBox</c> item renderer.</summary>
+    private sealed record TerminalListEntry(Guid DeviceId, string DeviceName, DiscoveredTerminal? Live)
+    {
+        public string DisplayText => Live != null ? DeviceName : $"{DeviceName}（离线）";
+    }
+
+    public MainForm(TerminalDiscoveryClient discoveryClient, DeviceIdentity identity, PairedTerminalStore pairedTerminals)
     {
         _discoveryClient = discoveryClient;
         _identity = identity;
+        _pairedTerminals = pairedTerminals;
 
         Text = "EveryStage 投屏机";
         ClientSize = new Size(320, 506);
@@ -67,9 +92,13 @@ public sealed class MainForm : Form
         _terminalListBox = new ListBox
         {
             Bounds = new Rectangle(12, 12, 296, 160),
-            DisplayMember = nameof(DiscoveredTerminal.DeviceName), // else ListBox shows the record's generated ToString().
+            DisplayMember = nameof(TerminalListEntry.DisplayText), // else ListBox shows the record's generated ToString().
         };
-        _terminalListBox.SelectedIndexChanged += (_, _) => _startButton.Enabled = _terminalListBox.SelectedItem != null;
+        // Only a live (online) entry has a real IP address to pair/cast to — an offline paired
+        // entry is shown for visibility (PLANNING.md §12 "已配对直显") but can't be selected to
+        // start anything until a fresh beacon from it turns it back into a live entry.
+        _terminalListBox.SelectedIndexChanged += (_, _) =>
+            _startButton.Enabled = _terminalListBox.SelectedItem is TerminalListEntry { Live: not null };
 
         var privacyLabel = new Label
         {
@@ -242,16 +271,31 @@ public sealed class MainForm : Form
     private void RefreshTerminalList()
     {
         // Preserve selection across refreshes by DeviceId rather than list index, since the list is
-        // re-sorted by name each time and a device could shuffle position as others come and go.
-        var selected = _terminalListBox.SelectedItem as DiscoveredTerminal;
-        var terminals = _discoveryClient.GetTerminals();
+        // re-sorted each time and an entry could shuffle position (or flip online/offline) as
+        // beacons come and go.
+        var selected = _terminalListBox.SelectedItem as TerminalListEntry;
+        var liveTerminals = _discoveryClient.GetTerminals(); // already ordered by name.
+
+        // Online entries first (these are the ones actually actionable), each paired-but-currently-
+        // offline entry appended after — see TerminalListEntry's doc comment on why an offline entry
+        // can't just reuse a cached live one. A terminal that both paired before and is currently
+        // beaconing shows up once, as its online entry (the Where below excludes it from the offline
+        // half), not twice.
+        var liveIds = liveTerminals.Select(t => t.DeviceId).ToHashSet();
+        var entries = liveTerminals
+            .Select(t => new TerminalListEntry(t.DeviceId, t.DeviceName, t))
+            .Concat(_pairedTerminals.All
+                .Where(p => !liveIds.Contains(p.DeviceId))
+                .OrderBy(p => p.DeviceName)
+                .Select(p => new TerminalListEntry(p.DeviceId, p.DeviceName, null)))
+            .ToList();
 
         _terminalListBox.BeginUpdate();
         _terminalListBox.Items.Clear();
-        foreach (var terminal in terminals) _terminalListBox.Items.Add(terminal);
+        foreach (var entry in entries) _terminalListBox.Items.Add(entry);
         if (selected != null)
         {
-            var stillPresent = terminals.FirstOrDefault(t => t.DeviceId == selected.DeviceId);
+            var stillPresent = entries.FirstOrDefault(e => e.DeviceId == selected.DeviceId);
             if (stillPresent != null) _terminalListBox.SelectedItem = stillPresent;
         }
         _terminalListBox.EndUpdate();
@@ -259,7 +303,11 @@ public sealed class MainForm : Form
 
     private async void OnStartButtonClick(object? sender, EventArgs e)
     {
-        if (_terminalListBox.SelectedItem is not DiscoveredTerminal terminal) return;
+        // The offline half of TerminalListEntry.Live == null can't reach here in practice (the
+        // SelectedIndexChanged handler above keeps _startButton disabled for it), but the pattern
+        // match still guards against it directly rather than trusting that invariant blindly.
+        if (_terminalListBox.SelectedItem is not TerminalListEntry { Live: not null } entry) return;
+        var terminal = entry.Live!; // non-null per the pattern match above.
 
         _startButton.Enabled = false;
         _startButton.Text = "配对中...";
@@ -279,13 +327,26 @@ public sealed class MainForm : Form
         }
         finally
         {
+            // Re-checks Live (not just non-null) rather than reusing the `entry` this method
+            // started with: RefreshTerminalList() runs on its own 1s timer independently of this
+            // await, and could have rebuilt the list — replacing the selected item with a fresh
+            // TerminalListEntry instance — while a pairing request was in flight (its 15s default
+            // timeout is longer than a single refresh tick). If the selected terminal's beacon
+            // happened to lapse during that wait, re-enabling the button without this check would
+            // let the user immediately retry against what the list now shows as offline.
             _startButton.Text = "开始投屏";
-            _startButton.Enabled = _terminalListBox.SelectedItem != null;
+            _startButton.Enabled = _terminalListBox.SelectedItem is TerminalListEntry { Live: not null };
         }
     }
 
     private void ShowPaired(DiscoveredTerminal terminal)
     {
+        // Remembered here, not just when the standby list was last built — this is the one point
+        // where a pairing is actually confirmed successful, which is the right moment to persist it
+        // for next time's "已配对直显" list (PLANNING.md §12), independent of whether/when the
+        // standby list next happens to refresh.
+        _pairedTerminals.Upsert(new PairedTerminal(terminal.DeviceId, terminal.DeviceName, DateTimeOffset.Now));
+
         _pairedTerminal = terminal;
         _pairedWithLabel.Text = $"正在向 \"{terminal.DeviceName}\" 投屏...";
         _standbyPanel.Visible = false;

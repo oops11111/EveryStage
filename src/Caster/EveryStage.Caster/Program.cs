@@ -13,11 +13,12 @@ internal static class Program
         Application.SetCompatibleTextRenderingDefault(false);
 
         var identity = DeviceIdentity.LoadOrCreate("caster");
+        var pairedTerminals = new PairedTerminalStore();
 
         using var discoveryClient = new TerminalDiscoveryClient();
         discoveryClient.Start();
 
-        using var mainForm = new MainForm(discoveryClient, identity);
+        using var mainForm = new MainForm(discoveryClient, identity, pairedTerminals);
         Application.Run(mainForm);
     }
 }

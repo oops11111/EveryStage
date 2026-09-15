@@ -60,7 +60,10 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   `Terminal/.../Devices/DiscoveryService` 广播、响应配对、分离"允许被投放/被监看"权限，配一个配对
   确认弹窗；投屏机侧 `src/Caster/EveryStage.Caster/` 监听终端机列表、发起配对请求。两边共用的协议
   定义搬到了 `src/Shared/EveryStage.Discovery/`——**协议格式仍是本仓库自定义的草案**，现在有了
-  两个独立实现，但从未在真实网络上互相验证过。
+  两个独立实现，但从未在真实网络上互相验证过。**Caster这一侧也补上了"已配对直显"**
+  （PLANNING.md §12）：新增 `Discovery/PairedTerminalStore.cs` 持久化每次成功配对过的终端机，
+  待机列表现在是"当前收到beacon的"和"配对过但暂时没广播的（标为离线）"两个来源合并显示的结果，
+  离线条目故意不缓存旧IP地址、也不可选，必须等对方重新广播才能真正发起投屏。
 - **阶段2的捕获/编码/传输现在端到端接通了，视频+音频都有**：Caster侧新增的
   `Casting/LiveCastSession.cs` 把屏幕捕获(Desktop Duplication API，`Caster/Capture/`)→ NV12转换 →
   **H.264硬件编码**(`Caster/Encode/`：`BgraToNv12Converter` 用GPU视频处理器转NV12，
