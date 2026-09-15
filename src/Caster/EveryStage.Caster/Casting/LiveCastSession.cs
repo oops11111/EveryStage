@@ -91,6 +91,26 @@ public sealed class LiveCastSession : IDisposable
     private readonly Channel<(byte[] Pcm, uint Timestamp)> _audioSendQueue =
         Channel.CreateUnbounded<(byte[], uint)>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
 
+    // Backpressure depth counters for the two queues above — see OnAccessUnitEncoded/OnPcmCaptured
+    // for the drop policy these back, and this project's README (risk #25's residual concern: "无
+    // 界的...没有背压或丢弃策略") for why this was previously entirely unimplemented. Interlocked
+    // rather than a lock: the writer thread (encoder event loop / NAudio capture callback) only
+    // ever increments, the reader thread (RunSendLoop/RunAudioSendLoop) only ever decrements, and
+    // neither side needs the read-and-act to be one atomic step — a queue depth that's off by one
+    // for a moment costs nothing here, unlike the queue contents themselves (which stay ordered by
+    // the Channel itself, untouched by this counter).
+    private int _queuedAccessUnitCount;
+    private int _queuedAudioChunkCount;
+
+    // Roughly 2 seconds of video / 1 second of audio at typical rates (30fps access units; ~10ms
+    // WASAPI loopback buffers), picked the same way every other timing constant in this repo
+    // lacking a real network to tune against is (see this project's README) — generous enough that
+    // a brief send-side hiccup doesn't start dropping data, bounded so a genuinely stuck network
+    // connection can't grow either queue forever, which is the whole point of this being a
+    // *bounded* backlog policy rather than the unbounded-forever behavior this was before.
+    private const int MaxQueuedAccessUnits = 60;
+    private const int MaxQueuedAudioChunks = 100;
+
     private D3D11Device? _gpu;
     private ScreenCaptureSource? _capture;
     private BgraToNv12Converter? _converter;
@@ -118,6 +138,13 @@ public sealed class LiveCastSession : IDisposable
     public long FramesCaptured { get; private set; }
     public long AccessUnitsSent { get; private set; }
     public long BytesSent { get; private set; }
+
+    /// <summary>Access units dropped whole (never enqueued at all) because <see cref="_sendQueue"/>
+    /// was already <see cref="MaxQueuedAccessUnits"/> deep when they finished encoding — see
+    /// <see cref="OnAccessUnitEncoded"/> for the policy. Should stay at 0 on any healthy LAN; a
+    /// climbing count means the network send side can't keep up with the encoder.</summary>
+    public long AccessUnitsDroppedForBackpressure { get; private set; }
+
     public string? LastError { get; private set; }
 
     /// <summary>Whether audio capture actually started for this session — false means this cast is
@@ -125,6 +152,10 @@ public sealed class LiveCastSession : IDisposable
     /// <see cref="Start"/> hasn't run yet.</summary>
     public bool HasAudio { get; private set; }
     public long AudioBytesSent { get; private set; }
+
+    /// <summary>Same role as <see cref="AccessUnitsDroppedForBackpressure"/>, for
+    /// <see cref="_audioSendQueue"/> — see <see cref="OnPcmCaptured"/>.</summary>
+    public long AudioChunksDroppedForBackpressure { get; private set; }
 
     /// <summary>Set when audio capture/sending fails — unlike <see cref="LastError"/> this never
     /// stops the video side of the session; see this class's doc comment on audio being
@@ -203,7 +234,11 @@ public sealed class LiveCastSession : IDisposable
         FramesCaptured = 0;
         AccessUnitsSent = 0;
         BytesSent = 0;
+        AccessUnitsDroppedForBackpressure = 0;
         AudioBytesSent = 0;
+        AudioChunksDroppedForBackpressure = 0;
+        _queuedAccessUnitCount = 0;
+        _queuedAudioChunkCount = 0;
         TerminalFramesDecoded = 0;
         TerminalVideoBytesReceived = 0;
         TerminalVideoError = null;
@@ -325,8 +360,27 @@ public sealed class LiveCastSession : IDisposable
 
     private void OnAccessUnitEncoded(byte[] accessUnit)
     {
+        // Backpressure — the residual risk this project's README flagged for risk #25 ("Channel是
+        // 无界的...没有背压或丢弃策略"): if RunSendLoop can't keep up with real network sends, drop
+        // this entire access unit rather than let the queue grow without bound. Dropping is
+        // deliberately all-or-nothing per access unit, decided BEFORE any of its NAL units are
+        // enqueued — a bounded Channel's built-in DropOldest policy would instead drop individual
+        // NAL units off the front of the queue, which could tear a still-partially-queued access
+        // unit in half and hand the Terminal's CastReceiver an access unit it can never decode at
+        // all (not even the frames after it, since H.264 slices generally depend on earlier slices
+        // within the same access unit). Dropping whole access units means the decoder only ever
+        // sees complete ones; H264HardwareEncoder's short-GOP, no-B-frames settings mean the next
+        // IDR frame self-heals the resulting gap within about a second either way.
+        if (Interlocked.CompareExchange(ref _queuedAccessUnitCount, 0, 0) >= MaxQueuedAccessUnits)
+        {
+            AccessUnitsDroppedForBackpressure++;
+            StatsUpdated?.Invoke();
+            return;
+        }
+
         uint timestamp = RtpVideoClock.FromElapsed(_clock.Elapsed);
         var nalUnits = AnnexBNalSplitter.Split(accessUnit).ToList();
+        Interlocked.Increment(ref _queuedAccessUnitCount); // decremented in RunSendLoop once sent.
         for (int i = 0; i < nalUnits.Count; i++)
         {
             bool isLastNalOfAccessUnit = i == nalUnits.Count - 1;
@@ -357,6 +411,14 @@ public sealed class LiveCastSession : IDisposable
                     LastError = ex.Message;
                     StatsUpdated?.Invoke();
                 }
+                finally
+                {
+                    // Decremented once per access unit (on its last NAL), regardless of whether the
+                    // send above succeeded — the item is gone from the queue either way, and
+                    // OnAccessUnitEncoded's backpressure check only cares about queue depth, not
+                    // send outcomes (a send failure is tracked separately via LastError above).
+                    if (isLastNalOfAccessUnit) Interlocked.Decrement(ref _queuedAccessUnitCount);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -374,6 +436,19 @@ public sealed class LiveCastSession : IDisposable
 
     private void OnPcmCaptured(byte[] pcm)
     {
+        // Backpressure — same policy/reasoning as OnAccessUnitEncoded's, applied to audio: if
+        // RunAudioSendLoop can't keep up, drop this entire captured buffer rather than let
+        // _audioSendQueue grow without bound. Unlike video, audio chunks have no access-unit-style
+        // dependency between them (each one is independently decodable PCM), so there's no
+        // "tearing" correctness concern here — dropping whole incoming buffers is simply the
+        // simplest place to apply the check, not something dropping mid-buffer would have broken.
+        if (Interlocked.CompareExchange(ref _queuedAudioChunkCount, 0, 0) >= MaxQueuedAudioChunks)
+        {
+            AudioChunksDroppedForBackpressure++;
+            StatsUpdated?.Invoke();
+            return;
+        }
+
         int bytesPerSampleFrame = 2 * _audioCapture!.Channels; // 16-bit samples, interleaved by channel.
 
         // Derived from the SAME _clock (Stopwatch) video's RtpVideoClock.FromElapsed(_clock.Elapsed)
@@ -398,6 +473,7 @@ public sealed class LiveCastSession : IDisposable
             // this runs on NAudio's own capture callback thread, which must not block on network I/O.
             uint timestamp = baseTimestamp + (uint)samplesEmittedSoFar;
             _audioSendQueue.Writer.TryWrite((chunk, timestamp));
+            Interlocked.Increment(ref _queuedAudioChunkCount); // decremented in RunAudioSendLoop once sent.
 
             samplesEmittedSoFar += chunkBytes / bytesPerSampleFrame;
             offset += chunkBytes;
@@ -431,6 +507,12 @@ public sealed class LiveCastSession : IDisposable
                 {
                     AudioError = ex.Message;
                     StatsUpdated?.Invoke();
+                }
+                finally
+                {
+                    // Decremented once per dequeued chunk regardless of send outcome — same
+                    // reasoning as RunSendLoop's identical decrement for video.
+                    Interlocked.Decrement(ref _queuedAudioChunkCount);
                 }
             }
         }

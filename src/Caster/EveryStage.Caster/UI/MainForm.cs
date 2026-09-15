@@ -605,12 +605,21 @@ public sealed class MainForm : Form
               (_liveCastSession.TerminalAudioError != null ? $"（终端机音频出错：{_liveCastSession.TerminalAudioError}）" : "")
             : "终端机确认: 未确认（尚未收到或已停止收到终端机的状态回报）";
 
+        // Only shown once something has actually been dropped — on a healthy LAN both counters
+        // should stay at 0 forever, and a permanent "已丢弃: 0" line would just be noise. See
+        // LiveCastSession.OnAccessUnitEncoded/OnPcmCaptured for the backpressure policy this reports.
+        string backpressureLine = _liveCastSession.AccessUnitsDroppedForBackpressure > 0 || _liveCastSession.AudioChunksDroppedForBackpressure > 0
+            ? $"\n⚠ 因网络发送跟不上而丢弃: 视频 {_liveCastSession.AccessUnitsDroppedForBackpressure} 个访问单元" +
+              $"，音频 {_liveCastSession.AudioChunksDroppedForBackpressure} 个分片"
+            : "";
+
         _liveCastStatsLabel.Text =
             $"分辨率: {_liveCastSession.Width}x{_liveCastSession.Height}\n" +
             $"已捕获帧数: {_liveCastSession.FramesCaptured}   已发送访问单元: {_liveCastSession.AccessUnitsSent}\n" +
             $"已发送字节数: {_liveCastSession.BytesSent}\n" +
             audioLine + "\n" +
-            terminalLine;
+            terminalLine +
+            backpressureLine;
     }
 
     private void ShowStandby()
