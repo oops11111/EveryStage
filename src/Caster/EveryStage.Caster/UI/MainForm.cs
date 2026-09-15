@@ -12,12 +12,18 @@ namespace EveryStage.Caster.UI;
 /// (target terminal list + start button + privacy notice) and, once paired, a second panel that now
 /// really streams: picking a terminal and pairing successfully immediately starts a real
 /// <see cref="LiveCastSession"/> (capture -> NV12 -> H.264 -> RTP, sent to the Terminal). Below that,
-/// three independent self-tests remain available as standalone diagnostics for isolating which stage
-/// (capture, encode, or transport) is at fault if live casting misbehaves: screen capture
-/// (<see cref="CaptureSelfTestRunner"/>), H.264 encoding (<see cref="EncodeSelfTestRunner"/>,
-/// capture -> NV12 -> hardware encoder), and RTP transport (<see cref="TransportSelfTest"/>, a real
-/// loopback UDP round-trip with synthetic NAL-shaped payloads). None of the three self-tests touch
-/// the live cast session or each other. The "终端机确认" line in the paired panel is the Terminal's
+/// four independent self-tests remain available as standalone diagnostics for isolating which stage
+/// (capture, encode, transport, or audio capture) is at fault if live casting misbehaves: screen
+/// capture (<see cref="CaptureSelfTestRunner"/>), H.264 encoding (<see cref="EncodeSelfTestRunner"/>,
+/// capture -> NV12 -> hardware encoder), RTP transport (<see cref="TransportSelfTest"/>, a real
+/// loopback UDP round-trip with synthetic NAL-shaped payloads), and audio capture
+/// (<see cref="AudioCaptureSelfTestRunner"/>, added a round after the other three — see this
+/// project's README on why WASAPI loopback capture had no independent self-test until now). None of
+/// the four self-tests touch the live cast session or each other — including the audio one running
+/// concurrently with a live cast's own <c>AudioCaptureSource</c>, which this repo has never verified
+/// on a real machine but expects to work since WASAPI loopback capture (unlike exclusive-mode
+/// rendering) is inherently a shared, read-only tap on the render stream, not something one capture
+/// client can lock out another from. The "终端机确认" line in the paired panel is the Terminal's
 /// own periodic status report (<see cref="LiveCastSession.IsTerminalAlive"/>) — see this project's
 /// README for what that does and doesn't guarantee (it's a lightweight heartbeat, not per-packet
 /// acknowledgment, and it can't distinguish "never confirmed" from "confirmed once, then the
@@ -51,9 +57,11 @@ public sealed class MainForm : Form
     private readonly PairedTerminalStore _pairedTerminals;
     private readonly CaptureSelfTestRunner _captureSelfTest = new();
     private readonly EncodeSelfTestRunner _encodeSelfTest = new();
+    private readonly AudioCaptureSelfTestRunner _audioCaptureSelfTest = new();
     private readonly System.Windows.Forms.Timer _listRefreshTimer;
     private readonly System.Windows.Forms.Timer _captureStatsTimer;
     private readonly System.Windows.Forms.Timer _encodeStatsTimer;
+    private readonly System.Windows.Forms.Timer _audioCaptureStatsTimer;
     private readonly System.Windows.Forms.Timer _liveCastStatsTimer;
 
     private readonly Panel _standbyPanel;
@@ -72,6 +80,8 @@ public sealed class MainForm : Form
     private readonly Label _encodeStatsLabel;
     private readonly Button _transportSelfTestButton;
     private readonly Label _transportStatsLabel;
+    private readonly Button _audioCaptureSelfTestButton;
+    private readonly Label _audioCaptureStatsLabel;
 
     private DiscoveredTerminal? _pairedTerminal;
     private LiveCastSession? _liveCastSession;
@@ -96,7 +106,9 @@ public sealed class MainForm : Form
         _pairedTerminals = pairedTerminals;
 
         Text = "EveryStage 投屏机";
-        ClientSize = new Size(320, 506);
+        // Grown from the previous 506 to fit a fourth self-test section (audio capture) added below
+        // the existing capture/encode/transport three — see this class's doc comment.
+        ClientSize = new Size(320, 600);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -165,7 +177,7 @@ public sealed class MainForm : Form
 
         var diagnosticsNoteLabel = new Label
         {
-            Text = "以下三个按钮各自独立、互不影响，是采集/编码/传输三个环节各自的自检工具，\n" +
+            Text = "以下四个按钮各自独立、互不影响，是采集/编码/传输/音频采集各环节各自的自检工具，\n" +
                    "用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
             ForeColor = Color.DimGray,
             Bounds = new Rectangle(12, 208, 296, 40),
@@ -183,12 +195,17 @@ public sealed class MainForm : Form
         _transportSelfTestButton.Click += OnTransportSelfTestClick;
         _transportStatsLabel = new Label { Bounds = new Rectangle(12, 462, 296, 40), ForeColor = Color.DimGray };
 
+        _audioCaptureSelfTestButton = new Button { Text = "开始音频采集自检 (WASAPI loopback)", Bounds = new Rectangle(12, 506, 296, 32) };
+        _audioCaptureSelfTestButton.Click += OnAudioCaptureSelfTestClick;
+        _audioCaptureStatsLabel = new Label { Bounds = new Rectangle(12, 540, 296, 50), ForeColor = Color.DimGray };
+
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
         {
             _pairedWithLabel, _privacyReminderLabel, _liveCastStatsLabel, _stopCastButton, diagnosticsNoteLabel,
             _captureSelfTestButton, _captureStatsLabel,
             _encodeSelfTestButton, _encodeStatsLabel, _transportSelfTestButton, _transportStatsLabel,
+            _audioCaptureSelfTestButton, _audioCaptureStatsLabel,
         });
 
         Controls.Add(_pairedPanel);
@@ -203,6 +220,9 @@ public sealed class MainForm : Form
 
         _encodeStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _encodeStatsTimer.Tick += (_, _) => RefreshEncodeStats();
+
+        _audioCaptureStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _audioCaptureStatsTimer.Tick += (_, _) => RefreshAudioCaptureStats();
 
         _liveCastStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _liveCastStatsTimer.Tick += (_, _) => RefreshLiveCastStats();
@@ -276,6 +296,41 @@ public sealed class MainForm : Form
         _encodeStatsLabel.Text =
             $"已编码访问单元数: {_encodeSelfTest.AccessUnitsEncoded}\n" +
             $"编码总字节数: {_encodeSelfTest.TotalEncodedBytes}";
+    }
+
+    private void OnAudioCaptureSelfTestClick(object? sender, EventArgs e)
+    {
+        if (_audioCaptureSelfTest.IsRunning)
+        {
+            _audioCaptureSelfTest.Stop();
+            _audioCaptureStatsTimer.Stop();
+            _audioCaptureSelfTestButton.Text = "开始音频采集自检 (WASAPI loopback)";
+            _audioCaptureStatsLabel.Text = "";
+        }
+        else
+        {
+            _audioCaptureSelfTest.Start();
+            _audioCaptureStatsTimer.Start();
+            _audioCaptureSelfTestButton.Text = "停止音频采集自检";
+            RefreshAudioCaptureStats();
+        }
+    }
+
+    private void RefreshAudioCaptureStats()
+    {
+        if (_audioCaptureSelfTest.LastError != null)
+        {
+            _audioCaptureStatsLabel.ForeColor = Color.DarkRed;
+            _audioCaptureStatsLabel.Text = $"音频采集出错：{_audioCaptureSelfTest.LastError}";
+            _audioCaptureStatsTimer.Stop();
+            _audioCaptureSelfTestButton.Text = "开始音频采集自检 (WASAPI loopback)";
+            return;
+        }
+
+        _audioCaptureStatsLabel.ForeColor = Color.DimGray;
+        _audioCaptureStatsLabel.Text =
+            $"采样率: {_audioCaptureSelfTest.SampleRate}Hz   声道数: {_audioCaptureSelfTest.Channels}\n" +
+            $"已捕获字节数: {_audioCaptureSelfTest.TotalBytesCaptured}    近1秒吞吐量: {_audioCaptureSelfTest.BytesPerSecond / 1024.0:F1} KB/s";
     }
 
     private async void OnTransportSelfTestClick(object? sender, EventArgs e)
@@ -483,6 +538,13 @@ public sealed class MainForm : Form
             _encodeSelfTestButton.Text = "开始编码自检 (捕获→NV12→H.264)";
             _encodeStatsLabel.Text = "";
         }
+        if (_audioCaptureSelfTest.IsRunning)
+        {
+            _audioCaptureSelfTest.Stop();
+            _audioCaptureStatsTimer.Stop();
+            _audioCaptureSelfTestButton.Text = "开始音频采集自检 (WASAPI loopback)";
+            _audioCaptureStatsLabel.Text = "";
+        }
         _transportStatsLabel.Text = "";
 
         _pairedTerminal = null;
@@ -499,6 +561,8 @@ public sealed class MainForm : Form
             _captureSelfTest.Dispose();
             _encodeStatsTimer.Dispose();
             _encodeSelfTest.Dispose();
+            _audioCaptureStatsTimer.Dispose();
+            _audioCaptureSelfTest.Dispose();
             _liveCastStatsTimer.Dispose();
             _liveCastSession?.Dispose();
         }
