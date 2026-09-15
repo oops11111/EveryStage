@@ -18,20 +18,32 @@ namespace EveryStage.Caster.Casting;
 /// (Annex-B H.264 access units) -> <see cref="AnnexBNalSplitter"/> (individual NAL units) ->
 /// <see cref="RtpSession"/> (RTP-over-UDP), sent to the paired Terminal's
 /// <see cref="DiscoveryProtocol.VideoRtpPort"/>, plus <see cref="AudioCaptureSource"/> (16-bit PCM)
-/// -> a second <see cref="RtpSession"/> on <see cref="DiscoveryProtocol.AudioRtpPort"/>.
-/// <see cref="EncodeSelfTestRunner"/> already exercises the video chain up through the encoder in
-/// isolation; this class carries it the rest of the way onto the network, adds the audio side
-/// (which has no equivalent self-test — see this project's README), and signals the Terminal
-/// out-of-band (<see cref="DiscoveryProtocol.CastStartMessage"/> /
-/// <see cref="DiscoveryProtocol.CastStopMessage"/>) so it knows a stream is starting/stopping and
-/// what resolution/audio format to expect, instead of the Terminal having to infer that purely from
-/// RTP packets arriving on a fixed port.
+/// -> <see cref="AacAudioEncoder"/> (ADTS-framed AAC access units) -> a second
+/// <see cref="RtpSession"/> on <see cref="DiscoveryProtocol.AudioRtpPort"/>. Sends AAC rather than
+/// raw PCM as of this round (see <see cref="OnPcmCaptured"/>/<see cref="OnAacAccessUnitEncoded"/>
+/// and this project's README risk #53-54 for the two encode/decode MFTs this replaces raw PCM with,
+/// and everything about them that's still unverified on real hardware) — no RTP fragmentation is
+/// needed for this stream even though <see cref="H264RtpPacketizer"/>-style splitting exists for
+/// video, because one AAC access unit (a few hundred bytes at typical bitrates) comfortably fits
+/// under a UDP payload budget that raw ~10ms WASAPI PCM buffers used to threaten; an unusually large
+/// access unit (this round doesn't control/cap the negotiated bitrate — see
+/// <c>AacAudioEncoder.ConfigureOutputType</c>'s own doc comment) would rely on ordinary IP
+/// fragmentation rather than anything this class does, which this repo has no way to verify holds up
+/// on a real LAN. <see cref="EncodeSelfTestRunner"/> already exercises the video chain up through the
+/// encoder in isolation, and <c>Encode.AacEncodeSelfTestRunner</c> exercises the audio encode+decode
+/// round trip in isolation; this class is the first to actually put AAC on the wire between the two
+/// real processes rather than looping it back to itself in one. Signals the Terminal out-of-band
+/// (<see cref="DiscoveryProtocol.CastStartMessage"/> / <see cref="DiscoveryProtocol.CastStopMessage"/>)
+/// so it knows a stream is starting/stopping and what resolution/audio format (now including which
+/// codec) to expect, instead of the Terminal having to infer that purely from RTP packets arriving on
+/// a fixed port.
 ///
 /// Audio is best-effort on top of video, not a co-equal requirement: if
-/// <see cref="AudioCaptureSource"/> fails to construct (no active audio session, a WASAPI error),
-/// this class still casts video-only rather than failing the whole session — PLANNING.md's screen
-/// capture is the core feature, and a machine with nothing currently producing audio is a normal
-/// state, not an error.
+/// <see cref="AudioCaptureSource"/> or <see cref="AacAudioEncoder"/> fails to construct (no active
+/// audio session, a WASAPI error, no AAC encoder MFT on this machine), this class still casts
+/// video-only rather than failing the whole session — PLANNING.md's screen capture is the core
+/// feature, and a machine with nothing currently producing audio (or, now, no AAC encoder
+/// registered) is a normal state, not an error.
 ///
 /// Now has a real, if lightweight, acknowledgment channel: the Terminal reports back periodically
 /// (<see cref="DiscoveryProtocol.CastStatusMessage"/>, roughly once a second, see
@@ -60,11 +72,12 @@ public sealed class LiveCastSession : IDisposable
     private const byte PayloadType = 96;
     private const byte AudioPayloadType = 97;
 
-    // Keeps each audio RTP packet's total IP-packet size safely under the ~1500-byte Ethernet MTU
-    // once RTP/UDP/IP headers are added — same conservative-budget reasoning as RtpSession's own
-    // default maxPayloadSize for video, picked independently here because WASAPI loopback capture
-    // buffers (commonly ~10ms, e.g. ~1920 bytes at 48kHz stereo 16-bit) can otherwise exceed it.
-    private const int MaxAudioPayloadBytes = 1280;
+    // AAC's fixed frame size (samples per channel) — one AacAudioEncoder.AccessUnitEncoded callback
+    // represents exactly this many samples' worth of audio, used to derive each access unit's own
+    // RTP timestamp within a batch (see OnPcmCaptured/OnAacAccessUnitEncoded). Independently
+    // duplicated from AacAudioDecoder.SamplesPerFrame rather than shared — same "each file keeps its
+    // own independently-verifiable copy" convention this repo already applies everywhere else.
+    private const int AacSamplesPerFrame = 1024;
 
     private readonly TerminalDiscoveryClient _discoveryClient;
     private readonly DeviceIdentity _identity;
@@ -85,13 +98,17 @@ public sealed class LiveCastSession : IDisposable
     private readonly Channel<(ReadOnlyMemory<byte> Nal, uint Timestamp, bool IsLastNalOfAccessUnit)> _sendQueue =
         Channel.CreateUnbounded<(ReadOnlyMemory<byte>, uint, bool)>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
 
-    // Same ordering reasoning as _sendQueue, applied to audio: AudioCaptureSource.PcmCaptured fires
-    // sequentially from NAudio's own capture callback thread, but fire-and-forget sends from that
-    // callback could still complete out of order relative to each other.
-    private readonly Channel<(byte[] Pcm, uint Timestamp)> _audioSendQueue =
+    // Same ordering reasoning as _sendQueue, applied to audio: AacAudioEncoder.AccessUnitEncoded
+    // fires sequentially (synchronously, from within OnPcmCaptured — see AacAudioEncoder's own doc
+    // comment on having no background thread of its own) on NAudio's own capture callback thread,
+    // but fire-and-forget sends from that callback could still complete out of order relative to
+    // each other. Holds ADTS-framed AAC access units now, not raw PCM chunks (see this class's own
+    // doc comment) — "Payload" rather than "Pcm" reflects that; RunAudioSendLoop itself doesn't care
+    // either way, since RtpSession.SendRawPayloadAsync is payload-agnostic.
+    private readonly Channel<(byte[] Payload, uint Timestamp)> _audioSendQueue =
         Channel.CreateUnbounded<(byte[], uint)>(new UnboundedChannelOptions { SingleReader = true, SingleWriter = true });
 
-    // Backpressure depth counters for the two queues above — see OnAccessUnitEncoded/OnPcmCaptured
+    // Backpressure depth counters for the two queues above — see OnAccessUnitEncoded/OnAacAccessUnitEncoded
     // for the drop policy these back, and this project's README (risk #25's residual concern: "无
     // 界的...没有背压或丢弃策略") for why this was previously entirely unimplemented. Interlocked
     // rather than a lock: the writer thread (encoder event loop / NAudio capture callback) only
@@ -102,12 +119,17 @@ public sealed class LiveCastSession : IDisposable
     private int _queuedAccessUnitCount;
     private int _queuedAudioChunkCount;
 
-    // Roughly 2 seconds of video / 1 second of audio at typical rates (30fps access units; ~10ms
-    // WASAPI loopback buffers), picked the same way every other timing constant in this repo
-    // lacking a real network to tune against is (see this project's README) — generous enough that
-    // a brief send-side hiccup doesn't start dropping data, bounded so a genuinely stuck network
-    // connection can't grow either queue forever, which is the whole point of this being a
-    // *bounded* backlog policy rather than the unbounded-forever behavior this was before.
+    // Roughly 2 seconds of video (30fps access units); the audio side's own budget used to be "~1
+    // second of ~10ms raw PCM chunks" (100 of them) before this round switched audio to AAC — a
+    // ~23ms AAC frame (1024 samples at 44.1kHz) means 100 of them is now closer to ~2.3 seconds, not
+    // deliberately retuned for the new frame size, just inherited as-is (same "no real network to
+    // tune against" reasoning this project's README gives for every other timing constant here; a
+    // generous-rather-than-precise budget errs the same direction either way). Picked the same way
+    // every other timing constant in this repo lacking a real network to tune against is (see this
+    // project's README) — generous enough that a brief send-side hiccup doesn't start dropping data,
+    // bounded so a genuinely stuck network connection can't grow either queue forever, which is the
+    // whole point of this being a *bounded* backlog policy rather than the unbounded-forever
+    // behavior this was before.
     private const int MaxQueuedAccessUnits = 60;
     private const int MaxQueuedAudioChunks = 100;
 
@@ -117,11 +139,21 @@ public sealed class LiveCastSession : IDisposable
     private H264HardwareEncoder? _encoder;
     private RtpSession? _rtpSession;
     private AudioCaptureSource? _audioCapture;
+    private AacAudioEncoder? _audioEncoder;
     private RtpSession? _audioRtpSession;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private Task? _sendLoopTask;
     private Task? _audioSendLoopTask;
+
+    // Set at the start of each OnPcmCaptured call, read/advanced by OnAacAccessUnitEncoded — see
+    // that method's own doc comment for why these need to be per-batch state rather than computed
+    // independently per access unit. Safe as plain fields (not Interlocked/volatile): both methods
+    // only ever run on the same thread, synchronously, within a single OnPcmCaptured call — never
+    // concurrently with themselves or each other (same single-capture-callback-thread invariant
+    // AudioCaptureSource's own doc comment already establishes).
+    private uint _aacBatchBaseTimestamp;
+    private int _aacSamplesEmittedInBatch;
 
     public bool IsRunning => _loopTask != null;
 
@@ -157,13 +189,18 @@ public sealed class LiveCastSession : IDisposable
     public string? LastError { get; private set; }
 
     /// <summary>Whether audio capture actually started for this session — false means this cast is
-    /// video-only, either because <see cref="AudioCaptureSource"/> failed to construct or because
-    /// <see cref="Start"/> hasn't run yet.</summary>
+    /// video-only, either because <see cref="AudioCaptureSource"/>/<see cref="AacAudioEncoder"/>
+    /// failed to construct or because <see cref="Start"/> hasn't run yet.</summary>
     public bool HasAudio { get; private set; }
+
+    /// <summary>AAC bytes actually sent (as of this round — previously raw PCM bytes captured, back
+    /// when this class sent PCM unmodified). Incremented per encoded access unit in
+    /// <see cref="OnAacAccessUnitEncoded"/>, not per PCM buffer captured, precisely so this keeps
+    /// meaning "bytes that went on the wire" rather than "bytes captured before compression".</summary>
     public long AudioBytesSent { get; private set; }
 
     /// <summary>Same role as <see cref="AccessUnitsDroppedForBackpressure"/>, for
-    /// <see cref="_audioSendQueue"/> — see <see cref="OnPcmCaptured"/>.</summary>
+    /// <see cref="_audioSendQueue"/> — see <see cref="OnAacAccessUnitEncoded"/>.</summary>
     public long AudioChunksDroppedForBackpressure { get; private set; }
 
     /// <summary>Set when audio capture/sending fails — unlike <see cref="LastError"/> this never
@@ -297,11 +334,18 @@ public sealed class LiveCastSession : IDisposable
         try
         {
             _audioCapture = new AudioCaptureSource();
+            // AAC as of this round (see this class's own doc comment) — AacAudioEncoder's own
+            // construction failure (no AAC encoder MFT on this machine, an unsupported negotiated
+            // input format) is caught by this same try/catch and degrades to video-only, same as an
+            // AudioCaptureSource failure always has.
+            _audioEncoder = new AacAudioEncoder(_audioCapture.SampleRate, _audioCapture.Channels);
             _audioRtpSession = new RtpSession(new IPEndPoint(_terminal.Address, DiscoveryProtocol.AudioRtpPort), AudioPayloadType);
+            _audioEncoder.AccessUnitEncoded += OnAacAccessUnitEncoded;
+            _audioEncoder.EncodingFailed += OnAudioCaptureFailed; // same AudioError surface as a capture failure — see that handler.
             _audioCapture.PcmCaptured += OnPcmCaptured;
             _audioCapture.CaptureFailed += OnAudioCaptureFailed;
             HasAudio = true;
-            audioInfo = new TerminalDiscoveryClient.AudioStreamInfo(_audioCapture.SampleRate, _audioCapture.Channels, AudioPayloadType);
+            audioInfo = new TerminalDiscoveryClient.AudioStreamInfo(_audioCapture.SampleRate, _audioCapture.Channels, AudioPayloadType, IsAac: true);
         }
         catch (Exception ex)
         {
@@ -310,6 +354,8 @@ public sealed class LiveCastSession : IDisposable
             AudioError = ex.Message;
             _audioCapture?.Dispose();
             _audioCapture = null;
+            _audioEncoder?.Dispose();
+            _audioEncoder = null;
             _audioRtpSession?.Dispose();
             _audioRtpSession = null;
         }
@@ -459,21 +505,6 @@ public sealed class LiveCastSession : IDisposable
 
     private void OnPcmCaptured(byte[] pcm)
     {
-        // Backpressure — same policy/reasoning as OnAccessUnitEncoded's, applied to audio: if
-        // RunAudioSendLoop can't keep up, drop this entire captured buffer rather than let
-        // _audioSendQueue grow without bound. Unlike video, audio chunks have no access-unit-style
-        // dependency between them (each one is independently decodable PCM), so there's no
-        // "tearing" correctness concern here — dropping whole incoming buffers is simply the
-        // simplest place to apply the check, not something dropping mid-buffer would have broken.
-        if (Interlocked.CompareExchange(ref _queuedAudioChunkCount, 0, 0) >= MaxQueuedAudioChunks)
-        {
-            AudioChunksDroppedForBackpressure++;
-            StatsUpdated?.Invoke();
-            return;
-        }
-
-        int bytesPerSampleFrame = 2 * _audioCapture!.Channels; // 16-bit samples, interleaved by channel.
-
         // Derived from the SAME _clock (Stopwatch) video's RtpVideoClock.FromElapsed(_clock.Elapsed)
         // uses, just at the audio's own sample rate instead of 90000 — this is what lets
         // CastReceiver convert both streams' RTP timestamps back to one shared "elapsed since cast
@@ -481,28 +512,48 @@ public sealed class LiveCastSession : IDisposable
         // section). This replaces an earlier draft that accumulated a sample counter from a random
         // RFC-3550-style initial value — sample-accurate within one stream, but with no relationship
         // to video's wall-clock timestamps whatsoever, which made it useless for cross-stream sync.
-        uint baseTimestamp = RtpVideoClock.FromElapsed(_clock.Elapsed, (uint)_audioCapture.SampleRate);
-        int samplesEmittedSoFar = 0;
+        // Computed once per captured buffer (a "batch") — AacAudioEncoder.SubmitPcm below can raise
+        // OnAacAccessUnitEncoded zero or more times per call, each representing exactly
+        // AacSamplesPerFrame samples, so every access unit within this batch gets this same
+        // wall-clock anchor offset by however many samples came before it (see
+        // OnAacAccessUnitEncoded) rather than each one independently reading _clock.Elapsed — the
+        // latter would let a slow encode call mid-batch skew later access units' timestamps away
+        // from where they actually belong on the shared audio-sample timeline.
+        _aacBatchBaseTimestamp = RtpVideoClock.FromElapsed(_clock.Elapsed, (uint)_audioCapture!.SampleRate);
+        _aacSamplesEmittedInBatch = 0;
 
-        int offset = 0;
-        while (offset < pcm.Length)
+        // Synchronous, on this same NAudio capture callback thread — see AacAudioEncoder's own doc
+        // comment on having no background thread of its own. Raises OnAacAccessUnitEncoded below
+        // (possibly more than once, possibly not at all) before returning.
+        _audioEncoder!.SubmitPcm(pcm);
+    }
+
+    private void OnAacAccessUnitEncoded(byte[] accessUnit)
+    {
+        // Backpressure — same policy/reasoning as OnAccessUnitEncoded's, applied to audio: if
+        // RunAudioSendLoop can't keep up, drop this entire access unit rather than let
+        // _audioSendQueue grow without bound. Unlike H.264 NAL units, AAC access units have no
+        // inter-unit dependency (each one decodes independently), so there's no "tearing" concern
+        // here — dropping a whole access unit is simply the natural granularity, not a compromise.
+        if (Interlocked.CompareExchange(ref _queuedAudioChunkCount, 0, 0) >= MaxQueuedAudioChunks)
         {
-            int maxChunk = MaxAudioPayloadBytes - (MaxAudioPayloadBytes % bytesPerSampleFrame);
-            int chunkBytes = Math.Min(maxChunk, pcm.Length - offset);
-            var chunk = new byte[chunkBytes];
-            Buffer.BlockCopy(pcm, offset, chunk, 0, chunkBytes);
-
-            // Non-blocking enqueue — same reasoning as OnAccessUnitEncoded's _sendQueue.TryWrite:
-            // this runs on NAudio's own capture callback thread, which must not block on network I/O.
-            uint timestamp = baseTimestamp + (uint)samplesEmittedSoFar;
-            _audioSendQueue.Writer.TryWrite((chunk, timestamp));
-            Interlocked.Increment(ref _queuedAudioChunkCount); // decremented in RunAudioSendLoop once sent.
-
-            samplesEmittedSoFar += chunkBytes / bytesPerSampleFrame;
-            offset += chunkBytes;
+            AudioChunksDroppedForBackpressure++;
+            StatsUpdated?.Invoke();
+            return;
         }
 
-        AudioBytesSent += pcm.Length;
+        uint timestamp = _aacBatchBaseTimestamp + (uint)_aacSamplesEmittedInBatch;
+        _aacSamplesEmittedInBatch += AacSamplesPerFrame;
+
+        // Non-blocking enqueue — same reasoning as OnAccessUnitEncoded's _sendQueue.TryWrite: this
+        // runs on NAudio's own capture callback thread (via OnPcmCaptured -> AacAudioEncoder.SubmitPcm
+        // -> this method, all synchronous), which must not block on network I/O. No RTP fragmentation
+        // needed here — see this class's own doc comment on why one AAC access unit safely fits a
+        // single UDP payload the way a raw ~10ms PCM buffer used to threaten to.
+        _audioSendQueue.Writer.TryWrite((accessUnit, timestamp));
+        Interlocked.Increment(ref _queuedAudioChunkCount); // decremented in RunAudioSendLoop once sent.
+
+        AudioBytesSent += accessUnit.Length;
         StatsUpdated?.Invoke();
     }
 
@@ -520,11 +571,11 @@ public sealed class LiveCastSession : IDisposable
     {
         try
         {
-            await foreach (var (pcm, timestamp) in _audioSendQueue.Reader.ReadAllAsync(token))
+            await foreach (var (payload, timestamp) in _audioSendQueue.Reader.ReadAllAsync(token))
             {
                 try
                 {
-                    await audioRtpSession.SendRawPayloadAsync(pcm, timestamp);
+                    await audioRtpSession.SendRawPayloadAsync(payload, timestamp);
                 }
                 catch (Exception ex)
                 {
@@ -533,7 +584,7 @@ public sealed class LiveCastSession : IDisposable
                 }
                 finally
                 {
-                    // Decremented once per dequeued chunk regardless of send outcome — same
+                    // Decremented once per dequeued access unit regardless of send outcome — same
                     // reasoning as RunSendLoop's identical decrement for video.
                     Interlocked.Decrement(ref _queuedAudioChunkCount);
                 }
@@ -600,6 +651,13 @@ public sealed class LiveCastSession : IDisposable
         }
         _audioCapture?.Dispose();
         _audioCapture = null;
+        if (_audioEncoder != null)
+        {
+            _audioEncoder.AccessUnitEncoded -= OnAacAccessUnitEncoded;
+            _audioEncoder.EncodingFailed -= OnAudioCaptureFailed;
+        }
+        _audioEncoder?.Dispose();
+        _audioEncoder = null;
         _audioRtpSession?.Dispose();
         _audioRtpSession = null;
     }

@@ -30,3 +30,10 @@ LAN发现/配对的共享部分（PLANNING.md §7），两个消费方各自实�
   需要，得在这里加字段，两端一起改。
 - 不含任何安全/认证机制（明文JSON，无签名无加密）——这与PLANNING.md §14.3 "不加密：内网传输明文"
   的产品决策一致，不是遗漏。
+- **【新增】`CastStartMessage.AudioIsAac`没有协议版本协商保护**：这个字段告诉Terminal该把
+  `AudioRtpPort`上收到的每个payload当成原始PCM还是ADTS封装的AAC访问单元（见Caster/Terminal各自
+  README里AAC编解码那几条风险）。这个协议本身没有版本号、没有"对方不认识这个字段就忽略/协商回退"
+  的机制——如果Terminal和Caster两端跑的不是同一次提交的代码（比如Terminal没更新、还是旧版本的
+  `CastStartMessage`反序列化），`AudioIsAac`会被反序列化成默认值`false`，导致Terminal把AAC字节
+  当PCM直接送进WASAPI，播放出来是噪音而不是报错——这个仓库假设两端总是同一次提交部署，没有为
+  跨版本不匹配做任何防御，风险等级跟这个协议整体"从未在真实网络环境验证过"是同一类。

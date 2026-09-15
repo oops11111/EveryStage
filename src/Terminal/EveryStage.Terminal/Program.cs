@@ -194,7 +194,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             {
                 _castReceiver = new CastReceiver(
                     _videoSurface, info.Width, info.Height, DiscoveryProtocol.VideoRtpPort,
-                    info.HasAudio, info.AudioSampleRate, info.AudioChannels, DiscoveryProtocol.AudioRtpPort);
+                    info.HasAudio, info.AudioSampleRate, info.AudioChannels, DiscoveryProtocol.AudioRtpPort,
+                    info.AudioIsAac);
                 _castReceiver.Start();
             }
             catch (Exception)

@@ -32,7 +32,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
 | `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，已接入`DiscoveryService`)；JSON-lines格式 + 自动清理过期文件 |
 | `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/`；新增 `SendCastStatusAsync`，配合 `Program.cs` 里每秒一次的 `SendCastStatus()` 把接收状态报回给正在投屏的Caster（`DiscoveryProtocol.CastStatusMessage`，见该README"已知风险"新增小节） |
-| `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收PCM，喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，构造失败会独立降级成纯视频（不影响视频侧）；新增`LastPacketReceivedAt`，配合`Program.cs`的`CheckCastLiveness()`在Caster连续10秒无数据包时自动断开 |
+| `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收到的payload按`AudioIsAac`分两条路径——PCM直接喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，AAC先经过`EveryStage.Rendering.Decode.AacAudioDecoder`解码回PCM再喂给它（见"已知风险"第64条），构造失败会独立降级成纯视频（不影响视频侧）；新增`LastPacketReceivedAt`，配合`Program.cs`的`CheckCastLiveness()`在Caster连续10秒无数据包时自动断开 |
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
 | `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
@@ -195,6 +195,8 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
     WASAPI播放类)。音频构造失败(`AudioPlaybackClock`/`WasapiOut`初始化失败)会被单独捕获并记到
     `AudioError`，退化成纯视频接收，不会连累视频一起失败——这跟Caster端`LiveCastSession`的
     "音频尽力而为"原则对称，是这次实现时特意做成一致的。具体的音频相关风险见下面新的一节。
+    **更新（见第64条）**：这里说的"收到PCM chunk后直接喂给`AudioPlaybackClock`"现在只是
+    `AudioIsAac`为假时的路径——Caster端换成AAC之后，这里多了一层`AacAudioDecoder`解码，见第64条。
 
 ### `UI/Panels/SettingsPanel.cs` / `Data/AppSettings.cs` / `Data/SettingsStore.cs` — 设置面板，这次新加的部分
 
@@ -475,6 +477,26 @@ Caster知道终端机确实收到了东西。
     第9条本来想要的"仅本地预览"——没有任何地方真的把这个文件渲染出来，用户看到的只是"知道点击
     被收到了、也知道原因"，而不是"能在没投屏的情况下就地预览内容"；真正的本地预览渲染目标本身
     依然完全不存在（同第9条原文）。
+64. **【已实现，原为已知缺口】设备投屏收到的音频现在真的能是AAC了**（对应第33条，见
+    `EveryStage.Caster` README第53-55条）：Caster端`LiveCastSession`这一轮从发送未压缩PCM改成
+    发送AAC，Terminal这一侧对称地补上了解码。`CastReceiver`构造函数新增`audioIsAac`参数
+    （来自`DiscoveryProtocol.CastStartMessage.AudioIsAac`，经`DiscoveryService.CastStartInfo`/
+    `Program.cs`一路传进来），为真时构造一个`EveryStage.Rendering.Decode.AacAudioDecoder`——这个
+    类本身继承`AacAudioEncoder`同样的最大风险点（内置AAC解码MFT被假设是同步transform，这个假设
+    在这个沙箱里没办法验证，见该类doc comment）。`OnAudioPayloadReceived`收到的payload先经过
+    `_audioDecoder.SubmitAccessUnit`解码、通过新增的`OnAacPcmDecoded`回调再送进
+    `_audioClock.Enqueue`，而不是像PCM路径那样直接把RTP payload送进`AudioPlaybackClock`——这个
+    分支写法上特意不用`try/catch`包`SubmitAccessUnit`（它自己从不抛异常，成功/失败都通过
+    `PcmDecoded`/`DecodingFailed`事件同步汇报），避免"调用完之后不管三七二十一先把`AudioError`
+    清空"这种会覆盖掉刚刚同步发生的解码失败的错误写法——这是这一轮设计时特意避免的一个坑，不是
+    事后发现的bug。**明确没有做的部分**：(a) 没有任何协议版本协商——`AudioIsAac`如果被反序列化成
+    默认值`false`（两端代码版本不一致时），Terminal会把AAC字节当PCM直接送进WASAPI，播放出来是
+    噪音而不是报错，见`EveryStage.Discovery`README对应的新增风险条目；(b) `OnAacPcmDecoded`失败、
+    `OnAacDecodingFailed`都会让`ConsecutiveAudioPlaybackErrors`自增，这个计数器本身已经被
+    `Program.cs`的`CheckDecodeHealth`读取（连续90次触发自动断开投屏），这次改动不需要额外接线就
+    自动获得了这个既有的恢复策略——但这个既有阈值本身是照PCM路径的失败模式（`AudioPlaybackClock`
+    偶发的WASAPI写入失败）估的，从未针对"AAC解码器本身持续失败"这种新失败模式重新核实过是否
+    仍然合适。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

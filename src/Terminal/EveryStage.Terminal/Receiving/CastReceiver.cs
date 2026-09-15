@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using EveryStage.Rendering.Audio;
+using EveryStage.Rendering.Decode;
 using EveryStage.Terminal.Display;
 using EveryStage.Transport;
 using Vortice.Direct3D11;
@@ -14,10 +15,13 @@ namespace EveryStage.Terminal.Receiving;
 /// strip start codes before packetizing), decodes each with <see cref="H264HardwareDecoder"/>, and
 /// presents the result through the shared <see cref="VideoSurface"/> bound to the overlay window's
 /// video HWND — the same surface <c>ContentEngine.VideoContentController</c> uses for local file
-/// playback, here fed from a live network stream instead of a file. Optionally also receives a raw
-/// PCM audio stream (<c>RawRtpReceiver</c>, EveryStage.Transport) and plays it through
-/// <see cref="AudioPlaybackClock"/> — the same WASAPI playback class <c>VideoContentController</c>
-/// uses for local video files' audio track, and here it plays the same master-clock role too:
+/// playback, here fed from a live network stream instead of a file. Optionally also receives an
+/// audio stream (<c>RawRtpReceiver</c>, EveryStage.Transport — raw 16-bit PCM, or, as of this round,
+/// ADTS-framed AAC access units decoded through <see cref="AacAudioDecoder"/> first, per
+/// <c>DiscoveryProtocol.CastStartMessage.AudioIsAac</c>; see <see cref="OnAudioPayloadReceived"/>)
+/// and plays it through <see cref="AudioPlaybackClock"/> — the same WASAPI playback class
+/// <c>VideoContentController</c> uses for local video files' audio track, and here it plays the same
+/// master-clock role too:
 /// decoded video frames are held on a background presentation thread and released only once
 /// <see cref="AudioPlaybackClock.PositionTicks"/> reaches the frame's own presentation time, the same
 /// "audio is the master clock" pattern <c>VideoContentController.RunPlaybackLoopCore</c> already uses
@@ -73,6 +77,11 @@ public sealed class CastReceiver : IDisposable
 
     private readonly RawRtpReceiver? _audioRtpReceiver;
     private readonly AudioPlaybackClock? _audioClock;
+
+    // Non-null only when the Caster signaled AAC (DiscoveryProtocol.CastStartMessage.AudioIsAac) —
+    // see OnAudioPayloadReceived for how this changes which path a received payload takes before
+    // reaching _audioClock.
+    private readonly AacAudioDecoder? _audioDecoder;
 
     // Guards the one-time initialization of _audioSyncOffsetTicks below — the audio RTP receive loop
     // is the only writer, but it's simplest to make the "first packet establishes the offset" check
@@ -139,7 +148,8 @@ public sealed class CastReceiver : IDisposable
     public DateTime LastPacketReceivedAt { get; private set; } = DateTime.UtcNow;
 
     public CastReceiver(VideoSurface surface, int width, int height, int listenPort,
-        bool hasAudio = false, int audioSampleRate = 0, int audioChannels = 0, int audioListenPort = 0)
+        bool hasAudio = false, int audioSampleRate = 0, int audioChannels = 0, int audioListenPort = 0,
+        bool audioIsAac = false)
     {
         Width = width;
         Height = height;
@@ -160,6 +170,17 @@ public sealed class CastReceiver : IDisposable
                 // OnAudioPayloadReceived on the RTP receive thread.
                 _audioClock = new AudioPlaybackClock(audioSampleRate, audioChannels);
                 _audioSampleRate = (uint)audioSampleRate;
+                if (audioIsAac)
+                {
+                    // Same "catch it here, not later on the RTP receive thread" reasoning as
+                    // _audioClock above — an AAC decoder MFT construction failure (no such MFT on
+                    // this machine, an unsupported negotiated format) is caught by this same
+                    // try/catch and degrades the whole cast to video-only, exactly like an
+                    // AudioPlaybackClock/WASAPI failure always has.
+                    _audioDecoder = new AacAudioDecoder(audioSampleRate, audioChannels);
+                    _audioDecoder.PcmDecoded += OnAacPcmDecoded;
+                    _audioDecoder.DecodingFailed += OnAacDecodingFailed;
+                }
                 _audioRtpReceiver = new RawRtpReceiver(audioListenPort);
                 _audioRtpReceiver.PayloadReceived += OnAudioPayloadReceived;
                 HasAudio = true;
@@ -171,6 +192,13 @@ public sealed class CastReceiver : IDisposable
                 AudioError = ex.Message;
                 _audioClock?.Dispose();
                 _audioClock = null;
+                if (_audioDecoder != null)
+                {
+                    _audioDecoder.PcmDecoded -= OnAacPcmDecoded;
+                    _audioDecoder.DecodingFailed -= OnAacDecodingFailed;
+                }
+                _audioDecoder?.Dispose();
+                _audioDecoder = null;
                 _audioRtpReceiver?.Dispose();
                 _audioRtpReceiver = null;
                 HasAudio = false;
@@ -197,10 +225,10 @@ public sealed class CastReceiver : IDisposable
         }
     }
 
-    private void OnAudioPayloadReceived(byte[] pcm, uint timestamp)
+    private void OnAudioPayloadReceived(byte[] payload, uint timestamp)
     {
         LastPacketReceivedAt = DateTime.UtcNow;
-        AudioBytesReceived += pcm.Length;
+        AudioBytesReceived += payload.Length;
 
         // Establishes the mapping between "audio RTP timestamp" and "AudioPlaybackClock.PositionTicks"
         // exactly once, from the first audio packet this receiver ever sees. RtpVideoClock.ToElapsedTicks
@@ -211,13 +239,28 @@ public sealed class CastReceiver : IDisposable
         // AudioPlaybackClock.PositionTicks at which that frame's audio counterpart is playing — see
         // RunPresentLoop. This is inherently approximate: it assumes this first audio packet reaches
         // the Terminal and gets enqueued with negligible delay relative to when it was captured, which
-        // holds well enough on a LAN but is not something this scheme measures or corrects for.
+        // holds well enough on a LAN but is not something this scheme measures or corrects for. Same
+        // timestamp convention whether payload is raw PCM or (as of this round) an AAC access unit —
+        // LiveCastSession derives both the same way (elapsed wall-clock time × sample rate), just with
+        // AAC's timestamps landing on AacSamplesPerFrame-sized boundaries instead of arbitrary ones.
         if (_audioSyncOffsetTicks == null)
         {
             lock (_syncLock)
             {
                 _audioSyncOffsetTicks ??= RtpVideoClock.ToElapsedTicks(timestamp, _audioSampleRate);
             }
+        }
+
+        if (_audioDecoder != null)
+        {
+            // AacAudioDecoder.SubmitAccessUnit never throws — it reports success/failure via
+            // PcmDecoded/DecodingFailed instead (see that class's own doc comment), which
+            // OnAacPcmDecoded/OnAacDecodingFailed below handle. AudioError/ConsecutiveAudioPlaybackErrors
+            // are updated there, not here, so this call is deliberately not wrapped in a try/catch —
+            // doing so and then unconditionally resetting AudioError afterward would incorrectly wipe
+            // out a failure OnAacDecodingFailed had just synchronously recorded during this very call.
+            _audioDecoder.SubmitAccessUnit(payload);
+            return;
         }
 
         // No jitter buffer, no reordering/loss recovery — enqueued straight into WASAPI playback as
@@ -227,7 +270,7 @@ public sealed class CastReceiver : IDisposable
         // "no loss recovery" limitation the video side already has and documents.
         try
         {
-            _audioClock!.Enqueue(pcm);
+            _audioClock!.Enqueue(payload);
             AudioError = null;
             ConsecutiveAudioPlaybackErrors = 0;
         }
@@ -242,6 +285,30 @@ public sealed class CastReceiver : IDisposable
             AudioError = ex.Message;
             ConsecutiveAudioPlaybackErrors++;
         }
+    }
+
+    private void OnAacPcmDecoded(byte[] pcm)
+    {
+        // Raised synchronously from within _audioDecoder.SubmitAccessUnit, called above from
+        // OnAudioPayloadReceived — same calling-thread context (the audio RTP receive loop) the
+        // raw-PCM path's direct Enqueue already runs on.
+        try
+        {
+            _audioClock!.Enqueue(pcm);
+            AudioError = null;
+            ConsecutiveAudioPlaybackErrors = 0;
+        }
+        catch (Exception ex)
+        {
+            AudioError = ex.Message;
+            ConsecutiveAudioPlaybackErrors++;
+        }
+    }
+
+    private void OnAacDecodingFailed(Exception ex)
+    {
+        AudioError = ex.Message;
+        ConsecutiveAudioPlaybackErrors++;
     }
 
     private void OnNalUnitReceived(byte[] nalUnit, bool isLastNalOfAccessUnit, uint timestamp)
@@ -399,6 +466,12 @@ public sealed class CastReceiver : IDisposable
         if (_audioRtpReceiver != null) _audioRtpReceiver.PayloadReceived -= OnAudioPayloadReceived;
         _audioRtpReceiver?.Dispose();
         _audioClock?.Dispose();
+        if (_audioDecoder != null)
+        {
+            _audioDecoder.PcmDecoded -= OnAacPcmDecoded;
+            _audioDecoder.DecodingFailed -= OnAacDecodingFailed;
+        }
+        _audioDecoder?.Dispose();
 
         // Anything still queued after the present thread has stopped (e.g. HasAudio was false and
         // frames were never routed through the queue at all — this is then always empty and the

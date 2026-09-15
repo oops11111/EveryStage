@@ -87,13 +87,24 @@ public static class DiscoveryProtocol
         public byte PayloadType { get; set; }
 
         /// <summary>False when the Caster couldn't start audio capture at all (e.g.
-        /// <c>AudioCaptureSource</c> construction threw) — the Terminal should not expect anything
-        /// on <see cref="AudioRtpPort"/> in that case, and the fields below are meaningless.
-        /// Casting video without audio is a real, expected outcome here, not an error state.</summary>
+        /// <c>AudioCaptureSource</c>/<c>AacAudioEncoder</c> construction threw) — the Terminal should
+        /// not expect anything on <see cref="AudioRtpPort"/> in that case, and the fields below are
+        /// meaningless. Casting video without audio is a real, expected outcome here, not an error
+        /// state.</summary>
         public bool HasAudio { get; set; }
         public int AudioSampleRate { get; set; }
         public int AudioChannels { get; set; }
         public byte AudioPayloadType { get; set; }
+
+        /// <summary>True means each <see cref="AudioRtpPort"/> payload is one ADTS-framed AAC access
+        /// unit (<c>Caster.Encode.AacAudioEncoder</c>) that the Terminal must run through
+        /// <c>EveryStage.Rendering.Decode.AacAudioDecoder</c> before playback; false means raw
+        /// interleaved 16-bit PCM, playable directly. Added this round alongside the Caster side
+        /// actually switching to AAC (see this project's README) — a Terminal built before this field
+        /// existed would default-deserialize it to false and misinterpret an AAC stream as raw PCM,
+        /// producing noise; there is no protocol-version negotiation in this repo to guard against
+        /// that mismatch; both sides are expected to be redeployed from the same commit.</summary>
+        public bool AudioIsAac { get; set; }
     }
 
     /// <summary>Sent unicast, Caster -> Terminal, when the user stops casting — lets the Terminal

@@ -3,12 +3,13 @@
 对应 `docs/PLANNING.md` §12 的UI描述、§7 的设备发现/配对流程的**投屏机一侧**，以及阶段2"屏幕捕获：
 Desktop Duplication API (DDA)"、"视频编码：H.264 硬件编码"、"传输：UDP + RTP"三项，加上这一轮新加的
 系统音频采集（PLANNING.md没有单独给音频采集一个章节，但"全屏捕获推流"隐含了画面+声音一起投）。
-PLANNING.md §15 把整个捕获/编码/传输称为"第二大技术风险区"——这几块不但各自写完并有自检（音频除
-外，见下方风险），还被 `Casting/LiveCastSession.cs` 接成了一条真正的端到端投屏管线：配对成功后
-立即开始真的采集/编码/发送，Terminal侧（`src/Terminal/EveryStage.Terminal/Receiving/`）也有了
-对应的接收/解码/播放。其中视频编码（`Encode/H264HardwareEncoder.cs`）仍然是这几块里风险最高、
-最难验证的一块，原因见该文件自己的doc comment和下面"已知风险"的专门小节；音频这一轮走的是低风险
-路线（原始PCM，不经过任何硬件编码器），见下方 `Capture/AudioCaptureSource.cs` 的专门小节。
+PLANNING.md §15 把整个捕获/编码/传输称为"第二大技术风险区"——这几块不但各自写完并有自检，还被
+`Casting/LiveCastSession.cs` 接成了一条真正的端到端投屏管线：配对成功后立即开始真的采集/编码/
+发送，Terminal侧（`src/Terminal/EveryStage.Terminal/Receiving/`）也有了对应的接收/解码/播放。
+其中视频编码（`Encode/H264HardwareEncoder.cs`）仍然是这几块里风险最高、最难验证的一块，原因见
+该文件自己的doc comment和下面"已知风险"的专门小节；音频最初几轮走的是低风险路线（原始PCM，不
+经过任何硬件编码器），**这一轮换成了AAC编码**（`Encode/AacAudioEncoder.cs`，见下方"已知风险"
+第53、55条）——真正投屏发送的音频不再是未压缩PCM。
 
 ## 现在能做什么
 
@@ -18,15 +19,18 @@ PLANNING.md §15 把整个捕获/编码/传输称为"第二大技术风险区"�
 3. **配对成功后立即真的开始投屏，视频+音频**：`Casting/LiveCastSession.cs` 启动完整链路——
    视频：`ScreenCaptureSource`(BGRA) → `BgraToNv12Converter`(NV12) → `H264HardwareEncoder`(H.264
    访问单元) → `AnnexBNalSplitter`(拆NAL单元) → `RtpSession`(RTP/UDP)，发送到终端机固定的
-   `DiscoveryProtocol.VideoRtpPort`；音频：`Capture/AudioCaptureSource.cs`(WASAPI loopback采集
-   系统播放的声音，转成16-bit PCM) → 另一个 `RtpSession`(`SendRawPayloadAsync`，不经过H.264那套
-   NAL分片) → `DiscoveryProtocol.AudioRtpPort`。同时通过 `DiscoveryProtocol.CastStartMessage`/
-   `CastStopMessage`（单播）告诉终端机"我要开始/停止投屏了，视频分辨率、音频采样率/声道数分别是
-   多少"，终端机据此启动/停止自己的 `Receiving/CastReceiver`。**音频是video之上的锦上添花，不是
-   硬性要求**——如果这台机器上没有正在播放的声音、或者WASAPI初始化失败，`AudioCaptureSource`
-   构造失败只会让这一次投屏退化成纯视频，不会连累视频一起失败。面板上实时显示分辨率/已捕获帧数/
-   已发送访问单元数/已发送字节数/音频状态/**终端机确认**（终端机每秒回报一次已解码帧数，见下方
-   "已知风险"里`CastStatusMessage`那一节），出错时如实显示错误而不是假装成功。
+   `DiscoveryProtocol.VideoRtpPort`；音频（**这一轮换成AAC，见下方"已知风险"第55条**）：
+   `Capture/AudioCaptureSource.cs`(WASAPI loopback采集系统播放的声音，转成16-bit PCM) →
+   `Encode/AacAudioEncoder.cs`(编码成ADTS封装的AAC access unit) → 另一个
+   `RtpSession`(`SendRawPayloadAsync`，AAC access unit够小、不需要像H.264那样分片) →
+   `DiscoveryProtocol.AudioRtpPort`。同时通过 `DiscoveryProtocol.CastStartMessage`/
+   `CastStopMessage`（单播）告诉终端机"我要开始/停止投屏了，视频分辨率、音频采样率/声道数/编码
+   方式（PCM还是AAC，新增的`AudioIsAac`字段）分别是多少"，终端机据此启动/停止自己的
+   `Receiving/CastReceiver`。**音频是video之上的锦上添花，不是硬性要求**——如果这台机器上没有
+   正在播放的声音、WASAPI初始化失败、或者AAC编码器构造失败，都只会让这一次投屏退化成纯视频，
+   不会连累视频一起失败。面板上实时显示分辨率/已捕获帧数/已发送访问单元数/已发送字节数/音频
+   状态/**终端机确认**（终端机每秒回报一次已解码帧数，见下方"已知风险"里`CastStatusMessage`
+   那一节），出错时如实显示错误而不是假装成功。
 4. 面板上有一个"屏幕捕获自检"按钮——用 Desktop Duplication API (`Capture/`) 独立验证捕获本身，
    跟正在进行的投屏互不影响，用于定位问题出在哪一步。
 5. 面板上还有一个"开始编码自检 (捕获→NV12→H.264)"按钮——`Encode/EncodeSelfTestRunner.cs`
@@ -37,16 +41,19 @@ PLANNING.md §15 把整个捕获/编码/传输称为"第二大技术风险区"�
 7. 面板上还有一个"开始音频采集自检 (WASAPI loopback)"按钮——
    `Capture/AudioCaptureSelfTestRunner.cs` 独立驱动 `AudioCaptureSource`，显示采样率/声道数/
    已捕获字节数/近1秒吞吐量，不经过RTP发送、不涉及`LiveCastSession`，同样不影响正在进行的投屏。
-8. **【这次新加】面板上还有一个"开始AAC编解码自检 (WASAPI loopback→AAC→PCM)"按钮**——
+8. 面板上还有一个"开始AAC编解码自检 (WASAPI loopback→AAC→PCM)"按钮——
    `Encode/AacEncodeSelfTestRunner.cs` 把 `AudioCaptureSource` 接到 `Encode/AacAudioEncoder.cs`
    （这个仓库第一个音频编码MFT，见下方"已知风险"第53条），再把每个编码出来的AAC访问单元原地喂给
-   新增的 `EveryStage.Rendering.Decode.AacAudioDecoder.cs`（解码方向的镜像，见第54条），显示
+   `EveryStage.Rendering.Decode.AacAudioDecoder.cs`（解码方向的镜像，见第54条），显示
    PCM输入字节数/已编码AAC访问单元数/编码总字节数/解码回PCM字节数，同样不经过RTP发送、不涉及
-   `LiveCastSession`真正的投屏路径——`LiveCastSession`目前依然只发送未压缩PCM，AAC编解码还没有
-   RTP打包/解包器、还没有接进真正的收发路径，这个自检是目前唯一能独立验证编→解码闭环的方式。
+   `LiveCastSession`真正的投屏路径——纯粹是独立诊断工具，不像`LiveCastSession`真正发送的AAC
+   那样受网络/丢包影响。**AAC编解码本身已经在第55条接进了真正的投屏发送路径**（`LiveCastSession`
+   现在真的发送AAC、`CastReceiver`真的解码它），这个自检只是仍然保留的、跟真实投屏完全隔离的
+   独立验证手段，不是这条链路唯一的验证方式了。
 
-这五个自检的角色从"补上还没接通的功能"变成了纯粹的独立诊断工具（AAC编解码除外——它还没有真正接入
-投屏发送路径，见上方第8点和下方"尚未开始"）——真实投屏管线已经接通后，它们的价值是在投屏出问题时
+这五个自检的角色从"补上还没接通的功能"变成了纯粹的独立诊断工具——真实投屏管线已经接通后，它们的
+价值是在投屏出问题时帮助判断问题出在采集、编码、传输、音频采集、还是AAC编解码哪一步，而不是必须
+先跑通它们才能投屏。
 帮助判断问题出在采集、编码、传输、音频采集、还是AAC编码哪一步，而不是必须先跑通它们才能投屏。
 
 ## 已知风险 / 待验证事项
@@ -420,12 +427,13 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     `MF_MT_AVG_BYTES_PER_SECOND`——这里用`GetOutputAvailableType`枚举、直接取第0个候选，而不是
     搜索一个"最接近目标码率"的——真正做码率搜索需要额外的`IMFAttributes.CopyAllItems`（把
     枚举出来的候选克隆到枚举调用之外还能存活的另一个`IMFMediaType`），这个方法本身也没验证过，
-    这一轮选择不在一个已经足够新的路径上再叠加一层不确定性。**明确没有做的部分**：(a) 没有
-    任何AAC的RTP打包器（RFC 3640），完全没有集成进`LiveCastSession`真正的发送路径——
-    `LiveCastSession`依然发送未压缩PCM；(b) 输出的AAC码率完全由编码器自己第0个候选决定，不可
-    配置（`AacAudioEncoder`构造函数因此没有`bitrateBps`参数——不像`H264HardwareEncoder`那样可以
-    指定，加一个当前不生效的参数会违反这个仓库自己的"没有真实行为支撑就不加"的一贯态度）。
-    **更新（见第54条）**：输出帧格式从最初的原始（无头）AAC访问单元改成了ADTS
+    这一轮选择不在一个已经足够新的路径上再叠加一层不确定性。**明确没有做的部分**：输出的AAC
+    码率完全由编码器自己第0个候选决定，不可配置（`AacAudioEncoder`构造函数因此没有`bitrateBps`
+    参数——不像`H264HardwareEncoder`那样可以指定，加一个当前不生效的参数会违反这个仓库自己的
+    "没有真实行为支撑就不加"的一贯态度）。**更新（见第55条）**：`LiveCastSession`现在真的用它
+    发送了，不再只是自检里的孤立组件——不需要RTP打包器就接进去了，因为AAC access unit本身够小、
+    不需要像H.264那样分片（见第55条）。**更新（见第54条）**：输出帧格式从最初的原始（无头）AAC
+    访问单元改成了ADTS
     （`MF_MT_AAC_PAYLOAD_TYPE = 1`）——这个仓库自己的两端是这个流唯一的消费者，ADTS每帧自带
     采样率/声道配置，解码那一侧因此完全不需要单独传一份`AudioSpecificConfig`，比照抄RFC 3640
     坚持用原始访问单元更简单，是一次有意的修正而不是最初就规划好的。这个编码器现在能通过第54条
@@ -448,17 +456,37 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     准确反映现在验证的是完整的编→解码闭环，而不只是单向编码。**这个自检的局限**：只验证"解码
     没有抛异常、产生了看起来数量合理的PCM字节"，不校验解出来的PCM在感知上跟原始音频一致（没有
     做任何波形/频谱比对），也完全没有播放出来让人耳朵听一下——真正确认"编解码音质没问题"仍然
-    需要在真机上跑起来。**依然没有做的部分**：跟第53条一样，完全没有集成进`LiveCastSession`
-    真正的接收路径（Terminal端`Receiving/CastReceiver`目前只认PCM），也没有任何AAC的RTP
-    打包/解包器。
+    需要在真机上跑起来。**更新（见第55条）**：`LiveCastSession`/`CastReceiver`现在真的用它了，
+    不再只是自检里的孤立组件。
+55. **【已实现，原为已知缺口】`LiveCastSession`真正发送AAC了，`CastReceiver`真正解码它**：
+    上面第53、54条实现的编码器/解码器这一轮接进了真正的投屏收发路径，不再只是自检工具。
+    Caster侧：`OnPcmCaptured`不再自己按MTU切PCM分片，改成把整段捕获缓冲区喂给
+    `AacAudioEncoder.SubmitPcm`，新增`OnAacAccessUnitEncoded`把每个编码出来的access unit（不需要
+    任何RTP分片——AAC access unit通常几百字节，远小于视频那种需要`H264RtpPacketizer`
+    FU-A分片的量级，见这个类doc comment）直接送进原有的`_audioSendQueue`/`RunAudioSendLoop`/
+    背压计数器，机制不变，只是队列里现在装的是AAC access unit而不是PCM分片。每个access unit
+    的RTP时间戳按"这批捕获缓冲区起始时刻的墙钟时间戳 + 已经吐出的access unit数 × 1024采样"计算
+    （`AacSamplesPerFrame`常量），延续了这个仓库"时间戳必须锚定墙钟时间、不能用一个跟视频流毫无
+    关系的采样计数器"的既有教训（本文件`OnPcmCaptured`/`OnAacAccessUnitEncoded`的doc comment里
+    专门重复了这条教训，避免以后有人为了"更精确"而改回纯采样计数）。协议侧：
+    `DiscoveryProtocol.CastStartMessage`新增`AudioIsAac`字段（`TerminalDiscoveryClient.AudioStreamInfo`
+    新增对应的`IsAac`参数），告诉Terminal该把收到的payload当PCM还是AAC解释——这个协议本身完全
+    没有版本协商，两端必须跑同一次提交的代码，否则字段被反序列化成默认值`false`会导致Terminal把
+    AAC字节当PCM直接播放出噪音（见`EveryStage.Discovery`README新增的对应风险条目）。Terminal侧：
+    `CastReceiver`构造函数新增`audioIsAac`参数，为真时构造一个`AacAudioDecoder`，
+    `OnAudioPayloadReceived`收到的payload先经过`_audioDecoder.SubmitAccessUnit`解码、通过新增的
+    `OnAacPcmDecoded`回调再送进`_audioClock.Enqueue`，而不是像原来那样直接把RTP payload当PCM送进
+    `AudioPlaybackClock`——这个分支写法上特意不用`try/catch`包`SubmitAccessUnit`（它自己从不抛
+    异常，成功/失败都通过`PcmDecoded`/`DecodingFailed`事件同步汇报），避免"调用完之后不管三七
+    二十一先把`AudioError`清空"这种会覆盖掉刚刚同步发生的解码失败的错误写法。**明确没有做的部分**：
+    (a) 没有任何针对异常大的AAC access unit的处理——`AacAudioEncoder.ConfigureOutputType`本身不
+    控制/不封顶协商出来的码率（见第53条），万一某台机器协商出一个明显偏高的码率导致单帧超过
+    正常UDP载荷预算，这里完全依赖普通IP分片兜底，这个仓库没有办法在真机验证这个假设是否成立；
+    (b) 没有做A/B测试或任何形式的"先用PCM验证问题不是这次改动引入的"回退开关——AAC现在是唯一的
+    音频发送路径，不像H.264视频编码器那样从一开始就没有"发送方式"这个选择，音频这条路径倒退回
+    PCM当前唯一的办法是回退这次提交。
 
 ## 尚未开始
 
-- 音频压缩接入真正的投屏发送路径（见"已知风险"第53、54条）——`AacAudioEncoder`/`AacAudioDecoder`
-  编码/解码两个方向本身都已经实现，也能通过独立的编→解码闭环自检验证，但`LiveCastSession`依然
-  发送未压缩PCM；接进去还需要：AAC的RTP打包/解包器（RFC 3640，完全没有实现）、`CastStartMessage`
-  协议加一个音频编码方式字段（PCM/AAC）、Terminal端`Receiving/CastReceiver`真正调用
-  `AacAudioDecoder`（这个类本身虽然已经存在，但`CastReceiver`目前完全没有引用它，只认PCM）——
-  这三块都完全没有开始
 - 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
   真正的往返延迟测量

@@ -95,8 +95,10 @@ public sealed class TerminalDiscoveryClient : IDisposable
     }
 
     /// <summary>One audio stream's parameters for <see cref="SendCastStartAsync"/> — null means
-    /// "video only", e.g. because <c>AudioCaptureSource</c> construction failed.</summary>
-    public readonly record struct AudioStreamInfo(int SampleRate, int Channels, byte PayloadType);
+    /// "video only", e.g. because <c>AudioCaptureSource</c>/<c>AacAudioEncoder</c> construction
+    /// failed. <paramref name="IsAac"/> mirrors <see cref="DiscoveryProtocol.CastStartMessage.AudioIsAac"/>
+    /// — see that property's own doc comment.</summary>
+    public readonly record struct AudioStreamInfo(int SampleRate, int Channels, byte PayloadType, bool IsAac);
 
     /// <summary>Tells the Terminal a live RTP/H.264 stream (and, optionally, an accompanying raw-PCM
     /// audio stream) is about to start on <see cref="DiscoveryProtocol.VideoRtpPort"/>/
@@ -115,6 +117,7 @@ public sealed class TerminalDiscoveryClient : IDisposable
             AudioSampleRate = audio?.SampleRate ?? 0,
             AudioChannels = audio?.Channels ?? 0,
             AudioPayloadType = audio?.PayloadType ?? 0,
+            AudioIsAac = audio?.IsAac ?? false,
         });
 
     /// <summary>Tells the Terminal the live stream has ended — see

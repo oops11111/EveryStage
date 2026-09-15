@@ -55,7 +55,7 @@ public sealed class DiscoveryService : IDisposable
     /// back to.</summary>
     public readonly record struct CastStartInfo(
         Guid DeviceId, int Width, int Height, byte PayloadType,
-        bool HasAudio, int AudioSampleRate, int AudioChannels, byte AudioPayloadType,
+        bool HasAudio, int AudioSampleRate, int AudioChannels, byte AudioPayloadType, bool AudioIsAac,
         IPEndPoint CasterEndPoint);
 
     public DiscoveryService(DeviceIdentity identity, PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog)
@@ -190,7 +190,7 @@ public sealed class DiscoveryService : IDisposable
         }
         CastStartRequested?.Invoke(new CastStartInfo(
             msg.DeviceId, msg.Width, msg.Height, msg.PayloadType,
-            msg.HasAudio, msg.AudioSampleRate, msg.AudioChannels, msg.AudioPayloadType,
+            msg.HasAudio, msg.AudioSampleRate, msg.AudioChannels, msg.AudioPayloadType, msg.AudioIsAac,
             remoteEndPoint));
     }
 
