@@ -540,6 +540,21 @@ Caster知道终端机确实收到了东西。
     这个改动本身完全没有真实Windows机器/真实显示器拔插可以验证，只是让"逻辑上应该发生什么"这件事
     从"完全没写"变成"照抄一条已经存在、已经被其他调用方用过很多次的`Disconnect()`路径"，属于
     降低风险而不是消除风险。
+68. **【部分实现，原为已知缺口】`SendCastStatus`现在真的会重传**（对应`EveryStage.Caster`README
+    第34条"状态回报本身也是尽力而为的UDP、没有重传"）：新增`RetransmitCastStatusAsync`，在
+    主发送之后约400ms（`StatusRetransmitDelay`）把**同一个**`CastStatusMessage`实例（同一个
+    `SentAtUtc`，不是重新构造一份新报告）再发一次——字面意义上的"重传"，不是"发得更频繁"。选
+    400ms而不是0ms（紧接着连发两次）：如果丢包是短时突发（比如一次Wi-Fi重传风暴），间隔0ms的
+    两次发送很可能被同一次突发一起吞掉，隔开一点时间理论上更可能躲开同一次突发，虽然这个仓库完全
+    没有真实网络环境可以验证这个直觉对不对。发送前重新检查`_castReceiver`/`_castingCasterEndPoint`
+    是否还是延迟开始时捕获的那一份（跟`LogConnectionQualityAsync`同一个"discovery异步操作完成时
+    重新核实状态没变"的写法）——投屏可能在这400ms期间已经停止或换了另一个Caster，这时候补发一份
+    针对旧状态的报告没有意义。**仍未解决的部分**：这不是ACK/重试协议，`CastStatusMessage`整体依旧
+    完全"尽力而为"；`EveryStage.Caster`README第35条描述的"discovery socket整体变差导致状态通道
+    系统性不健康"这种失败模式（不是偶发单包丢失）两次发送很可能同时受影响，这次改动对此基本没有
+    缓解；副作用是如果真的是重传副本才让Caster收到，`LastStatusLatencyEstimate`算出来的延迟会比
+    真实值多约400ms（`SentAtUtc`沿用的是原始发送时刻），这个偏差只在"第一次发送真的丢了"这个本来
+    就不常见的情况下才会出现，被认为可以接受。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

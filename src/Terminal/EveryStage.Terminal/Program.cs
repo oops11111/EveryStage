@@ -325,9 +325,30 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _stateMachine.Disconnect();
     }
 
+    // How long after the primary send to fire the retransmit copy (see SendCastStatus's own doc
+    // comment) — picked to land meaningfully later than the primary send (so a single short-lived
+    // loss burst is less likely to take out both copies) while still leaving a comfortable margin
+    // before the next tick's own fresh send 1000ms later. Not tuned against any real network,
+    // same as every other timing constant in this repo lacking a Windows machine to measure
+    // against.
+    private static readonly TimeSpan StatusRetransmitDelay = TimeSpan.FromMilliseconds(400);
+
+    /// <summary>See EveryStage.Caster's README risk #34 ("状态回报本身也是尽力而为的UDP、没有重传")
+    /// for the problem this addresses: a single lost <c>CastStatusMessage</c> previously meant the
+    /// Caster's "终端机确认" reading went stale until the next 1-second tick's report, and staying
+    /// unlucky for several consecutive ticks could make a perfectly healthy Terminal show as
+    /// "未确认". This sends the exact same status snapshot a second time,
+    /// <see cref="StatusRetransmitDelay"/> later — a genuine retransmission (identical payload, not
+    /// a fresh independent report) of the kind the risk item's own title asks for, not a new ack/
+    /// retry protocol: <c>CastStatusMessage</c> stays exactly as "尽力而为" as before, this just
+    /// makes each 1-second report need two independent packet losses instead of one before the
+    /// Caster sees a gap. Deliberately NOT a fix for risk #34's other half (network jitter/
+    /// congestion affecting the whole discovery socket, not just one packet) — that's a
+    /// fundamentally different failure mode this cheap doubling doesn't touch.</summary>
     private void SendCastStatus()
     {
         if (_castReceiver == null || _castingCasterEndPoint == null) return;
+        var casterEndPoint = _castingCasterEndPoint;
 
         var status = new DiscoveryProtocol.CastStatusMessage
         {
@@ -340,7 +361,22 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             AudioBytesReceived = _castReceiver.AudioBytesReceived,
             AudioError = _castReceiver.AudioError,
         };
-        _ = _discovery.SendCastStatusAsync(_castingCasterEndPoint, status);
+        _ = _discovery.SendCastStatusAsync(casterEndPoint, status);
+        _ = RetransmitCastStatusAsync(casterEndPoint, status);
+    }
+
+    private async Task RetransmitCastStatusAsync(IPEndPoint casterEndPoint, DiscoveryProtocol.CastStatusMessage status)
+    {
+        await Task.Delay(StatusRetransmitDelay);
+
+        // The cast this was reporting on may have stopped (or a different one started against a
+        // different Caster) during the delay — same "re-check before acting on stale captured state"
+        // reasoning as LogConnectionQualityAsync above. Comparing the IPEndPoint reference is
+        // enough: _castingCasterEndPoint is only ever assigned once per cast (OnCastStartRequested)
+        // and cleared to null by StopCasting(), never replaced in place.
+        if (_castReceiver == null || _castingCasterEndPoint != casterEndPoint) return;
+
+        _ = _discovery.SendCastStatusAsync(casterEndPoint, status);
     }
 
     /// <summary>Fills in PLANNING.md §14.4's "连接质量指标（丢包率/延迟）" for
