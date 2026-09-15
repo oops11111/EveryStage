@@ -121,6 +121,7 @@ public sealed class MainWindow : Form
         if (panel == _filesPanel) _filesPanel.Refresh_();
         else if (panel == _devicesPanel) _devicesPanel.Refresh_();
         else if (panel == _activitiesPanel) _activitiesPanel.RefreshTree();
+        else if (panel == _settingsPanel) _settingsPanel.Refresh_();
     }
 
     private void OnStateChanged(OutputState state) => UpdateStatusLabel();

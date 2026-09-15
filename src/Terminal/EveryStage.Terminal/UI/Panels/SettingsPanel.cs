@@ -66,9 +66,8 @@ public sealed class SettingsPanel : UserControl
         PopulateMonitorComboBox(settings.PreferredMonitorDeviceName);
         var displayNote = new Label
         {
-            Text = "更改后需要重启终端机才能生效。下面的列表只在终端机主界面本次启动后第一次打开本面板时\n" +
-                   "枚举一次——MainWindow把每个面板实例都长期复用，之后不会重新枚举，所以如果启动后又\n" +
-                   "插拔了显示器，需要重启整个终端机主界面才能在这里看到最新的显示器列表。",
+            Text = "选择本身更改后需要重启终端机才能生效；但下面的显示器列表现在每次切换到本面板都会重新\n" +
+                   "枚举一次（见 Refresh_()），不再需要重启整个终端机主界面才能看到刚插拔的显示器。",
             ForeColor = Color.DimGray,
             AutoSize = true,
             Location = new Point(16, 76),
@@ -148,6 +147,35 @@ public sealed class SettingsPanel : UserControl
 
         Controls.Add(tabs);
         Controls.Add(bottomBar);
+    }
+
+    /// <summary>Call whenever this panel becomes the visible one (<c>MainWindow.ShowPanel</c>) — same
+    /// convention as <c>FilesPanel.Refresh_()</c>/<c>DevicesPanel.Refresh_()</c> (trailing underscore
+    /// to avoid colliding with <see cref="Control.Refresh"/>, which repaints rather than reloads
+    /// data). Only the "显示"标签页's monitor list actually needs this: it's the one piece of this
+    /// panel's UI state built from something other than <see cref="_settingsStore"/>/<see cref="_identity"/>
+    /// (live hardware, via <see cref="MonitorService.GetAll"/>), so it's the only part that could ever
+    /// go stale purely from time passing while this panel instance sits reused-but-not-visible — see
+    /// this class's history for why "枚举一次，永不刷新" was a real bug, not a hypothetical one.
+    ///
+    /// Re-enumerating doesn't just re-run <see cref="PopulateMonitorComboBox"/> with the last-SAVED
+    /// preference (that would silently discard whatever the user has picked in this dropdown but not
+    /// yet clicked "保存设置" for, every single time they navigate away and back) — it re-populates
+    /// around whatever is CURRENTLY selected in the combo box instead, so an unsaved in-progress
+    /// choice survives a refresh as long as that monitor is still connected, and only resets to
+    /// "自动选择" if the selected monitor genuinely disappeared.
+    ///
+    /// NOTE: this assumes <see cref="MonitorService.GetAll"/> (backed by WinForms'
+    /// <see cref="Screen.AllScreens"/>) actually returns freshly-enumerated hardware on each call
+    /// rather than some internal cache that only invalidates on a real display-change notification —
+    /// .NET's own docs describe <c>Screen</c> as listening for <c>WM_DISPLAYCHANGE</c> to invalidate
+    /// its cache, which should make repeated calls correct in a normal WinForms message-pump app like
+    /// this one, but this sandbox has no way to verify that behavior against a real monitor
+    /// unplug/replug on an actual Windows machine.</summary>
+    public void Refresh_()
+    {
+        string? currentSelection = (_monitorComboBox.SelectedItem as MonitorComboItem)?.DeviceName;
+        PopulateMonitorComboBox(currentSelection ?? _settingsStore.Current.PreferredMonitorDeviceName);
     }
 
     private void PopulateMonitorComboBox(string? preferredDeviceName)
