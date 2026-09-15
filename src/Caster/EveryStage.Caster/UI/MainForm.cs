@@ -14,17 +14,19 @@ namespace EveryStage.Caster.UI;
 /// really streams: picking a terminal and pairing successfully immediately starts a real
 /// <see cref="LiveCastSession"/> (capture -> NV12 -> H.264 -> RTP, sent to the Terminal). Below that,
 /// five independent self-tests remain available as standalone diagnostics for isolating which stage
-/// (capture, encode, transport, audio capture, or AAC encode) is at fault if live casting misbehaves:
-/// screen capture (<see cref="CaptureSelfTestRunner"/>), H.264 encoding (<see cref="EncodeSelfTestRunner"/>,
-/// capture -> NV12 -> hardware encoder), RTP transport (<see cref="TransportSelfTest"/>, a real
-/// loopback UDP round-trip with synthetic NAL-shaped payloads), audio capture
-/// (<see cref="AudioCaptureSelfTestRunner"/>, added a round after the other three — see this
-/// project's README on why WASAPI loopback capture had no independent self-test until now), and AAC
-/// encoding (<see cref="AacEncodeSelfTestRunner"/>, capture -> <see cref="AacAudioEncoder"/> — this
-/// repo's first audio-encoding MFT, not yet wired into the live cast session's own audio path, which
-/// still sends uncompressed PCM; see this project's README). None of the five self-tests touch the
-/// live cast session or each other — including the two audio-capturing ones (WASAPI loopback and AAC
-/// encode) running concurrently with a live cast's own <c>AudioCaptureSource</c> and each other,
+/// (capture, encode, transport, audio capture, or AAC encode/decode) is at fault if live casting
+/// misbehaves: screen capture (<see cref="CaptureSelfTestRunner"/>), H.264 encoding
+/// (<see cref="EncodeSelfTestRunner"/>, capture -> NV12 -> hardware encoder), RTP transport
+/// (<see cref="TransportSelfTest"/>, a real loopback UDP round-trip with synthetic NAL-shaped
+/// payloads), audio capture (<see cref="AudioCaptureSelfTestRunner"/>, added a round after the other
+/// three — see this project's README on why WASAPI loopback capture had no independent self-test
+/// until now), and AAC encode/decode (<see cref="AacEncodeSelfTestRunner"/>, capture ->
+/// <see cref="AacAudioEncoder"/> -> <see cref="EveryStage.Rendering.Decode.AacAudioDecoder"/> — this
+/// repo's first audio-encoding *and* decoding MFTs, chained into a full in-process round trip, but
+/// still not wired into the live cast session's own audio path, which still sends uncompressed PCM;
+/// see this project's README). None of the five self-tests touch the live cast session or each other
+/// — including the two audio-capturing ones (WASAPI loopback and AAC encode/decode) running
+/// concurrently with a live cast's own <c>AudioCaptureSource</c> and each other,
 /// which this repo has never verified on a real machine but expects to work since WASAPI loopback
 /// capture (unlike exclusive-mode rendering) is inherently a shared, read-only tap on the render
 /// stream, not something one capture client can lock out another from. The "终端机确认" line in the
@@ -140,8 +142,10 @@ public sealed class MainForm : Form
         // capture) below the existing capture/encode/transport three, then to 630 to give
         // _liveCastStatsLabel enough extra height for its new always-visible "确认≠健康" caveat
         // line, then to 718 to fit a fifth self-test section (AAC encode) below the audio capture
-        // one — see this class's doc comment and _liveCastStatsLabel's own Bounds comment below.
-        ClientSize = new Size(320, 718);
+        // one, then to 733 when that fifth section's stats label grew a 4th line once
+        // AacAudioDecoder joined the round trip — see this class's doc comment and
+        // _liveCastStatsLabel's/_aacEncodeStatsLabel's own Bounds comments below.
+        ClientSize = new Size(320, 733);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -248,9 +252,12 @@ public sealed class MainForm : Form
         // AacAudioEncoder/AacEncodeSelfTestRunner (see their own doc comments) — this repo's first
         // audio-encoding MFT, not yet wired into LiveCastSession's own audio path (which still sends
         // uncompressed PCM), so this self-test is currently the only way to exercise it at all.
-        _aacEncodeSelfTestButton = new Button { Text = "开始AAC编码自检 (WASAPI loopback→AAC)", Bounds = new Rectangle(12, 612, 296, 32) };
+        _aacEncodeSelfTestButton = new Button { Text = "开始AAC编解码自检 (WASAPI loopback→AAC→PCM)", Bounds = new Rectangle(12, 612, 296, 32) };
         _aacEncodeSelfTestButton.Click += OnAacEncodeSelfTestClick;
-        _aacEncodeStatsLabel = new Label { Bounds = new Rectangle(12, 646, 296, 50), ForeColor = Color.DimGray };
+        // Height 65 (not the usual 50 the other stats labels use) — this one now packs 4 lines
+        // (RefreshAacEncodeStats grew a "解码回PCM字节数" line once AacAudioDecoder joined the
+        // round trip), one more than the 3-line labels elsewhere in this panel.
+        _aacEncodeStatsLabel = new Label { Bounds = new Rectangle(12, 646, 296, 65), ForeColor = Color.DimGray };
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
@@ -402,14 +409,14 @@ public sealed class MainForm : Form
         {
             _aacEncodeSelfTest.Stop();
             _aacEncodeStatsTimer.Stop();
-            _aacEncodeSelfTestButton.Text = "开始AAC编码自检 (WASAPI loopback→AAC)";
+            _aacEncodeSelfTestButton.Text = "开始AAC编解码自检 (WASAPI loopback→AAC→PCM)";
             _aacEncodeStatsLabel.Text = "";
         }
         else
         {
             _aacEncodeSelfTest.Start();
             _aacEncodeStatsTimer.Start();
-            _aacEncodeSelfTestButton.Text = "停止AAC编码自检";
+            _aacEncodeSelfTestButton.Text = "停止AAC编解码自检";
             RefreshAacEncodeStats();
         }
     }
@@ -419,9 +426,12 @@ public sealed class MainForm : Form
         if (_aacEncodeSelfTest.LastError != null)
         {
             _aacEncodeStatsLabel.ForeColor = Color.DarkRed;
-            _aacEncodeStatsLabel.Text = $"AAC编码出错：{_aacEncodeSelfTest.LastError}";
+            // LastError is shared between AacAudioEncoder and AacAudioDecoder failures (see
+            // AacEncodeSelfTestRunner's OnEncodingFailed/OnDecodingFailed) — "编解码" rather than
+            // just "编码" so this label doesn't misattribute a decode-side failure to the encoder.
+            _aacEncodeStatsLabel.Text = $"AAC编解码出错：{_aacEncodeSelfTest.LastError}";
             _aacEncodeStatsTimer.Stop();
-            _aacEncodeSelfTestButton.Text = "开始AAC编码自检 (WASAPI loopback→AAC)";
+            _aacEncodeSelfTestButton.Text = "开始AAC编解码自检 (WASAPI loopback→AAC→PCM)";
             return;
         }
 
@@ -429,7 +439,8 @@ public sealed class MainForm : Form
         _aacEncodeStatsLabel.Text =
             $"采样率: {_aacEncodeSelfTest.SampleRate}Hz   声道数: {_aacEncodeSelfTest.Channels}\n" +
             $"PCM输入字节数: {_aacEncodeSelfTest.TotalPcmBytesIn}\n" +
-            $"已编码访问单元数: {_aacEncodeSelfTest.AccessUnitsEncoded}   编码总字节数: {_aacEncodeSelfTest.TotalEncodedBytes}";
+            $"已编码访问单元数: {_aacEncodeSelfTest.AccessUnitsEncoded}   编码总字节数: {_aacEncodeSelfTest.TotalEncodedBytes}\n" +
+            $"解码回PCM字节数: {_aacEncodeSelfTest.TotalDecodedPcmBytes}";
     }
 
     private async void OnTransportSelfTestClick(object? sender, EventArgs e)
@@ -748,7 +759,7 @@ public sealed class MainForm : Form
         {
             _aacEncodeSelfTest.Stop();
             _aacEncodeStatsTimer.Stop();
-            _aacEncodeSelfTestButton.Text = "开始AAC编码自检 (WASAPI loopback→AAC)";
+            _aacEncodeSelfTestButton.Text = "开始AAC编解码自检 (WASAPI loopback→AAC→PCM)";
             _aacEncodeStatsLabel.Text = "";
         }
         _transportStatsLabel.Text = "";

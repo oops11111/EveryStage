@@ -37,14 +37,15 @@ PLANNING.md §15 把整个捕获/编码/传输称为"第二大技术风险区"�
 7. 面板上还有一个"开始音频采集自检 (WASAPI loopback)"按钮——
    `Capture/AudioCaptureSelfTestRunner.cs` 独立驱动 `AudioCaptureSource`，显示采样率/声道数/
    已捕获字节数/近1秒吞吐量，不经过RTP发送、不涉及`LiveCastSession`，同样不影响正在进行的投屏。
-8. **【这次新加】面板上还有一个"开始AAC编码自检 (WASAPI loopback→AAC)"按钮**——
-   `Encode/AacEncodeSelfTestRunner.cs` 把 `AudioCaptureSource` 接到新增的 `Encode/AacAudioEncoder.cs`
-   （这个仓库第一个音频编码MFT，见下方"已知风险"第53条），显示PCM输入字节数/已编码AAC访问单元数/
-   编码总字节数，同样不经过RTP发送、不涉及`LiveCastSession`真正的投屏路径——`LiveCastSession`
-   目前依然只发送未压缩PCM，AAC编码器还没有RTP打包器、还没有接进真正的发送路径，这个自检是目前
-   唯一能独立验证它的方式。
+8. **【这次新加】面板上还有一个"开始AAC编解码自检 (WASAPI loopback→AAC→PCM)"按钮**——
+   `Encode/AacEncodeSelfTestRunner.cs` 把 `AudioCaptureSource` 接到 `Encode/AacAudioEncoder.cs`
+   （这个仓库第一个音频编码MFT，见下方"已知风险"第53条），再把每个编码出来的AAC访问单元原地喂给
+   新增的 `EveryStage.Rendering.Decode.AacAudioDecoder.cs`（解码方向的镜像，见第54条），显示
+   PCM输入字节数/已编码AAC访问单元数/编码总字节数/解码回PCM字节数，同样不经过RTP发送、不涉及
+   `LiveCastSession`真正的投屏路径——`LiveCastSession`目前依然只发送未压缩PCM，AAC编解码还没有
+   RTP打包/解包器、还没有接进真正的收发路径，这个自检是目前唯一能独立验证编→解码闭环的方式。
 
-这五个自检的角色从"补上还没接通的功能"变成了纯粹的独立诊断工具（AAC编码除外——它还没有真正接入
+这五个自检的角色从"补上还没接通的功能"变成了纯粹的独立诊断工具（AAC编解码除外——它还没有真正接入
 投屏发送路径，见上方第8点和下方"尚未开始"）——真实投屏管线已经接通后，它们的价值是在投屏出问题时
 帮助判断问题出在采集、编码、传输、音频采集、还是AAC编码哪一步，而不是必须先跑通它们才能投屏。
 
@@ -421,19 +422,43 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     枚举出来的候选克隆到枚举调用之外还能存活的另一个`IMFMediaType`），这个方法本身也没验证过，
     这一轮选择不在一个已经足够新的路径上再叠加一层不确定性。**明确没有做的部分**：(a) 没有
     任何AAC的RTP打包器（RFC 3640），完全没有集成进`LiveCastSession`真正的发送路径——
-    `LiveCastSession`依然发送未压缩PCM，这个编码器只能通过新增的
-    `Encode/AacEncodeSelfTestRunner.cs`（`MainForm`新增第五个自检按钮"开始AAC编码自检"）独立验证；
-    (b) 输出的AAC码率完全由编码器自己第0个候选决定，不可配置（`AacAudioEncoder`构造函数因此没有
-    `bitrateBps`参数——不像`H264HardwareEncoder`那样可以指定，加一个当前不生效的参数会违反这个
-    仓库自己的"没有真实行为支撑就不加"的一贯态度）。
+    `LiveCastSession`依然发送未压缩PCM；(b) 输出的AAC码率完全由编码器自己第0个候选决定，不可
+    配置（`AacAudioEncoder`构造函数因此没有`bitrateBps`参数——不像`H264HardwareEncoder`那样可以
+    指定，加一个当前不生效的参数会违反这个仓库自己的"没有真实行为支撑就不加"的一贯态度）。
+    **更新（见第54条）**：输出帧格式从最初的原始（无头）AAC访问单元改成了ADTS
+    （`MF_MT_AAC_PAYLOAD_TYPE = 1`）——这个仓库自己的两端是这个流唯一的消费者，ADTS每帧自带
+    采样率/声道配置，解码那一侧因此完全不需要单独传一份`AudioSpecificConfig`，比照抄RFC 3640
+    坚持用原始访问单元更简单，是一次有意的修正而不是最初就规划好的。这个编码器现在能通过第54条
+    新增的解码器做真正的编码→解码闭环自检了，不再只是"编码之后没有任何办法验证解出来的东西对
+    不对"。
+54. **新增`EveryStage.Rendering.Decode.AacAudioDecoder.cs`——这个仓库第一个音频解码MFT，
+    `AacAudioEncoder`的解码方向镜像**：跟第53条同一类"从未编译/从未在真机跑过"风险，也继承了
+    同一个最大风险点——内置AAC解码MFT同样被假设是**同步**transform，如果这个假设不成立，这个类
+    需要的重写量跟第53条完全一样。刻意跟`AacAudioEncoder`各自独立实现、不抽共享基类
+    （`ProcessInput`/`ProcessOutput`驱动循环本质上是镜像的两份几乎一样的代码）——同样的"两个方向
+    差异大到共享抽象反而更容易搞错哪个类型参数对应哪个方向"的理由，这个仓库对
+    `VideoDecodeSource`/`AudioDecodeSource`、以及Terminal/Caster两份独立的discovery协议实现，
+    都是同一个态度。输入协商顺序（先设输入类型、再枚举输出类型）跟编码器完全对称；`ConfigureOutputType`
+    同样直接取`GetOutputAvailableType`第0个候选，不去搜索/构造一个特定的PCM格式。因为
+    `AacAudioEncoder`现在输出ADTS（见第53条更新），这个解码器不需要单独的`AudioSpecificConfig`
+    带外配置数据——这是选择ADTS而不是原始访问单元的直接收益。**同步测试**：新增的
+    `Encode/AacEncodeSelfTestRunner.cs`把每个编码出来的AAC访问单元立刻原地喂给这个解码器（同一个
+    调用线程上——WASAPI采集回调→编码→解码全程同步、没有任何后台线程或线程封送），新增
+    "解码回PCM字节数"统计行；`MainForm`原来的"开始AAC编码自检"按钮改名"开始AAC编解码自检"，
+    准确反映现在验证的是完整的编→解码闭环，而不只是单向编码。**这个自检的局限**：只验证"解码
+    没有抛异常、产生了看起来数量合理的PCM字节"，不校验解出来的PCM在感知上跟原始音频一致（没有
+    做任何波形/频谱比对），也完全没有播放出来让人耳朵听一下——真正确认"编解码音质没问题"仍然
+    需要在真机上跑起来。**依然没有做的部分**：跟第53条一样，完全没有集成进`LiveCastSession`
+    真正的接收路径（Terminal端`Receiving/CastReceiver`目前只认PCM），也没有任何AAC的RTP
+    打包/解包器。
 
 ## 尚未开始
 
-- 音频压缩接入真正的投屏发送路径（见"已知风险"第53条）——`AacAudioEncoder`本身已经实现并能通过
-  独立自检验证，但`LiveCastSession`依然发送未压缩PCM；接进去还需要：AAC的RTP打包器（RFC 3640，
-  完全没有实现）、`CastStartMessage`协议加一个音频编码方式字段（PCM/AAC）、Terminal端对应的AAC
-  解码（`CastReceiver`目前只认PCM）——这三块都完全没有开始
-- 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
-  真正的往返延迟测量
+- 音频压缩接入真正的投屏发送路径（见"已知风险"第53、54条）——`AacAudioEncoder`/`AacAudioDecoder`
+  编码/解码两个方向本身都已经实现，也能通过独立的编→解码闭环自检验证，但`LiveCastSession`依然
+  发送未压缩PCM；接进去还需要：AAC的RTP打包/解包器（RFC 3640，完全没有实现）、`CastStartMessage`
+  协议加一个音频编码方式字段（PCM/AAC）、Terminal端`Receiving/CastReceiver`真正调用
+  `AacAudioDecoder`（这个类本身虽然已经存在，但`CastReceiver`目前完全没有引用它，只认PCM）——
+  这三块都完全没有开始
 - 状态回报的可靠性/时间戳（见风险34-36）——目前是最简单的"定时报告+新鲜度窗口"，没有重传、没有
   真正的往返延迟测量

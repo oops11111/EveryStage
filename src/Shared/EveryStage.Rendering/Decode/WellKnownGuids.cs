@@ -26,6 +26,21 @@ internal static class WellKnownGuids
     // through as a D3D11 texture instead of an internal color-convert/software path kicking in.
     public static readonly Guid MFVideoFormat_NV12 = new("3231564e-0000-0010-8000-00aa00389b71");
     public static readonly Guid MFAudioFormat_PCM = new("00000001-0000-0010-8000-00aa00389b71");
+    // Same wFormatTag-derived pattern as MFAudioFormat_PCM above — AAC's registered tag is
+    // WAVE_FORMAT_MPEG_HEAAC (0x1610). Independently duplicated from
+    // EveryStage.Caster.Encode.EncoderGuids's identical constant rather than shared/referenced —
+    // same "each file keeps its own independently-verifiable copy" convention this repo already
+    // applies to every raw-GUID file (see AacAudioDecoder's own doc comment).
+    public static readonly Guid MFAudioFormat_AAC = new("00001610-0000-0010-8000-00aa00389b71");
+
+    // --- MF_MT_AUDIO_* attribute keys (mfapi.h) — used by AacAudioDecoder, mirroring
+    // EveryStage.Caster.Encode.EncoderGuids's identical set for AacAudioEncoder.
+    public static readonly Guid MF_MT_AUDIO_NUM_CHANNELS = new("37e48bf5-645e-4c5b-89de-ada9e29b696a");
+    public static readonly Guid MF_MT_AUDIO_SAMPLES_PER_SECOND = new("5faeeae7-0290-4c31-9e8a-c534f68d9dba");
+    public static readonly Guid MF_MT_AUDIO_BITS_PER_SAMPLE = new("f2deb57f-40fa-4764-aa33-ed4f2d1ff669");
+    // Same "ADTS, self-describing per frame" choice AacAudioEncoder makes on the output side (1 =
+    // ADTS) — see that class's and EncoderGuids' doc comments.
+    public static readonly Guid MF_MT_AAC_PAYLOAD_TYPE = new("bfbabe79-7434-4d1c-94f0-72a3b9e17491");
 
     // --- IMFSourceReader / IMFReadWriteClassFactory creation attributes (mfreadwrite.h) ---
     // Binds the source reader's internal DXVA decoder to our D3D11 device via IMFDXGIDeviceManager
@@ -40,4 +55,14 @@ internal static class WellKnownGuids
     public const uint MF_SOURCE_READER_FIRST_VIDEO_STREAM = unchecked((uint)-4);
     public const uint MF_SOURCE_READER_FIRST_AUDIO_STREAM = unchecked((uint)-3);
     public const uint MF_SOURCE_READER_ANY_STREAM = unchecked((uint)-2);
+
+    // --- MFT category (mfobjects.h) — used by AacAudioDecoder to find the built-in AAC decoder MFT,
+    // mirroring EveryStage.Caster.Encode.EncoderGuids.MFT_CATEGORY_AUDIO_ENCODER's identical role
+    // for the encode direction.
+    public static readonly Guid MFT_CATEGORY_AUDIO_DECODER = new("9ea73fb4-ef7a-4559-8d5d-719d8f0426c7");
+
+    // Attribute set (to UINT32 1) on an async MFT's own attribute store before use — same role as
+    // EveryStage.Caster.Encode.EncoderGuids.MF_TRANSFORM_ASYNC_UNLOCK, duplicated here rather than
+    // shared for the same independent-verification reasoning as every other GUID in this file.
+    public static readonly Guid MF_TRANSFORM_ASYNC_UNLOCK = new("e5666d6b-3422-4eb3-8daf-32ecd6e15d96");
 }

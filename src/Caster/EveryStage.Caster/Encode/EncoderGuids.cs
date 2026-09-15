@@ -37,9 +37,14 @@ internal static class EncoderGuids
     public static readonly Guid MF_MT_AUDIO_AVG_BYTES_PER_SECOND = new("1aab75c8-cfef-451c-ab95-ac034b8e1731");
     public static readonly Guid MF_MT_AUDIO_BLOCK_ALIGNMENT = new("322de230-9eeb-43bd-ab7a-ff412251541d");
     public static readonly Guid MF_MT_AUDIO_BITS_PER_SAMPLE = new("f2deb57f-40fa-4764-aa33-ed4f2d1ff669");
-    // Selects raw (headerless) AAC access units rather than ADTS/LOAS framing — 0 = raw. This repo
-    // has no RTP packetizer for AAC yet (see AacAudioEncoder's doc comment), but raw access units
-    // are the right output shape for one, per RFC 3640's AAC-hbr mode, whenever that gets built.
+    // Selects which AAC framing the encoder emits — 0 = raw (headerless), 1 = ADTS, 2/3 = LOAS/LATM
+    // variants. AacAudioEncoder uses 1 (ADTS): this repo's own two ends are the only consumer of
+    // this stream (see that file's doc comment on why an RFC 3640 RTP packetizer isn't in scope
+    // yet), and ADTS's self-describing per-frame header (sample rate/channel config baked into every
+    // frame) means the decoding side needs no separate out-of-band AudioSpecificConfig at all — a
+    // real gain in simplicity for a private protocol that a real RFC 3640 receiver wouldn't get to
+    // make (that RTP payload format standardizes on raw access units precisely so per-frame headers
+    // aren't repeated on the wire).
     public static readonly Guid MF_MT_AAC_PAYLOAD_TYPE = new("bfbabe79-7434-4d1c-94f0-72a3b9e17491");
 
     // --- MFT category / async-unlock (mfobjects.h / mftransform.h) ---

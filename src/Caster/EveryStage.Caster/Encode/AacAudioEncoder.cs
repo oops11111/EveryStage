@@ -4,10 +4,10 @@ using static EveryStage.Caster.Encode.EncoderGuids;
 namespace EveryStage.Caster.Encode;
 
 /// <summary>
-/// Drives the built-in AAC encoder MFT directly (PCM in, raw AAC access units out) — this repo's
-/// first audio-encoding MFT, closing the "尚未开始" gap this project's README has flagged since the
-/// live-cast pipeline first connected: audio is currently sent as uncompressed 16-bit PCM, at
-/// noticeably higher bandwidth than the H.264 video it travels alongside.
+/// Drives the built-in AAC encoder MFT directly (PCM in, ADTS-framed AAC access units out) — this
+/// repo's first audio-encoding MFT, closing the "尚未开始" gap this project's README has flagged
+/// since the live-cast pipeline first connected: audio is currently sent as uncompressed 16-bit PCM,
+/// at noticeably higher bandwidth than the H.264 video it travels alongside.
 ///
 /// Meaningfully lower-risk than <see cref="H264HardwareEncoder"/> despite being new territory, for
 /// two reasons. First, this repo does not need to find/select a specific hardware vendor's
@@ -25,12 +25,21 @@ namespace EveryStage.Caster.Encode;
 /// same async event-loop pattern <see cref="H264HardwareEncoder"/> already uses. See this project's
 /// README "已知风险" for the rest of what's unverified here.
 ///
-/// Deliberately does NOT include an RTP packetizer, and is not wired into
-/// <see cref="Casting.LiveCastSession"/>'s network send path — see this project's README for why:
-/// AAC's RTP payload format (RFC 3640) is its own, different-from-H.264 protocol surface this round
-/// didn't attempt, so this class is validated only in isolation via
-/// <see cref="AacEncodeSelfTestRunner"/> for now, the same "build + self-test before wiring into the
-/// real send path" order <c>EncodeSelfTestRunner</c> already established for the H.264 encoder.
+/// Emits ADTS-framed access units (<c>MF_MT_AAC_PAYLOAD_TYPE</c> = 1) rather than raw/headerless
+/// ones — see that GUID's own doc comment in <c>EncoderGuids.cs</c> for why: since this repo's own
+/// two ends are the only consumer of this stream (no RFC 3640 RTP packetizer exists here, or is
+/// planned for this round — see below), ADTS's self-describing per-frame header means
+/// <see cref="AacAudioDecoder"/> needs no separate out-of-band AudioSpecificConfig at all, a
+/// meaningful simplification a real RFC 3640 receiver wouldn't get to make.
+///
+/// Not wired into <see cref="Casting.LiveCastSession"/>'s network send path yet — see this project's
+/// README for why (there's still no RTP packetizer/depacketizer for this stream, nor a
+/// <c>CastStartMessage</c> field to tell the Terminal which codec to expect). Instead this round adds
+/// the missing decode-side half (<see cref="AacAudioDecoder"/>, <c>EveryStage.Rendering.Decode</c>)
+/// and validates the full encode-then-decode round trip in one process via
+/// <see cref="AacEncodeSelfTestRunner"/> — the same "build + self-test before wiring into the real
+/// send path" order <c>EncodeSelfTestRunner</c> already established for the H.264 encoder, just with
+/// an extra step now that both directions exist to actually chain together.
 /// </summary>
 public sealed class AacAudioEncoder : IDisposable
 {
@@ -39,7 +48,7 @@ public sealed class AacAudioEncoder : IDisposable
     private readonly long _bytesPerSecond;
 
     /// <summary>Raised (from whichever thread calls <see cref="SubmitPcm"/> — see that method) with
-    /// one raw (headerless) AAC access unit.</summary>
+    /// one ADTS-framed AAC access unit.</summary>
     public event Action<byte[]>? AccessUnitEncoded;
 
     /// <summary>Raised (same calling-thread caveat as <see cref="AccessUnitEncoded"/>) if encoding
@@ -228,10 +237,10 @@ public sealed class AacAudioEncoder : IDisposable
         encoder.GetOutputAvailableType(0, 0, out var type).CheckError();
         using (type)
         {
-            // Raw (headerless) access units — see MF_MT_AAC_PAYLOAD_TYPE's own doc comment in
-            // EncoderGuids.cs for why, and what still needs to be built before this matters (there's
-            // no RTP packetizer for AAC in this repo yet).
-            type.Set(MF_MT_AAC_PAYLOAD_TYPE, 0u);
+            // ADTS-framed access units — see MF_MT_AAC_PAYLOAD_TYPE's own doc comment in
+            // EncoderGuids.cs for why (self-describing per-frame headers mean AacAudioDecoder needs
+            // no separate out-of-band AudioSpecificConfig).
+            type.Set(MF_MT_AAC_PAYLOAD_TYPE, 1u);
             encoder.SetOutputType(0, type, 0).CheckError();
         }
     }
