@@ -1,3 +1,4 @@
+using EveryStage.Discovery;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Devices;
 using EveryStage.Terminal.Logging;
@@ -13,9 +14,10 @@ namespace EveryStage.Terminal.UI;
 /// whatever display the operator is actually sitting at — this is NOT the <c>OverlayWindow</c>,
 /// which covers the bound extended display with actual content output.
 ///
-/// 文件、活动、设备 are real (§8.2) — all three had (or, for 活动, needed only) a working data
-/// source to hang UI on. 设置 is an honest placeholder (<see cref="NotImplementedPanel"/>); see
-/// this project's README for what's missing there and why.
+/// All four §8.2 panels are real now: 文件/活动/设备 from earlier rounds, and 设置
+/// (<see cref="SettingsPanel"/>) from this one — see that class and this project's README for what
+/// its fields are and aren't (PLANNING.md only names the five category labels, not any field
+/// within them).
 ///
 /// The 投屏开关 here is a plain <see cref="CheckBox"/>, not the slide-switch visual PLANNING.md §8.1
 /// calls for ("滑动开关，非按钮") — that's a Phase 5 visual-design concern (themes, Acrylic/Mica,
@@ -31,11 +33,12 @@ public sealed class MainWindow : Form
     private readonly FilesPanel _filesPanel;
     private readonly DevicesPanel _devicesPanel;
     private readonly ActivitiesPanel _activitiesPanel;
-    private readonly NotImplementedPanel _settingsPanel;
+    private readonly SettingsPanel _settingsPanel;
 
     public MainWindow(
         OutputStateMachine stateMachine, PlaybackEngine? playback, FileLibraryStore library,
-        PairedDeviceStore pairedDevices, ScenarioStore scenarioStore, ScenarioRepository scenarioRepository)
+        PairedDeviceStore pairedDevices, ScenarioStore scenarioStore, ScenarioRepository scenarioRepository,
+        SettingsStore settingsStore, DeviceIdentity identity)
     {
         _stateMachine = stateMachine;
         _playback = playback;
@@ -80,7 +83,7 @@ public sealed class MainWindow : Form
         _devicesPanel = new DevicesPanel(pairedDevices);
         _activitiesPanel = new ActivitiesPanel(
             scenarioStore, scenarioRepository, library, _playback, new FileOperationLogger(), stateMachine);
-        _settingsPanel = new NotImplementedPanel("设置", "通用/显示/播放行为/网络与设备等分类设置尚未实现。");
+        _settingsPanel = new SettingsPanel(settingsStore, identity);
 
         filesButton.Click += (_, _) => ShowPanel(_filesPanel);
         activitiesButton.Click += (_, _) => ShowPanel(_activitiesPanel);

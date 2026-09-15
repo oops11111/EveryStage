@@ -29,6 +29,7 @@ public sealed class PlaybackEngine : IDisposable
     private readonly OutputStateMachine _stateMachine;
     private readonly OverlayWindow _overlay;
     private readonly VideoSurface _videoSurface;
+    private readonly SettingsStore _settingsStore;
     private readonly ImageContentRenderer _imageRenderer = new();
     private readonly PdfContentRenderer _pdfRenderer = new();
     private readonly PlaybackLogger _playbackLogger = new();
@@ -75,11 +76,12 @@ public sealed class PlaybackEngine : IDisposable
         _ => null,
     };
 
-    public PlaybackEngine(OutputStateMachine stateMachine, OverlayWindow overlay, VideoSurface videoSurface)
+    public PlaybackEngine(OutputStateMachine stateMachine, OverlayWindow overlay, VideoSurface videoSurface, SettingsStore settingsStore)
     {
         _stateMachine = stateMachine;
         _overlay = overlay;
         _videoSurface = videoSurface;
+        _settingsStore = settingsStore;
         _stateMachine.StateChanged += OnOutputStateChanged;
     }
 
@@ -203,7 +205,18 @@ public sealed class PlaybackEngine : IDisposable
         ArmStayDurationTimer(file);
     }
 
-    private void ArmStayDurationTimer(MediaFile file) => ArmStayDurationTimer(file, file.StayDuration ?? TimeSpan.Zero, isFreshStart: true);
+    private void ArmStayDurationTimer(MediaFile file) => ArmStayDurationTimer(file, file.StayDuration ?? DefaultStayDurationOrZero(), isFreshStart: true);
+
+    /// <summary>The 设置 面板's "默认停留时长" (<c>AppSettings.DefaultStayDurationSeconds</c>), read
+    /// fresh every time rather than cached — a change saved through <c>SettingsPanel</c> applies to
+    /// the very next file played, no restart needed. Falls back to <see cref="TimeSpan.Zero"/> (this
+    /// method's existing meaning: "hold indefinitely", see <see cref="ArmStayDurationTimer(MediaFile, TimeSpan, bool)"/>)
+    /// when the setting isn't configured, preserving the pre-settings behavior exactly.</summary>
+    private TimeSpan DefaultStayDurationOrZero()
+    {
+        int? seconds = _settingsStore.Current.DefaultStayDurationSeconds;
+        return seconds is > 0 ? TimeSpan.FromSeconds(seconds.Value) : TimeSpan.Zero;
+    }
 
     private void ArmStayDurationTimer(MediaFile file, TimeSpan duration, bool isFreshStart)
     {

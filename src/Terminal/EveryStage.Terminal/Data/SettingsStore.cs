@@ -1,0 +1,73 @@
+using System.Text.Json;
+
+namespace EveryStage.Terminal.Data;
+
+/// <summary>
+/// JSON persistence for <see cref="AppSettings"/>, the same atomic-write pattern as
+/// <see cref="ScenarioRepository"/>/<see cref="FileLibraryStore"/>/<c>Devices.PairedDeviceStore</c>:
+/// temp file then <see cref="File.Replace(string, string, string?)"/>, so a crash mid-write can't
+/// corrupt the settings an unattended Terminal reads at every startup.
+/// </summary>
+public sealed class SettingsStore
+{
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
+    private readonly string _storePath;
+
+    /// <summary>The live settings object. Callers that only read a value (e.g.
+    /// <c>PlaybackEngine</c>'s stay-duration fallback) can hold onto this <see cref="SettingsStore"/>
+    /// and read <see cref="Current"/> fresh each time, so a change made through the 设置 panel is
+    /// visible immediately without re-wiring anything. Mutate a copy and pass it to <see cref="Save"/>
+    /// rather than mutating this instance in place, so a half-edited settings object is never what
+    /// another reader sees mid-edit.</summary>
+    public AppSettings Current { get; private set; }
+
+    public SettingsStore(string? storePathOverride = null)
+    {
+        _storePath = storePathOverride ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+            "EveryStage", "settings.json");
+        Current = Load();
+    }
+
+    /// <summary>Replaces and persists the settings. Takes the whole object rather than a partial
+    /// update — <see cref="AppSettings"/> is small enough that "load, copy, edit, save" (the
+    /// pattern <c>UI/Panels/SettingsPanel</c> uses) doesn't need a more granular API yet.</summary>
+    public void Save(AppSettings settings)
+    {
+        Current = settings;
+
+        string directory = Path.GetDirectoryName(_storePath)!;
+        Directory.CreateDirectory(directory);
+
+        string tempPath = _storePath + ".tmp";
+        using (var stream = File.Create(tempPath))
+        {
+            JsonSerializer.Serialize(stream, Current, JsonOptions);
+        }
+
+        if (File.Exists(_storePath))
+            File.Replace(tempPath, _storePath, destinationBackupFileName: null);
+        else
+            File.Move(tempPath, _storePath);
+    }
+
+    private AppSettings Load()
+    {
+        if (!File.Exists(_storePath)) return new AppSettings();
+
+        try
+        {
+            using var stream = File.OpenRead(_storePath);
+            return JsonSerializer.Deserialize<AppSettings>(stream, JsonOptions) ?? new AppSettings();
+        }
+        catch (JsonException)
+        {
+            // Same fail-safe as ScenarioRepository/PairedDeviceStore: an unattended device must not
+            // crash-loop on a corrupt settings file. Keep the bad file around (renamed) rather than
+            // silently discard it, and fall back to defaults instead.
+            File.Copy(_storePath, _storePath + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: true);
+            return new AppSettings();
+        }
+    }
+}

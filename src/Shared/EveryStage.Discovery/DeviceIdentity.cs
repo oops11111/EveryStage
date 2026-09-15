@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace EveryStage.Discovery;
 
@@ -13,7 +14,15 @@ namespace EveryStage.Discovery;
 public sealed class DeviceIdentity
 {
     public Guid DeviceId { get; init; }
-    public string DeviceName { get; init; } = Environment.MachineName;
+
+    /// <summary>Mutable (not <c>init</c>) — Terminal's 设置 panel lets the operator rename this
+    /// device; call <see cref="Save"/> after changing it to persist the rename.</summary>
+    public string DeviceName { get; set; } = Environment.MachineName;
+
+    // Where this instance was loaded from/created at — not serialized, so it survives round-trips
+    // through JSON only as "whatever path LoadOrCreate used", never read back from the file itself.
+    [JsonIgnore]
+    private string? _persistedPath;
 
     /// <param name="fileNameStem">Distinguishes Terminal's identity file from Caster's under the
     /// shared ProgramData\EveryStage\ folder, e.g. "terminal" -> terminal-identity.json.</param>
@@ -28,14 +37,29 @@ public sealed class DeviceIdentity
             try
             {
                 var loaded = JsonSerializer.Deserialize<DeviceIdentity>(File.ReadAllText(path));
-                if (loaded != null && loaded.DeviceId != Guid.Empty) return loaded;
+                if (loaded != null && loaded.DeviceId != Guid.Empty)
+                {
+                    loaded._persistedPath = path;
+                    return loaded;
+                }
             }
             catch (JsonException) { } // corrupt file — fall through and mint a fresh identity.
         }
 
-        var identity = new DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = Environment.MachineName };
+        var identity = new DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = Environment.MachineName, _persistedPath = path };
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         File.WriteAllText(path, JsonSerializer.Serialize(identity));
         return identity;
+    }
+
+    /// <summary>Persists the current <see cref="DeviceName"/> (the only field meant to change after
+    /// creation) back to the file this identity was loaded from or created at. Throws if this
+    /// instance wasn't obtained via <see cref="LoadOrCreate"/> — there's no other valid path to
+    /// write to.</summary>
+    public void Save()
+    {
+        if (_persistedPath == null)
+            throw new InvalidOperationException("DeviceIdentity.Save() requires an instance obtained via LoadOrCreate.");
+        File.WriteAllText(_persistedPath, JsonSerializer.Serialize(this));
     }
 }

@@ -19,14 +19,27 @@ public static class MonitorService
             .ToList();
 
     /// <summary>
-    /// The Terminal's designated output display: the first non-primary monitor, matching "绑定
-    /// 扩展屏" — the Terminal drives a dedicated display, not the primary desktop. Returns null on
-    /// a single-monitor machine, which the caller must treat as a real configuration state (no
-    /// extended display attached yet), not an error to swallow.
+    /// The Terminal's designated output display, matching "绑定扩展屏" — the Terminal drives a
+    /// dedicated display, not the primary desktop. Returns null on a single-monitor machine, which
+    /// the caller must treat as a real configuration state (no extended display attached yet), not
+    /// an error to swallow.
     /// </summary>
-    public static MonitorInfo? GetBoundExtendedDisplay(IReadOnlyList<MonitorInfo>? monitors = null)
+    /// <param name="preferredDeviceName">The 设置 panel's "扩展屏选择" — a specific monitor's
+    /// <see cref="MonitorInfo.DeviceName"/> (e.g. <c>"\\.\DISPLAY2"</c>) to prefer, from
+    /// <c>AppSettings.PreferredMonitorDeviceName</c>. Falls back to the original "first non-primary
+    /// monitor found" behavior when null, or when the preferred monitor isn't currently connected —
+    /// this only picks WHICH single monitor to bind, it doesn't add support for driving more than
+    /// one extended display at once.</param>
+    public static MonitorInfo? GetBoundExtendedDisplay(IReadOnlyList<MonitorInfo>? monitors = null, string? preferredDeviceName = null)
     {
         monitors ??= GetAll();
+
+        if (preferredDeviceName != null)
+        {
+            var preferred = monitors.FirstOrDefault(m => !m.IsPrimary && m.DeviceName == preferredDeviceName);
+            if (preferred != null) return preferred;
+        }
+
         return monitors.FirstOrDefault(m => !m.IsPrimary);
     }
 }

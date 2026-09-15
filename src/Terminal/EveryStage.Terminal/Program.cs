@@ -47,6 +47,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 {
     private readonly ScenarioStore _store;
     private readonly ScenarioRepository _repository;
+    private readonly SettingsStore _settingsStore;
     private readonly OutputStateMachine _stateMachine = new();
     private readonly AudioTakeoverService _audioTakeover = new();
     private readonly TrayIconController _tray;
@@ -67,7 +68,13 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _uiContext = SynchronizationContext.Current
             ?? throw new InvalidOperationException("Expected Program.Main to have installed a WindowsFormsSynchronizationContext first.");
 
-        var extendedDisplay = MonitorService.GetBoundExtendedDisplay();
+        _settingsStore = new SettingsStore();
+
+        // Applied once, here, at startup — AppSettings.CastSwitchDefaultOn's own doc comment
+        // explains why this never runs again after this point (it's a default, not a live toggle).
+        _stateMachine.SetCastSwitch(_settingsStore.Current.CastSwitchDefaultOn);
+
+        var extendedDisplay = MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName);
         if (extendedDisplay != null)
         {
             _overlay = new OverlayWindow(extendedDisplay);
@@ -75,7 +82,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             // playback and a live device cast — see VideoSurface's doc comment for why this can't
             // be two independent ones anymore.
             _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
-            _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface);
+            _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore);
             _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
             _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
         }
@@ -98,7 +105,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _discovery.Start();
 
         var library = new FileLibraryStore();
-        _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository);
+        _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, identity);
         _mainWindow.Show();
 
         _tray = new TrayIconController(_stateMachine);

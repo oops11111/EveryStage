@@ -108,11 +108,15 @@ public sealed class DiscoveryService : IDisposable
 
     private async Task BeaconLoopAsync(CancellationToken token)
     {
-        var beacon = new DiscoveryProtocol.BeaconMessage { DeviceId = _identity.DeviceId, DeviceName = _identity.DeviceName };
         var broadcastEndPoint = new IPEndPoint(IPAddress.Broadcast, DiscoveryProtocol.Port);
 
         while (!token.IsCancellationRequested)
         {
+            // Built fresh each tick rather than once before the loop — _identity.DeviceName can be
+            // changed at runtime (the 设置 panel's "设备名称" field, via DeviceIdentity.Save()), and
+            // a beacon built once up front would keep broadcasting the name this Terminal had at
+            // startup forever, silently ignoring the rename.
+            var beacon = new DiscoveryProtocol.BeaconMessage { DeviceId = _identity.DeviceId, DeviceName = _identity.DeviceName };
             await SendAsync(beacon, broadcastEndPoint);
             PruneExpiredPendingRequests();
 
