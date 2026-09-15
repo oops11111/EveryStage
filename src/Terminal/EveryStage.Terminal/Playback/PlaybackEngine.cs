@@ -19,15 +19,18 @@ namespace EveryStage.Terminal.Playback;
 /// need UI-thread access, so treat it as one anyway.
 ///
 /// Deliberately out of scope for this first cut (see this project's README "已知风险/待验证事项"):
-/// fades, volume-follows-fade, background-audio overlay content (§6 "音频特殊性"), what happens
-/// after the last file in an activity under NextItem (cross-activity auto-advance isn't specified
-/// anywhere in PLANNING.md), and rendering a local-only preview when the cast switch is off (that
-/// preview surface belongs to the Phase 4 UI's file/activity panels, which don't exist yet).
+/// fades, volume-follows-fade, the *background*-audio half of §6 "音频特殊性" (an audio file playing
+/// concurrently with other visual content, overlaid rather than occupying the main queue's
+/// sequential slot — that needs a genuinely concurrent playback-track model this class doesn't
+/// attempt), what happens after the last file in an activity under NextItem (cross-activity
+/// auto-advance isn't specified anywhere in PLANNING.md), and rendering a local-only preview when the
+/// cast switch is off (that preview surface belongs to the Phase 4 UI's file/activity panels, which
+/// don't exist yet).
 ///
 /// <see cref="MediaFile.PlayModeOverride"/>/<see cref="Activity.DefaultPlayMode"/> (via
-/// <see cref="EffectivePlayMode"/>) and <see cref="MediaFile.AllowManualSkip"/> (via
-/// <see cref="TryAdvance"/>) DO have real effect here, unlike the properties listed above — see
-/// those two methods for exactly what each one gates.
+/// <see cref="EffectivePlayMode"/>), <see cref="MediaFile.AllowManualSkip"/> (via
+/// <see cref="TryAdvance"/>), and now standalone (non-background) audio playback — see
+/// <see cref="PlayStandaloneAudio"/> — DO have real effect here, unlike the properties listed above.
 /// </summary>
 public sealed class PlaybackEngine : IDisposable
 {
@@ -39,6 +42,7 @@ public sealed class PlaybackEngine : IDisposable
     private readonly PdfContentRenderer _pdfRenderer = new();
     private readonly PlaybackLogger _playbackLogger = new();
     private VideoContentController? _videoController;
+    private AudioContentController? _audioController;
 
     private Activity? _currentActivity;
     private int _currentFileIndex = -1;
@@ -46,6 +50,15 @@ public sealed class PlaybackEngine : IDisposable
     private System.Windows.Forms.Timer? _stayDurationTimer;
     private DateTime _stayDurationArmedAt;
     private TimeSpan _stayDurationTotal;
+
+    // Backing state for MediaFile.BackgroundAudioVisual == Waveform — see ApplyAudioVisual/
+    // RedrawWaveformFrame. _latestAudioLevel is written from AudioContentController's background
+    // playback thread (OnAudioLevelChanged) and read from the UI thread (_waveformTimer's Tick);
+    // volatile is enough here since a torn/stale read costs nothing worse than one meter frame being
+    // one PCM chunk behind, the same reasoning OnAudioLevelChanged's own doc comment gives.
+    private volatile float _latestAudioLevel;
+    private System.Windows.Forms.Timer? _waveformTimer;
+    private System.Drawing.Bitmap? _audioVisualFrame;
 
     /// <summary>Raised after a file actually starts casting to the extended display (never raised
     /// when the cast switch declined the request).</summary>
@@ -96,6 +109,13 @@ public sealed class PlaybackEngine : IDisposable
     // device cast can need it before any local video ever plays).
     private VideoContentController VideoController =>
         _videoController ??= new VideoContentController(_videoSurface);
+
+    // Same laziness reasoning as VideoController, but there's no shared GPU resource to justify
+    // eager construction the way TerminalApplicationContext eagerly builds _videoSurface for a
+    // device cast that might arrive before any local video plays — nothing else in this process
+    // needs an AudioContentController to exist before the first standalone-audio file is played.
+    private AudioContentController AudioController =>
+        _audioController ??= new AudioContentController();
 
     /// <summary>"点文件" from within an activity's file list — establishes the auto-advance/manual-
     /// skip context that <see cref="NextManual"/>/<see cref="PreviousManual"/> and
@@ -157,6 +177,13 @@ public sealed class PlaybackEngine : IDisposable
         _stayDurationTimer?.Dispose();
         _stayDurationTimer = null;
         IsPaused = false;
+        // Stopping any in-flight standalone-audio playback here (rather than only inside the
+        // MediaKind.Audio case below) means switching from audio to an image/video/document — or to
+        // a different audio file — always tears down the previous one first, the same way the
+        // Image/Document/Video cases below each stop _videoController before taking over. Harmless
+        // no-op when nothing was playing (AudioContentController.Stop() guards every field with ?.).
+        _audioController?.Stop();
+        StopWaveformTimer();
 
         bool casting = _stateMachine.RequestLocalFilePlayback();
         if (!casting)
@@ -202,10 +229,19 @@ public sealed class PlaybackEngine : IDisposable
                 break;
 
             case MediaKind.Audio:
-                // Background/standalone audio (§6 "音频特殊性") needs its own mixing + overlay
-                // visual (waveform/背景图/黑屏) that isn't built yet. Left unhandled rather than
-                // silently mis-rendering it through the image path.
-                return;
+                if (file.IsBackgroundAudio)
+                {
+                    // The concurrent-overlay half of §6 "音频特殊性" — playing on top of whatever
+                    // else is on screen, without occupying the main queue's sequential slot — needs
+                    // a genuinely concurrent playback-track model this class doesn't have (see this
+                    // class's doc comment). Left unhandled rather than silently mis-rendering it
+                    // through the image path. The non-background half (below) has real behavior now.
+                    return;
+                }
+                _videoController?.Stop();
+                _overlay.ShowImageSurface();
+                PlayStandaloneAudio(file);
+                break;
         }
 
         FileStarted?.Invoke(file);
@@ -224,6 +260,108 @@ public sealed class PlaybackEngine : IDisposable
         await _pdfRenderer.LoadAsync(file.SourcePath);
         _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
         ArmStayDurationTimer(file);
+    }
+
+    /// <summary>Standalone (non-background) audio playback — see this class's doc comment and
+    /// <see cref="MediaFile.IsBackgroundAudio"/>'s caller in <see cref="PlayFile"/> for what this
+    /// deliberately does not cover. Presents through <see cref="OverlayWindow.ContentSurface"/>
+    /// (the image path, not <see cref="VideoSurface"/>) since <see cref="AudioVisualRenderer"/>
+    /// produces plain GDI+ <see cref="System.Drawing.Bitmap"/>s, not D3D11 textures — there's no
+    /// zero-copy pipeline to route audio-only content through.</summary>
+    private void PlayStandaloneAudio(MediaFile file)
+    {
+        // -= before += on all three, every time: same "avoid stacking subscriptions across plays"
+        // reasoning as the video case above.
+        AudioController.PlaybackCompleted -= OnAudioCompleted;
+        AudioController.PlaybackCompleted += OnAudioCompleted;
+        AudioController.PlaybackFailed -= OnAudioFailed;
+        AudioController.PlaybackFailed += OnAudioFailed;
+        AudioController.LevelChanged -= OnAudioLevelChanged;
+        AudioController.LevelChanged += OnAudioLevelChanged;
+
+        ApplyAudioVisual(file);
+        AudioController.Play(file.SourcePath);
+    }
+
+    /// <summary>Sets up whichever of the three <see cref="AudioVisual"/> options this file asks for.
+    /// <see cref="AudioVisual.Black"/> needs nothing beyond clearing the surface — see
+    /// <see cref="AudioVisualRenderer"/>'s doc comment for why the other two are placeholders rather
+    /// than a real default-image asset / true scrolling waveform.</summary>
+    private void ApplyAudioVisual(MediaFile file)
+    {
+        _audioVisualFrame?.Dispose();
+        _audioVisualFrame = null;
+
+        switch (file.BackgroundAudioVisual)
+        {
+            case AudioVisual.Black:
+                _overlay.ContentSurface.SetFrame(null);
+                break;
+
+            case AudioVisual.DefaultBackgroundImage:
+                _audioVisualFrame = AudioVisualRenderer.CreateDefaultBackgroundFrame(_overlay.ContentSurface.ClientSize, file.SourcePath);
+                _overlay.ContentSurface.SetFrame(_audioVisualFrame);
+                break;
+
+            case AudioVisual.Waveform:
+                // Redrawn on a fixed UI-thread timer rather than once per LevelChanged callback —
+                // LevelChanged fires from AudioContentController's background thread at whatever
+                // rate MF hands back PCM chunks (potentially far faster than any display needs),
+                // and OnAudioLevelChanged deliberately does nothing but record the latest value for
+                // this timer to pick up (see that method's doc comment). ~15fps is plenty for a
+                // level meter and keeps GDI+ Bitmap allocation off the hot decode path entirely.
+                _latestAudioLevel = 0f;
+                _waveformTimer = new System.Windows.Forms.Timer { Interval = 66 };
+                _waveformTimer.Tick += (_, _) => RedrawWaveformFrame();
+                _waveformTimer.Start();
+                RedrawWaveformFrame(); // paint an initial (silent) frame now, not just on the first tick.
+                break;
+        }
+    }
+
+    private void RedrawWaveformFrame()
+    {
+        _audioVisualFrame?.Dispose();
+        _audioVisualFrame = AudioVisualRenderer.CreateWaveformFrame(_overlay.ContentSurface.ClientSize, _latestAudioLevel);
+        _overlay.ContentSurface.SetFrame(_audioVisualFrame);
+    }
+
+    private void StopWaveformTimer()
+    {
+        _waveformTimer?.Stop();
+        _waveformTimer?.Dispose();
+        _waveformTimer = null;
+    }
+
+    private void OnAudioCompleted()
+    {
+        var file = _currentFile;
+        if (file == null) return;
+        // Raised from AudioContentController's background playback thread — same marshal-before-
+        // touching-timers/overlay-state reasoning as OnVideoCompleted.
+        _overlay.BeginInvoke(new Action(() => HandleCompletion(file)));
+    }
+
+    private void OnAudioFailed(Exception ex)
+    {
+        var file = _currentFile;
+        if (file == null) return;
+        // Also raised from the background playback thread.
+        _overlay.BeginInvoke(new Action(() =>
+        {
+            if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
+            _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
+            // Same "no documented recovery behavior" reasoning as OnVideoFailed.
+        }));
+    }
+
+    private void OnAudioLevelChanged(float level)
+    {
+        // Raised from AudioContentController's background playback thread, once per decoded PCM
+        // chunk — potentially much more often than any display needs. Deliberately does nothing but
+        // record the value: _waveformTimer's UI-thread Tick (see ApplyAudioVisual) is what actually
+        // touches Bitmaps/ContentSurface, at a bounded ~15fps regardless of how fast chunks arrive.
+        _latestAudioLevel = level;
     }
 
     private void ArmStayDurationTimer(MediaFile file) => ArmStayDurationTimer(file, file.StayDuration ?? DefaultStayDurationOrZero(), isFreshStart: true);
@@ -362,6 +500,8 @@ public sealed class PlaybackEngine : IDisposable
         _stayDurationTimer = null;
         IsPaused = false;
         _videoController?.Stop();
+        _audioController?.Stop();
+        StopWaveformTimer();
     }
 
     private void OnOutputStateChanged(OutputState state)
@@ -379,14 +519,19 @@ public sealed class PlaybackEngine : IDisposable
         }
         _stayDurationTimer?.Stop();
         _videoController?.Stop();
+        _audioController?.Stop();
+        StopWaveformTimer();
     }
 
     public void Dispose()
     {
         _stateMachine.StateChanged -= OnOutputStateChanged;
         _stayDurationTimer?.Dispose();
+        StopWaveformTimer();
+        _audioVisualFrame?.Dispose();
         _imageRenderer.Dispose();
         _pdfRenderer.Dispose();
         _videoController?.Dispose();
+        _audioController?.Dispose();
     }
 }

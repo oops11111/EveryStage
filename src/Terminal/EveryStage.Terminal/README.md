@@ -72,8 +72,9 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
    一个活动的文件列表播完最后一项后 `NextItem` 该不该自动跳到下一个活动；投屏开关关闭时"仅本地预览"
    应该渲染到哪个界面——文件面板现在存在了，双击文件仍然会正确遵守开关状态(`RequestLocalFilePlayback`
    返回`false`就不播)，但关闭状态下双击目前是彻底无反馈的静默无操作，用户会以为点击没生效，这本身
-   也是需要在真正实现"本地预览"之前先解决的可用性问题；音频类文件(`MediaKind.Audio`)的播放目前完全
-   没接（§6"音频特殊性"的背景音轨叠加规则本身在文档§16第3项里也还标着"待细化"）。
+   也是需要在真正实现"本地预览"之前先解决的可用性问题；音频类文件(`MediaKind.Audio`)的播放**更新
+   （见风险#60-61）**：非背景音频（`IsBackgroundAudio == false`）现在有真正的播放行为了，背景音轨
+   叠加（§6"音频特殊性"那条规则本身在文档§16第3项里也还标着"待细化"）仍然完全没接。
 10. **`Logging/`**：`DailyRollingLogWriter` 用反射把匿名对象的属性摊平进日志行，日志量在这个阶段
     很小，没考虑过性能。`VideoContentController` 后台播放线程里的解码异常现在会被捕获并通过新增的
     `PlaybackFailed` 事件上报给 `PlaybackEngine`（记入 `LogAbnormalInterruption`），但恢复行为
@@ -418,6 +419,39 @@ Caster知道终端机确实收到了东西。
     在真实Windows机器上到底从哪个线程触发这个事件，这个沙箱没有dotnet/Windows SDK，完全没办法
     验证——`OnDisplaySettingsChanged`因此防御性地用构造函数里捕获的`_uiContext.Post`把
     `HandleDisplaySettingsChanged`转回UI线程执行，而不是假设它已经在UI线程上。
+60. **新增`EveryStage.Rendering.Decode.AudioDecodeSource`——这个仓库第二个`IMFSourceReader`
+    封装**：跟`VideoDecodeSource`同样的"从未编译/从未在真机跑过"风险等级，但比它简单——不需要
+    `D3D11Device`/`MF_SOURCE_READER_D3D_MANAGER`/`MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS`（音频
+    没有DXVA硬件解码这回事），构造函数只协商音频媒体类型、只选中`MF_SOURCE_READER_FIRST_AUDIO_STREAM`
+    这一路流。具体未核实点跟`VideoDecodeSource`是同一类：`MFCreateSourceReaderFromURL`接受的
+    `IMFAttributes`参数这里传了一个空的（而不是猜测Vortice绑定是否接受`null`），`IMFMediaBuffer.Lock`
+    的签名沿用`VideoDecodeSource.ReadNextAudioChunk`已经标注过的同一个不确定点。有一点在真机上
+    需要重点验证但这个沙箱完全没办法验证：某些容器格式的音频文件（比如内嵌封面图的mp3）可能会被
+    Media Foundation识别出一个"视频"流（封面图本身），这里的实现是"完全不对视频流调用
+    `SetStreamSelection`"，指望`IMFSourceReader`对没有显式选中的流不产生任何行为——如果这个假设
+    不成立，构造函数或`ReadNextChunk`的行为需要重新核实。
+61. **【已实现，原为已知缺口】`PlaybackEngine`现在真正播放非背景音频文件了**（对应第9条"音频类
+    文件的播放目前完全没接"）：`MediaFile.Kind == Audio`且`IsBackgroundAudio == false`时，新增的
+    `ContentEngine.AudioContentController`（结构上是`VideoContentController`的音频版——同样是
+    独立的解码/播放后台线程、`Play`/`Stop`/`PlaybackCompleted`/`PlaybackFailed`这套接口）通过
+    `AudioDecodeSource`解码、`AudioPlaybackClock`（跟视频共享的同一个WASAPI输出类）播放，完成时
+    走跟视频完全一样的`HandleCompletion`（`OnCompletion`的`NextItem`/`Loop`/`HoldOnLastFrame`对
+    音频和视频现在是同一套代码路径）。**明确没有实现的部分**：(a) `IsBackgroundAudio == true`
+    的背景音轨叠加——PLANNING.md §6要求"叠加在其他视觉内容之上播放，不占用主队列顺序位"，这需要
+    一个真正支持多轨同时播放的模型，`PlaybackEngine`目前是单一"当前文件"的顺序播放模型，完全没有
+    并发轨道的概念，这次刻意没有尝试；这个分支目前维持原样直接`return`。(b) `FadeDuration`/
+    `VolumeFollowsFade`——音频播放本身没有任何音量渐变逻辑，`AudioPlaybackClock.Enqueue`原样
+    把解码出来的PCM送进WASAPI缓冲区。(c) `MediaFile.BackgroundAudioVisual`的三个选项里只有
+    `Black`是"真的什么都不用做"（`ContentSurface`本来就在没有帧时画黑屏）；`DefaultBackgroundImage`
+    和`Waveform`都是新增的`ContentEngine.AudioVisualRenderer`生成的占位画面，不是真正的产品视觉
+    ——`DefaultBackgroundImage`只是纯色背景+文件名文字（这个仓库完全没有任何图片资源文件，见该类
+    doc comment），`Waveform`是单柱状峰值电平表（每个解码出来的PCM块算一次峰值绝对值，归一化到
+    [0,1]），不是真正的滚动波形动画。电平表通过`AudioContentController.LevelChanged`从后台解码
+    线程把最新数值写进一个`volatile float`字段，再由UI线程上一个约15fps（66ms间隔）的
+    `System.Windows.Forms.Timer`读取并重新生成`Bitmap`——刻意不在`LevelChanged`每次触发时都在
+    后台线程直接生成/`BeginInvoke`一个新`Bitmap`，因为PCM块到达的频率完全由Media Foundation
+    决定、可能远高于任何显示器需要的帧率，真这样做等于把大量GDI+ `Bitmap`分配和UI线程封送堆在
+    解码热路径上。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -429,8 +463,13 @@ Caster知道终端机确实收到了东西。
   /位置"这一种场景已经在第59条实现；"启动时没绑定、运行中途插入新显示器"和"已绑定的显示器运行
   中途被整个拔掉"这两种场景仍然完全没有处理，见第59条列出的具体理由
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
-- `FadeDuration`/`VolumeFollowsFade`/`IsBackgroundAudio`/`BackgroundAudioVisual`这几个字段仍然
-  完全没有任何代码读取过（见`PlaybackEngine`类doc comment"deliberately out of scope"那一段），
-  在它们本身有真正的播放行为之前，这个仓库不打算为它们加编辑UI——同样的"先做行为、再做UI"的顺序，
-  见风险#55-57（`PlayMode`/`AllowManualSkip`/`FileOperationLogger.LogPlaybackPropertyChanged`已经
-  按这个顺序做完了）
+- 背景音轨叠加播放（`IsBackgroundAudio == true`，见"已知风险"第61条）——需要`PlaybackEngine`支持
+  真正的多轨并发播放，目前完全没有实现；非背景音频（第61条已实现的那一半）不受影响
+- `FadeDuration`/`VolumeFollowsFade`这两个字段仍然完全没有任何代码读取过（见`PlaybackEngine`类doc
+  comment"deliberately out of scope"那一段；`IsBackgroundAudio`/`BackgroundAudioVisual`这两个
+  字段已经在第61条里有真正的行为了，从这条移出）——在`FadeDuration`/`VolumeFollowsFade`本身有真正
+  的播放行为之前，这个仓库不打算为它们加编辑UI，同样的"先做行为、再做UI"的顺序，见风险#55-57、61
+  （`PlayMode`/`AllowManualSkip`/`FileOperationLogger.LogPlaybackPropertyChanged`/音频播放已经按
+  这个顺序做完了）
+- 标准音频文件的编辑UI（`IsBackgroundAudio`/`BackgroundAudioVisual`目前只有行为、没有编辑入口，
+  `ActivitiesPanel`里还没有类似`PlayModeDialog`那样的音频属性对话框）
