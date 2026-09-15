@@ -33,10 +33,17 @@ namespace EveryStage.Caster.Casting;
 /// capture is the core feature, and a machine with nothing currently producing audio is a normal
 /// state, not an error.
 ///
-/// Nothing in this class knows whether the Terminal actually received or displayed anything — there
-/// is no acknowledgment channel, so "投屏中" here only ever means "still capturing/encoding/sending
-/// without a local error", never "confirmed visible on the other end". See this project's README
-/// "已知风险" for why that's an accepted, documented limitation rather than an oversight.
+/// Now has a real, if lightweight, acknowledgment channel: the Terminal reports back periodically
+/// (<see cref="DiscoveryProtocol.CastStatusMessage"/>, roughly once a second, see
+/// <c>TerminalApplicationContext.SendCastStatus</c> on the Terminal side) with how many frames it has
+/// actually decoded and how many audio bytes it has received. That's not per-packet acknowledgment
+/// or flow control — it's the smallest thing that turns "投屏中" from a purely local claim into
+/// something the Terminal has actually confirmed, exposed here as <see cref="TerminalFramesDecoded"/>
+/// and friends, and <see cref="IsTerminalAlive"/> for "has it said anything recently". If the
+/// Terminal never accepted this cast in the first place (no display bound, no permission, a
+/// construction failure), no status ever arrives and <see cref="IsTerminalAlive"/> stays false
+/// forever — this class still can't distinguish "never confirmed" from "confirmed once, then went
+/// silent", only whether a confirmation is currently recent.
 ///
 /// One instance is single-use: <see cref="Start"/> then, once, <see cref="Stop"/> or
 /// <see cref="Dispose"/> — the internal send queues are completed on stop and cannot be reopened.
@@ -115,6 +122,37 @@ public sealed class LiveCastSession : IDisposable
     /// best-effort.</summary>
     public string? AudioError { get; private set; }
 
+    // --- The Terminal's own confirmation, via DiscoveryProtocol.CastStatusMessage — the
+    // acknowledgment channel this project's READMEs have flagged as missing since the live pipeline
+    // first connected. Everything above this point is purely local ("did sending fail?"); everything
+    // below is what the Terminal itself has reported back, best-effort and on its own 1-second timer
+    // (see TerminalApplicationContext.SendCastStatus), so it always lags slightly behind the local
+    // stats and can go stale if the Terminal stops reporting (see LastStatusReceivedAt/IsTerminalAlive).
+
+    public long TerminalFramesDecoded { get; private set; }
+    public long TerminalVideoBytesReceived { get; private set; }
+    public string? TerminalVideoError { get; private set; }
+    public bool TerminalHasAudio { get; private set; }
+    public long TerminalAudioBytesReceived { get; private set; }
+    public string? TerminalAudioError { get; private set; }
+
+    /// <summary>UTC time of the last <c>CastStatusMessage</c> received from this session's Terminal
+    /// — null if none has arrived yet (could mean "just started, give it a second" or "the Terminal
+    /// never actually accepted this cast at all", this class can't tell those apart).</summary>
+    public DateTime? LastStatusReceivedAt { get; private set; }
+
+    // A status report is expected roughly every second (TerminalApplicationContext's timer) —
+    // several missed in a row is a reasonable "the Terminal's gone quiet" signal without being
+    // trigger-happy about one lost UDP datagram, same reasoning TerminalDiscoveryClient's own
+    // beacon-expiry window uses.
+    private static readonly TimeSpan StatusStaleAfter = TimeSpan.FromSeconds(5);
+
+    /// <summary>True once at least one status report has arrived and it's recent — false either
+    /// means "no confirmation has ever arrived" or "the Terminal stopped reporting", and this
+    /// property deliberately doesn't distinguish the two: both mean the UI shouldn't claim the
+    /// Terminal is receiving anything right now.</summary>
+    public bool IsTerminalAlive => LastStatusReceivedAt is { } at && DateTime.UtcNow - at < StatusStaleAfter;
+
     /// <summary>Raised from the background capture/encode loop, or from the encoder's own event
     /// loop — marshal to the UI thread before touching UI (mirrors every other self-test runner in
     /// this project).</summary>
@@ -125,6 +163,20 @@ public sealed class LiveCastSession : IDisposable
         _discoveryClient = discoveryClient;
         _identity = identity;
         _terminal = terminal;
+    }
+
+    private void OnCastStatusReceived(DiscoveryProtocol.CastStatusMessage status)
+    {
+        if (status.DeviceId != _terminal.DeviceId) return; // a report from some other terminal — not ours to track.
+
+        TerminalFramesDecoded = status.FramesDecoded;
+        TerminalVideoBytesReceived = status.VideoBytesReceived;
+        TerminalVideoError = status.VideoError;
+        TerminalHasAudio = status.HasAudio;
+        TerminalAudioBytesReceived = status.AudioBytesReceived;
+        TerminalAudioError = status.AudioError;
+        LastStatusReceivedAt = DateTime.UtcNow;
+        StatsUpdated?.Invoke();
     }
 
     public void Start()
@@ -138,6 +190,15 @@ public sealed class LiveCastSession : IDisposable
         AccessUnitsSent = 0;
         BytesSent = 0;
         AudioBytesSent = 0;
+        TerminalFramesDecoded = 0;
+        TerminalVideoBytesReceived = 0;
+        TerminalVideoError = null;
+        TerminalHasAudio = false;
+        TerminalAudioBytesReceived = 0;
+        TerminalAudioError = null;
+        LastStatusReceivedAt = null;
+
+        _discoveryClient.CastStatusReceived += OnCastStatusReceived;
 
         try
         {
@@ -366,6 +427,8 @@ public sealed class LiveCastSession : IDisposable
 
     private void StopInternal()
     {
+        _discoveryClient.CastStatusReceived -= OnCastStatusReceived;
+
         _cts?.Cancel();
         _sendQueue.Writer.TryComplete();
         _audioSendQueue.Writer.TryComplete();

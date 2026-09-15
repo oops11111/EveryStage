@@ -17,9 +17,11 @@ namespace EveryStage.Caster.UI;
 /// (<see cref="CaptureSelfTestRunner"/>), H.264 encoding (<see cref="EncodeSelfTestRunner"/>,
 /// capture -> NV12 -> hardware encoder), and RTP transport (<see cref="TransportSelfTest"/>, a real
 /// loopback UDP round-trip with synthetic NAL-shaped payloads). None of the three self-tests touch
-/// the live cast session or each other. See this project's README for what "投屏中" does and doesn't
-/// guarantee (there is no acknowledgment from the Terminal, so this UI can't tell whether the stream
-/// is actually being displayed on the other end).
+/// the live cast session or each other. The "终端机确认" line in the paired panel is the Terminal's
+/// own periodic status report (<see cref="LiveCastSession.IsTerminalAlive"/>) — see this project's
+/// README for what that does and doesn't guarantee (it's a lightweight heartbeat, not per-packet
+/// acknowledgment, and it can't distinguish "never confirmed" from "confirmed once, then the
+/// Terminal went quiet").
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -56,7 +58,7 @@ public sealed class MainForm : Form
         _identity = identity;
 
         Text = "EveryStage 投屏机";
-        ClientSize = new Size(320, 488);
+        ClientSize = new Size(320, 506);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -89,9 +91,9 @@ public sealed class MainForm : Form
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
         _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 32) };
-        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 46, 296, 72), ForeColor = Color.DimGray };
+        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 46, 296, 90), ForeColor = Color.DimGray };
 
-        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 122, 296, 32) };
+        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 140, 296, 32) };
         _stopCastButton.Click += (_, _) => ShowStandby();
 
         var diagnosticsNoteLabel = new Label
@@ -99,20 +101,20 @@ public sealed class MainForm : Form
             Text = "以下三个按钮各自独立、互不影响，是采集/编码/传输三个环节各自的自检工具，\n" +
                    "用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(12, 166, 296, 40),
+            Bounds = new Rectangle(12, 184, 296, 40),
         };
 
-        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 210, 296, 32) };
+        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 228, 296, 32) };
         _captureSelfTestButton.Click += OnCaptureSelfTestClick;
-        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 244, 296, 50), ForeColor = Color.DimGray };
+        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 262, 296, 50), ForeColor = Color.DimGray };
 
-        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 298, 296, 32) };
+        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 316, 296, 32) };
         _encodeSelfTestButton.Click += OnEncodeSelfTestClick;
-        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 332, 296, 50), ForeColor = Color.DimGray };
+        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 350, 296, 50), ForeColor = Color.DimGray };
 
-        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 386, 296, 32) };
+        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 404, 296, 32) };
         _transportSelfTestButton.Click += OnTransportSelfTestClick;
-        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 420, 296, 40), ForeColor = Color.DimGray };
+        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 438, 296, 40), ForeColor = Color.DimGray };
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
@@ -312,11 +314,23 @@ public sealed class MainForm : Form
         string audioLine = _liveCastSession.HasAudio
             ? $"音频: 已发送 {_liveCastSession.AudioBytesSent} 字节" + (_liveCastSession.AudioError != null ? $"（出错：{_liveCastSession.AudioError}）" : "")
             : $"音频: 未启用" + (_liveCastSession.AudioError != null ? $"（{_liveCastSession.AudioError}）" : "");
+
+        // The one line in this panel that isn't a purely local claim — see LiveCastSession's doc
+        // comment on CastStatusMessage. "未确认" covers both "never heard from the terminal at all"
+        // and "used to hear from it, not anymore" on purpose: this UI can't tell those apart, and
+        // shouldn't pretend to.
+        string terminalLine = _liveCastSession.IsTerminalAlive
+            ? $"终端机确认: 已解码 {_liveCastSession.TerminalFramesDecoded} 帧" +
+              (_liveCastSession.TerminalVideoError != null ? $"（终端机视频出错：{_liveCastSession.TerminalVideoError}）" : "") +
+              (_liveCastSession.TerminalAudioError != null ? $"（终端机音频出错：{_liveCastSession.TerminalAudioError}）" : "")
+            : "终端机确认: 未确认（尚未收到或已停止收到终端机的状态回报）";
+
         _liveCastStatsLabel.Text =
             $"分辨率: {_liveCastSession.Width}x{_liveCastSession.Height}\n" +
             $"已捕获帧数: {_liveCastSession.FramesCaptured}   已发送访问单元: {_liveCastSession.AccessUnitsSent}\n" +
             $"已发送字节数: {_liveCastSession.BytesSent}\n" +
-            audioLine;
+            audioLine + "\n" +
+            terminalLine;
     }
 
     private void ShowStandby()

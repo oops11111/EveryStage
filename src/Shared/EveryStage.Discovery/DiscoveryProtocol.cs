@@ -105,6 +105,30 @@ public static class DiscoveryProtocol
         public Guid DeviceId { get; set; }
     }
 
+    /// <summary>Sent unicast, Terminal -> Caster, periodically while a cast is active — the
+    /// acknowledgment channel this repository's own READMEs have flagged as missing ever since the
+    /// live pipeline first connected: without this, a Caster has no way to know whether the
+    /// Terminal actually received/decoded/played anything, and "投屏中" in its UI only ever meant
+    /// "still sending without a local error". Not a full ack-per-packet protocol — just a periodic
+    /// "still alive, here's roughly how much has gotten through" heartbeat, on the same
+    /// best-effort, no-retry footing as every other message in this file.</summary>
+    public sealed class CastStatusMessage : Message
+    {
+        public override string Type => "cast_status";
+
+        /// <summary>The reporting Terminal's own DeviceId — lets a Caster that has cast to several
+        /// terminals over time (never concurrently, see EveryStage.Caster's README "只支持单一目标")
+        /// tell whose status this is, and lets <c>LiveCastSession</c> ignore a stray report from a
+        /// terminal it isn't currently casting to.</summary>
+        public Guid DeviceId { get; set; }
+        public long FramesDecoded { get; set; }
+        public long VideoBytesReceived { get; set; }
+        public string? VideoError { get; set; }
+        public bool HasAudio { get; set; }
+        public long AudioBytesReceived { get; set; }
+        public string? AudioError { get; set; }
+    }
+
     public static byte[] Encode(Message message)
     {
         // Flatten to {"type": "...", ...the message's own fields} in one object, so a hand-written
@@ -129,6 +153,7 @@ public static class DiscoveryProtocol
             "pair_response" => doc.RootElement.Deserialize<PairResponseMessage>(),
             "cast_start" => doc.RootElement.Deserialize<CastStartMessage>(),
             "cast_stop" => doc.RootElement.Deserialize<CastStopMessage>(),
+            "cast_status" => doc.RootElement.Deserialize<CastStatusMessage>(),
             _ => null,
         };
     }

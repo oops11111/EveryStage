@@ -80,13 +80,18 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   `VideoHost`的问题（新增 `Terminal/.../Display/VideoSurface.cs`，两者现在用同一个D3D11设备/
   交换链而不是各自建一个绑到同一HWND，并靠`PlaybackEngine.StopForDeviceCast`/
   `LocalPlaybackStarting`互相抢占）已经在后续一轮修复，详见
-  `src/Terminal/EveryStage.Terminal/README.md`。**这条链路仍然完全没有应答机制、也没有音视频
-  同步**——Caster不知道Terminal是否真的收到并显示/播放了画面/声音，视频和音频走完全独立的时钟、
-  长时间投屏可能明显不同步，这些都是明确记录、留到之后解决的空白，不是被忽略的问题（见两个项目
-  各自的README"已知风险"）。屏幕捕获、H.264编码、RTP传输三块各自的独立自检（Caster侧的"屏幕捕获
-  自检"/"编码自检"/"传输自检"三个按钮，`EveryStage.Transport`的`TransportSelfTest`是这个仓库第一
-  个不需要Windows/GPU就能跑通的端到端自检）仍然保留，作为跟真实投屏管线互不干扰的独立诊断工具——
-  音频这次没有加对应的自检，是明确记录的缺口。
+  `src/Terminal/EveryStage.Terminal/README.md`。**这条链路现在有了一个轻量的应答机制**：
+  `DiscoveryProtocol`新增`CastStatusMessage`，Terminal每秒把已解码帧数/收到的音视频字节数/两侧
+  各自的出错信息报回给正在投屏的Caster（`Program.cs`的`SendCastStatus()`发送，
+  `LiveCastSession`接收并暴露`IsTerminalAlive`），Caster的UI上第一次出现了"终端机确认"这行不是
+  纯本地自说自话的状态。这只是一个尽力而为、约5秒容忍窗口的心跳，不是逐包确认或流控，也**没有
+  反方向的检测**（Terminal目前无法判断Caster是否还在线）；**仍然没有音视频同步**——视频和音频走
+  完全独立的时钟（RTP时间戳分别来自墙钟和采样计数），长时间投屏可能明显不同步。这些都是明确记录、
+  留到之后解决的空白，不是被忽略的问题（见两个项目各自的README"已知风险"）。屏幕捕获、H.264编码、
+  RTP传输三块各自的独立自检（Caster侧的"屏幕捕获自检"/"编码自检"/"传输自检"三个按钮，
+  `EveryStage.Transport`的`TransportSelfTest`是这个仓库第一个不需要Windows/GPU就能跑通的端到端
+  自检）仍然保留，作为跟真实投屏管线互不干扰的独立诊断工具——音频和应答机制都还没有对应的自检，
+  是明确记录的缺口。
 
 ## License
 

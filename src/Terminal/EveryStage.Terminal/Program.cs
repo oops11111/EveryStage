@@ -1,3 +1,4 @@
+using System.Net;
 using EveryStage.Discovery;
 using EveryStage.Terminal.Audio;
 using EveryStage.Terminal.Data;
@@ -39,15 +40,17 @@ internal static class Program
 
 /// <summary>
 /// Wires the framework pieces together: state machine, overlay window, audio takeover, device
-/// discovery, the main window (with its 文件/活动/设备 panels), the floating preview window, and
-/// the pairing confirmation dialog. 设置 is still a placeholder inside MainWindow — see that
-/// project's README for what's left.
+/// discovery (including the periodic <see cref="SendCastStatus"/> acknowledgment back to whichever
+/// Caster is currently casting here — see <c>DiscoveryProtocol.CastStatusMessage</c>), the main
+/// window (with its 文件/活动/设备/设置 panels), the floating preview window, and the pairing
+/// confirmation dialog.
 /// </summary>
 internal sealed class TerminalApplicationContext : ApplicationContext
 {
     private readonly ScenarioStore _store;
     private readonly ScenarioRepository _repository;
     private readonly SettingsStore _settingsStore;
+    private readonly DeviceIdentity _identity;
     private readonly OutputStateMachine _stateMachine = new();
     private readonly AudioTakeoverService _audioTakeover = new();
     private readonly TrayIconController _tray;
@@ -60,6 +63,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private readonly MainWindow _mainWindow;
     private CastReceiver? _castReceiver;
     private Guid _castingDeviceId;
+    private IPEndPoint? _castingCasterEndPoint;
+    private readonly System.Windows.Forms.Timer _castStatusTimer;
 
     public TerminalApplicationContext(ScenarioStore store, ScenarioRepository repository)
     {
@@ -96,16 +101,23 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         _stateMachine.StateChanged += OnOutputStateChanged;
 
-        var identity = DeviceIdentity.LoadOrCreate("terminal");
+        _identity = DeviceIdentity.LoadOrCreate("terminal");
         var pairedDevices = new PairedDeviceStore();
-        _discovery = new DiscoveryService(identity, pairedDevices, new DeviceConnectionLogger());
+        _discovery = new DiscoveryService(_identity, pairedDevices, new DeviceConnectionLogger());
         _discovery.PairingRequested += OnPairingRequested;
         _discovery.CastStartRequested += OnCastStartRequested;
         _discovery.CastStopRequested += OnCastStopRequested;
         _discovery.Start();
 
+        // Periodic acknowledgment back to whichever Caster is currently casting to this Terminal —
+        // see DiscoveryProtocol.CastStatusMessage for why this exists. Started/stopped alongside
+        // _castReceiver in StopCasting()/OnCastStartRequested, never left running with nothing to
+        // report.
+        _castStatusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _castStatusTimer.Tick += (_, _) => SendCastStatus();
+
         var library = new FileLibraryStore();
-        _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, identity);
+        _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity);
         _mainWindow.Show();
 
         _tray = new TrayIconController(_stateMachine);
@@ -128,10 +140,11 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _audioTakeover.Restore();
             // "断" must also stop an active device cast — without this, a CastReceiver keeps
             // receiving/decoding/presenting to a now-hidden overlay indefinitely instead of being
-            // torn down. This does not notify the Caster (no cast_stop goes back) — same one-way
-            // acknowledgment limitation as OnLocalPlaybackStarting above and this project's README.
-            _castReceiver?.Dispose();
-            _castReceiver = null;
+            // torn down. This does not send a cast_stop to the Caster — "断" is a local, immediate
+            // action and there's no reason to make it wait on a network send; the Caster instead
+            // notices via CastStatusMessage reports simply stopping (see LiveCastSession's
+            // "terminal went quiet" handling).
+            StopCasting();
         }
     }
 
@@ -161,8 +174,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             // concurrently (see VideoSurface's doc comment). This does not touch OutputStateMachine.
             _playback?.StopForDeviceCast();
 
-            _castReceiver?.Dispose();
-            _castReceiver = null;
+            StopCasting();
             try
             {
                 _castReceiver = new CastReceiver(
@@ -185,6 +197,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             }
 
             _castingDeviceId = info.DeviceId;
+            _castingCasterEndPoint = info.CasterEndPoint;
+            _castStatusTimer.Start();
             _overlay.ShowVideoSurface();
             _stateMachine.AcceptDeviceCastRequest();
         }, null);
@@ -198,8 +212,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             // duplicated cast_stop arriving after a different device already took over the output.
             if (_castReceiver == null || deviceId != _castingDeviceId) return;
 
-            _castReceiver.Dispose();
-            _castReceiver = null;
+            StopCasting();
             _stateMachine.Disconnect();
         }, null);
     }
@@ -210,12 +223,40 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // active device cast must stop first, for the same mutual-exclusion reason as
         // OnCastStartRequested stopping local playback in the other direction. This intentionally
         // does not call _stateMachine.Disconnect(): OutputStateMachine.State stays Active (local
-        // content is replacing device content, not ending output), and there is no message back to
-        // the Caster telling it its stream is being ignored now — a one-way limitation already
-        // recorded in this project's README alongside CastStartRequested/CastStopRequested's own
-        // lack of acknowledgment.
+        // content is replacing device content, not ending output), and there is no cast_stop sent
+        // to the Caster telling it its stream is being ignored now — the Caster instead notices via
+        // CastStatusMessage reports simply stopping.
+        StopCasting();
+    }
+
+    /// <summary>Tears down whatever's currently receiving a device cast, if anything — the one
+    /// place that does so, so the status-report timer can never be left running with no
+    /// <see cref="_castReceiver"/> to report on (a bug that bit an earlier draft of this class: the
+    /// three call sites below used to each repeat "_castReceiver?.Dispose(); _castReceiver = null;"
+    /// inline, and it would have been easy to add the timer to two of the three and miss one).</summary>
+    private void StopCasting()
+    {
+        _castStatusTimer.Stop();
+        _castingCasterEndPoint = null;
         _castReceiver?.Dispose();
         _castReceiver = null;
+    }
+
+    private void SendCastStatus()
+    {
+        if (_castReceiver == null || _castingCasterEndPoint == null) return;
+
+        var status = new DiscoveryProtocol.CastStatusMessage
+        {
+            DeviceId = _identity.DeviceId,
+            FramesDecoded = _castReceiver.FramesDecoded,
+            VideoBytesReceived = _castReceiver.BytesReceived,
+            VideoError = _castReceiver.LastError,
+            HasAudio = _castReceiver.HasAudio,
+            AudioBytesReceived = _castReceiver.AudioBytesReceived,
+            AudioError = _castReceiver.AudioError,
+        };
+        _ = _discovery.SendCastStatusAsync(_castingCasterEndPoint, status);
     }
 
     private void OnExitRequested()
@@ -225,6 +266,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         _tray.Dispose();
         _discovery.Dispose();
+        _castStatusTimer.Dispose();
         _castReceiver?.Dispose();
         _previewWindow?.Dispose();
         _playback?.Dispose();

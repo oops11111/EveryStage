@@ -32,6 +32,13 @@ public sealed class TerminalDiscoveryClient : IDisposable
     /// a terminal is newly seen, changes name, or is pruned as expired.</summary>
     public event Action? TerminalListChanged;
 
+    /// <summary>A Terminal sent a periodic cast status report (see
+    /// <see cref="DiscoveryProtocol.CastStatusMessage"/>) — raised for every one received, from
+    /// whichever terminal, since this class doesn't track "who am I currently casting to" itself;
+    /// that filtering is <c>Casting.LiveCastSession</c>'s job. Marshal to the UI thread before
+    /// touching UI.</summary>
+    public event Action<DiscoveryProtocol.CastStatusMessage>? CastStatusReceived;
+
     public TerminalDiscoveryClient()
     {
         _socket = new UdpClient();
@@ -160,6 +167,9 @@ public sealed class TerminalDiscoveryClient : IDisposable
                 break;
             case DiscoveryProtocol.PairResponseMessage response:
                 HandlePairResponse(response);
+                break;
+            case DiscoveryProtocol.CastStatusMessage status:
+                CastStatusReceived?.Invoke(status);
                 break;
         }
     }

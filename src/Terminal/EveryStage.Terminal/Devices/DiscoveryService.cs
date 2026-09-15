@@ -49,10 +49,14 @@ public sealed class DiscoveryService : IDisposable
     public event Action<Guid>? CastStopRequested;
 
     /// <summary>Audio fields are meaningless when <see cref="HasAudio"/> is false (the Caster
-    /// couldn't start audio capture) — see <see cref="DiscoveryProtocol.CastStartMessage"/>.</summary>
+    /// couldn't start audio capture) — see <see cref="DiscoveryProtocol.CastStartMessage"/>.
+    /// <paramref name="CasterEndPoint"/> (really just its address — the port is always
+    /// <see cref="DiscoveryProtocol.Port"/>) is where <see cref="SendCastStatusAsync"/> reports
+    /// back to.</summary>
     public readonly record struct CastStartInfo(
         Guid DeviceId, int Width, int Height, byte PayloadType,
-        bool HasAudio, int AudioSampleRate, int AudioChannels, byte AudioPayloadType);
+        bool HasAudio, int AudioSampleRate, int AudioChannels, byte AudioPayloadType,
+        IPEndPoint CasterEndPoint);
 
     public DiscoveryService(DeviceIdentity identity, PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog)
     {
@@ -163,7 +167,7 @@ public sealed class DiscoveryService : IDisposable
                 HandlePairRequest(req, remoteEndPoint);
                 break;
             case DiscoveryProtocol.CastStartMessage start:
-                HandleCastStart(start);
+                HandleCastStart(start, remoteEndPoint);
                 break;
             case DiscoveryProtocol.CastStopMessage stop:
                 HandleCastStop(stop);
@@ -173,7 +177,7 @@ public sealed class DiscoveryService : IDisposable
         }
     }
 
-    private void HandleCastStart(DiscoveryProtocol.CastStartMessage msg)
+    private void HandleCastStart(DiscoveryProtocol.CastStartMessage msg, IPEndPoint remoteEndPoint)
     {
         var device = _pairedDevices.Find(msg.DeviceId);
         if (device is not { AllowCast: true })
@@ -186,8 +190,16 @@ public sealed class DiscoveryService : IDisposable
         }
         CastStartRequested?.Invoke(new CastStartInfo(
             msg.DeviceId, msg.Width, msg.Height, msg.PayloadType,
-            msg.HasAudio, msg.AudioSampleRate, msg.AudioChannels, msg.AudioPayloadType));
+            msg.HasAudio, msg.AudioSampleRate, msg.AudioChannels, msg.AudioPayloadType,
+            remoteEndPoint));
     }
+
+    /// <summary>Sends a periodic "still alive, here's roughly what's gotten through" status report
+    /// back to the Caster currently casting to this Terminal — see
+    /// <see cref="DiscoveryProtocol.CastStatusMessage"/> for why this exists. Best-effort,
+    /// fire-and-forget like every other send in this class.</summary>
+    public Task SendCastStatusAsync(IPEndPoint casterEndPoint, DiscoveryProtocol.CastStatusMessage status) =>
+        SendAsync(status, casterEndPoint);
 
     private void HandleCastStop(DiscoveryProtocol.CastStopMessage msg) => CastStopRequested?.Invoke(msg.DeviceId);
 

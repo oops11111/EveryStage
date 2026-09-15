@@ -31,7 +31,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `ContentEngine/` | §3 | 图片(GDI+，WIC编解码器) + PDF(PdfiumViewer) 渲染器、画面呈现控件（等比缩放、黑边）、视频播放控制器(`VideoContentController`，复用 `EveryStage.Rendering` 的D3D11零拷贝管线，通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`) |
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
 | `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，已接入`DiscoveryService`)；JSON-lines格式 + 自动清理过期文件 |
-| `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/` |
+| `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/`；新增 `SendCastStatusAsync`，配合 `Program.cs` 里每秒一次的 `SendCastStatus()` 把接收状态报回给正在投屏的Caster（`DiscoveryProtocol.CastStatusMessage`，见该README"已知风险"新增小节） |
 | `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收PCM，喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，构造失败会独立降级成纯视频（不影响视频侧） |
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
@@ -245,8 +245,32 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
     "尽力而为"原则、没有共享代码或测试验证两边真的对称，是这个仓库到处存在的"协议/约定靠约定俗成
     而不是类型系统强制"的又一个例子。
 
+### `Program.cs` 的 `CastStatusMessage` 应答机制 — 这次新加的部分
+
+`DiscoveryProtocol`新增`CastStatusMessage`，`TerminalApplicationContext`每秒通过
+`SendCastStatus()`把`_castReceiver`的已解码帧数/收到的视频音频字节数/两边各自的出错信息报回给
+正在投屏的Caster——这是Caster端README里记录的"完全没有应答机制"缺口的另一半实现，第一次让
+Caster知道终端机确实收到了东西。
+
+43. **状态回报走discovery socket的现有基础设施，没有新开专门的控制通道**：`DiscoveryService`
+    新增`SendCastStatusAsync`直接复用了已有的`_socket`和`SendAsync`私有方法——这跟发beacon/配对
+    响应用的是同一个逻辑通道，如果discovery协议以后要加更多"高频周期性消息"，可能需要重新考虑
+    要不要跟低频的beacon/配对消息分开，现在还看不出真的有必要。
+44. **`_castStatusTimer`只在`_castReceiver`存在时才发送，但`SendCastStatus`本身没有验证
+    `_castingCasterEndPoint`是否还指向一个真实在线的Caster**：如果Caster进程本身已经崩溃/被强制
+    结束（没有机会走`LiveCastSession.Stop()`发送`cast_stop`），Terminal会一直定时往一个不再存在
+    的地址发状态包，直到用户手动"断"或者来了另一个`cast_start`/`cast_stop`——这是本身就没有的
+    "对方是否还在"检测，状态回报本身不解决这个问题，只是让*Caster*那一侧能检测*Terminal*是否还在，
+    反过来（Terminal检测Caster是否还在）目前完全没有。
+45. **`StopCasting()`重构消除了"三处重复的清理逻辑各自维护"的风险，但这次修改没有为此新增任何
+    自动化验证**：这类"把重复逻辑收敛到一个方法"的重构在没有编译器/测试的环境下，风险是重构本身
+    引入新bug（比如某个调用点其实需要跳过其中一步）而没有被发现——这次审查过三个调用点(§9.1"设备
+    投屏"接管、`cast_stop`收到、"断"点击)确实都应该做完全一样的清理，但这个判断本身没有测试佐证。
+
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
+- Terminal检测Caster是否还在线（见"已知风险"第44条）——现在只有反方向（Caster靠`CastStatusMessage`
+  判断Terminal是否还在），Caster掉线/崩溃时Terminal会一直空发状态包直到手动"断"或收到新的cast消息
 - 音视频同步（见"已知风险"第39-40条）——目前音频收到就播、视频独立解码呈现，长时间投屏后可能明显
   不同步
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
