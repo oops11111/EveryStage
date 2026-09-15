@@ -48,7 +48,11 @@ public sealed class DiscoveryService : IDisposable
     /// <see cref="CastStartRequested"/>.</summary>
     public event Action<Guid>? CastStopRequested;
 
-    public readonly record struct CastStartInfo(Guid DeviceId, int Width, int Height, byte PayloadType);
+    /// <summary>Audio fields are meaningless when <see cref="HasAudio"/> is false (the Caster
+    /// couldn't start audio capture) — see <see cref="DiscoveryProtocol.CastStartMessage"/>.</summary>
+    public readonly record struct CastStartInfo(
+        Guid DeviceId, int Width, int Height, byte PayloadType,
+        bool HasAudio, int AudioSampleRate, int AudioChannels, byte AudioPayloadType);
 
     public DiscoveryService(DeviceIdentity identity, PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog)
     {
@@ -180,7 +184,9 @@ public sealed class DiscoveryService : IDisposable
             _connectionLog.LogDisconnected(msg.DeviceId.ToString(), "cast_start_rejected_not_allowed");
             return;
         }
-        CastStartRequested?.Invoke(new CastStartInfo(msg.DeviceId, msg.Width, msg.Height, msg.PayloadType));
+        CastStartRequested?.Invoke(new CastStartInfo(
+            msg.DeviceId, msg.Width, msg.Height, msg.PayloadType,
+            msg.HasAudio, msg.AudioSampleRate, msg.AudioChannels, msg.AudioPayloadType));
     }
 
     private void HandleCastStop(DiscoveryProtocol.CastStopMessage msg) => CastStopRequested?.Invoke(msg.DeviceId);

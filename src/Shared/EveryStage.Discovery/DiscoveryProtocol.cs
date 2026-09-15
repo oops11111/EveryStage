@@ -26,6 +26,14 @@ public static class DiscoveryProtocol
     /// there is nothing that needs disambiguating by a dynamically-chosen port.</summary>
     public const int VideoRtpPort = 47991;
 
+    /// <summary>Well-known, fixed UDP port for the raw-PCM audio stream that accompanies a cast
+    /// (<c>EveryStage.Transport</c>'s <c>RtpSession.SendRawPayloadAsync</c>/<c>RawRtpReceiver</c>) —
+    /// a separate port from <see cref="VideoRtpPort"/> rather than muxing both onto one RTP session,
+    /// since this project has no RTP session multiplexing (SSRC-based demuxing on one port) and
+    /// audio/video use different payload framing (H.264 NAL/FU-A vs. a plain continuous byte
+    /// stream) anyway.</summary>
+    public const int AudioRtpPort = 47992;
+
     public abstract class Message
     {
         // Ignored on serialize: Encode() writes "type" itself (lowercase, once) after serializing
@@ -77,6 +85,15 @@ public static class DiscoveryProtocol
         public int Width { get; set; }
         public int Height { get; set; }
         public byte PayloadType { get; set; }
+
+        /// <summary>False when the Caster couldn't start audio capture at all (e.g.
+        /// <c>AudioCaptureSource</c> construction threw) — the Terminal should not expect anything
+        /// on <see cref="AudioRtpPort"/> in that case, and the fields below are meaningless.
+        /// Casting video without audio is a real, expected outcome here, not an error state.</summary>
+        public bool HasAudio { get; set; }
+        public int AudioSampleRate { get; set; }
+        public int AudioChannels { get; set; }
+        public byte AudioPayloadType { get; set; }
     }
 
     /// <summary>Sent unicast, Caster -> Terminal, when the user stops casting — lets the Terminal

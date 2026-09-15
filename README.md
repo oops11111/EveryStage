@@ -14,7 +14,7 @@ EveryStage/
 ├── docs/            产品规划与设计文档
 ├── src/
 │   ├── Terminal/    终端机主程序（C#，覆盖式全屏窗口 + Content Engine + 传输接收端，含投屏接收/解码）
-│   ├── Caster/      投屏机轻量工具（C#，屏幕捕获 + 编码 + 推流，端到端投屏已接通）
+│   ├── Caster/      投屏机轻量工具（C#，屏幕捕获 + 音频采集 + 编码 + 推流，端到端投屏已接通）
 │   ├── Shared/
 │   │   ├── EveryStage.Rendering/  D3D11/Media Foundation零拷贝解码渲染管线，Terminal与阶段0 Demo共用
 │   │   ├── EveryStage.Discovery/  局域网发现/配对协议 + 设备身份持久化，Terminal与Caster共用
@@ -61,25 +61,32 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   确认弹窗；投屏机侧 `src/Caster/EveryStage.Caster/` 监听终端机列表、发起配对请求。两边共用的协议
   定义搬到了 `src/Shared/EveryStage.Discovery/`——**协议格式仍是本仓库自定义的草案**，现在有了
   两个独立实现，但从未在真实网络上互相验证过。
-- **阶段2的捕获/编码/传输现在端到端接通了**：Caster侧新增的 `Casting/LiveCastSession.cs` 把屏幕
-  捕获(Desktop Duplication API，`Caster/Capture/`)→ NV12转换 → **H.264硬件编码**
-  (`Caster/Encode/`：`BgraToNv12Converter` 用GPU视频处理器转NV12，`H264HardwareEncoder` 驱动一个
-  异步Media Foundation编码器MFT，这是PLANNING.md §15"第二大技术风险区"里风险最高的一块，详细风险
-  清单见 `src/Caster/EveryStage.Caster/README.md`)→ RTP打包发送(`src/Shared/EveryStage.Transport/`)
-  串成一条真正的链路：配对成功后立即真的开始采集/编码/通过RTP发往终端机，不再是占位的"尚未实现"
-  提示。Terminal侧新增 `Terminal/.../Receiving/`（`H264HardwareDecoder` 驱动一个假设为同步的H.264
-  解码器MFT + `CastReceiver` 接收RTP、用marker位重组Annex-B访问单元、解码后通过
-  `EveryStage.Rendering` 的 `SwapChainPresenter` 显示到覆盖窗口），配合 `DiscoveryService` 新增的
-  `CastStartMessage`/`CastStopMessage`处理（只信任已配对且`AllowCast`的设备）驱动
-  `OutputStateMachine`/`OverlayWindow`。本地播放与设备投屏共享覆盖窗口`VideoHost`的问题
-  （新增 `Terminal/.../Display/VideoSurface.cs`，两者现在用同一个D3D11设备/交换链而不是各自建一
-  个绑到同一HWND，并靠`PlaybackEngine.StopForDeviceCast`/`LocalPlaybackStarting`互相抢占）已经在
-  后续一轮修复，详见 `src/Terminal/EveryStage.Terminal/README.md`。**这条链路仍然完全没有应答
-  机制**——Caster不知道Terminal是否真的收到并显示了画面，这是明确记录、留到之后解决的空白，不是
-  被忽略的问题（见两个项目各自的README"已知风险"）。屏幕捕获、H.264编码、
-  RTP传输三块各自的独立自检（Caster侧的"屏幕捕获自检"/"编码自检"/"传输自检"三个按钮，
-  `EveryStage.Transport`的`TransportSelfTest`是这个仓库第一个不需要Windows/GPU就能跑通的端到端
-  自检）仍然保留，作为跟真实投屏管线互不干扰的独立诊断工具。
+- **阶段2的捕获/编码/传输现在端到端接通了，视频+音频都有**：Caster侧新增的
+  `Casting/LiveCastSession.cs` 把屏幕捕获(Desktop Duplication API，`Caster/Capture/`)→ NV12转换 →
+  **H.264硬件编码**(`Caster/Encode/`：`BgraToNv12Converter` 用GPU视频处理器转NV12，
+  `H264HardwareEncoder` 驱动一个异步Media Foundation编码器MFT，这是PLANNING.md §15"第二大技术
+  风险区"里风险最高的一块，详细风险清单见 `src/Caster/EveryStage.Caster/README.md`)→ RTP打包发送
+  (`src/Shared/EveryStage.Transport/`)串成一条真正的链路：配对成功后立即真的开始采集/编码/通过
+  RTP发往终端机，不再是占位的"尚未实现"提示。这一轮又加上了**系统音频采集**
+  (`Caster/Capture/AudioCaptureSource.cs`：WASAPI loopback采集系统正在播放的声音，转成16-bit PCM，
+  走另一个独立的RTP流发送——刻意不经过任何音频编码器，绕开了跟视频编码器同一类的MFT风险，代价是
+  未压缩PCM带宽更高)，是video之上的锦上添花而非硬性要求：这台机器没有声音在播、或者WASAPI初始化
+  失败，只会让这次投屏退化成纯视频，不影响画面。Terminal侧新增 `Terminal/.../Receiving/`
+  （`H264HardwareDecoder` 驱动一个假设为同步的H.264解码器MFT + `CastReceiver` 接收RTP、用marker
+  位重组Annex-B访问单元、解码后通过 `EveryStage.Rendering` 的 `SwapChainPresenter` 显示到覆盖
+  窗口，现在还有对称的音频侧：收到PCM直接喂给`AudioPlaybackClock`播放，同样独立于视频、失败时独立
+  降级)，配合 `DiscoveryService` 新增的 `CastStartMessage`/`CastStopMessage`处理（只信任已配对且
+  `AllowCast`的设备）驱动 `OutputStateMachine`/`OverlayWindow`。本地播放与设备投屏共享覆盖窗口
+  `VideoHost`的问题（新增 `Terminal/.../Display/VideoSurface.cs`，两者现在用同一个D3D11设备/
+  交换链而不是各自建一个绑到同一HWND，并靠`PlaybackEngine.StopForDeviceCast`/
+  `LocalPlaybackStarting`互相抢占）已经在后续一轮修复，详见
+  `src/Terminal/EveryStage.Terminal/README.md`。**这条链路仍然完全没有应答机制、也没有音视频
+  同步**——Caster不知道Terminal是否真的收到并显示/播放了画面/声音，视频和音频走完全独立的时钟、
+  长时间投屏可能明显不同步，这些都是明确记录、留到之后解决的空白，不是被忽略的问题（见两个项目
+  各自的README"已知风险"）。屏幕捕获、H.264编码、RTP传输三块各自的独立自检（Caster侧的"屏幕捕获
+  自检"/"编码自检"/"传输自检"三个按钮，`EveryStage.Transport`的`TransportSelfTest`是这个仓库第一
+  个不需要Windows/GPU就能跑通的端到端自检）仍然保留，作为跟真实投屏管线互不干扰的独立诊断工具——
+  音频这次没有加对应的自检，是明确记录的缺口。
 
 ## License
 

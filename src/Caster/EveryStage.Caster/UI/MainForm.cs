@@ -56,7 +56,7 @@ public sealed class MainForm : Form
         _identity = identity;
 
         Text = "EveryStage 投屏机";
-        ClientSize = new Size(320, 470);
+        ClientSize = new Size(320, 488);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -89,9 +89,9 @@ public sealed class MainForm : Form
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
         _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 32) };
-        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 46, 296, 54), ForeColor = Color.DimGray };
+        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 46, 296, 72), ForeColor = Color.DimGray };
 
-        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 104, 296, 32) };
+        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 122, 296, 32) };
         _stopCastButton.Click += (_, _) => ShowStandby();
 
         var diagnosticsNoteLabel = new Label
@@ -99,20 +99,20 @@ public sealed class MainForm : Form
             Text = "以下三个按钮各自独立、互不影响，是采集/编码/传输三个环节各自的自检工具，\n" +
                    "用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(12, 148, 296, 40),
+            Bounds = new Rectangle(12, 166, 296, 40),
         };
 
-        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 192, 296, 32) };
+        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 210, 296, 32) };
         _captureSelfTestButton.Click += OnCaptureSelfTestClick;
-        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 226, 296, 50), ForeColor = Color.DimGray };
+        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 244, 296, 50), ForeColor = Color.DimGray };
 
-        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 280, 296, 32) };
+        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 298, 296, 32) };
         _encodeSelfTestButton.Click += OnEncodeSelfTestClick;
-        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 314, 296, 50), ForeColor = Color.DimGray };
+        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 332, 296, 50), ForeColor = Color.DimGray };
 
-        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 368, 296, 32) };
+        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 386, 296, 32) };
         _transportSelfTestButton.Click += OnTransportSelfTestClick;
-        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 402, 296, 40), ForeColor = Color.DimGray };
+        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 420, 296, 40), ForeColor = Color.DimGray };
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
@@ -309,10 +309,14 @@ public sealed class MainForm : Form
         }
 
         _liveCastStatsLabel.ForeColor = Color.DimGray;
+        string audioLine = _liveCastSession.HasAudio
+            ? $"音频: 已发送 {_liveCastSession.AudioBytesSent} 字节" + (_liveCastSession.AudioError != null ? $"（出错：{_liveCastSession.AudioError}）" : "")
+            : $"音频: 未启用" + (_liveCastSession.AudioError != null ? $"（{_liveCastSession.AudioError}）" : "");
         _liveCastStatsLabel.Text =
             $"分辨率: {_liveCastSession.Width}x{_liveCastSession.Height}\n" +
             $"已捕获帧数: {_liveCastSession.FramesCaptured}   已发送访问单元: {_liveCastSession.AccessUnitsSent}\n" +
-            $"已发送字节数: {_liveCastSession.BytesSent}";
+            $"已发送字节数: {_liveCastSession.BytesSent}\n" +
+            audioLine;
     }
 
     private void ShowStandby()

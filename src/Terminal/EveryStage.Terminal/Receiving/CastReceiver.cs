@@ -1,3 +1,4 @@
+using EveryStage.Rendering.Audio;
 using EveryStage.Terminal.Display;
 using EveryStage.Transport;
 using Vortice.Direct3D11;
@@ -11,7 +12,11 @@ namespace EveryStage.Terminal.Receiving;
 /// strip start codes before packetizing), decodes each with <see cref="H264HardwareDecoder"/>, and
 /// presents the result through the shared <see cref="VideoSurface"/> bound to the overlay window's
 /// video HWND — the same surface <c>ContentEngine.VideoContentController</c> uses for local file
-/// playback, here fed from a live network stream instead of a file.
+/// playback, here fed from a live network stream instead of a file. Optionally also receives a raw
+/// PCM audio stream (<c>RawRtpReceiver</c>, EveryStage.Transport) and plays it through
+/// <see cref="AudioPlaybackClock"/> — the same WASAPI playback class <c>VideoContentController</c>
+/// uses for local video files' audio track, here with no video-frame pacing to serve since it's
+/// just played back as it arrives (see this project's README on what that costs: no A/V sync).
 ///
 /// Takes the <see cref="VideoSurface"/> from its caller rather than creating its own — see that
 /// class's doc comment for why two independent D3D11 devices/swap chains bound to the same HWND was
@@ -25,7 +30,9 @@ namespace EveryStage.Terminal.Receiving;
 /// All decode/present calls happen synchronously on whatever thread invokes
 /// <see cref="RtpReceiver.NalUnitReceived"/> — that event fires from `RtpReceiver`'s own single
 /// sequential background receive loop (see its doc comment), so calls into this class are never
-/// concurrent with each other and no additional locking is needed here.
+/// concurrent with each other and no additional locking is needed here. The audio side runs on its
+/// own, entirely independent <c>RawRtpReceiver</c> background loop — video and audio share no state
+/// beyond both presenting into resources this class owns.
 /// </summary>
 public sealed class CastReceiver : IDisposable
 {
@@ -34,13 +41,26 @@ public sealed class CastReceiver : IDisposable
     private readonly RtpReceiver _rtpReceiver;
     private readonly List<byte[]> _pendingNals = new();
 
+    private readonly RawRtpReceiver? _audioRtpReceiver;
+    private readonly AudioPlaybackClock? _audioClock;
+
     public int Width { get; }
     public int Height { get; }
     public long FramesDecoded { get; private set; }
     public long BytesReceived { get; private set; }
     public string? LastError { get; private set; }
 
-    public CastReceiver(VideoSurface surface, int width, int height, int listenPort)
+    public bool HasAudio { get; private set; }
+    public long AudioBytesReceived { get; private set; }
+
+    /// <summary>Set when audio construction fails — unlike a video-side failure (which fails this
+    /// whole constructor, since there's no cast without video), an audio failure here degrades to
+    /// video-only, matching <c>LiveCastSession</c>'s own audio-is-best-effort handling on the Caster
+    /// side.</summary>
+    public string? AudioError { get; private set; }
+
+    public CastReceiver(VideoSurface surface, int width, int height, int listenPort,
+        bool hasAudio = false, int audioSampleRate = 0, int audioChannels = 0, int audioListenPort = 0)
     {
         Width = width;
         Height = height;
@@ -51,9 +71,53 @@ public sealed class CastReceiver : IDisposable
 
         _rtpReceiver = new RtpReceiver(listenPort);
         _rtpReceiver.NalUnitReceived += OnNalUnitReceived;
+
+        if (hasAudio)
+        {
+            try
+            {
+                // Constructed here (not lazily on first packet) so a WASAPI failure is caught right
+                // away rather than surfacing later as an unhandled exception from inside
+                // OnAudioPayloadReceived on the RTP receive thread.
+                _audioClock = new AudioPlaybackClock(audioSampleRate, audioChannels);
+                _audioRtpReceiver = new RawRtpReceiver(audioListenPort);
+                _audioRtpReceiver.PayloadReceived += OnAudioPayloadReceived;
+                HasAudio = true;
+            }
+            catch (Exception ex)
+            {
+                // Video-only is a normal, expected outcome here — a WASAPI output failure on the
+                // Terminal shouldn't take down a cast whose video side is working fine.
+                AudioError = ex.Message;
+                _audioClock?.Dispose();
+                _audioClock = null;
+                _audioRtpReceiver?.Dispose();
+                _audioRtpReceiver = null;
+                HasAudio = false;
+            }
+        }
     }
 
-    public void Start() => _rtpReceiver.Start();
+    public void Start()
+    {
+        _rtpReceiver.Start();
+        if (HasAudio)
+        {
+            _audioClock!.Start();
+            _audioRtpReceiver!.Start();
+        }
+    }
+
+    private void OnAudioPayloadReceived(byte[] pcm)
+    {
+        AudioBytesReceived += pcm.Length;
+        // No jitter buffer, no A/V sync — enqueued straight into WASAPI playback as it arrives.
+        // BufferedWaveProvider (inside AudioPlaybackClock) discards on overflow rather than
+        // blocking, so a burst of late packets thins itself out instead of building unbounded
+        // latency; a dropped/reordered RTP packet here just becomes an audible gap/glitch, the same
+        // "no loss recovery" limitation the video side already has and documents.
+        _audioClock!.Enqueue(pcm);
+    }
 
     private void OnNalUnitReceived(byte[] nalUnit, bool isLastNalOfAccessUnit)
     {
@@ -66,9 +130,10 @@ public sealed class CastReceiver : IDisposable
 
         try
         {
-            // Sample time isn't used for anything downstream yet (no A/V sync — this pipeline
-            // carries no audio at all, see this project's README) — 0 is a placeholder rather than
-            // a real presentation timestamp.
+            // Sample time isn't used for anything downstream yet — 0 is a placeholder rather than a
+            // real presentation timestamp. Audio (when HasAudio) plays independently via its own
+            // AudioPlaybackClock with no synchronization against this video timestamp at all — see
+            // this project's README on the resulting lack of A/V sync.
             _decoder.SubmitAccessUnit(accessUnit, sampleTimeTicks: 0);
         }
         catch (Exception ex)
@@ -115,5 +180,9 @@ public sealed class CastReceiver : IDisposable
         _rtpReceiver.Dispose();
         _decoder.FrameDecoded -= OnFrameDecoded;
         _decoder.Dispose();
+
+        if (_audioRtpReceiver != null) _audioRtpReceiver.PayloadReceived -= OnAudioPayloadReceived;
+        _audioRtpReceiver?.Dispose();
+        _audioClock?.Dispose();
     }
 }

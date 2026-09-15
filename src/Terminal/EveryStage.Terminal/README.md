@@ -32,7 +32,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
 | `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，已接入`DiscoveryService`)；JSON-lines格式 + 自动清理过期文件 |
 | `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/` |
-| `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检） |
+| `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收PCM，喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，构造失败会独立降级成纯视频（不影响视频侧） |
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
 | `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
@@ -181,9 +181,12 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 32. **同一时间只支持一路投屏**：`RtpReceiver` 绑定固定端口 `DiscoveryProtocol.VideoRtpPort`，
     `Program.cs` 也只维护一个 `_castReceiver` 字段——第二个设备的 `cast_start` 到达时会直接顶掉
     第一个（`_castReceiver?.Dispose()` 后新建），没有排队或拒绝逻辑，也没有UI提示"已经有人在投屏"。
-33. **投屏接收端完全没有音频**：`CastReceiver`/`H264HardwareDecoder` 只处理视频轨——Caster端本身
-    也还没做音频采集（见 `EveryStage.Caster` 的README"尚未开始"），所以这不是Terminal单方面的缺口，
-    但记录在这里以免以后误以为只差Terminal这一侧。
+33. **【已实现，原为已知缺口】投屏接收端现在有音频了**：`CastReceiver` 新增了音频侧——
+    `RawRtpReceiver`(`EveryStage.Transport`，音频专用、不经过H.264那套NAL重组) 收到PCM chunk后
+    直接喂给 `EveryStage.Rendering.Audio.AudioPlaybackClock`(跟本地视频文件播放音轨复用同一个
+    WASAPI播放类)。音频构造失败(`AudioPlaybackClock`/`WasapiOut`初始化失败)会被单独捕获并记到
+    `AudioError`，退化成纯视频接收，不会连累视频一起失败——这跟Caster端`LiveCastSession`的
+    "音频尽力而为"原则对称，是这次实现时特意做成一致的。具体的音频相关风险见下面新的一节。
 
 ### `UI/Panels/SettingsPanel.cs` / `Data/AppSettings.cs` / `Data/SettingsStore.cs` — 设置面板，这次新加的部分
 
@@ -220,13 +223,38 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
     改动本身不难但会牵动其他三个面板现有的"构造一次、靠`Refresh_()`手动刷新"约定，留到真的需要
     这个功能时再做。
 
+### `Receiving/CastReceiver.cs` 的音频侧 — 这次新加的部分
+
+39. **完全没有音视频同步**：音频通过`RawRtpReceiver`收到就立即`AudioPlaybackClock.Enqueue`播放，
+    跟视频解码/呈现的时间线完全独立——两者甚至不共享同一个时钟基准（Caster端视频用墙钟时间戳，
+    音频用采样计数，见`EveryStage.Caster`的README）。长时间投屏后画面和声音很可能明显不同步，
+    这是有意先接通"能听到声音"这条链路，音画同步是明确的后续工作。
+40. **`AudioPlaybackClock`原本是为本地视频文件播放设计的**（构造函数注入`sampleRate`/`channels`，
+    `PositionTicks`用来给视频解码步调打拍子）——这里复用它纯粹是当一个"WASAPI播放缓冲区"用，
+    完全不读它的`PositionTicks`/`Start()`只是启动播放而不是启动一个真正被消费的时钟。复用本身没
+    有问题（构造函数/`Enqueue`签名完全匹配需求），但如果以后要修复上一条的音画同步问题，可能需要
+    重新设计这个类的职责边界（播放 vs. 计时该不该是同一个对象）。
+41. **`BufferedWaveProvider`(`AudioPlaybackClock`内部)的`DiscardOnBufferOverflow=true`+
+    5秒缓冲区，是为本地文件播放场景调的，没有针对网络抖动重新评估过**：网络场景下包到达的节奏比
+    本地文件解码更不稳定（可能成串到达而不是均匀节奏），5秒缓冲区/丢弃满溢策略是否合适，只有真机
+    联网测试才能知道。
+42. **`CastReceiver`构造函数里音频初始化失败会被单独捕获，视频初始化失败则会让整个构造函数抛出**：
+    这是有意的不对称（没有视频就没有可投的东西，没有音频只是体验降级），跟`LiveCastSession`在
+    Caster端的处理原则一致，但值得注意`Program.cs`里`OnCastStartRequested`的`catch`块现在只应该
+    捕获到视频侧的失败——写完这段代码后已经把注释更新为准确反映这个区分，但两边独立实现同一个
+    "尽力而为"原则、没有共享代码或测试验证两边真的对称，是这个仓库到处存在的"协议/约定靠约定俗成
+    而不是类型系统强制"的又一个例子。
+
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
+- 音视频同步（见"已知风险"第39-40条）——目前音频收到就播、视频独立解码呈现，长时间投屏后可能明显
+  不同步
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
 - 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35条）——`OverlayWindow.Rebind`存在但从未被
   调用过，`VideoSurface`/`PlaybackEngine`也没有为"运行中途换显示器"设计
-- 设置面板"显示"标签页的列表刷新时机文案与实际行为不一致（见"已知风险"第38条）
+- 设置面板"显示"标签页真正做到"重新打开面板刷新显示器列表"（见"已知风险"第38条——文案已经在
+  上一轮改准确了，这里指的是功能本身，即需要`MainWindow`不再永久复用面板实例）
 - 悬浮预览窗、文件面板、活动面板三者之间没有联动（比如从悬浮预览窗"下一项"切换后，文件/活动面板
   不会自动高亮对应的缩略图/树节点）——PLANNING.md §16第5项本身也把这类交互细节列为"待验证"。
 - `FileOperationLogger` 里"文件导入/删除"这两个方法仍然没有调用方——`FilesPanel.ImportPaths`

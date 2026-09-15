@@ -87,18 +87,27 @@ public sealed class TerminalDiscoveryClient : IDisposable
         }
     }
 
-    /// <summary>Tells the Terminal a live RTP/H.264 stream is about to start on
-    /// <see cref="DiscoveryProtocol.VideoRtpPort"/>, and at what resolution/payload type — see
+    /// <summary>One audio stream's parameters for <see cref="SendCastStartAsync"/> — null means
+    /// "video only", e.g. because <c>AudioCaptureSource</c> construction failed.</summary>
+    public readonly record struct AudioStreamInfo(int SampleRate, int Channels, byte PayloadType);
+
+    /// <summary>Tells the Terminal a live RTP/H.264 stream (and, optionally, an accompanying raw-PCM
+    /// audio stream) is about to start on <see cref="DiscoveryProtocol.VideoRtpPort"/>/
+    /// <see cref="DiscoveryProtocol.AudioRtpPort"/>, and at what resolution/format — see
     /// <see cref="DiscoveryProtocol.CastStartMessage"/> for why this exists instead of the Terminal
     /// inferring a stream's parameters purely from incoming RTP packets. Best-effort, fire-and-forget
     /// like every other send in this class — there's no acknowledgment or retry.</summary>
-    public Task SendCastStartAsync(DiscoveredTerminal terminal, DeviceIdentity myIdentity, int width, int height, byte payloadType) =>
+    public Task SendCastStartAsync(DiscoveredTerminal terminal, DeviceIdentity myIdentity, int width, int height, byte payloadType, AudioStreamInfo? audio) =>
         SendControlMessageAsync(terminal, new DiscoveryProtocol.CastStartMessage
         {
             DeviceId = myIdentity.DeviceId,
             Width = width,
             Height = height,
             PayloadType = payloadType,
+            HasAudio = audio.HasValue,
+            AudioSampleRate = audio?.SampleRate ?? 0,
+            AudioChannels = audio?.Channels ?? 0,
+            AudioPayloadType = audio?.PayloadType ?? 0,
         });
 
     /// <summary>Tells the Terminal the live stream has ended — see

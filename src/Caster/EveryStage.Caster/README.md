@@ -1,26 +1,32 @@
-# EveryStage.Caster — 投屏机（阶段2：发现/配对 + 屏幕捕获 + H.264硬件编码 + 传输层，端到端已接通）
+# EveryStage.Caster — 投屏机（阶段2：发现/配对 + 屏幕捕获 + H.264硬件编码 + 传输层 + 音频采集，端到端已接通）
 
 对应 `docs/PLANNING.md` §12 的UI描述、§7 的设备发现/配对流程的**投屏机一侧**，以及阶段2"屏幕捕获：
-Desktop Duplication API (DDA)"、"视频编码：H.264 硬件编码"和"传输：UDP + RTP"三项。PLANNING.md
-§15 把整个捕获/编码/传输称为"第二大技术风险区"——现在这三块不但各自写完并有自检，还被
-`Casting/LiveCastSession.cs` 接成了一条真正的端到端投屏管线：配对成功后立即开始真的采集/编码/
-发送，Terminal侧（`src/Terminal/EveryStage.Terminal/Receiving/`）也有了对应的接收/解码/显示。
-其中编码（`Encode/H264HardwareEncoder.cs`）仍然是这几块里风险最高、最难验证的一块，原因见该文件
-自己的doc comment和下面"已知风险"的专门小节。
+Desktop Duplication API (DDA)"、"视频编码：H.264 硬件编码"、"传输：UDP + RTP"三项，加上这一轮新加的
+系统音频采集（PLANNING.md没有单独给音频采集一个章节，但"全屏捕获推流"隐含了画面+声音一起投）。
+PLANNING.md §15 把整个捕获/编码/传输称为"第二大技术风险区"——这几块不但各自写完并有自检（音频除
+外，见下方风险），还被 `Casting/LiveCastSession.cs` 接成了一条真正的端到端投屏管线：配对成功后
+立即开始真的采集/编码/发送，Terminal侧（`src/Terminal/EveryStage.Terminal/Receiving/`）也有了
+对应的接收/解码/播放。其中视频编码（`Encode/H264HardwareEncoder.cs`）仍然是这几块里风险最高、
+最难验证的一块，原因见该文件自己的doc comment和下面"已知风险"的专门小节；音频这一轮走的是低风险
+路线（原始PCM，不经过任何硬件编码器），见下方 `Capture/AudioCaptureSource.cs` 的专门小节。
 
 ## 现在能做什么
 
 1. 启动后监听终端机的UDP广播beacon，标准的"待机态：目标终端机列表"（§12）
 2. 选中一个终端机，点"开始投屏"——真的会发送配对请求（`DiscoveryProtocol.PairRequestMessage`）
    并等待终端机的响应
-3. **配对成功后立即真的开始投屏**：`Casting/LiveCastSession.cs` 启动完整链路——
-   `ScreenCaptureSource`(BGRA) → `BgraToNv12Converter`(NV12) → `H264HardwareEncoder`(H.264访问
-   单元) → `AnnexBNalSplitter`(拆NAL单元) → `RtpSession`(RTP/UDP)，发送到终端机固定的
-   `DiscoveryProtocol.VideoRtpPort`；同时通过新增的 `DiscoveryProtocol.CastStartMessage`/
-   `CastStopMessage`（单播）告诉终端机"我要开始/停止投屏了，分辨率是多少"，终端机据此启动/停止
-   自己的 `Receiving/CastReceiver`。面板上实时显示分辨率/已捕获帧数/已发送访问单元数/已发送字节
-   数，出错时如实显示错误而不是假装成功。**没有任何应答机制**——Caster完全不知道终端机是否真的
-   收到并显示了画面，见下方"已知风险"。
+3. **配对成功后立即真的开始投屏，视频+音频**：`Casting/LiveCastSession.cs` 启动完整链路——
+   视频：`ScreenCaptureSource`(BGRA) → `BgraToNv12Converter`(NV12) → `H264HardwareEncoder`(H.264
+   访问单元) → `AnnexBNalSplitter`(拆NAL单元) → `RtpSession`(RTP/UDP)，发送到终端机固定的
+   `DiscoveryProtocol.VideoRtpPort`；音频：`Capture/AudioCaptureSource.cs`(WASAPI loopback采集
+   系统播放的声音，转成16-bit PCM) → 另一个 `RtpSession`(`SendRawPayloadAsync`，不经过H.264那套
+   NAL分片) → `DiscoveryProtocol.AudioRtpPort`。同时通过 `DiscoveryProtocol.CastStartMessage`/
+   `CastStopMessage`（单播）告诉终端机"我要开始/停止投屏了，视频分辨率、音频采样率/声道数分别是
+   多少"，终端机据此启动/停止自己的 `Receiving/CastReceiver`。**音频是video之上的锦上添花，不是
+   硬性要求**——如果这台机器上没有正在播放的声音、或者WASAPI初始化失败，`AudioCaptureSource`
+   构造失败只会让这一次投屏退化成纯视频，不会连累视频一起失败。面板上实时显示分辨率/已捕获帧数/
+   已发送访问单元数/已发送字节数/音频状态，出错时如实显示错误而不是假装成功。**没有任何应答
+   机制**——Caster完全不知道终端机是否真的收到并显示/播放了画面/声音，见下方"已知风险"。
 4. 面板上有一个"屏幕捕获自检"按钮——用 Desktop Duplication API (`Capture/`) 独立验证捕获本身，
    跟正在进行的投屏互不影响，用于定位问题出在哪一步。
 5. 面板上还有一个"开始编码自检 (捕获→NV12→H.264)"按钮——`Encode/EncodeSelfTestRunner.cs`
@@ -151,13 +157,51 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     也从未发出），但如果调用方在`LastError`非空时误以为"投屏已经开始，需要停止"而调用`Stop()`，
     行为上是安全的空操作，只是没有额外提示"其实什么都没开始过"。
 
+### `Capture/AudioCaptureSource.cs` — 系统音频采集，这次新加的部分
+
+跟视频编码那条路径比，这一块选的是刻意更低风险的方案：WASAPI loopback采集用的是这个仓库已经在
+`AudioPlaybackClock`/`AudioTakeoverService`上用过的NAudio成熟API，而且音频完全不经过硬件编码器
+（直接发送量化后的16-bit PCM），绕开了整个"再写一个异步/同步MFT消费者"的风险类别——代价是带宽
+明显更高（未压缩PCM vs. H.264压缩后的视频），但这个仓库现在没有能力验证一个新的音频编码器MFT
+（无论是MF的AAC编码器还是别的），所以选择先接通链路、把压缩留到以后。
+
+28. **假设WASAPI loopback的原生混音格式是32位IEEE浮点**（`ConvertFloatToPcm16`）：这是WASAPI共享
+    模式几乎普遍的格式，但不是API保证的——如果真机上报告的格式不是32位float，这个方法会抛异常而
+    不是把字节误读成别的格式产出噪音，异常会被`LiveCastSession`按"音频尽力而为"的原则捕获，退化
+    成纯视频投屏，不会崩溃整个程序。
+29. **完全没有自检**：跟屏幕捕获/编码/传输三块都有的自检按钮不同，`AudioCaptureSource`没有独立的
+    "音频采集自检"——现在唯一的验证方式就是真机跑一次完整的`LiveCastSession`，如果音频路径本身
+    (格式转换、分片、发送)有问题，不容易跟视频问题区分开。
+30. **`OnDataAvailable`/`OnRecordingStopped`在NAudio自己的采集回调线程上跑，`ConvertFloatToPcm16`
+    抛出的异常会被这个方法自己的try/catch捕获转成`CaptureFailed`事件**——但`WasapiLoopbackCapture`
+    本身在其回调线程里如果抛出未被这层try/catch覆盖的异常（比如构造`WasapiLoopbackCapture`本身
+    没有异常但内部COM调用运行时失败），NAudio内部怎么处理这类异常没有核实过，可能表现为
+    `RecordingStopped`事件带着异常（已处理），也可能是完全没有捕获到的场景。
+31. **音频RTP分片大小(`MaxAudioPayloadBytes = 1280`)是估算值，不是实测的**：WASAPI共享模式回调
+    间隔通常在10ms左右，但具体缓冲区大小依赖声卡驱动/系统配置，1280字节的选择留了一些余量，但
+    没有在真实硬件上验证过是否总能避免IP分片。
+32. **没有处理系统默认播放设备切换**：`WasapiLoopbackCapture`绑定的是构造时的默认渲染设备——如果
+    投屏过程中用户切换了系统默认输出设备（比如插拔耳机），这个类不会自动跟着切换，捕获到的会是
+    旧设备（如果还存在）或者直接停止（如果设备消失，`OnRecordingStopped`应该会带着异常触发
+    `CaptureFailed`，但没有实测过具体行为）。
+33. **没有回声消除/音量归一化**：纯粹是"把系统正在播放的声音转发出去"，不做任何后处理——如果
+    Terminal机器本身也在播放声音又被其他设备投屏监看，这属于产品层面的场景设计问题，不是这个类
+    的职责范围。
+
 ## 尚未开始
 
-- 应答/心跳机制：让Caster真正知道终端机是否收到、显示了画面（见风险23）
-- 音频采集与同步（Terminal端的`Receiving/`同样完全没有音频，两边都缺）
+- 应答/心跳机制：让Caster真正知道终端机是否收到、显示/播放了画面/声音（见风险23）
+- 音视频同步：视频侧的RTP时间戳来自墙钟(`RtpVideoClock.FromElapsed`)，音频侧来自采样计数
+  (`_audioTimestamp`累加发送的采样数)，两条时钟完全独立，Terminal那边`CastReceiver`也没有做任何
+  基于时间戳的对齐——音频播放纯粹是"收到就播"，跟画面之间没有同步保证，长时间投屏后可能出现明显的
+  音画不同步
+- 音频采集自检（见风险29）
+- 音频压缩（当前是未压缩16-bit PCM，带宽明显高于H.264视频——真要做流畅的低延迟音频编码需要走
+  Media Foundation的AAC编码器MFT，跟视频编码器同一类风险，这一轮为了先接通链路特意绕开了）
 - 已配对设备的持久化列表
 - 真正的"投屏中"状态里的时长显示、隐私提醒条（PLANNING.md §12 提到的UI细节，目前只有停止按钮和
   统计数字）
 - 选择捕获哪个显示器（`ScreenCaptureSource` 目前固定捕获 `outputIndex=0`，多显示器场景没有UI选择）
 - `H264HardwareEncoder` 里"编码器不提供自己的输出sample"这条分支（见上方风险16）
-- 编码器的丢帧/背压策略、以及`LiveCastSession`发送队列的背压策略（同一类问题，见上方风险17、25）
+- 编码器的丢帧/背压策略、以及`LiveCastSession`两个发送队列（视频/音频）的背压策略（同一类问题，
+  见上方风险17、25）

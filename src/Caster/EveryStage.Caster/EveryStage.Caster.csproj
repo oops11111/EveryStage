@@ -32,6 +32,11 @@
          usage, so it references Vortice.MediaFoundation explicitly rather than relying on it
          flowing in transitively through the EveryStage.Rendering project reference. -->
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <!-- Capture/AudioCaptureSource.cs drives NAudio's WasapiLoopbackCapture directly for system-
+         audio capture, so it references NAudio explicitly rather than relying on it flowing in
+         transitively through the EveryStage.Rendering project reference (same reasoning as
+         Vortice.MediaFoundation above). -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
 </Project>

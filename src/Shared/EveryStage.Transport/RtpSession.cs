@@ -45,19 +45,31 @@ public sealed class RtpSession : IDisposable
     {
         foreach (var payload in H264RtpPacketizer.Packetize(nalUnit, isLastNalOfAccessUnit, _maxPayloadSize))
         {
-            var packet = new RtpPacket
-            {
-                Marker = payload.Marker,
-                PayloadType = _payloadType,
-                SequenceNumber = _sequenceNumber++, // wraps at ushort.MaxValue by design, per RFC 3550.
-                Timestamp = rtpTimestamp,
-                Ssrc = _ssrc,
-                Payload = payload.Bytes,
-            };
-
-            byte[] datagram = packet.Encode();
-            await _socket.SendAsync(datagram, datagram.Length, _remoteEndPoint);
+            await SendRawPayloadAsync(payload.Bytes, rtpTimestamp, payload.Marker);
         }
+    }
+
+    /// <summary>Sends one payload as a single RTP packet with no H.264-specific NAL/FU-A framing —
+    /// for payload kinds that don't need it, e.g. raw PCM audio chunks
+    /// (<c>Caster.Capture.AudioCaptureSource</c> / <c>Terminal.Receiving.CastReceiver</c>'s audio
+    /// side), where every chunk is already an independently-usable piece of a continuous byte
+    /// stream rather than something that needs reassembling like an H.264 NAL unit. Unlike
+    /// <see cref="SendNalUnitAsync"/> there is no automatic fragmentation — the caller must keep
+    /// <paramref name="payload"/> within the network path's MTU budget itself.</summary>
+    public async Task SendRawPayloadAsync(ReadOnlyMemory<byte> payload, uint rtpTimestamp, bool marker = false)
+    {
+        var packet = new RtpPacket
+        {
+            Marker = marker,
+            PayloadType = _payloadType,
+            SequenceNumber = _sequenceNumber++, // wraps at ushort.MaxValue by design, per RFC 3550.
+            Timestamp = rtpTimestamp,
+            Ssrc = _ssrc,
+            Payload = payload,
+        };
+
+        byte[] datagram = packet.Encode();
+        await _socket.SendAsync(datagram, datagram.Length, _remoteEndPoint);
     }
 
     public void Dispose() => _socket.Dispose();

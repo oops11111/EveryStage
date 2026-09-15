@@ -165,14 +165,21 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _castReceiver = null;
             try
             {
-                _castReceiver = new CastReceiver(_videoSurface, info.Width, info.Height, DiscoveryProtocol.VideoRtpPort);
+                _castReceiver = new CastReceiver(
+                    _videoSurface, info.Width, info.Height, DiscoveryProtocol.VideoRtpPort,
+                    info.HasAudio, info.AudioSampleRate, info.AudioChannels, DiscoveryProtocol.AudioRtpPort);
                 _castReceiver.Start();
             }
             catch (Exception)
             {
                 // Same "don't crash, don't pretend it worked" reasoning as everywhere else in this
                 // repo lacking a dedicated cast-session log yet — leaves the Terminal at Idle rather
-                // than showing a video surface that will never receive a frame.
+                // than showing a video surface that will never receive a frame. A pure audio-side
+                // failure doesn't reach here — CastReceiver's own constructor already degrades to
+                // video-only on an audio construction failure (see its AudioError property), mirroring
+                // LiveCastSession's audio-is-best-effort handling on the Caster side; this catch is
+                // for video-side failures only, which do end the whole cast (there's no cast without
+                // video).
                 _castReceiver = null;
                 return;
             }
