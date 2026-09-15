@@ -206,7 +206,10 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
     `OverlayWindow.Rebind`之后重新创建`VideoSurface`/重新绑定`PlaybackEngine`等一整套热切换逻辑，
     这个仓库目前完全没有涉足"运行时显示器热插拔"这个话题（`OverlayWindow.Rebind`本身也从未被任何
     调用方实际调用过，见`Display/OverlayWindow.cs`）。设置面板里已经用文字提示了这一点，而不是假装
-    立即生效。
+    立即生效。**更新（见第59条）**：这里说的"从未被任何调用方实际调用过"现在只在"设置面板改了
+    扩展屏选择"这一条路径上仍然成立——`OverlayWindow.Rebind`本身已经有了另一个真正的调用方
+    （已绑定的扩展屏运行中途自己改分辨率/位置），但设置面板这条路径确实还是要重启才生效，因为
+    这里触发`Rebind`的是`SystemEvents.DisplaySettingsChanged`，跟设置面板改选择完全是两回事。
 36. **"默认停留时长"是唯一立即生效的设置**：因为`PlaybackEngine`持有的是`SettingsStore`本身（不是
     某次读取的快照），每次`ArmStayDurationTimer`都重新读一次`Current.DefaultStayDurationSeconds`——
     这个字段选它作为"立即生效"的示范是有意的，用来验证"设置存储可以被多处共享读取、不需要额外的
@@ -399,6 +402,22 @@ Caster知道终端机确实收到了东西。
     是专门为"记录单个文件的某个播放属性从什么值变成了什么值"设计的，这次是它第一次真正被用在
     它本来的用途上（`propertyName`传的是`nameof(MediaFile.PlayModeOverride)`，`oldValue`/
     `newValue`是`PlayMode?.ToString()`，null会原样记成`null`而不是字符串"null"）。
+59. **【部分实现，原为已知缺口】`Program.cs`现在订阅`Microsoft.Win32.SystemEvents.DisplaySettingsChanged`，
+    给`OverlayWindow.Rebind`/`VideoSurface.Resize`补上了第一个真正的调用方**：上面第35条提到这两个
+    方法写好之后从未被调用过——这次只解决其中最窄的一种场景："终端机启动时已经绑定了某个扩展屏，
+    这个屏幕运行途中改了分辨率/位置"（`HandleDisplaySettingsChanged`重新调用
+    `MonitorService.GetBoundExtendedDisplay`，跟`OverlayWindow.Monitor`做`record`结构相等比较，
+    不同才真正`Rebind`+`Resize`，避免无意义的重建）。**明确没有解决的两种情况**：(a)
+    启动时完全没有扩展屏绑定的，`_overlay`/`_videoSurface`永远是`null`，运行中途插入新显示器
+    也不会凭空生出一整套`_overlay`/`_videoSurface`/`_playback`/`_previewWindow`——这需要的对象
+    生命周期改动比这次大得多，尤其是"正在播放本地视频或正在接收设备投屏时显示器被拔掉"这类并发
+    场景在这个沙箱里完全没办法验证，属于有意暂缓而不是遗漏；(b) 已绑定的显示器运行中途被完全拔掉，
+    `HandleDisplaySettingsChanged`在`GetBoundExtendedDisplay`返回`null`时直接返回，`OverlayWindow`
+    停留在最后已知的位置/尺寸——Windows会把这块离屏的无边框窗口简单裁剪掉而不会报错，所以这不是
+    崩溃风险，只是"重新插回或者重启进程之前画面不对"这个已知的、可接受的缺口。另外`SystemEvents`
+    在真实Windows机器上到底从哪个线程触发这个事件，这个沙箱没有dotnet/Windows SDK，完全没办法
+    验证——`OnDisplaySettingsChanged`因此防御性地用构造函数里捕获的`_uiContext.Post`把
+    `HandleDisplaySettingsChanged`转回UI线程执行，而不是假设它已经在UI线程上。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -406,8 +425,9 @@ Caster知道终端机确实收到了东西。
   但采集延迟差、RTP时间戳回绕、解码器FIFO假设这几项仍然是接受的已知限制，没有计划中的进一步方案
 - WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
   这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
-- 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35条）——`OverlayWindow.Rebind`存在但从未被
-  调用过，`VideoSurface`/`PlaybackEngine`也没有为"运行中途换显示器"设计
+- 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35、59条）——"已绑定的扩展屏运行中途改分辨率
+  /位置"这一种场景已经在第59条实现；"启动时没绑定、运行中途插入新显示器"和"已绑定的显示器运行
+  中途被整个拔掉"这两种场景仍然完全没有处理，见第59条列出的具体理由
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
 - `FadeDuration`/`VolumeFollowsFade`/`IsBackgroundAudio`/`BackgroundAudioVisual`这几个字段仍然
   完全没有任何代码读取过（见`PlaybackEngine`类doc comment"deliberately out of scope"那一段），

@@ -1,4 +1,5 @@
 using System.Net;
+using Microsoft.Win32;
 using EveryStage.Discovery;
 using EveryStage.Terminal.Audio;
 using EveryStage.Terminal.Data;
@@ -90,6 +91,16 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore);
             _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
             _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
+
+            // Runtime display-configuration changes (PLANNING.md §5, this project's README "已知
+            // 风险" on OverlayWindow.Rebind/VideoSurface.Resize previously existing but never having
+            // a caller) — narrowly scoped to "the extended display this Terminal already bound at
+            // startup moved or changed resolution", NOT "a display was plugged in or unplugged after
+            // startup" (see HandleDisplaySettingsChanged's own doc comment for why those two cases
+            // are still explicitly out of scope). Only subscribed when an overlay actually exists —
+            // with no bound display at startup there is nothing here for a later display change to
+            // rebind anyway (see the "no display bound" case below).
+            SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         }
         // extendedDisplay == null: no second monitor attached yet. §5/§7 don't specify a "no
         // display bound" UX beyond implying it's a real, visible configuration state — the tray
@@ -315,10 +326,51 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _ = _discovery.SendCastStatusAsync(_castingCasterEndPoint, status);
     }
 
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        // SystemEvents raises this from its own internal message-pump thread, not necessarily this
+        // process's UI thread — same "marshal before touching UI-affine state" reasoning this class
+        // already applies to DiscoveryService's background-thread callbacks. _uiContext was captured
+        // from the WindowsFormsSynchronizationContext Program.Main guarantees exists before this
+        // constructor runs, so Post here always lands back on the UI thread regardless of which
+        // thread SystemEvents actually used to raise this on (NOTE: this repo has no way to verify
+        // SystemEvents' real threading behavior on an actual Windows machine — Post is used
+        // defensively rather than assuming the common case that it's already on the UI thread).
+        _uiContext.Post(_ => HandleDisplaySettingsChanged(), null);
+    }
+
+    /// <summary>Narrowly scoped to one case: the extended display this Terminal already bound at
+    /// startup (<see cref="_overlay"/> non-null) moved position or changed resolution/orientation —
+    /// <see cref="OverlayWindow.Rebind"/> and <see cref="VideoSurface.Resize"/> both already existed
+    /// for exactly this (this project's README used to flag them as written but never called by
+    /// anything). Deliberately does NOT handle: a display being plugged in for the first time after
+    /// this Terminal already started with none bound (<see cref="_overlay"/> stays null forever once
+    /// decided at startup — building/tearing down the whole <see cref="_overlay"/>/
+    /// <see cref="_videoSurface"/>/<see cref="_playback"/>/<see cref="_previewWindow"/> graph at
+    /// runtime is a substantially bigger change this round doesn't attempt), or the bound display
+    /// being unplugged entirely (falls through to the last-known bounds silently rather than tearing
+    /// anything down — Windows simply clips an off-screen borderless window rather than erroring, so
+    /// this isn't a crash risk, just a "nothing looks right until it's replugged or the process
+    /// restarts" gap). See this project's README "已知风险" for both being recorded, intentional
+    /// scope limits rather than oversights.</summary>
+    private void HandleDisplaySettingsChanged()
+    {
+        if (_overlay == null || _videoSurface == null) return;
+
+        var updated = MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName);
+        if (updated == null) return; // the bound display disappeared entirely — not handled, see this method's own doc comment.
+        if (updated == _overlay.Monitor) return; // MonitorInfo is a record — structural equality catches "nothing actually changed".
+
+        _overlay.Rebind(updated);
+        _videoSurface.Resize(updated.Bounds.Width, updated.Bounds.Height);
+    }
+
     private void OnExitRequested()
     {
         _repository.Save(_store);
         _stateMachine.Disconnect(); // ensure audio is restored / overlay hidden before teardown.
+
+        if (_overlay != null) SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
 
         _tray.Dispose();
         _discovery.Dispose();
