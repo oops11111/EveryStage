@@ -118,6 +118,24 @@ public sealed class CastReceiver : IDisposable
     /// that's gone silent.</summary>
     public int ConsecutiveVideoDecodeErrors { get; private set; }
 
+    /// <summary>Combined video+audio "gap events / (received + gap events)" ratio as a percentage —
+    /// see <see cref="RtpReceiver.GapEvents"/>'s own doc comment for why this is an honest
+    /// approximation, not an exact packet-loss percentage (it under-counts multi-packet gaps as a
+    /// single event, and can't distinguish real loss from this project's own lack of reordering
+    /// support). Fed into <c>DeviceConnectionLogger.LogQualityMetric</c> (PLANNING.md §14.4's
+    /// "连接质量指标（丢包率/延迟）", previously logged by nothing at all — see this project's
+    /// README). Null only if zero packets (video or audio) have been received yet at all.</summary>
+    public double? EstimatedPacketLossPercent
+    {
+        get
+        {
+            long packets = _rtpReceiver.PacketsReceived + (_audioRtpReceiver?.PacketsReceived ?? 0);
+            long gaps = _rtpReceiver.GapEvents + (_audioRtpReceiver?.GapEvents ?? 0);
+            if (packets == 0) return null;
+            return gaps / (double)(packets + gaps) * 100.0;
+        }
+    }
+
     public bool HasAudio { get; private set; }
     public long AudioBytesReceived { get; private set; }
 

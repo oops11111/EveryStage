@@ -5,9 +5,10 @@ namespace EveryStage.Terminal.Logging;
 /// 断开原因" — for diagnosing network problems with Casters, separate from what content played
 /// (<see cref="PlaybackLogger"/>) or library edits (<see cref="FileOperationLogger"/>).
 ///
-/// Nothing calls this yet: device discovery/pairing (PLANNING.md §7, Phase 3) hasn't been built.
-/// This exists now so that work has a logging surface ready to call into from day one, rather than
-/// bolting logging on after the fact.
+/// <see cref="LogQualityMetric"/> went uncalled for a long time after this class was first written
+/// (device discovery/pairing hadn't been built yet) — see this project's README for when a real
+/// caller finally showed up (<c>Program.cs</c>'s <c>LogConnectionQualityAsync</c>, once both a real
+/// RTT measurement and a real packet-loss estimate existed to feed it).
 /// </summary>
 public sealed class DeviceConnectionLogger
 {
@@ -31,6 +32,11 @@ public sealed class DeviceConnectionLogger
     public void LogDisconnected(string deviceId, string reason) =>
         _writer.Write("device_disconnected", new { deviceId, reason });
 
-    public void LogQualityMetric(string deviceId, double packetLossPercent, double latencyMs) =>
+    /// <summary>Either figure may be null for a given call — a missed ping shouldn't suppress a
+    /// perfectly good local packet-loss reading gathered the same round, and vice versa. Nullable
+    /// rather than defaulting a missing measurement to some sentinel like 0: a 0 in a persisted log
+    /// would silently read as "measured, found perfect" instead of "not measured this round", which
+    /// is a worse lie for a diagnostic log to tell than an honest null.</summary>
+    public void LogQualityMetric(string deviceId, double? packetLossPercent, double? latencyMs) =>
         _writer.Write("device_quality", new { deviceId, packetLossPercent, latencyMs });
 }

@@ -70,6 +70,19 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
    检测到并丢弃整个访问单元（不会拼出损坏的帧喂给解码器）；音频这边`RawRtpReceiver`把每个payload
    都直接交给调用方，`CastReceiver`收到就直接`AudioPlaybackClock.Enqueue`——一个包丢失或乱序到达，
    听到的就是原始PCM顺序被打乱/出现空隙的效果（可能是可闻的爆音/跳跃），没有任何检测或缓解。
+   **更新（见第9条）**：现在至少能"看见"这件事发生了（`RtpReceiver`/`RawRtpReceiver`新增的
+   `GapEvents`计数器），但这条风险原本说的"没有任何检测或缓解"里"缓解"那一半依然完全成立——
+   检测到之后什么都不做，跟第3条"没有尝试恢复"是同一个未解决的限制。
+9. **【新增】`RtpReceiver`/`RawRtpReceiver`新增`PacketsReceived`/`GapEvents`，但只是粗略的丢包
+   信号、不是精确计数**：两个类现在都会跟踪RTP序列号，每收到一个包就检查它是不是恰好比上一个包
+   大1，不是就把`GapEvents`加1——刻意不去计算"预期序号"和"实际序号"之间的数值差（RFC 3550序列号
+   在65536处回绕），因为一个乱序但没有丢的包（比如序号提前1个到达）如果直接算数值差会通过`ushort`
+   回绕被误判成"丢了65535个包"这种荒谬的数字，比"一次跳变只算1个事件"这种保守的低估更糟——这两个
+   类本来就完全没有乱序重排支持（见第3条），一个乱序包本来就已经会打乱认知，这里选择不在这个基础
+   上再犯一个更大的错误。这意味着一次跳过5个序号的丢包，在这里只算1次`GapEvents`，不是5——
+   `Terminal.Receiving.CastReceiver.EstimatedPacketLossPercent`把`GapEvents`/`PacketsReceived`
+   合并成一个粗略的百分比，喂给`DeviceConnectionLogger.LogQualityMetric`（PLANNING.md §14.4"连接
+   质量指标"，见Terminal README），这个数字应该被当成"大致的健康趋势"而不是精确的丢包率。
 
 ## 尚未开始
 

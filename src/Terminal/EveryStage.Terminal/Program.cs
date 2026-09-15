@@ -66,6 +66,14 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private Guid _castingDeviceId;
     private IPEndPoint? _castingCasterEndPoint;
     private readonly System.Windows.Forms.Timer _castStatusTimer;
+    private readonly DeviceConnectionLogger _connectionLog = new();
+
+    // How many _castStatusTimer ticks (1s each) between LogConnectionQuality runs — a diagnostic
+    // *log* entry every second would spam the on-disk log with what's meant to be a periodic
+    // summary, not a per-tick stream; this tick counter piggybacks on the timer that already exists
+    // rather than adding a whole second System.Windows.Forms.Timer for one coarser-grained check.
+    private const int ConnectionQualityCheckEveryNTicks = 15;
+    private int _castStatusTickCount;
 
     public TerminalApplicationContext(ScenarioStore store, ScenarioRepository repository)
     {
@@ -114,7 +122,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         _identity = DeviceIdentity.LoadOrCreate("terminal");
         var pairedDevices = new PairedDeviceStore();
-        _discovery = new DiscoveryService(_identity, pairedDevices, new DeviceConnectionLogger());
+        _discovery = new DiscoveryService(_identity, pairedDevices, _connectionLog);
         _discovery.PairingRequested += OnPairingRequested;
         _discovery.CastStartRequested += OnCastStartRequested;
         _discovery.CastStopRequested += OnCastStopRequested;
@@ -129,7 +137,13 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // _castReceiver in StopCasting()/OnCastStartRequested, never left running with nothing to
         // report or check.
         _castStatusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
-        _castStatusTimer.Tick += (_, _) => { CheckCastLiveness(); CheckDecodeHealth(); SendCastStatus(); };
+        _castStatusTimer.Tick += (_, _) =>
+        {
+            CheckCastLiveness();
+            CheckDecodeHealth();
+            SendCastStatus();
+            if (++_castStatusTickCount % ConnectionQualityCheckEveryNTicks == 0) _ = LogConnectionQualityAsync();
+        };
 
         var library = new FileLibraryStore();
         _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity);
@@ -214,6 +228,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
             _castingDeviceId = info.DeviceId;
             _castingCasterEndPoint = info.CasterEndPoint;
+            _castStatusTickCount = 0;
             _castStatusTimer.Start();
             _overlay.ShowVideoSurface();
             _stateMachine.AcceptDeviceCastRequest();
@@ -325,6 +340,53 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             AudioError = _castReceiver.AudioError,
         };
         _ = _discovery.SendCastStatusAsync(_castingCasterEndPoint, status);
+    }
+
+    /// <summary>Fills in PLANNING.md §14.4's "连接质量指标（丢包率/延迟）" for
+    /// <see cref="DeviceConnectionLogger.LogQualityMetric"/> — a method that has existed since this
+    /// project's very first logging round but, until now, had no caller anywhere (see this project's
+    /// README): nothing on this side had ever measured either a real latency or a real packet-loss
+    /// figure to pass it. Latency comes from <see cref="DiscoveryService.PingAsync"/> (Terminal
+    /// actively pinging the Caster it's currently receiving a cast from — the mirror image of
+    /// <c>Caster.Casting.LiveCastSession</c>'s own <c>RunPingLoop</c>, which pings this Terminal for
+    /// its own UI). Packet loss comes from <see cref="CastReceiver.EstimatedPacketLossPercent"/> —
+    /// see that property's own doc comment for why it's an honest approximation, not exact. Called
+    /// roughly every <see cref="ConnectionQualityCheckEveryNTicks"/> seconds rather than every
+    /// <see cref="SendCastStatus"/> tick — a diagnostic log entry once a second would spam the
+    /// on-disk log with what's meant to be a periodic summary.</summary>
+    private async Task LogConnectionQualityAsync()
+    {
+        // The `is not { } casterEndPoint` pattern both null-checks _castingCasterEndPoint and binds
+        // it to a properly non-null local in one step — plain `!= null` wouldn't let the compiler
+        // carry that narrowing to casterEndPoint below, since it's a field (mutable from elsewhere
+        // between statements, in the compiler's more conservative view of fields vs. locals).
+        if (_castReceiver == null || _castingCasterEndPoint is not { } casterEndPoint) return;
+
+        // Captured before the ping's own await, in case StopCasting()/a new cast start races in
+        // while this is in flight — logging against a Guid.Empty or the wrong device would be worse
+        // than not logging at all.
+        Guid deviceId = _castingDeviceId;
+        var castReceiver = _castReceiver;
+
+        TimeSpan? rtt;
+        try
+        {
+            rtt = await _discovery.PingAsync(casterEndPoint);
+        }
+        catch (Exception)
+        {
+            rtt = null; // best-effort, like every other discovery-protocol interaction in this repo.
+        }
+
+        // The cast this was measuring may have ended (or a different one started) while the ping was
+        // in flight — re-check rather than logging a quality metric for a device this Terminal is no
+        // longer casting with (or, worse, attributing it to whatever new device started meanwhile).
+        if (_castReceiver != castReceiver || _castingDeviceId != deviceId) return;
+
+        // Logs even a partial reading (only one of the two measured) rather than requiring both —
+        // see LogQualityMetric's own doc comment on why a missing measurement is passed as null
+        // rather than a misleading 0.
+        _connectionLog.LogQualityMetric(deviceId.ToString(), castReceiver.EstimatedPacketLossPercent, rtt?.TotalMilliseconds);
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)

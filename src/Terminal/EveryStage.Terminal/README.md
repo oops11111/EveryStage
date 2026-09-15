@@ -505,6 +505,25 @@ Caster知道终端机确实收到了东西。
     里任何人都可以用这两个消息类型探测一个Terminal是否在线、测出到它的往返时延，即使从未跟它
     配对过——这个仓库认为这个额外的探测能力不比协议本身已有的明文/无认证风险更严重，选择不为
     这一个消息类型单独加一层配对检查。
+66. **【已实现，原为已知缺口】`DeviceConnectionLogger.LogQualityMetric`终于有了第一个真正的
+    调用方**：这个方法从这个仓库最早的日志功能那一轮起就存在，一直没有任何代码调用它（对应
+    PLANNING.md §14.4"连接质量指标（丢包率/延迟）"这半句需求）——不是没接线，是当时真的没有任何
+    数据可以喂给它。这一轮把两个缺失的数据来源都补上了：(1) **延迟**：`DiscoveryService`新增
+    `PingAsync`/`HandlePong`，跟`EveryStage.Caster`的`TerminalDiscoveryClient.PingAsync`完全对称
+    （现在`PingMessage`/`PongMessage`双向都能发起，见该协议的doc comment和`EveryStage.Caster`
+    README第56条）——Terminal主动ping正在给自己投屏的那个Caster，不依赖两台机器时钟同步；
+    (2) **丢包率**：`EveryStage.Transport`的`RtpReceiver`/`RawRtpReceiver`新增序列号跳变检测
+    （见该项目README第9条，一个粗略的、不精确的信号，不是真实丢包数），`CastReceiver`新增
+    `EstimatedPacketLossPercent`把视频+音频两路合并成一个百分比。`Program.cs`新增
+    `LogConnectionQualityAsync`，复用现有的`_castStatusTimer`（每15个tick、约15秒跑一次，而不是
+    每秒都写一条日志——诊断日志本来就该是周期性摘要，不是逐tick的流水账），ping和丢包率任何一个
+    缺失都用`null`记录而不是编造一个`0`——`LogQualityMetric`的两个参数因此从`double`改成了
+    `double?`：一个持久化日志里的`0`会被误读成"测量了、结果是满分"，比诚实的"这一轮没测到"是
+    更严重的谎言，这是这次改动过程中特意做的一个小修正，不是最初就设计好的。**残留的不确定性**：
+    `EstimatedPacketLossPercent`本身只是"跳变次数/(收到数+跳变次数)"这种粗略估算（见
+    `EveryStage.Transport`README第9条），`PingAsync`往返测量的也是discovery socket的RTT，不是
+    RTP媒体流本身的延迟——跟`EveryStage.Caster`第35条已经说明的"状态通道健康不代表媒体流健康"
+    是同一类需要牢记的区别。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

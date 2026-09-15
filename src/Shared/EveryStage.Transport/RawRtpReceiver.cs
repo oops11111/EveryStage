@@ -25,6 +25,19 @@ public sealed class RawRtpReceiver : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private Task? _receiveLoop;
 
+    private ushort? _lastSequenceNumber;
+    private long _packetsReceived;
+    private long _gapEvents;
+
+    /// <summary>Same role/approximation caveats as <see cref="RtpReceiver.PacketsReceived"/> —
+    /// deliberately independent code rather than shared, see this class's own doc comment on why.</summary>
+    public long PacketsReceived => Interlocked.Read(ref _packetsReceived);
+
+    /// <summary>Same role/approximation caveats as <see cref="RtpReceiver.GapEvents"/> — a gap-event
+    /// count, not an exact lost-packet count, and indistinguishable from reordering (this class has
+    /// no reordering support either).</summary>
+    public long GapEvents => Interlocked.Read(ref _gapEvents);
+
     /// <summary>Raised from the background receive loop — marshal to another thread/UI as needed.
     /// The <c>uint</c> is the packet's RTP timestamp — for the audio stream this is a wall-clock-
     /// derived value sharing the same epoch as the video stream's timestamps (see
@@ -59,8 +72,18 @@ public sealed class RawRtpReceiver : IDisposable
 
             if (!RtpPacket.TryDecode(result.Buffer, out var packet)) continue; // not one of ours — ignore.
 
+            TrackSequenceNumber(packet.SequenceNumber);
+
             PayloadReceived?.Invoke(packet.Payload.ToArray(), packet.Timestamp);
         }
+    }
+
+    private void TrackSequenceNumber(ushort sequenceNumber)
+    {
+        Interlocked.Increment(ref _packetsReceived);
+        if (_lastSequenceNumber.HasValue && sequenceNumber != unchecked((ushort)(_lastSequenceNumber.Value + 1)))
+            Interlocked.Increment(ref _gapEvents);
+        _lastSequenceNumber = sequenceNumber;
     }
 
     public void Dispose()

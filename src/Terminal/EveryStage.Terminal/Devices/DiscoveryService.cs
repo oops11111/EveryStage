@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using EveryStage.Discovery;
@@ -30,6 +31,14 @@ public sealed class DiscoveryService : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly object _pendingGate = new();
     private readonly Dictionary<string, PendingRequest> _pendingRequests = new();
+
+    // Same correlation-by-RequestId pattern as _pendingRequests/Caster's own _pendingPairRequests,
+    // for PingAsync/HandlePong — see DiscoveryProtocol.PingMessage's doc comment for why this exists
+    // symmetrically on this side too now: originally only a Caster could ping a Terminal (for its
+    // own live "真实RTT估算" UI); this lets a Terminal measure RTT to the Caster it's currently
+    // receiving a cast from, for DeviceConnectionLogger.LogQualityMetric (PLANNING.md §14.4's
+    // "连接质量指标（丢包率/延迟）", previously logged by nothing at all — see this project's README).
+    private readonly Dictionary<string, (TaskCompletionSource<TimeSpan> Tcs, Stopwatch Stopwatch)> _pendingPings = new();
 
     private Task? _receiveLoop;
     private Task? _beaconLoop;
@@ -175,6 +184,9 @@ public sealed class DiscoveryService : IDisposable
             case DiscoveryProtocol.PingMessage ping:
                 HandlePing(ping, remoteEndPoint);
                 break;
+            case DiscoveryProtocol.PongMessage pong:
+                HandlePong(pong);
+                break;
             // BeaconMessage: this is the Terminal side, which only ever sends beacons, never needs
             // to react to one — that's Caster-side discovery UI's job.
         }
@@ -209,6 +221,49 @@ public sealed class DiscoveryService : IDisposable
     /// fire-and-forget like every other send in this class.</summary>
     public Task SendCastStatusAsync(IPEndPoint casterEndPoint, DiscoveryProtocol.CastStatusMessage status) =>
         SendAsync(status, casterEndPoint);
+
+    /// <summary>Measures real round-trip time to <paramref name="casterEndPoint"/> — the Terminal-
+    /// initiated mirror of <c>Caster.Discovery.TerminalDiscoveryClient.PingAsync</c> (see that
+    /// method's and <see cref="DiscoveryProtocol.PingMessage"/>'s own doc comments). Returns null on
+    /// timeout, same "a single missed ping isn't meaningful on its own" reasoning as that mirror
+    /// method — callers pinging periodically should just try again next cycle.</summary>
+    public async Task<TimeSpan?> PingAsync(IPEndPoint casterEndPoint, TimeSpan? timeout = null)
+    {
+        string requestId = Guid.NewGuid().ToString("N");
+        var tcs = new TaskCompletionSource<TimeSpan>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopwatch = new Stopwatch();
+        lock (_pendingGate) _pendingPings[requestId] = (tcs, stopwatch);
+
+        try
+        {
+            stopwatch.Start(); // started as close to the actual send as practical, not at method entry.
+            await SendAsync(new DiscoveryProtocol.PingMessage { RequestId = requestId }, casterEndPoint);
+
+            using var timeoutCts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(3));
+            try
+            {
+                return await tcs.Task.WaitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return null; // Caster never answered (this ping or its pong got lost).
+            }
+        }
+        finally
+        {
+            lock (_pendingGate) _pendingPings.Remove(requestId);
+        }
+    }
+
+    private void HandlePong(DiscoveryProtocol.PongMessage pong)
+    {
+        (TaskCompletionSource<TimeSpan> Tcs, Stopwatch Stopwatch)? entry = null;
+        lock (_pendingGate)
+        {
+            if (_pendingPings.TryGetValue(pong.RequestId, out var found)) entry = found;
+        }
+        if (entry != null) entry.Value.Tcs.TrySetResult(entry.Value.Stopwatch.Elapsed);
+    }
 
     private void HandleCastStop(DiscoveryProtocol.CastStopMessage msg) => CastStopRequested?.Invoke(msg.DeviceId);
 

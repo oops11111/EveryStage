@@ -222,7 +222,35 @@ public sealed class TerminalDiscoveryClient : IDisposable
             case DiscoveryProtocol.PongMessage pong:
                 HandlePong(pong);
                 break;
+            case DiscoveryProtocol.PingMessage ping:
+                HandlePing(ping, remoteEndPoint);
+                break;
         }
+    }
+
+    /// <summary>Echoes any ping addressed to this Caster, unconditionally — the mirror-image of
+    /// Terminal's own <c>DiscoveryService.HandlePing</c>, needed now that pinging is symmetric
+    /// (<c>DiscoveryService.PingAsync</c> lets a Terminal measure RTT to a Caster it's receiving a
+    /// cast from, the same way <see cref="PingAsync"/> here already let a Caster measure RTT to a
+    /// Terminal). Same "no pairing/trust check" reasoning as the Terminal side's own doc comment —
+    /// this protocol has no authentication at all, so gating one message type wouldn't meaningfully
+    /// change this Caster's exposure.</summary>
+    private void HandlePing(DiscoveryProtocol.PingMessage ping, IPEndPoint remoteEndPoint) =>
+        _ = SendRawAsync(new DiscoveryProtocol.PongMessage { RequestId = ping.RequestId }, remoteEndPoint);
+
+    /// <summary>Sends directly to an already-known <see cref="IPEndPoint"/> (a ping's own sender
+    /// address+port) rather than through <see cref="SendControlMessageAsync"/>, which only knows how
+    /// to address a <see cref="DiscoveredTerminal"/> (always at <see cref="DiscoveryProtocol.Port"/>)
+    /// — a reply must go back to the exact port the request actually arrived from, which happens to
+    /// be the same port here but isn't guaranteed to be in general.</summary>
+    private async Task SendRawAsync(DiscoveryProtocol.Message message, IPEndPoint destination)
+    {
+        try
+        {
+            byte[] payload = DiscoveryProtocol.Encode(message);
+            await _socket.SendAsync(payload, payload.Length, destination);
+        }
+        catch (SocketException) { } // best-effort — same reasoning as every other send in this class.
     }
 
     private void HandleBeacon(DiscoveryProtocol.BeaconMessage beacon, IPEndPoint remoteEndPoint)
