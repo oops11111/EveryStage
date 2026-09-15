@@ -34,6 +34,15 @@ namespace EveryStage.Caster.UI;
 /// the next beacon. A "移除配对" button undoes that — <see cref="OnRemovePairingClick"/> deletes the
 /// persisted record for whichever entry is selected (online or offline), so a terminal that will
 /// never come back doesn't sit in the offline half of this list forever with no way to clear it.
+///
+/// The "投屏中" panel now carries a persistent privacy reminder + elapsed-time line
+/// (<see cref="_privacyReminderLabel"/>, PLANNING.md §12) for as long as a cast is running, not just
+/// the one-time notice on the standby panel before "开始投屏" is clicked — a cast can run for a while,
+/// and the person at this machine (not necessarily the same person who started it, if it's shared)
+/// should have a standing, hard-to-miss reminder that the whole screen is being broadcast, not just a
+/// notice they saw once before starting. The elapsed time itself is read from
+/// <see cref="LiveCastSession.Elapsed"/> and is purely a UI display value — the same underlying
+/// <c>Stopwatch</c> also drives A/V sync's RTP timestamps, but neither reads from the other.
 /// </summary>
 public sealed class MainForm : Form
 {
@@ -54,6 +63,7 @@ public sealed class MainForm : Form
 
     private readonly Panel _pairedPanel;
     private readonly Label _pairedWithLabel;
+    private readonly Label _privacyReminderLabel;
     private readonly Label _liveCastStatsLabel;
     private readonly Button _stopCastButton;
     private readonly Button _captureSelfTestButton;
@@ -138,9 +148,19 @@ public sealed class MainForm : Form
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
         _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 32) };
-        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 46, 296, 90), ForeColor = Color.DimGray };
 
-        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 140, 296, 32) };
+        // PLANNING.md §12 "投屏中" 状态里的隐私提醒条 + 时长显示——之前只有开始投屏前那条一次性的
+        // privacyLabel，投屏过程中完全没有任何持续提醒或计时，这两个都是这次新加的。
+        _privacyReminderLabel = new Label
+        {
+            Text = "⚠ 正在投放整个屏幕｜已投屏时长: 00:00:00",
+            ForeColor = Color.DarkRed,
+            Bounds = new Rectangle(12, 44, 296, 20),
+        };
+
+        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 70, 296, 90), ForeColor = Color.DimGray };
+
+        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 164, 296, 32) };
         _stopCastButton.Click += (_, _) => ShowStandby();
 
         var diagnosticsNoteLabel = new Label
@@ -148,25 +168,25 @@ public sealed class MainForm : Form
             Text = "以下三个按钮各自独立、互不影响，是采集/编码/传输三个环节各自的自检工具，\n" +
                    "用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(12, 184, 296, 40),
+            Bounds = new Rectangle(12, 208, 296, 40),
         };
 
-        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 228, 296, 32) };
+        _captureSelfTestButton = new Button { Text = "开始屏幕捕获自检", Bounds = new Rectangle(12, 252, 296, 32) };
         _captureSelfTestButton.Click += OnCaptureSelfTestClick;
-        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 262, 296, 50), ForeColor = Color.DimGray };
+        _captureStatsLabel = new Label { Bounds = new Rectangle(12, 286, 296, 50), ForeColor = Color.DimGray };
 
-        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 316, 296, 32) };
+        _encodeSelfTestButton = new Button { Text = "开始编码自检 (捕获→NV12→H.264)", Bounds = new Rectangle(12, 340, 296, 32) };
         _encodeSelfTestButton.Click += OnEncodeSelfTestClick;
-        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 350, 296, 50), ForeColor = Color.DimGray };
+        _encodeStatsLabel = new Label { Bounds = new Rectangle(12, 374, 296, 50), ForeColor = Color.DimGray };
 
-        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 404, 296, 32) };
+        _transportSelfTestButton = new Button { Text = "运行传输自检 (本机回环)", Bounds = new Rectangle(12, 428, 296, 32) };
         _transportSelfTestButton.Click += OnTransportSelfTestClick;
-        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 438, 296, 40), ForeColor = Color.DimGray };
+        _transportStatsLabel = new Label { Bounds = new Rectangle(12, 462, 296, 40), ForeColor = Color.DimGray };
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
         {
-            _pairedWithLabel, _liveCastStatsLabel, _stopCastButton, diagnosticsNoteLabel,
+            _pairedWithLabel, _privacyReminderLabel, _liveCastStatsLabel, _stopCastButton, diagnosticsNoteLabel,
             _captureSelfTestButton, _captureStatsLabel,
             _encodeSelfTestButton, _encodeStatsLabel, _transportSelfTestButton, _transportStatsLabel,
         });
@@ -397,6 +417,18 @@ public sealed class MainForm : Form
     {
         if (_liveCastSession == null) return;
 
+        // Kept updating even once LastError is set below (and the stats timer stops) — the elapsed
+        // time up to the moment of failure is still meaningful, unlike the rest of the stats block
+        // below which gets replaced by the error message entirely.
+        var elapsed = _liveCastSession.Elapsed;
+        // Formatted from TotalHours rather than TimeSpan's "hh" custom-format specifier (which
+        // wraps at 24, like a clock) — a continuous cast running that long is unlikely but this
+        // avoids silently showing a wrong, wrapped-around hour count if it ever happens. Purely a
+        // display nicety; note this project's README already documents RTP's own 32-bit timestamp
+        // wraparound at ~13.25 hours as a separate, more fundamental limit on session length.
+        _privacyReminderLabel.Text =
+            $"⚠ 正在投放整个屏幕｜已投屏时长: {(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}";
+
         if (_liveCastSession.LastError != null)
         {
             _liveCastStatsLabel.ForeColor = Color.DarkRed;
@@ -435,6 +467,7 @@ public sealed class MainForm : Form
         _liveCastSession?.Dispose();
         _liveCastSession = null;
         _liveCastStatsLabel.Text = "";
+        _privacyReminderLabel.Text = "⚠ 正在投放整个屏幕｜已投屏时长: 00:00:00";
 
         if (_captureSelfTest.IsRunning)
         {

@@ -103,6 +103,15 @@ public sealed class LiveCastSession : IDisposable
     private Task? _audioSendLoopTask;
 
     public bool IsRunning => _loopTask != null;
+
+    /// <summary>Wall-clock time since <see cref="Start"/> restarted <see cref="_clock"/> — the same
+    /// Stopwatch video/audio RTP timestamps are derived from (see <see cref="RtpVideoClock"/>'s doc
+    /// comment), exposed here purely for UI display (PLANNING.md §12's "投屏中" state time indicator)
+    /// with no bearing on the RTP/sync math itself. Reads as <c>TimeSpan.Zero</c> before <see
+    /// cref="Start"/> has ever run, since a not-yet-started <see cref="Stopwatch"/> reports zero
+    /// elapsed time on its own.</summary>
+    public TimeSpan Elapsed => _clock.Elapsed;
+
     public int Width { get; private set; }
     public int Height { get; private set; }
     public long FramesCaptured { get; private set; }
