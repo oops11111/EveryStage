@@ -908,6 +908,17 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     同一个`try`纯粹是因为这是这个进程里仅有的两个"在`Application.Run()`之前构造、背后有真实
     文件I/O"的调用，一次性堵上而不是只堵`DeviceIdentity`这一个已知会抛的。**没有做的部分**：
     这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+82. **【修复】`BgraToNv12Converter`构造函数里`_videoDevice`/`_videoContext`两次`QueryInterface`
+    之间没有异常防护**：跟`EveryStage.Rendering`README记录的`D3D11Device`/`SwapChainPresenter`
+    构造函数修复是完全同一种形状——`_videoDevice = gpu.Device.QueryInterface<ID3D11VideoDevice>()`
+    成功、赋给只读字段之后，如果紧接着`_videoContext = gpu.ImmediateContext.
+    QueryInterface<ID3D11VideoContext>()`抛出异常，这个构造函数永远不会正常完成，调用方
+    （`LiveCastSession.Start()`/`EncodeSelfTestRunner.Start()`，两者都是每次开始投屏/自检
+    就`new`一个全新实例）永远拿不到实例去调用`Dispose()`，`_videoDevice`就永久泄漏一份COM
+    资源。**修复方式**：把第二个`QueryInterface`包进`try/catch`，失败时释放已经成功的
+    `_videoDevice`再重新抛出——跟`AacAudioDecoder`构造函数那次修复（单个字段场景）完全
+    同一个写法，不释放传入的`gpu`参数本身，因为这个类不拥有它。**没有做的部分**：这次改动
+    本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始
 

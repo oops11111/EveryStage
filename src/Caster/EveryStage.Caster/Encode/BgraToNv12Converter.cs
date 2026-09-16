@@ -28,8 +28,25 @@ public sealed class BgraToNv12Converter : IDisposable
     public BgraToNv12Converter(D3D11Device gpu)
     {
         _gpu = gpu;
+
+        // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
+        // step one" shape as EveryStage.Rendering's D3D11Device/SwapChainPresenter constructor
+        // fixes (see that library's README) — if the second QueryInterface below throws after the
+        // first one already succeeded, _videoDevice would leak: this constructor never finishes, so
+        // no BgraToNv12Converter instance ever exists for a caller (LiveCastSession/
+        // EncodeSelfTestRunner, both of which construct one fresh per cast/self-test run) to later
+        // Dispose() and release it. Does not dispose _gpu on failure — this class doesn't own it,
+        // same reasoning as SwapChainPresenter's own _gpu field.
         _videoDevice = gpu.Device.QueryInterface<ID3D11VideoDevice>();
-        _videoContext = gpu.ImmediateContext.QueryInterface<ID3D11VideoContext>();
+        try
+        {
+            _videoContext = gpu.ImmediateContext.QueryInterface<ID3D11VideoContext>();
+        }
+        catch
+        {
+            _videoDevice.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
