@@ -36,6 +36,26 @@ public sealed class AudioContentController : IDisposable
     private AudioDecodeSource? _source;
     private AudioPlaybackClock? _audioClock;
 
+    // Survives across Play() calls (unlike _audioClock, which gets torn down and rebuilt every
+    // time) precisely so adjusting volume once stays in effect for whatever file plays next within
+    // this controller's lifetime, not just the currently-playing one — matches how a real player's
+    // volume control behaves, rather than silently resetting to full volume every track.
+    private float _volume = 1f;
+
+    /// <summary>Playback volume, 0.0 (silent) to 1.0 (full) — clamped on write. Applied immediately
+    /// to <see cref="_audioClock"/> if something is currently playing, and to whatever
+    /// <see cref="AudioPlaybackClock"/> the next <see cref="Play"/> call constructs, since a fresh
+    /// clock always starts at NAudio's own default volume (1.0) otherwise.</summary>
+    public float Volume
+    {
+        get => _volume;
+        set
+        {
+            _volume = Math.Clamp(value, 0f, 1f);
+            if (_audioClock != null) _audioClock.Volume = _volume;
+        }
+    }
+
     /// <summary>Raised (from the background playback thread — marshal to the UI thread if the
     /// handler touches UI) when the audio stream reaches end-of-stream.</summary>
     public event Action? PlaybackCompleted;
@@ -58,6 +78,7 @@ public sealed class AudioContentController : IDisposable
 
         var source = new AudioDecodeSource(path);
         var audioClock = new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
+        audioClock.Volume = _volume; // see _volume's own doc comment — a fresh clock otherwise starts at full volume regardless of what was set for the previous file.
         _source = source;
         _audioClock = audioClock;
 

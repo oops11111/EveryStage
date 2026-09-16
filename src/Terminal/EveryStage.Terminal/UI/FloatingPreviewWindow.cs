@@ -7,7 +7,9 @@ namespace EveryStage.Terminal.UI;
 /// <summary>
 /// The floating preview window (PLANNING.md §8.3): "仅在扩展屏有输出时出现，无输出时不存在" — shown
 /// while <see cref="OutputStateMachine"/> is Active, hidden the rest of the time. Content: LIVE
-/// badge, thumbnail preview, filename/kind, and four buttons (上一项/暂停/下一项/切断).
+/// badge, thumbnail preview, filename/kind, four buttons (上一项/暂停/下一项/切断), and now a small
+/// volume row (－/音量文本/＋) for standalone audio — see <see cref="_volumeDownButton"/>'s own doc
+/// comment for why it lives here rather than waiting for §8.2's full "横向播放条" to exist.
 ///
 /// Kept as one persistent <see cref="Form"/> instance rather than recreated per show — that's what
 /// gives "支持拖动记忆位置" (dragged position remembered) for free: <see cref="Control.Location"/>
@@ -41,6 +43,20 @@ public sealed class FloatingPreviewWindow : Form
     private readonly Button _nextButton;
     private readonly Button _disconnectButton;
     private readonly Button _pinButton;
+
+    /// <summary>Adjusts <see cref="PlaybackEngine.AudioVolume"/> in fixed 10% steps — a full "横向
+    /// 播放条" (PLANNING.md §8.2, with a proper slider/percentage readout) doesn't exist anywhere in
+    /// this repo yet and building one just for this window would be guessing at a UI this project's
+    /// own README already documents as a bigger, deferred piece of work (see that README's "已知
+    /// 风险"/"尚未开始" on the audio play bar). A pair of step buttons reuses the exact same
+    /// Button-based interaction language every other control in this window already uses, rather
+    /// than introducing a new control type (e.g. <c>TrackBar</c>) this codebase has never used
+    /// anywhere — its layout/rendering behavior can't be verified without a real Windows build, and
+    /// reusing an already-proven control type here avoids adding a second, independent unverified
+    /// risk on top of that.</summary>
+    private readonly Button _volumeDownButton;
+    private readonly Label _volumeLabel;
+    private readonly Button _volumeUpButton;
 
     public FloatingPreviewWindow(PlaybackEngine playback, OutputStateMachine stateMachine)
     {
@@ -92,12 +108,25 @@ public sealed class FloatingPreviewWindow : Form
         _disconnectButton = new Button { Text = "断", ForeColor = Color.DarkRed, Bounds = new Rectangle(184, 200, 28, 24) };
         _pinButton = new Button { Text = "📌", Bounds = new Rectangle(184, 6, 24, 20) };
 
-        ClientSize = new Size(220, 232);
+        // New row below the existing four buttons — grown ClientSize by the same 24px (row) + 4px
+        // (gap) = 28px this file's own history already uses for adding a row without reflowing
+        // anything above it (see the comment on _previousButton etc. above for the last time this
+        // happened, for _pageLabel).
+        _volumeDownButton = new Button { Text = "－", Bounds = new Rectangle(8, 228, 32, 24) };
+        _volumeLabel = new Label
+        {
+            TextAlign = ContentAlignment.MiddleCenter,
+            Bounds = new Rectangle(44, 228, 128, 24),
+        };
+        _volumeUpButton = new Button { Text = "＋", Bounds = new Rectangle(180, 228, 32, 24) };
+
+        ClientSize = new Size(220, 260);
 
         Controls.AddRange(new Control[]
         {
             _liveBadge, _thumbnail, _fileLabel, _pageLabel,
             _previousButton, _pauseButton, _nextButton, _disconnectButton, _pinButton,
+            _volumeDownButton, _volumeLabel, _volumeUpButton,
         });
 
         _previousButton.Click += (_, _) => _playback.PreviousManual();
@@ -113,6 +142,10 @@ public sealed class FloatingPreviewWindow : Form
             TopMost = !TopMost;
             _pinButton.BackColor = TopMost ? SystemColors.Highlight : SystemColors.Control;
         };
+        // 10% fixed step — matches this window's existing preference for simple, discrete controls
+        // (see _volumeDownButton's own doc comment) over a continuously-adjustable one.
+        _volumeDownButton.Click += (_, _) => { _playback.AudioVolume -= 0.1f; RefreshFromEngine(); };
+        _volumeUpButton.Click += (_, _) => { _playback.AudioVolume += 0.1f; RefreshFromEngine(); };
 
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _refreshTimer.Tick += (_, _) => RefreshFromEngine();
@@ -158,20 +191,31 @@ public sealed class FloatingPreviewWindow : Form
             _thumbnail.Image = null;
             _pauseButton.Enabled = false;
             _pageLabel.Text = "";
+            _volumeDownButton.Enabled = false;
+            _volumeUpButton.Enabled = false;
+            _volumeLabel.Text = "";
             return;
         }
 
         _fileLabel.Text = $"{Path.GetFileName(file.SourcePath)}\n[{file.Kind}]";
         _thumbnail.Image = _playback.CurrentThumbnail; // null for video — see PlaybackEngine.CurrentThumbnail.
 
+        bool isStandaloneAudio = file.Kind == MediaKind.Audio && !file.IsBackgroundAudio;
+
         // Pause is meaningful for image/PDF (freezes the stay-duration clock) and now standalone
         // audio too (real WASAPI pause-in-place, see PlaybackEngine.Pause's doc comment) — still not
         // video, and not background audio (which never reaches PlayStandaloneAudio in the first
         // place, see that method's doc comment), so this mirrors PlaybackEngine.Pause's own guard
         // exactly rather than re-deriving a slightly different condition here.
-        _pauseButton.Enabled = file.Kind is MediaKind.Image or MediaKind.Document
-            || (file.Kind == MediaKind.Audio && !file.IsBackgroundAudio);
+        _pauseButton.Enabled = file.Kind is MediaKind.Image or MediaKind.Document || isStandaloneAudio;
         _pauseButton.Text = _playback.IsPaused ? "继续" : "暂停";
+
+        // Volume only means anything for standalone audio — image/PDF/video have no audio track of
+        // their own that PlaybackEngine.AudioVolume touches (a video's own audio plays through
+        // VideoContentController's separate AudioPlaybackClock, entirely untouched by this).
+        _volumeDownButton.Enabled = isStandaloneAudio;
+        _volumeUpButton.Enabled = isStandaloneAudio;
+        _volumeLabel.Text = isStandaloneAudio ? $"音量: {(int)Math.Round(_playback.AudioVolume * 100)}%" : "";
 
         // Null (empty text) for anything that isn't a multi-page Document — see this class's and
         // PlaybackEngine.DocumentPageInfo's own doc comments on why this only shows up when

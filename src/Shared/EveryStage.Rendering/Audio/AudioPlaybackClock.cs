@@ -46,6 +46,19 @@ public sealed class AudioPlaybackClock : IDisposable
     /// <summary>Resumes playback paused by <see cref="Pause"/> from the exact position it left off.</summary>
     public void Resume() => _output.Play();
 
+    /// <summary>Output volume, 0.0 (silent) to 1.0 (full) — wraps <c>WasapiOut.Volume</c> directly,
+    /// which NAudio documents as valid at any point in this player's lifetime (before, during, or
+    /// after <see cref="Start"/>), not just while actively playing. No clamping here: this class
+    /// trusts its caller (<c>Terminal.ContentEngine.AudioContentController.Volume</c>) to have
+    /// already clamped to [0, 1] — a value outside that range would reach <c>WasapiOut.Volume</c>
+    /// directly, whatever that does (this class doesn't know without a real run, see this project's
+    /// README).</summary>
+    public float Volume
+    {
+        get => _output.Volume;
+        set => _output.Volume = value;
+    }
+
     public void Enqueue(byte[] pcm) => _buffer.AddSamples(pcm, 0, pcm.Length);
 
     /// <summary>Current hardware playback position, converted to 100ns ticks so it's directly

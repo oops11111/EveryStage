@@ -160,8 +160,36 @@ public sealed class PlaybackEngine : IDisposable
     // eager construction the way TerminalApplicationContext eagerly builds _videoSurface for a
     // device cast that might arrive before any local video plays — nothing else in this process
     // needs an AudioContentController to exist before the first standalone-audio file is played.
-    private AudioContentController AudioController =>
-        _audioController ??= new AudioContentController();
+    // Seeded with _pendingAudioVolume on construction (see AudioVolume's own doc comment) so a
+    // volume adjustment made before any audio has ever played isn't silently lost the moment this
+    // is finally created.
+    private AudioContentController AudioController
+    {
+        get
+        {
+            _audioController ??= new AudioContentController { Volume = _pendingAudioVolume };
+            return _audioController;
+        }
+    }
+
+    private float _pendingAudioVolume = 1f;
+
+    /// <summary>Standalone (non-background) audio playback volume, 0.0-1.0 — read/written by
+    /// <c>FloatingPreviewWindow</c>'s volume buttons. Tracked here rather than only inside
+    /// <see cref="AudioContentController"/> so it has a sensible value (and can be set) even before
+    /// any audio has ever played, without forcing <see cref="AudioController"/>'s lazy construction
+    /// just to read or write a property; once that controller exists, this delegates straight to its
+    /// own <see cref="AudioContentController.Volume"/>, which is what actually persists the value
+    /// across separate audio files being played in sequence (see that property's own doc comment).</summary>
+    public float AudioVolume
+    {
+        get => _audioController?.Volume ?? _pendingAudioVolume;
+        set
+        {
+            _pendingAudioVolume = Math.Clamp(value, 0f, 1f);
+            if (_audioController != null) _audioController.Volume = _pendingAudioVolume;
+        }
+    }
 
     /// <summary>"点文件" from within an activity's file list — establishes the auto-advance/manual-
     /// skip context that <see cref="NextManual"/>/<see cref="PreviousManual"/> and
