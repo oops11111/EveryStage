@@ -136,6 +136,14 @@ public sealed class CastReceiver : IDisposable
         }
     }
 
+    /// <summary>Combined video+audio count of <see cref="RtpReceiver.PayloadTypeMismatches"/> /
+    /// <see cref="RawRtpReceiver.PayloadTypeMismatches"/> — see either property's own doc comment on
+    /// why this is expected to stay 0 in this project's own traffic. Fed into
+    /// <c>DiscoveryProtocol.CastStatusMessage.PayloadTypeMismatches</c> so the Caster side can see it
+    /// too, not just this Terminal — previously this was purely a local counter with no consumer at
+    /// all beyond the two underlying receivers themselves (see EveryStage.Transport's README).</summary>
+    public long PayloadTypeMismatches => _rtpReceiver.PayloadTypeMismatches + (_audioRtpReceiver?.PayloadTypeMismatches ?? 0);
+
     public bool HasAudio { get; private set; }
     public long AudioBytesReceived { get; private set; }
 

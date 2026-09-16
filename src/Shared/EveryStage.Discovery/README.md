@@ -34,6 +34,14 @@ LAN发现/配对的共享部分（PLANNING.md §7），两个消费方各自实�
   收到的RTP包是否跟它们一致——见`EveryStage.Transport`README风险第4条。这不是真正的SDP式协商，
   只是"跟本项目自己硬编码的常量比对"，两端预期永远一致，这个校验存在的意义是防御同一端口上的
   陌生/无关RTP包，不是当前会真的触发的场景。
+- **【新增】`CastStatusMessage.PayloadTypeMismatches`**：跟上面那条是同一次改动的下半段——上面
+  校验的结果（丢弃了多少个PayloadType不匹配的包）现在会被Terminal通过这个新字段一路报回Caster，
+  见`EveryStage.Transport`README风险第4条"这次没有做的部分"更新、以及Terminal/Caster各自README
+  里这一轮的新增条目。这个协议本身没有为"以后又加一个字段"做任何版本协商（跟`AudioIsAac`是同一类
+  风险，见下面那条）——一个跑旧代码的Terminal发出的`CastStatusMessage`不会有这个字段，反序列化到
+  跑新代码的Caster这边会得到默认值`0`，看起来像是"从未发生过不匹配"而不是"这个字段这个版本还不
+  存在"，这两种情况在协议层面完全无法区分，跟这份清单一直以来的"两端假设总是同一次提交部署"的
+  态度一致。
 - 不含任何安全/认证机制（明文JSON，无签名无加密）——这与PLANNING.md §14.3 "不加密：内网传输明文"
   的产品决策一致，不是遗漏。
 - **【新增】`CastStartMessage.AudioIsAac`没有协议版本协商保护**：这个字段告诉Terminal该把

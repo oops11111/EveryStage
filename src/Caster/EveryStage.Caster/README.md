@@ -596,6 +596,18 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     还不存在的消费方准备的可选基础设施（比如另一套UI、遥测、日志），而不是"忘了接线"，故意不去
     给它们找一个第一个调用方——跟这个仓库这次找到的其他几十个"缺调用方"的例子性质不同，这次是
     "确认过，这个不该被接线"，不是新的已知缺口。
+63. **【已实现，原为已知缺口】`LiveCastSession.TerminalPayloadTypeMismatches`——Terminal那边的
+    RTP PayloadType防御性校验丢了多少包，这个Caster现在终于能看到了**：`EveryStage.Transport`的
+    `RtpReceiver`/`RawRtpReceiver`早就在Terminal那侧追踪这个计数器（见`EveryStage.Transport`
+    README风险第4条），但一直只是个纯本地计数器，连Terminal自己的UI都没展示，更没有传回过Caster。
+    这次`DiscoveryProtocol.CastStatusMessage`新增同名字段，Terminal的`SendCastStatus()`把它填上，
+    `OnCastStatusReceived`接住存成这个新属性，`RefreshLiveCastStats()`最后加一行展示——跟
+    `AccessUnitsDroppedForBackpressure`/`EncoderFramesDroppedForBackpressure`那两行一样的
+    "只在非零时才显示"处理：这个数字在本项目自己的Caster↔Terminal流量里预期永远是0（两端用的是
+    同一套硬编码PayloadType常量），只有局域网上出现陌生/无关的RTP包时才会变成非零，日常投屏时这行
+    完全不出现。**没有做的部分**：`_liveCastStatsLabel`的`Bounds`高度（108）本来就是个已知偏紧的
+    空间（见该控件构造处、以及RTT那两行旁边的NOTE），这次又叠了第六种可能出现的行，没有借机重新
+    评估这个布局——理由跟其他几行一样，为一个预期几乎永远不出现的行去改布局，不值得。
 
 ## 尚未开始
 

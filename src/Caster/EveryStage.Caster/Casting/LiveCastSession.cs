@@ -229,6 +229,11 @@ public sealed class LiveCastSession : IDisposable
     public long TerminalAudioBytesReceived { get; private set; }
     public string? TerminalAudioError { get; private set; }
 
+    /// <summary>Mirrors <c>DiscoveryProtocol.CastStatusMessage.PayloadTypeMismatches</c> — see that
+    /// field's own doc comment. Expected to stay 0; see <c>Caster.UI.MainForm.RefreshLiveCastStats</c>
+    /// for why this is only ever shown once it isn't.</summary>
+    public long TerminalPayloadTypeMismatches { get; private set; }
+
     /// <summary>UTC time of the last <c>CastStatusMessage</c> received from this session's Terminal
     /// — null if none has arrived yet (could mean "just started, give it a second" or "the Terminal
     /// never actually accepted this cast at all", this class can't tell those apart).</summary>
@@ -318,6 +323,7 @@ public sealed class LiveCastSession : IDisposable
         TerminalHasAudio = status.HasAudio;
         TerminalAudioBytesReceived = status.AudioBytesReceived;
         TerminalAudioError = status.AudioError;
+        TerminalPayloadTypeMismatches = status.PayloadTypeMismatches;
         LastStatusReceivedAt = DateTime.UtcNow;
         LastStatusLatencyEstimate = DateTimeOffset.UtcNow - status.SentAtUtc;
         StatsUpdated?.Invoke();
@@ -344,6 +350,7 @@ public sealed class LiveCastSession : IDisposable
         TerminalHasAudio = false;
         TerminalAudioBytesReceived = 0;
         TerminalAudioError = null;
+        TerminalPayloadTypeMismatches = 0;
         LastStatusReceivedAt = null;
         LastStatusLatencyEstimate = null;
         RealRoundTripEstimate = null;

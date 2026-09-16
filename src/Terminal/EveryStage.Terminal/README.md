@@ -748,6 +748,19 @@ Caster知道终端机确实收到了东西。
     一套悬浮UI不值得。**没有做的部分**：批量选择支持的三个动作里"加入活动"/"统一设置属性"两个
     仍然完全没有实现，见"尚未开始"——它们各自需要新的跨面板管线或者PLANNING.md没有展开的多选编辑
     交互细节，不是这次这种纯"打开一个已有开关"级别的小改动。
+80. **【已实现，原为已知缺口】`CastReceiver.PayloadTypeMismatches`终于有了消费方，一路报回给
+    Caster**：`EveryStage.Transport`的`RtpReceiver`/`RawRtpReceiver`早就在追踪这个计数器（见
+    `EveryStage.Transport`README风险第4条），但它只是个纯本地计数器，Terminal自己都没在任何地方
+    展示过，更别说告诉Caster。这次给`CastReceiver`加了合并视频+音频两路的`PayloadTypeMismatches`
+    属性，`SendCastStatus()`把它塞进`DiscoveryProtocol.CastStatusMessage`新增的同名字段一起发出去
+    ——跟`FramesDecoded`/`VideoBytesReceived`等其他几个"Terminal自己知道、Caster需要被告知"的字段
+    走的是完全一样的路径。**为什么现在才做**：这个字段本身是这次改动里比较边缘的一环——它统计的是
+    "同一端口收到了陌生/无关的RTP包"这种预期中几乎永远不会发生的防御性场景，不像`FramesDecoded`
+    那样是投屏这个核心功能本身就需要的可观测性，所以直到`EveryStage.Transport`那条风险自己写明
+    "没有接入任何UI/日志展示"之前，一直没有单独优先级去补这条管线。**已知限制**：`CastStatusMessage`
+    这个协议本身没有版本协商（见`EveryStage.Discovery`README对应新增条目）——一个跑旧代码的
+    Terminal发的报告没有这个字段，Caster这边反序列化会得到默认值`0`，跟"确实没有发生不匹配"在协议
+    层面完全无法区分。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

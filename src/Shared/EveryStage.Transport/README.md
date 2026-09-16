@@ -70,12 +70,18 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
    校验的是"跟本项目自己硬编码的常量是否一致"，不是"跟对方声明的值协商出一个双方都接受的值"，本项目
    仍然没有任何真正的协商机制；在这个仓库自己的Caster↔Terminal流量里`PayloadTypeMismatches`预期
    永远是0（两边用的是同一套硬编码常量），这个校验存在的意义是防御同一端口上出现的陌生/无关RTP包，
-   或者以后协议版本不一致的情况，不是当前就会触发的场景。**这次没有做的部分**：`PayloadTypeMismatches`
-   目前只是一个计数器，没有接入`CastReceiver.EstimatedPacketLossPercent`或任何UI/日志展示——跟
-   `GapEvents`当初加进来但过了一轮才被真正用在诊断日志里是同一个"先加计数器、再决定怎么用"的顺序，
-   这次只做到第一步；`TransportSelfTest`/`RawTransportSelfTest`也没有专门测试"PayloadType不匹配的
-   包真的会被丢弃"这条新逻辑本身——两个自检传的都是`null`（不校验），这次改动本身也没有在这个沙箱
-   里跑过（没有dotnet），新增的判断分支是否真的按预期工作，完全依赖代码审阅而非实际执行验证过。
+   或者以后协议版本不一致的情况，不是当前就会触发的场景。**【更新】`PayloadTypeMismatches`现在有了
+   真正的展示路径**：跟`GapEvents`当初加进来但过了一轮才被真正用在诊断日志里是同一个"先加计数器、
+   再决定怎么用"的顺序，这次终于走完第二步——`Terminal.Receiving.CastReceiver`新增合并视频+音频
+   两路的`PayloadTypeMismatches`属性，`Program.cs`的`SendCastStatus()`把它塞进
+   `DiscoveryProtocol.CastStatusMessage`新增的同名字段一起发给Caster，`Caster.Casting.
+   LiveCastSession`接住存成`TerminalPayloadTypeMismatches`，`MainForm.RefreshLiveCastStats()`
+   最后展示出来——跟`AccessUnitsDroppedForBackpressure`那几行一样，只在非零时才显示一行警告，日常
+   情况下（预期永远是0）这行完全不出现，不会污染UI。**这次仍然没有做的部分**：`TransportSelfTest`/
+   `RawTransportSelfTest`还是没有专门测试"PayloadType不匹配的包真的会被丢弃"这条逻辑本身——两个
+   自检传的都是`null`（不校验），这次改动本身也没有在这个沙箱里跑过（没有dotnet），新增的判断分支、
+   以及`CastStatusMessage`新字段的序列化/反序列化，是否真的按预期工作，完全依赖代码审阅而非实际
+   执行验证过。
 5. **`TransportSelfTest` 用一次性 `UdpClient(0)` 探测空闲端口再关闭、`RtpReceiver` 再重新绑定
    同一个端口号**：两次绑定之间存在（概率很低的）端口被别的进程抢先占用的竞态，对本机自检这个用途
    可以接受，不是生产级的端口分配方式。

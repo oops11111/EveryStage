@@ -165,6 +165,16 @@ public static class DiscoveryProtocol
         public bool HasAudio { get; set; }
         public long AudioBytesReceived { get; set; }
         public string? AudioError { get; set; }
+
+        /// <summary>Combined video+audio count of <c>EveryStage.Transport.RtpReceiver.PayloadTypeMismatches</c>
+        /// / <c>RawRtpReceiver.PayloadTypeMismatches</c> — see either property's own doc comment.
+        /// Expected to be 0 in this project's own Caster-to-Terminal traffic always (see
+        /// <see cref="CastStartMessage.PayloadType"/>'s doc comment); a Caster that sees this go
+        /// non-zero is hearing about a stray/foreign RTP-shaped datagram landing on its Terminal's
+        /// listening port, not a normal operating condition, so unlike the byte/frame counters above
+        /// this one is meant to stay invisible in the UI until it actually happens (see
+        /// <c>Caster.UI.MainForm.RefreshLiveCastStats</c>'s only-shown-if-nonzero treatment).</summary>
+        public long PayloadTypeMismatches { get; set; }
     }
 
     /// <summary>Sent unicast, Caster -> Terminal, purely to measure real network round-trip time —

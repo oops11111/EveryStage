@@ -360,6 +360,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             HasAudio = _castReceiver.HasAudio,
             AudioBytesReceived = _castReceiver.AudioBytesReceived,
             AudioError = _castReceiver.AudioError,
+            PayloadTypeMismatches = _castReceiver.PayloadTypeMismatches,
         };
         _ = _discovery.SendCastStatusAsync(casterEndPoint, status);
         _ = RetransmitCastStatusAsync(casterEndPoint, status);

@@ -808,6 +808,11 @@ public sealed class MainForm : Form
         // line existed (see the label's own construction comment) — two lines here now instead of
         // one makes clipping on top of an already-showing backpressure warning more likely, not
         // less; still not fixed this round, same accepted-but-unverified risk that comment flags.
+        // payloadTypeMismatchLine below stacks onto the same risk (a sixth possible line, though one
+        // that should in practice never actually show) — not resized for the same reason: growing the
+        // label for a line expected to stay permanently invisible would trade a real, common-case
+        // problem (clipping when several already-common lines are showing) for wasted vertical space
+        // in the overwhelmingly more common case where it never appears at all.
         string rttLine = _liveCastSession.RealRoundTripEstimate is { } rtt
             ? $"\n真实RTT估算: {rtt.TotalMilliseconds:F0}ms（不受两台机器时钟是否同步的影响）" +
               (_liveCastSession.IsRttStale ? "\n⚠ 已超过10秒没有成功测量，这个数字可能已经过时" : "")
@@ -826,6 +831,20 @@ public sealed class MainForm : Form
             ? $"\n⚠ 因编码器跟不上采集而丢弃: {_liveCastSession.EncoderFramesDroppedForBackpressure} 帧"
             : "";
 
+        // TerminalPayloadTypeMismatches comes from the same CastStatusMessage as the terminalLine
+        // fields above but, until now, was never actually read on this side — EveryStage.Transport's
+        // RtpReceiver/RawRtpReceiver have counted it since it was added, and it always reached this
+        // class via OnCastStatusReceived, but nothing displayed it (see EveryStage.Transport's README
+        // "已知风险" on this counter having no UI/log consumer). Same only-shown-if-nonzero treatment
+        // as backpressureLine/encoderBackpressureLine above: on a healthy LAN this should stay 0
+        // forever (both ends use the same hardcoded PayloadType constant), so a permanent "0" line
+        // would just be noise — a nonzero value here means the Terminal's RtpReceiver/RawRtpReceiver
+        // dropped a stray/foreign RTP-shaped datagram, not that this cast's own stream is unhealthy.
+        string payloadTypeMismatchLine = _liveCastSession.TerminalPayloadTypeMismatches > 0
+            ? $"\n⚠ 终端机丢弃了 {_liveCastSession.TerminalPayloadTypeMismatches} 个PayloadType不匹配的RTP包" +
+              "（同一端口上出现了陌生/无关的包，不是这次投屏本身的问题）"
+            : "";
+
         _liveCastStatsLabel.Text =
             $"分辨率: {_liveCastSession.Width}x{_liveCastSession.Height}\n" +
             $"已捕获帧数: {_liveCastSession.FramesCaptured}   已发送访问单元: {_liveCastSession.AccessUnitsSent}\n" +
@@ -834,7 +853,8 @@ public sealed class MainForm : Form
             terminalLine +
             rttLine +
             backpressureLine +
-            encoderBackpressureLine;
+            encoderBackpressureLine +
+            payloadTypeMismatchLine;
     }
 
     private void ShowStandby()
