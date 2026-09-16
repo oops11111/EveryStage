@@ -52,7 +52,21 @@ public sealed class D3D11Device : IDisposable
             multithread.SetMultithreadProtected(true);
         }
 
-        DxgiFactory = Device.QueryInterface<IDXGIDevice>().GetParent<IDXGIAdapter>().GetParent<IDXGIFactory2>();
+        // Bug fixed here: this used to be one chained expression —
+        // Device.QueryInterface<IDXGIDevice>().GetParent<IDXGIAdapter>().GetParent<IDXGIFactory2>() —
+        // which silently leaked the two intermediate COM objects (the IDXGIDevice and IDXGIAdapter
+        // instances QueryInterface/GetParent each hand back with their own AddRef) since only the
+        // final IDXGIFactory2 was ever kept around to be Dispose()d later. Every other COM call
+        // chain of more than one step elsewhere in this codebase (e.g. AudioTakeoverService's
+        // enumerator/device pair) already wraps each intermediate step in its own `using` — this
+        // constructor's one-liner was the one place that didn't. Matters more here than a one-time
+        // leak would: this class is constructed fresh per cast (Caster.Casting.LiveCastSession.Start()
+        // makes a new D3D11Device every time casting starts), so every cast start/stop cycle used to
+        // leak one more IDXGIDevice + IDXGIAdapter reference that would never be released until
+        // process exit.
+        using var dxgiDevice = Device.QueryInterface<IDXGIDevice>();
+        using var adapter = dxgiDevice.GetParent<IDXGIAdapter>();
+        DxgiFactory = adapter.GetParent<IDXGIFactory2>();
 
         MediaFactory.MFCreateDXGIDeviceManager(out var resetToken, out var manager).CheckError();
         manager.ResetDevice(Device, resetToken).CheckError();

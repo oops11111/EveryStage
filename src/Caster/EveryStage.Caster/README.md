@@ -743,6 +743,18 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     沙箱里跑过（没有dotnet），没有真机验证过——包括这个引用计数泄漏在实际运行中到底会不会造成
     可观察的问题，本身也只是基于MF官方文档描述的引用计数语义推断出来的，没有实测验证过多次
     开始/停止投屏循环之后是否真的有异常表现。
+72. **【新发现的真实bug，已修复】`EveryStage.Rendering.D3D11Device`的构造函数每次投屏都会泄漏
+    两个中间COM对象**：跟上一条MFStartup/MFShutdown是同一次审计顺手找到的——`LiveCastSession.
+    Start()`每次开始投屏都会`new`一个新的`D3D11Device`，它的构造函数原来有一行链式调用
+    `Device.QueryInterface<IDXGIDevice>().GetParent<IDXGIAdapter>().GetParent<IDXGIFactory2>()`，
+    只有最后的`IDXGIFactory2`被存下来、在`Dispose()`里释放，中间`QueryInterface`/`GetParent`
+    各自返回的`IDXGIDevice`/`IDXGIAdapter`实例从来没有被释放过——跟这个仓库自己的
+    `Capture/ScreenCaptureSource.cs`两处几乎一模一样的调用链（都老老实实用`using`分别接住
+    每一步）对比就能看出这是个真的遗漏，不是故意的。这个泄漏发生在共享库`EveryStage.Rendering`
+    里，但因为只有Caster这边的`LiveCastSession`会重复构造`D3D11Device`（Terminal那边
+    `Display/VideoSurface`只构造一次，泄漏影响小得多），修复方式、详细分析见
+    `EveryStage.Rendering`README对应条目——这次代码改动完全在共享库里，Caster自己的代码一行
+    都没有改，值得在这里也记一笔说明为什么这条对Caster的实际意义更大。
 
 ## 尚未开始
 

@@ -34,6 +34,17 @@ Demo专属的——两边需要完全一样的解码/渲染行为，所以放进
 5. **`AudioPlaybackClock.PositionTicks`**：依赖 `WasapiOut.GetPosition()` 返回"已经渲染到硬件
    的字节数"（由 `IAudioClock` 支撑），而不是"已经入队等待播放的字节数"——如果 NAudio 某个版本的
    语义不同，音画同步会系统性偏移，值得用已知时长的测试音频单独验证一次。
+6. **【新发现的真实bug，已修复】`D3D11Device`构造函数里一条链式调用泄漏了两个中间COM对象**：
+   原来是`Device.QueryInterface<IDXGIDevice>().GetParent<IDXGIAdapter>().GetParent<IDXGIFactory2>()`
+   这一整行，只有最后的`IDXGIFactory2`被存进字段、在`Dispose()`里释放，链条中间
+   `QueryInterface`/`GetParent`各自返回的`IDXGIDevice`/`IDXGIAdapter`实例从来没有被`Dispose`
+   过。这个仓库其他地方处理同样形状的调用链时一直很小心——`Caster.Capture.ScreenCaptureSource`
+   两处几乎一模一样的`gpu.Device.QueryInterface<IDXGIDevice>().GetParent<IDXGIAdapter>()`
+   链条都老老实实用`using`分别接住每一步——唯独这个构造函数图省事写成了一行链式调用，把中间
+   对象弄丢了。因为`D3D11Device`不是只构造一次：`Caster.Casting.LiveCastSession.Start()`每次
+   开始投屏都会`new`一个新的，这个泄漏是每次投屏循环都会发生一次，不是一次性的。**修复方式**：
+   拆成三行，每个中间步骤都用`using var`接住，只把最终需要长期持有的`IDXGIFactory2`赋给字段。
+   **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 在 Windows 上第一次编译成功、把 `src/Poc/ZeroCopyRenderDemo` 跑通验收标准之后，这份清单里已确认
 没问题的条目可以直接删掉，只留下真正还需要注意的坑。
