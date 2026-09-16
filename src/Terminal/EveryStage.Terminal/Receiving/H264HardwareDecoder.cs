@@ -276,5 +276,16 @@ public sealed class H264HardwareDecoder : IDisposable
 
     private static ulong PackUInt64(uint high, uint low) => ((ulong)high << 32) | low;
 
-    public void Dispose() => _decoder.Dispose();
+    public void Dispose()
+    {
+        _decoder.Dispose();
+
+        // Bug fixed here (same one found and fixed in Caster.Encode.H264HardwareEncoder — see that
+        // class's own Dispose() comment): this class's constructor calls MediaFactory.MFStartup()
+        // but this Dispose() never called the matching MFShutdown(). MFStartup/MFShutdown are
+        // reference-counted process-wide, so every decoder ever created (one per CastReceiver, i.e.
+        // once per accepted device cast) bumped that count up with nothing bumping it back down for
+        // this class's share of it.
+        MediaFactory.MFShutdown();
+    }
 }

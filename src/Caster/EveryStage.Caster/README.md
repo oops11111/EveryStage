@@ -728,6 +728,21 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过——包括"一个真人平均
     需要多久点开并回应这个弹窗"这个判断本身，2分钟本来就是Terminal那边凭感觉定的一个数字，这次
     只是让Caster跟它保持一致，不是重新论证这个数字本身对不对。
+71. **【新发现的真实bug，已修复】`H264HardwareEncoder`调用了`MediaFactory.MFStartup()`却从来
+    没有调用配对的`MFShutdown()`**：`MFStartup`/`MFShutdown`是进程级引用计数的一对——每次
+    `MFStartup`调用计数加一，`MFShutdown`减一，底层Media Foundation子系统真正释放的时机是这个
+    计数真正归零的时候。审计的时候顺手核对了这个仓库里所有调用过`MediaFactory.MFStartup()`的
+    地方（`EveryStage.Rendering`的`AudioDecodeSource`/`VideoDecodeSource`/`AacAudioDecoder`、
+    这个项目自己的`AacAudioEncoder`都在各自的`Dispose()`里正确配对了`MFShutdown()`），唯独
+    `H264HardwareEncoder.Dispose()`原来漏了这一句——`LiveCastSession.Start()`每次开始投屏就会
+    构造一个新的`H264HardwareEncoder`，`EncodeSelfTestRunner`每跑一次自检也会构造一个，这个
+    计数只增不减，永远不会真正把这些编码会话占用的Media Foundation资源还给系统，直到整个
+    Caster进程退出为止。**修复方式**：`Dispose()`里补上`MediaFactory.MFShutdown();`，跟其他
+    几个类的既有模式完全一致。Terminal端`H264HardwareDecoder`有完全同一个bug、同一次改动一起
+    修了，见`EveryStage.Terminal`README对应条目。**没有做的部分**：这次改动本身没有在这个
+    沙箱里跑过（没有dotnet），没有真机验证过——包括这个引用计数泄漏在实际运行中到底会不会造成
+    可观察的问题，本身也只是基于MF官方文档描述的引用计数语义推断出来的，没有实测验证过多次
+    开始/停止投屏循环之后是否真的有异常表现。
 
 ## 尚未开始
 

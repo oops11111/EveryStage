@@ -956,6 +956,21 @@ Caster知道终端机确实收到了东西。
     互相加了交叉引用注释提醒手动保持同步）见`EveryStage.Caster`README——这次改动完全在Caster
     那一侧，Terminal这边`PendingRequestTimeout`本身没有改，单纯是这个bug的根源就是这个常量
     这一轮才第一次被真正对照检查过，值得在这里也记一笔。
+91. **【新发现的真实bug，已修复】`H264HardwareDecoder`调用了`MediaFactory.MFStartup()`却从来
+    没有调用配对的`MFShutdown()`**：`MFStartup`/`MFShutdown`是进程级引用计数的一对——每次
+    `MFStartup`调用计数加一，`MFShutdown`减一，底层Media Foundation子系统真正释放的时机是这个
+    计数真正归零的时候，不是某一个具体对象被`Dispose`的时候。审计的时候顺手核对了这个仓库里所有
+    调用过`MediaFactory.MFStartup()`的地方（`AudioDecodeSource`/`VideoDecodeSource`/
+    `AacAudioDecoder`/`Caster.Encode.AacAudioEncoder`都在各自的`Dispose()`里正确配对了
+    `MFShutdown()`），唯独这个类的`Dispose()`原来只有`_decoder.Dispose();`一行，从来没有调用
+    `MFShutdown()`——`CastReceiver`每接受一次设备投屏就会构造一个新的`H264HardwareDecoder`，
+    这个计数只增不减，永远不会真正把这次投屏占用的Media Foundation资源还给系统，直到整个
+    Terminal进程退出为止。**修复方式**：`Dispose()`里补上`MediaFactory.MFShutdown();`，跟
+    其他几个类的既有模式完全一致。Caster端`H264HardwareEncoder`有完全同一个bug、同一次改动
+    一起修了，见`EveryStage.Caster`README对应条目。**没有做的部分**：这次改动本身没有在这个
+    沙箱里跑过（没有dotnet），没有真机验证过——包括这个引用计数泄漏在实际运行中到底会不会造成
+    可观察的问题（比如某个内部资源池耗尽），本身也只是基于MF官方文档描述的引用计数语义推断出来
+    的，没有实测验证过多次投屏循环之后是否真的有异常表现。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

@@ -441,5 +441,15 @@ public sealed class H264HardwareEncoder : IDisposable
 
         _events.Dispose();
         _encoder.Dispose();
+
+        // Bug fixed here: this class's constructor (via ActivateFirstHardwareEncoder) calls
+        // MediaFactory.MFStartup() but this Dispose() never called the matching MFShutdown() —
+        // MFStartup/MFShutdown are reference-counted process-wide, so every encoder ever created
+        // (one per LiveCastSession.Start(), one per EncodeSelfTestRunner run) bumped that count up
+        // with nothing ever bumping it back down for this class's share of it. Every sibling class
+        // in this same Encode/Decode family that calls MFStartup in its constructor
+        // (AacAudioEncoder, AacAudioDecoder, VideoDecodeSource, AudioDecodeSource) already pairs it
+        // with MFShutdown() here in Dispose() — this was the one that didn't.
+        MediaFactory.MFShutdown();
     }
 }
