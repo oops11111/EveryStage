@@ -42,23 +42,38 @@ public sealed class CaptureSelfTestRunner : IDisposable
         FrameCount = 0;
         Fps = 0;
 
-        var gpu = new D3D11Device();
-        ScreenCaptureSource capture;
+        // Bug fixed here: new D3D11Device() used to be constructed OUTSIDE this try/catch, unlike
+        // every other self-test runner's identical first step (e.g. EncodeSelfTestRunner's own
+        // _gpu = new D3D11Device() is inside its try block) — a real GPU/driver failure here (no
+        // compatible D3D11 device on this machine, exactly the kind of thing this specific self-test
+        // button exists to help diagnose) would propagate straight out of Start() uncaught instead
+        // of degrading to the LastError label every other construction failure in this class already
+        // shows. Caster's top-level Application.ThreadException handler would still catch it before
+        // it could crash the process, but the operator would see an unhandled-exception message box
+        // instead of this self-test's own graceful "自检失败：<原因>" reporting.
+        D3D11Device? gpu = null;
+        ScreenCaptureSource? capture = null;
         try
         {
+            gpu = new D3D11Device();
             capture = new ScreenCaptureSource(gpu);
         }
         catch (Exception ex)
         {
             LastError = ex.Message;
-            gpu.Dispose();
+            // capture is still null whenever D3D11Device() itself is what failed — Dispose() on the
+            // gpu it never got past is the only cleanup needed in that case, same as before this fix.
+            capture?.Dispose();
+            gpu?.Dispose();
             StatsUpdated?.Invoke();
             return;
         }
 
+        // Both non-null here: the catch block above always returns, so reaching this line means the
+        // try block ran to completion without throwing.
         _gpu = gpu;
         _capture = capture;
-        Width = capture.Width;
+        Width = capture!.Width;
         Height = capture.Height;
 
         _cts = new CancellationTokenSource();
