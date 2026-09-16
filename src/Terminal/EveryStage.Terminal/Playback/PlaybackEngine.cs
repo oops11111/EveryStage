@@ -29,8 +29,10 @@ namespace EveryStage.Terminal.Playback;
 ///
 /// <see cref="MediaFile.PlayModeOverride"/>/<see cref="Activity.DefaultPlayMode"/> (via
 /// <see cref="EffectivePlayMode"/>), <see cref="MediaFile.AllowManualSkip"/> (via
-/// <see cref="TryAdvance"/>), and now standalone (non-background) audio playback — see
-/// <see cref="PlayStandaloneAudio"/> — DO have real effect here, unlike the properties listed above.
+/// <see cref="TryAdvance"/>), standalone (non-background) audio playback — see
+/// <see cref="PlayStandaloneAudio"/> — and now multi-page Document navigation (via
+/// <see cref="NextManual"/>/<see cref="PreviousManual"/>/<see cref="DocumentPageInfo"/>, PLANNING.md
+/// §3's PDF "翻页") — DO have real effect here, unlike the properties listed above.
 /// </summary>
 public sealed class PlaybackEngine : IDisposable
 {
@@ -146,12 +148,51 @@ public sealed class PlaybackEngine : IDisposable
         PlayFile(file, trigger);
     }
 
-    /// <summary>Floating-preview-window "下一项" (PLANNING.md §8.3). Returns false at the end of
-    /// the current activity's file list or with no activity context.</summary>
-    public bool NextManual() => TryAdvance(1, PlaybackTrigger.ManualSkip);
+    /// <summary>Floating-preview-window "下一项" (PLANNING.md §8.3) — except when the current file
+    /// is a multi-page Document, where this means "turn to the next page" first
+    /// (<see cref="IContentRenderer.NextPage"/>: exactly the caller its own doc comment describes
+    /// but never had until now). Only once the document has no further page to turn to does this
+    /// fall through to the normal "advance to the next playlist item" behavior — see this project's
+    /// README for why page-turning and playlist-advance share these two buttons rather than getting
+    /// their own. Deliberately NOT gated by <see cref="MediaFile.AllowManualSkip"/>: that field's
+    /// own doc comment is about skipping past this item in the sequence, not about navigating pages
+    /// within it, so <see cref="TryAdvance"/>'s existing check only applies once page-turning is
+    /// exhausted. Returns false at the end of the current activity's file list or with no activity
+    /// context (and no further page to turn to).</summary>
+    public bool NextManual()
+    {
+        if (_currentFile?.Kind == MediaKind.Document && _pdfRenderer.NextPage())
+        {
+            _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
+            return true;
+        }
+        return TryAdvance(1, PlaybackTrigger.ManualSkip);
+    }
 
-    /// <summary>Floating-preview-window "上一项". Returns false at the start of the list.</summary>
-    public bool PreviousManual() => TryAdvance(-1, PlaybackTrigger.ManualSkip);
+    /// <summary>Floating-preview-window "上一项" — same page-before-item precedence as
+    /// <see cref="NextManual"/>, in reverse. Returns false at the start of the list (and no further
+    /// page to turn back to).</summary>
+    public bool PreviousManual()
+    {
+        if (_currentFile?.Kind == MediaKind.Document && _pdfRenderer.PreviousPage())
+        {
+            _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
+            return true;
+        }
+        return TryAdvance(-1, PlaybackTrigger.ManualSkip);
+    }
+
+    /// <summary>Null unless the current file is a Document with more than one page — the floating
+    /// preview window uses this to show a "第X页/共Y页" indicator only when page-turning is actually
+    /// possible right now, since <see cref="NextManual"/>/<see cref="PreviousManual"/> silently
+    /// changed meaning for this case (page-turn instead of playlist-advance) and a user watching the
+    /// same two buttons do something different without any visible indicator would be confusing.
+    /// 1-based for display (<c>CurrentPage</c> starting at 1, not <see cref="IContentRenderer"/>'s
+    /// own 0-based <c>CurrentPageIndex</c>).</summary>
+    public (int CurrentPage, int PageCount)? DocumentPageInfo =>
+        _currentFile?.Kind == MediaKind.Document && _pdfRenderer.PageCount > 1
+            ? (_pdfRenderer.CurrentPageIndex + 1, _pdfRenderer.PageCount)
+            : null;
 
     private bool TryAdvance(int delta, PlaybackTrigger trigger)
     {

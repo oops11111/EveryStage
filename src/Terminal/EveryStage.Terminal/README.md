@@ -555,6 +555,30 @@ Caster知道终端机确实收到了东西。
     缓解；副作用是如果真的是重传副本才让Caster收到，`LastStatusLatencyEstimate`算出来的延迟会比
     真实值多约400ms（`SentAtUtc`沿用的是原始发送时刻），这个偏差只在"第一次发送真的丢了"这个本来
     就不常见的情况下才会出现，被认为可以接受。
+69. **【已实现，原为已知缺口】`IContentRenderer.NextPage`/`PreviousPage`/`PageCount`/
+    `CurrentPageIndex`终于有了第一个真正的调用方——PDF"翻页"（PLANNING.md §3）**：这四个成员从
+    `PdfContentRenderer`/`ImageContentRenderer`写出来那一轮起就存在（`NextPage`/`PreviousPage`自己
+    的doc comment甚至早就写好了"调用方应该把返回false当成'翻不动了'而不是错误"这种前瞻性说明），
+    但`PlaybackEngine`一直只调用`LoadAsync`/`SetTargetSize`/`CurrentFrame`/`Dispose`，从未真正翻过
+    页——一整块渲染层已经写好的能力，上面完全没有接线。`ContentSurface`自己的doc comment甚至已经
+    写着"after each page turn or file change"，这次才第一次真的对应上"page turn"这一半。这次把
+    悬浮预览窗现有的"上一项/下一项"两个按钮改成了双重用途：`PlaybackEngine.NextManual`/
+    `PreviousManual`现在会先尝试`_pdfRenderer.NextPage()`/`PreviousPage()`（仅当当前文件是
+    `MediaKind.Document`），翻页成功就更新`ContentSurface`的画面并返回，只有翻到最后/第一页
+    （`NextPage`/`PreviousPage`返回`false`）才落回原来的"移动到播放列表里的下一/上一个文件"
+    行为——不是新加两个按钮，而是复用现有两个按钮，跟按钮上"上一项/下一项"这几个字面意思略有出入，
+    所以新增了`PlaybackEngine.DocumentPageInfo`（`(CurrentPage, PageCount)?`，只在真正的多页
+    Document上非空）和悬浮预览窗新增的`_pageLabel`（显示"第X页/共Y页"），让这个行为差异对用户
+    可见，而不是让同一对按钮悄悄换了含义却没有任何提示。**故意做出的范围限定**：(1)
+    `MediaFile.AllowManualSkip`不影响翻页——这个字段的doc comment说的是"是否允许跳过这个文件本身"，
+    不是"是否允许在文件内部翻页"，两者是不同的产品概念，`TryAdvance`里原有的`AllowManualSkip`检查
+    只在翻页耗尽、真的要移动到另一个文件时才会生效；(2) 翻页不重置`ArmStayDurationTimer`(停留时长
+    计时器)——PLANNING.md §6把"停留时长"列为"图片/文档"整个条目的属性，不是按页计时，这次没有改变
+    这个前提，翻页多久都不会延长或缩短整份文档的停留时长；(3) 翻页不经过`PlaybackLogger`，跟
+    `Pause`/`Resume`是同一个先例（这两个方法本来就不记日志）；(4) 悬浮预览窗的缩略图/画面刷新
+    完全依赖既有的500ms轮询（`RefreshFromEngine`），翻页没有额外触发`FileStarted`或任何新事件——
+    因为这不是"开始播放一个新文件"，是同一个文件内部的状态变化，勉强触发`FileStarted`会是语义上
+    的误用。窗体`ClientSize`从(220,214)涨到(220,232)以容纳新增的`_pageLabel`。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

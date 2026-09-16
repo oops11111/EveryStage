@@ -17,7 +17,14 @@ namespace EveryStage.Terminal.UI;
 /// <see cref="PlaybackEngine.FileStarted"/>: that event fires synchronously the moment a file is
 /// accepted, but for image/PDF the actual decoded frame lands slightly later (LoadAsync is
 /// fire-and-forget from PlaybackEngine's point of view) — polling sidesteps that race entirely
-/// instead of chasing a second "frame ready" event.
+/// instead of chasing a second "frame ready" event. The same polling now also drives
+/// <see cref="_pageLabel"/> (<see cref="PlaybackEngine.DocumentPageInfo"/>), for the same reason:
+/// a page turn changes the renderer's current frame without raising any event of its own.
+///
+/// 上一项/下一项 silently mean "turn a page" instead of "move to a different playlist item" while
+/// viewing a multi-page Document (see <see cref="PlaybackEngine.NextManual"/>'s own doc comment) —
+/// <see cref="_pageLabel"/> exists so that behavior change is visible rather than surprising: it
+/// only shows up (as "第X页/共Y页") when there's actually more than one page to turn between.
 /// </summary>
 public sealed class FloatingPreviewWindow : Form
 {
@@ -28,6 +35,7 @@ public sealed class FloatingPreviewWindow : Form
     private readonly Label _liveBadge;
     private readonly PictureBox _thumbnail;
     private readonly Label _fileLabel;
+    private readonly Label _pageLabel;
     private readonly Button _previousButton;
     private readonly Button _pauseButton;
     private readonly Button _nextButton;
@@ -67,17 +75,28 @@ public sealed class FloatingPreviewWindow : Form
             Bounds = new Rectangle(8, 146, 204, 32),
         };
 
-        _previousButton = new Button { Text = "◀ 上一项", Bounds = new Rectangle(8, 182, 60, 24) };
-        _pauseButton = new Button { Text = "暂停", Bounds = new Rectangle(72, 182, 44, 24) };
-        _nextButton = new Button { Text = "下一项 ▶", Bounds = new Rectangle(120, 182, 60, 24) };
-        _disconnectButton = new Button { Text = "断", ForeColor = Color.DarkRed, Bounds = new Rectangle(184, 182, 28, 24) };
+        // Empty text (AutoSize-less Label collapses to nothing visible) whenever
+        // PlaybackEngine.DocumentPageInfo is null — see this class's doc comment.
+        _pageLabel = new Label
+        {
+            ForeColor = Color.DimGray,
+            Bounds = new Rectangle(8, 178, 204, 16),
+        };
+
+        // Shifted down 18px (was 182) from the original layout to make room for _pageLabel above —
+        // ClientSize grown by the same 18px (was 214) to match, same "grow, don't reflow everything"
+        // approach this repo's other absolutely-positioned WinForms panels already use.
+        _previousButton = new Button { Text = "◀ 上一项", Bounds = new Rectangle(8, 200, 60, 24) };
+        _pauseButton = new Button { Text = "暂停", Bounds = new Rectangle(72, 200, 44, 24) };
+        _nextButton = new Button { Text = "下一项 ▶", Bounds = new Rectangle(120, 200, 60, 24) };
+        _disconnectButton = new Button { Text = "断", ForeColor = Color.DarkRed, Bounds = new Rectangle(184, 200, 28, 24) };
         _pinButton = new Button { Text = "📌", Bounds = new Rectangle(184, 6, 24, 20) };
 
-        ClientSize = new Size(220, 214);
+        ClientSize = new Size(220, 232);
 
         Controls.AddRange(new Control[]
         {
-            _liveBadge, _thumbnail, _fileLabel,
+            _liveBadge, _thumbnail, _fileLabel, _pageLabel,
             _previousButton, _pauseButton, _nextButton, _disconnectButton, _pinButton,
         });
 
@@ -132,6 +151,7 @@ public sealed class FloatingPreviewWindow : Form
             _fileLabel.Text = "(无内容 / 音频类文件预览尚未支持)";
             _thumbnail.Image = null;
             _pauseButton.Enabled = false;
+            _pageLabel.Text = "";
             return;
         }
 
@@ -141,6 +161,11 @@ public sealed class FloatingPreviewWindow : Form
         // Pause is only meaningful for image/PDF today (see PlaybackEngine.Pause's doc comment).
         _pauseButton.Enabled = file.Kind is MediaKind.Image or MediaKind.Document;
         _pauseButton.Text = _playback.IsPaused ? "继续" : "暂停";
+
+        // Null (empty text) for anything that isn't a multi-page Document — see this class's and
+        // PlaybackEngine.DocumentPageInfo's own doc comments on why this only shows up when
+        // 上一项/下一项 actually mean "turn a page" right now.
+        _pageLabel.Text = _playback.DocumentPageInfo is { } page ? $"第{page.CurrentPage}页/共{page.PageCount}页" : "";
     }
 
     protected override void Dispose(bool disposing)
