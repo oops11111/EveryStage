@@ -128,6 +128,27 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
    `Terminal.Receiving.CastReceiver.EstimatedPacketLossPercent`把`GapEvents`/`PacketsReceived`
    合并成一个粗略的百分比，喂给`DeviceConnectionLogger.LogQualityMetric`（PLANNING.md §14.4"连接
    质量指标"，见Terminal README），这个数字应该被当成"大致的健康趋势"而不是精确的丢包率。
+10. **【新增，防御性加固，不是修复已确认的bug】`RtpReceiver`/`RawRtpReceiver`的`NalUnitReceived`/
+    `PayloadReceived`事件分发现在包了一层`try/catch`，新增`DispatchExceptions`计数器**：委托一个
+    子agent专门排查这个仓库里"未处理异常杀死某个后台接收循环，从此永久失效"这一形状的bug（这一轮
+    已经在`PlaybackEngine`和`EveryStage.Discovery.DiscoveryProtocol.Decode`里各自真的找到过、
+    修过一次），它审计到编码/解码/采集这条链路本身是干净的（`H264HardwareEncoder.RunEventLoop`
+    整个循环体本来就包了一层`try/catch`并通过`EncodingFailed`上报，`H264HardwareDecoder`/
+    `AacAudioDecoder`的调用方`CastReceiver`也早就各自有`try/catch`），但顺带指出这两个类的
+    `ReceiveLoopAsync`比看起来薄一层——`_socket.ReceiveAsync`本身有`catch (SocketException)`，
+    但往后`_depacketizer.Process`/事件分发这一段完全没有保护，如果`NalUnitReceived`/
+    `PayloadReceived`的订阅方（生产环境里是`Terminal.Receiving.CastReceiver`的
+    `OnNalUnitReceived`/`OnAudioPayloadReceived`）在它们自己那层`try/catch`之外的代码抛出异常
+    （子agent没有找到具体能触发这一点的输入，`H264RtpDepacketizer.Process`本身也已经是防御性
+    边界检查过的），这个异常会直接杀穿这整个接收循环，永久失效，不留任何痕迹——跟这一轮已经真的
+    修过的那几个bug是完全同一种形状。**这次不是在修一个已确认的bug**，是在一个已知会造成这种
+    后果的位置提前加固：给`_depacketizer.Process`/事件分发这一段包一层`try/catch`，异常发生时
+    只丢弃这一个包、计入新增的`DispatchExceptions`计数器，继续处理下一个包——跟这个循环本来就有的
+    "TryDecode失败/PayloadType不匹配就跳过，不杀循环"是同一个哲学，只是这次覆盖到事件分发这一步。
+    **为什么只加计数器、不加日志**：这是Terminal和Caster共用的库，没有自己的日志基础设施，
+    跟`GapEvents`/`PayloadTypeMismatches`当初"先加计数器、后面再决定怎么用"是同一个顺序，这次
+    只做到第一步，预期这个计数器永远是0。**没有做的部分**：这次改动本身没有在这个沙箱里跑过
+    （没有dotnet），没有真机验证过。
 
 ## 尚未开始
 

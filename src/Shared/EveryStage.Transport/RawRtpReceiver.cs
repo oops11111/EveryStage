@@ -30,6 +30,7 @@ public sealed class RawRtpReceiver : IDisposable
     private long _packetsReceived;
     private long _gapEvents;
     private long _payloadTypeMismatches;
+    private long _dispatchExceptions;
 
     /// <summary>Same role/approximation caveats as <see cref="RtpReceiver.PacketsReceived"/> —
     /// deliberately independent code rather than shared, see this class's own doc comment on why.</summary>
@@ -43,6 +44,10 @@ public sealed class RawRtpReceiver : IDisposable
     /// <summary>Same role as <see cref="RtpReceiver.PayloadTypeMismatches"/> — deliberately
     /// independent code rather than shared, see this class's own doc comment on why.</summary>
     public long PayloadTypeMismatches => Interlocked.Read(ref _payloadTypeMismatches);
+
+    /// <summary>Same role as <see cref="RtpReceiver.DispatchExceptions"/> — deliberately
+    /// independent code rather than shared, see this class's own doc comment on why.</summary>
+    public long DispatchExceptions => Interlocked.Read(ref _dispatchExceptions);
 
     /// <summary>Raised from the background receive loop — marshal to another thread/UI as needed.
     /// The <c>uint</c> is the packet's RTP timestamp — for the audio stream this is a wall-clock-
@@ -90,7 +95,30 @@ public sealed class RawRtpReceiver : IDisposable
 
             TrackSequenceNumber(packet.SequenceNumber);
 
-            PayloadReceived?.Invoke(packet.Payload.ToArray(), packet.Timestamp);
+            try
+            {
+                PayloadReceived?.Invoke(packet.Payload.ToArray(), packet.Timestamp);
+            }
+            catch (Exception)
+            {
+                // Defensive hardening, not a fix for a confirmed bug: an audit this session ran
+                // looking for the same "unguarded exception kills a whole background receive loop
+                // forever" shape found three real instances elsewhere (see this library's README)
+                // and flagged this exact call site as "one exception-scope layer thinner than it
+                // looks" — no concrete reachable trigger exists today (the real subscriber,
+                // Terminal.Receiving.CastReceiver.OnAudioPayloadReceived, already wraps its own
+                // risky part in its own try/catch), but nothing stops a future change from adding
+                // unguarded logic ahead of that inner try. Swallowing here and moving on to the next
+                // packet matches this loop's existing philosophy for a bad datagram (a TryDecode
+                // failure or PayloadType mismatch just above are also "skip, don't crash the loop")
+                // — the alternative would silently and permanently kill this entire audio stream's
+                // receive loop, exactly the shape this session already found and fixed three times
+                // elsewhere. Counted, not logged: this class has no logging of its own (it's a
+                // shared library used by both Terminal and Caster), matching how GapEvents/
+                // PayloadTypeMismatches were also added as bare counters well before either got a
+                // real diagnostic consumer.
+                Interlocked.Increment(ref _dispatchExceptions);
+            }
         }
     }
 

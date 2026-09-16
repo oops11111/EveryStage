@@ -24,6 +24,7 @@ public sealed class RtpReceiver : IDisposable
     private long _packetsReceived;
     private long _gapEvents;
     private long _payloadTypeMismatches;
+    private long _dispatchExceptions;
 
     /// <summary>Total RTP packets successfully decoded (<see cref="RtpPacket.TryDecode"/> succeeded)
     /// since this receiver started — read via <see cref="Interlocked"/> so a caller on another
@@ -53,6 +54,14 @@ public sealed class RtpReceiver : IDisposable
     /// defensive check against a stray/foreign RTP-shaped datagram on the same port, or a future
     /// protocol-version mismatch, not as a currently-expected occurrence.</summary>
     public long PayloadTypeMismatches => Interlocked.Read(ref _payloadTypeMismatches);
+
+    /// <summary>How many times dispatching a decoded/depacketized NAL unit to
+    /// <see cref="NalUnitReceived"/> subscribers threw an exception, caught here rather than left to
+    /// kill this receive loop — see <see cref="ReceiveLoopAsync"/>'s own comment on why this exists
+    /// as defensive hardening against a not-currently-known bug, not a fix for a confirmed one. Same
+    /// bare-counter treatment as <see cref="GapEvents"/>/<see cref="PayloadTypeMismatches"/> before
+    /// either had a real diagnostic consumer — expected to stay 0.</summary>
+    public long DispatchExceptions => Interlocked.Read(ref _dispatchExceptions);
 
     /// <summary>Raised from the background receive loop — marshal to another thread/UI as needed.
     /// The <c>bool</c> is the completing RTP packet's Marker bit, i.e. RFC 6184 §5.3 "this was the
@@ -110,8 +119,32 @@ public sealed class RtpReceiver : IDisposable
 
             TrackSequenceNumber(packet.SequenceNumber);
 
-            var nalUnit = _depacketizer.Process(packet.Payload);
-            if (nalUnit != null) NalUnitReceived?.Invoke(nalUnit, packet.Marker, packet.Timestamp);
+            try
+            {
+                var nalUnit = _depacketizer.Process(packet.Payload);
+                if (nalUnit != null) NalUnitReceived?.Invoke(nalUnit, packet.Marker, packet.Timestamp);
+            }
+            catch (Exception)
+            {
+                // Defensive hardening, not a fix for a confirmed bug: an audit this session ran
+                // looking for the same "unguarded exception kills a whole background receive loop
+                // forever" shape found three real instances elsewhere (see this library's README)
+                // and flagged this exact call site as "one exception-scope layer thinner than it
+                // looks" — no concrete reachable trigger exists today (H264RtpDepacketizer.Process
+                // itself is defensively bounds-checked, and the real subscriber,
+                // Terminal.Receiving.CastReceiver.OnNalUnitReceived, already wraps its own risky part
+                // in its own try/catch), but nothing stops a future change from adding unguarded
+                // logic ahead of that inner try, or a bug in the depacketizer itself. Swallowing here
+                // and moving on to the next packet matches this loop's existing philosophy for a bad
+                // datagram (a TryDecode failure or PayloadType mismatch just above are also "skip,
+                // don't crash the loop") — the alternative would silently and permanently kill this
+                // entire video stream's receive loop, exactly the shape this session already found
+                // and fixed three times elsewhere. Counted, not logged: this class has no logging of
+                // its own (it's a shared library used by both Terminal and Caster), matching how
+                // GapEvents/PayloadTypeMismatches were also added as bare counters well before either
+                // got a real diagnostic consumer.
+                Interlocked.Increment(ref _dispatchExceptions);
+            }
         }
     }
 
