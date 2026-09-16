@@ -16,6 +16,7 @@ public sealed class DevicesPanel : UserControl
     private readonly PairedDeviceStore _pairedDevices;
     private readonly ListView _listView;
     private readonly Button _removeButton;
+    private readonly Button _editPermissionsButton;
 
     public DevicesPanel(PairedDeviceStore pairedDevices)
     {
@@ -28,13 +29,33 @@ public sealed class DevicesPanel : UserControl
         _listView.Columns.Add("允许被投放", 90);
         _listView.Columns.Add("允许被监看", 90);
         _listView.Columns.Add("配对时间", 140);
-        _listView.SelectedIndexChanged += (_, _) => _removeButton.Enabled = _listView.SelectedItems.Count > 0;
+        _listView.SelectedIndexChanged += (_, _) =>
+        {
+            _removeButton.Enabled = _listView.SelectedItems.Count > 0;
+            _editPermissionsButton.Enabled = _listView.SelectedItems.Count > 0;
+        };
 
-        _removeButton = new Button { Text = "移除配对", Dock = DockStyle.Bottom, Height = 32, Enabled = false };
+        // Until now the only way to change a paired device's trust/permission flags after the
+        // initial pairing dialog was to remove the pairing entirely and force a brand-new request —
+        // see this project's README "已知风险" for why that was a real gap, not a deliberate
+        // decision. A separate button from _removeButton rather than folding into it: removing a
+        // pairing and editing its permissions are different operations with different consequences
+        // (the former forgets the device, the latter doesn't), and conflating them into one button
+        // would make one of the two harder to find. Both live in one explicitly-positioned bottom
+        // panel (side by side) rather than each being its own DockStyle.Bottom control — this repo
+        // otherwise favors absolute Bounds over stacking multiple same-edge-docked controls, whose
+        // relative order depends on Controls collection order in a way that's easy to get backwards.
+        _editPermissionsButton = new Button { Text = "编辑权限", Bounds = new Rectangle(8, 4, 140, 32), Enabled = false };
+        _editPermissionsButton.Click += OnEditPermissionsClick;
+
+        _removeButton = new Button { Text = "移除配对", Bounds = new Rectangle(156, 4, 140, 32), Enabled = false };
         _removeButton.Click += OnRemoveClick;
 
+        var buttonBar = new Panel { Dock = DockStyle.Bottom, Height = 40 };
+        buttonBar.Controls.AddRange(new Control[] { _editPermissionsButton, _removeButton });
+
         Controls.Add(_listView);
-        Controls.Add(_removeButton);
+        Controls.Add(buttonBar);
 
         Refresh_();
     }
@@ -48,6 +69,23 @@ public sealed class DevicesPanel : UserControl
         if (confirm != DialogResult.Yes) return;
 
         _pairedDevices.Remove(device.DeviceId);
+        Refresh_();
+    }
+
+    private void OnEditPermissionsClick(object? sender, EventArgs e)
+    {
+        if (_listView.SelectedItems.Count == 0 || _listView.SelectedItems[0].Tag is not PairedDevice device) return;
+
+        using var dialog = new EditPairedDevicePermissionsDialog(device);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        // Mutate the same PairedDevice instance PairedDeviceStore.All already holds, then Upsert —
+        // matches DiscoveryService.RespondToPairing's own use of Upsert for "this is the current
+        // truth for this DeviceId, persist it" rather than a separate in-place-update method.
+        device.TrustMode = dialog.TrustMode;
+        device.AllowCast = dialog.AllowCast;
+        device.AllowMonitor = dialog.AllowMonitor;
+        _pairedDevices.Upsert(device);
         Refresh_();
     }
 

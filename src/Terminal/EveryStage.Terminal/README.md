@@ -34,10 +34,11 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/`；新增 `SendCastStatusAsync`，配合 `Program.cs` 里每秒一次的 `SendCastStatus()` 把接收状态报回给正在投屏的Caster（`DiscoveryProtocol.CastStatusMessage`，见该README"已知风险"新增小节）；新增 `HandlePing`，无条件echo任何收到的 `PingMessage`（不检查配对状态，见"已知风险"第65条），供Caster端测量真实RTT |
 | `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收到的payload按`AudioIsAac`分两条路径——PCM直接喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，AAC先经过`EveryStage.Rendering.Decode.AacAudioDecoder`解码回PCM再喂给它（见"已知风险"第64条），构造失败会独立降级成纯视频（不影响视频侧）；新增`LastPacketReceivedAt`，配合`Program.cs`的`CheckCastLiveness()`在Caster连续10秒无数据包时自动断开 |
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
-| `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
+| `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项，"被监看"旁边现在有一行提示：这个功能本身还没实现，见"已知风险"第70条）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
+| `UI/EditPairedDevicePermissionsDialog.cs` | §7 | 配对之后修改已配对设备的信任/被投放/被监看这三个字段（见"已知风险"第70条）——之前只有首次配对时的 `PairingConfirmationDialog` 能设置它们 |
 | `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
 | `UI/Panels/FilesPanel.cs` | §8.2 | 文件面板：`ListView`缩略图网格 + 类型筛选(全部/图片/视频/文档/音频) + 导入对话框 + 从资源管理器拖拽导入 + 移除(二次确认) + 双击播放(`PlaybackEngine.RequestPlay`)，导入/移除都接入`FileOperationLogger` |
-| `UI/Panels/DevicesPanel.cs` | §8.2 | 设备面板：已配对设备列表(信任状态/被投放/被监看/配对时间) + 移除配对 |
+| `UI/Panels/DevicesPanel.cs` | §8.2 | 设备面板：已配对设备列表(信任状态/被投放/被监看/配对时间) + 移除配对 + 编辑权限(见"已知风险"第70条) |
 | `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(可折叠) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改 |
 | `UI/TextInputDialog.cs`, `UI/LibraryFilePickerDialog.cs` | — | 活动面板用到的两个小弹窗：单行文本输入(方案/活动命名)、从文件库选一个文件 |
 | `UI/Panels/SettingsPanel.cs` | §8.2 | 设置面板：`TabControl`五个分类(通用/显示/播放行为/网络与设备/关于)；`Data/AppSettings.cs`+`Data/SettingsStore.cs`是这次新加的数据模型和JSON持久化(同样是atomic write) |
@@ -579,6 +580,29 @@ Caster知道终端机确实收到了东西。
     完全依赖既有的500ms轮询（`RefreshFromEngine`），翻页没有额外触发`FileStarted`或任何新事件——
     因为这不是"开始播放一个新文件"，是同一个文件内部的状态变化，勉强触发`FileStarted`会是语义上
     的误用。窗体`ClientSize`从(220,214)涨到(220,232)以容纳新增的`_pageLabel`。
+70. **【已实现，原为已知缺口】`DevicesPanel`新增"编辑权限"按钮——配对之后终于能改
+    信任状态/允许被投放/允许被监看了，不用整个移除重新配对**：`PairedDevice.TrustMode`/
+    `AllowCast`/`AllowMonitor`这三个字段之前只有`PairingConfirmationDialog`（首次配对确认弹窗）
+    一个地方能设置，`DevicesPanel`只是只读展示（"是/否"两列文字），一旦配对完成，唯一能改变这些
+    字段的办法就是"移除配对"（整个忘记这个设备）再等它重新发起配对请求——这不是产品决策，只是
+    这三个字段从写出来那一轮起就没人给它们补上编辑入口。新增`UI/EditPairedDevicePermissionsDialog.cs`
+    （跟`PairingConfirmationDialog`外观相似但语义不同：没有"待处理的配对请求"这回事，按钮是
+    "保存/取消"不是"接受/拒绝"），`DevicesPanel`新增"编辑权限"按钮（选中一项才启用，跟"移除配对"
+    同一个交互模式），保存时直接修改`PairedDeviceStore.All`里那个`PairedDevice`实例的三个字段
+    再调用`Upsert`——复用`DiscoveryService.RespondToPairing`已经在用的"这就是这个DeviceId当前的
+    真相，写回去"这套`Upsert`语义，没有另外造一个`Update`方法。**顺带补上的诚实提示**：这次发现
+    "允许被监看"这个权限位从这个仓库最早的配对功能那一轮起就只是被采集/持久化/展示，PLANNING.md
+    §7提到的"监看"这个能力本身（投屏机远程查看终端机当前状态）在这个仓库里完全没有任何实现——
+    不是被这次改动砍掉的功能，是从来就没有过。之前两个勾选框（`PairingConfirmationDialog`和这次
+    新增的`EditPairedDevicePermissionsDialog`）上都没有任何提示，勾上"允许被监看"看起来像是在
+    启用一个真实功能，实际上什么都不会发生——这次给两个弹窗都加了一行"（监看功能本身尚未实现，
+    此开关暂无实际效果）"的灰色小字，跟`AudioPropertiesDialog`给`AudioVisual.Waveform`标"当前是
+    占位"是同一个"不要让还没做的功能看起来像做完了"的做法。**这次没有做的部分**：真正的"监看"
+    功能本身（协议消息、终端机侧采集什么状态给投屏机看、投屏机侧UI）完全没有开始，需要的是全新的
+    协议设计而不是"接线"，属于跟WPS COM互操作、背景音轨叠加同一档的、需要真正产品决策的大改动，
+    这次故意没有尝试；权限变更本身也没有接入任何日志（`DeviceConnectionLogger`目前只有配对/断开/
+    连接质量几类，没有"权限变更"这一类，PLANNING.md §14.4也没有明确要求记录这个），如果以后需要
+    审计权限变更历史，需要单独设计。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

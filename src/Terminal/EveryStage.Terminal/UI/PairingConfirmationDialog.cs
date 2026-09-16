@@ -28,7 +28,7 @@ public sealed class PairingConfirmationDialog : Form
         StartPosition = FormStartPosition.CenterScreen;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(320, 220);
+        ClientSize = new Size(320, 236);
         TopMost = true;
 
         var infoLabel = new Label
@@ -48,21 +48,30 @@ public sealed class PairingConfirmationDialog : Form
             Text = "允许被监看（该设备可以查看本终端机状态）",
             Bounds = new Rectangle(12, 116, 296, 24),
         };
+        // Same honest disclaimer as EditPairedDevicePermissionsDialog (which lets this same flag be
+        // revised later) — 监看 has no actual implementation anywhere in this repo yet, only this
+        // permission flag being collected/stored/displayed.
+        var monitorDisclaimer = new Label
+        {
+            Text = "（监看功能本身尚未实现，此开关暂无实际效果）",
+            ForeColor = Color.DimGray,
+            Bounds = new Rectangle(28, 140, 280, 16),
+        };
         _trustCheckbox = new CheckBox
         {
             Text = "信任此设备（以后自动接受，无需再次确认）",
-            Bounds = new Rectangle(12, 142, 296, 24),
+            Bounds = new Rectangle(12, 158, 296, 24),
         };
 
-        var acceptButton = new Button { Text = "接受", Bounds = new Rectangle(120, 176, 88, 28), DialogResult = DialogResult.OK };
-        var declineButton = new Button { Text = "拒绝", Bounds = new Rectangle(216, 176, 88, 28), DialogResult = DialogResult.Cancel };
+        var acceptButton = new Button { Text = "接受", Bounds = new Rectangle(120, 192, 88, 28), DialogResult = DialogResult.OK };
+        var declineButton = new Button { Text = "拒绝", Bounds = new Rectangle(216, 192, 88, 28), DialogResult = DialogResult.Cancel };
 
         AcceptButton = acceptButton;
         CancelButton = declineButton;
 
         Controls.AddRange(new Control[]
         {
-            infoLabel, _allowCastCheckbox, _allowMonitorCheckbox, _trustCheckbox, acceptButton, declineButton,
+            infoLabel, _allowCastCheckbox, _allowMonitorCheckbox, monitorDisclaimer, _trustCheckbox, acceptButton, declineButton,
         });
 
         FormClosed += (_, _) => Accepted = DialogResult == DialogResult.OK;
