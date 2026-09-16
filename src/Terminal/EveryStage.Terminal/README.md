@@ -1213,6 +1213,26 @@ Caster知道终端机确实收到了东西。
     同一个`DailyRollingLogWriter`的日志分类（`FileOperationLogger`/`PlaybackLogger`/
     `DeviceConnectionLogger`），因为它们的构造函数问题完全出在这一个共享的底层类里。
     **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+101. **【新发现的真实bug，已修复】`CastReceiver`构造函数里`_decoder = new H264HardwareDecoder(...)`
+    成功之后，紧接着的`_rtpReceiver = new RtpReceiver(listenPort, ...)`没有异常防护**：跟
+    `EveryStage.Rendering`README记录的`D3D11Device`/`SwapChainPresenter`/`AudioPlaybackClock`
+    和`EveryStage.Caster`README记录的`BgraToNv12Converter`构造函数修复是完全同一种形状，这次
+    出现在Terminal自己的接收端。`new RtpReceiver(listenPort, ...)`会把一个UDP socket绑定到
+    一个固定、众所周知的端口（`DiscoveryProtocol.VideoRtpPort`），这真的可能抛出
+    `SocketException`——上一个`CastReceiver`的socket还没来得及释放完（快速停止/重新开始投屏，
+    或者这台Terminal刚从一次崩溃里恢复过来），是真实可触发的场景，不是假设。一旦这里抛出异常，
+    这个构造函数永远不会正常完成，`Program.OnCastStartRequested`永远拿不到`CastReceiver`实例
+    去调用`Dispose()`，前面已经成功构造的`H264HardwareDecoder`就会泄漏——包括它自己内部持有的
+    `MFStartup()`引用计数和真实的GPU硬件解码器MFT资源。**这次泄漏尤其值得关注的地方**：这个
+    构造函数每次一个设备投屏被接受时就会执行一次，比这一轮修的其它几个构造函数（每次播放本地
+    文件、每次投屏开始时才各构造一次）触发频率更高——一台Terminal只要接受过一次投屏、又恰好
+    赶上端口还没释放干净这种时机，就会永久泄漏一份真实GPU解码器资源，这一轮之前保护
+    `H264HardwareDecoder`自己构造函数的那次修复对这里完全无能为力，因为这里的解码器早就已经
+    构造成功了，问题出在它构造成功*之后*、`CastReceiver`自己构造函数剩余部分抛出异常。
+    **修复方式**：把`_rtpReceiver = new RtpReceiver(...)`包进`try/catch`，失败时先取消订阅
+    `_decoder.FrameDecoded`（跟这个类自己`Dispose()`的清理顺序保持一致）、调用`_decoder.
+    Dispose()`，再重新抛出异常。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有
+    dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

@@ -201,11 +201,35 @@ public sealed class CastReceiver : IDisposable
         _decoder = new H264HardwareDecoder(_surface.Gpu, width, height);
         _decoder.FrameDecoded += OnFrameDecoded;
 
-        // payloadType/audioPayloadType (see EveryStage.Transport's README) come from
-        // DiscoveryProtocol.CastStartMessage.PayloadType/AudioPayloadType — this is that field's
-        // first real consumer; previously it was received and stored in
-        // DiscoveryService.CastStartInfo but never passed any further.
-        _rtpReceiver = new RtpReceiver(listenPort, payloadType);
+        // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
+        // step one" shape as EveryStage.Rendering's D3D11Device/SwapChainPresenter/
+        // AudioPlaybackClock and Caster's BgraToNv12Converter constructor fixes (see those
+        // libraries' READMEs) — new RtpReceiver(listenPort, ...) binds a UDP socket to a fixed,
+        // well-known port (DiscoveryProtocol.VideoRtpPort), which can genuinely throw
+        // SocketException if a previous CastReceiver's socket hasn't finished releasing it yet (a
+        // rapid stop/restart of casting, or this Terminal recovering from an earlier crash) — a
+        // real, reachable failure mode, not hypothetical. Without this try/catch, that failure
+        // would leak the H264HardwareDecoder just constructed above: this constructor never
+        // finishes, so no CastReceiver instance ever exists for Program.OnCastStartRequested to
+        // later Dispose(), and the decoder's own MFStartup() reference count/GPU decoder MFT would
+        // never be released — every one of this session's earlier fixes protecting
+        // H264HardwareDecoder's OWN constructor doesn't help here, since the decoder here already
+        // finished constructing successfully; the leak this time is one level up, in whichever
+        // sibling construction step runs after it.
+        try
+        {
+            // payloadType/audioPayloadType (see EveryStage.Transport's README) come from
+            // DiscoveryProtocol.CastStartMessage.PayloadType/AudioPayloadType — this is that
+            // field's first real consumer; previously it was received and stored in
+            // DiscoveryService.CastStartInfo but never passed any further.
+            _rtpReceiver = new RtpReceiver(listenPort, payloadType);
+        }
+        catch
+        {
+            _decoder.FrameDecoded -= OnFrameDecoded;
+            _decoder.Dispose();
+            throw;
+        }
         _rtpReceiver.NalUnitReceived += OnNalUnitReceived;
 
         if (hasAudio)
