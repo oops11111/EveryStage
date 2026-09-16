@@ -39,8 +39,34 @@ internal static class Program
         // CrashLogger does.
         TaskScheduler.UnobservedTaskException += (_, e) => e.SetObserved();
 
-        var identity = DeviceIdentity.LoadOrCreate("caster");
-        var pairedTerminals = new PairedTerminalStore();
+        DeviceIdentity identity;
+        PairedTerminalStore pairedTerminals;
+        try
+        {
+            // Bug fixed here: same "runs before Application.Run(), so ThreadException above never
+            // sees it, and this process has no AppDomain.UnhandledException handler either" shape as
+            // the TerminalDiscoveryClient catch below — just one step earlier. DeviceIdentity.
+            // LoadOrCreate's own two write sites (see that class's WriteAtomic) are NOT wrapped in
+            // try/catch on the "no file yet" / "corrupt file, mint fresh" paths (Directory.
+            // CreateDirectory + the atomic-write pair) — a permissions problem or full disk on
+            // ProgramData\EveryStage would throw straight out of here, before either the "内部错误"
+            // MessageBox convention or the discovery-socket catch below ever gets a chance to run.
+            // PairedTerminalStore's own Load() is already hardened against the same JsonException/
+            // IOException/UnauthorizedAccessException cases (see that class), so it's most likely to
+            // stay quiet here — wrapped alongside identity purely so one catch covers both of this
+            // app's two JSON-file-backed constructions run this early, not because a concrete failure
+            // mode is known for it specifically.
+            identity = DeviceIdentity.LoadOrCreate("caster");
+            pairedTerminals = new PairedTerminalStore();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(
+                $"无法读取或创建设备身份/配对记录文件：\n\n{ex.Message}\n\n" +
+                "请检查程序是否有权限读写系统的应用数据目录（ProgramData\\EveryStage），或磁盘空间是否充足。",
+                "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
 
         TerminalDiscoveryClient discoveryClient;
         try

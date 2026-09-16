@@ -887,6 +887,27 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     新增第九个自检按钮，`ClientSize`从963长到1043，类doc comment里"eight independent
     self-tests"相应改成"nine"，说明文字里的"以下八个按钮"也改成"以下九个按钮"。**没有做的
     部分**：这次新增的代码本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+81. **【修复】`Program.Main`里`DeviceIdentity.LoadOrCreate("caster")`/`new PairedTerminalStore()`
+    也在`Application.Run()`之前跑，之前完全没包`try/catch`**：跟第79条修的`new
+    TerminalDiscoveryClient()`是完全同一种形状的漏洞，只是早了两行——`DeviceIdentity.
+    LoadOrCreate`自己"文件不存在"/"文件损坏、重新生成"这两条路径末尾的`Directory.
+    CreateDirectory`+原子写入那一对调用，本身没有包`try/catch`（见`EveryStage.Discovery`
+    README/这个类自己的doc comment），如果`ProgramData\EveryStage`目录权限有问题或者磁盘
+    满了，会直接抛出来。这段代码执行的时候，`Application.ThreadException`（第25-28行刚注册的）
+    帮不上忙——它只能接住`Application.Run()`消息循环*内部*抛出的异常，这里还在消息循环启动
+    之前的同步代码里；而且这个进程照第79条的说明，从来没注册过`AppDomain.CurrentDomain.
+    UnhandledException`。两者叠加的结果是：这里一旦抛出异常，操作者会看到的不是"内部错误"
+    MessageBox，也不是第79条那种"启动失败"提示，而是彻彻底底一个原生.NET崩溃对话框、没有
+    任何记录——跟第79条修复之前`TerminalDiscoveryClient`失败时一模一样的最坏情况，只是触发
+    路径提前到了这一行。**修复方式**：把`identity = DeviceIdentity.LoadOrCreate("caster")`
+    和`pairedTerminals = new PairedTerminalStore()`两行一起包进一个`try/catch`，风格跟第79条
+    完全一致——失败时`MessageBox.Show`说明"无法读取或创建设备身份/配对记录文件"，建议检查
+    ProgramData目录权限和磁盘空间，然后`return`而不是让异常继续往外抛。`PairedTerminalStore`
+    自己的`Load()`其实已经对`JsonException`/`IOException`/`UnauthorizedAccessException`做过
+    降级处理（见本README第73条附近），单独拎出来看不太可能在这里抛出，跟`identity`放进
+    同一个`try`纯粹是因为这是这个进程里仅有的两个"在`Application.Run()`之前构造、背后有真实
+    文件I/O"的调用，一次性堵上而不是只堵`DeviceIdentity`这一个已知会抛的。**没有做的部分**：
+    这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始
 
