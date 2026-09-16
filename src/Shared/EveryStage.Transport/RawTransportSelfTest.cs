@@ -80,7 +80,71 @@ public static class RawTransportSelfTest
         if (receiver.GapEvents != 0)
             return new Result(false, testPayloads.Count, receivedCount, receiver.GapEvents, $"All payloads matched, but GapEvents was {receiver.GapEvents} instead of 0 on a lossless loopback run.");
 
+        string? mismatchFailure = await RunPayloadTypeMismatchCheckAsync();
+        if (mismatchFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, receiver.GapEvents, mismatchFailure);
+
         return new Result(true, testPayloads.Count, receivedCount, receiver.GapEvents, null);
+    }
+
+    /// <summary>Same check as <see cref="TransportSelfTest"/>'s own copy of this method, adapted to
+    /// <see cref="RawRtpReceiver"/>/<see cref="RtpSession.SendRawPayloadAsync"/> instead of the
+    /// NAL-framed path — see that copy's doc comment for what this verifies and why it runs on its
+    /// own fresh port/receiver. Deliberately duplicated rather than shared, same "two small,
+    /// independent implementations" reasoning as the rest of this class (see its own doc comment).</summary>
+    private static async Task<string?> RunPayloadTypeMismatchCheckAsync()
+    {
+        const byte expectedType = 97;
+        const byte wrongType = 98;
+
+        int port = GetLikelyFreeUdpPort();
+        using var receiver = new RawRtpReceiver(port, expectedPayloadType: expectedType);
+
+        var received = new List<byte[]>();
+        var gate = new object();
+        var matchingArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        receiver.PayloadReceived += (payload, _) =>
+        {
+            lock (gate)
+            {
+                received.Add(payload);
+                matchingArrived.TrySetResult();
+            }
+        };
+        receiver.Start();
+
+        var matchingPayload = MakeFakePayload(new Random(997), 80);
+        var mismatchedPayload = MakeFakePayload(new Random(996), 80);
+
+        // Mismatched packet sent first — see TransportSelfTest's own copy of this method for why.
+        using (var wrongSender = new RtpSession(new IPEndPoint(IPAddress.Loopback, port), payloadType: wrongType))
+            await wrongSender.SendRawPayloadAsync(mismatchedPayload, 0);
+
+        using (var rightSender = new RtpSession(new IPEndPoint(IPAddress.Loopback, port), payloadType: expectedType))
+            await rightSender.SendRawPayloadAsync(matchingPayload, 1024);
+
+        var finished = await Task.WhenAny(matchingArrived.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        if (finished != matchingArrived.Task)
+            return "PayloadType mismatch check: timed out waiting for the correctly-typed payload to arrive.";
+
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        lock (gate)
+        {
+            if (received.Count != 1)
+                return $"PayloadType mismatch check: expected exactly 1 delivered payload (the correctly-typed one), got {received.Count} — the mismatched packet was not dropped as expected.";
+            if (!received[0].AsSpan().SequenceEqual(matchingPayload.Span))
+                return "PayloadType mismatch check: the one delivered payload's bytes don't match the correctly-typed payload that was sent.";
+        }
+
+        if (receiver.PayloadTypeMismatches != 1)
+            return $"PayloadType mismatch check: expected PayloadTypeMismatches == 1, got {receiver.PayloadTypeMismatches}.";
+        if (receiver.PacketsReceived != 1)
+            return $"PayloadType mismatch check: expected PacketsReceived == 1 (the mismatched packet shouldn't count), got {receiver.PacketsReceived}.";
+        if (receiver.GapEvents != 0)
+            return $"PayloadType mismatch check: expected GapEvents == 0 (a dropped mismatch isn't a sequence gap), got {receiver.GapEvents}.";
+
+        return null;
     }
 
     private static List<ReadOnlyMemory<byte>> BuildTestPayloads()

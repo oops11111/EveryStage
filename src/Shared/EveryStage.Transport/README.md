@@ -64,7 +64,9 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
    （各自独立实现，同一套逻辑）新增可选的`expectedPayloadType`构造参数，收到的包如果PayloadType
    不匹配就当成"不是我们的包"直接丢弃（计入新增的`PayloadTypeMismatches`计数器），处理方式
    跟`RtpPacket.TryDecode`本身失败时完全一样——不传这个参数（`null`，默认值）保留原来的宽松行为，
-   向后兼容`TransportSelfTest`/`RawTransportSelfTest`自己（它们没有改，仍然不做这个校验）。
+   向后兼容`TransportSelfTest`/`RawTransportSelfTest`自己主体验证流程用的那个接收端（它没有改，
+   仍然不传这个参数）——两个自检各自新增的独立校验小节见下面"更新"段落，用的是另一个专门为此新建
+   的接收端，不影响主体流程原有的行为。
    `Terminal.Receiving.CastReceiver`是这个参数第一个真正的生产调用方：从`DiscoveryService.
    CastStartInfo.PayloadType`/`AudioPayloadType`一路传进来。**仍然不是真正的SDP式协商**——这里
    校验的是"跟本项目自己硬编码的常量是否一致"，不是"跟对方声明的值协商出一个双方都接受的值"，本项目
@@ -77,11 +79,21 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
    `DiscoveryProtocol.CastStatusMessage`新增的同名字段一起发给Caster，`Caster.Casting.
    LiveCastSession`接住存成`TerminalPayloadTypeMismatches`，`MainForm.RefreshLiveCastStats()`
    最后展示出来——跟`AccessUnitsDroppedForBackpressure`那几行一样，只在非零时才显示一行警告，日常
-   情况下（预期永远是0）这行完全不出现，不会污染UI。**这次仍然没有做的部分**：`TransportSelfTest`/
-   `RawTransportSelfTest`还是没有专门测试"PayloadType不匹配的包真的会被丢弃"这条逻辑本身——两个
-   自检传的都是`null`（不校验），这次改动本身也没有在这个沙箱里跑过（没有dotnet），新增的判断分支、
-   以及`CastStatusMessage`新字段的序列化/反序列化，是否真的按预期工作，完全依赖代码审阅而非实际
-   执行验证过。
+   情况下（预期永远是0）这行完全不出现，不会污染UI。**【更新】`TransportSelfTest`/
+   `RawTransportSelfTest`现在各自新增了一段专门验证"PayloadType不匹配的包真的会被丢弃"的小节**
+   （`RunPayloadTypeMismatchCheckAsync`，各自独立实现，同一套逻辑，跟这两个自检整体的"两个独立
+   实现"惯例一致）：各自另开一个全新的接收端（带上`expectedPayloadType`），故意先发一个用错误
+   PayloadType构造的包、再发一个用正确PayloadType构造的包，断言只有正确的那个真正送达
+   （`NalUnitReceived`/`PayloadReceived`只触发一次、内容匹配），且`PayloadTypeMismatches`恰好为1、
+   `PacketsReceived`恰好为1、`GapEvents`恰好为0（错的包不该被算进序列号跟踪，也不该被算成一次跳变
+   ——这正是第9条`GapEvents`那个"跳过的序号不计入丢包统计"设计决定要防的另一种误判）。主体验证流程
+   本身用的那个接收端没有改，仍然不传`expectedPayloadType`（同上一段）——这个新校验完全是加在旁边
+   的独立小节，不影响主体流程原有的行为/覆盖范围。**这次仍然没有做的部分**：这次改动本身也没有在
+   这个沙箱里跑过（没有dotnet），新增的这段校验逻辑、以及`CastStatusMessage`新字段的序列化/
+   反序列化，是否真的按预期工作，完全依赖代码审阅而非实际执行验证过——包括一个容易被忽略的细节：
+   这段新校验依赖"UDP在本机回环上按发送顺序到达"这个假设（先发的错包应该先被处理并丢弃，后发的
+   对包再到达），这本身不是UDP协议保证的行为，只是本机回环环境下几乎总是成立的经验事实，跟这两个
+   自检主体验证流程"逐字节按顺序比对"从一开始就依赖的假设是同一类、没有比它更弱也没有更强。
 5. **`TransportSelfTest` 用一次性 `UdpClient(0)` 探测空闲端口再关闭、`RtpReceiver` 再重新绑定
    同一个端口号**：两次绑定之间存在（概率很低的）端口被别的进程抢先占用的竞态，对本机自检这个用途
    可以接受，不是生产级的端口分配方式。
@@ -123,6 +135,6 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
   场景下有实际后果的地方：局域网上偶发丢包会让某个访问单元被丢弃/解码出瑕疵帧，音频则直接是可闻
   的爆音/跳跃（见风险第8条），而不是本机回环自检那种几乎不丢包的环境
 - RTP参数真正的SDP式协商机制——PayloadType数值本身现在会被`RtpReceiver`/`RawRtpReceiver`校验了
-  （见风险第4条），但校验的只是"是否等于本项目自己硬编码的常量"，不是"双方协商出一个都接受的值"；
-  时钟基准以外的更多元数据（真正的SDP能表达的那些）仍然完全没有协商机制，`RawTransportSelfTest`
-  也没有专门测试PayloadType不匹配时的丢弃行为（见风险第4条最后一段）
+  （见风险第4条，`TransportSelfTest`/`RawTransportSelfTest`现在也都验证了这个丢弃行为本身），但
+  校验的只是"是否等于本项目自己硬编码的常量"，不是"双方协商出一个都接受的值"；时钟基准以外的更多
+  元数据（真正的SDP能表达的那些）仍然完全没有协商机制

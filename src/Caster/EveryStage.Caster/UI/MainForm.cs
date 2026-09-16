@@ -491,7 +491,7 @@ public sealed class MainForm : Form
             var result = await TransportSelfTest.RunAsync();
             _transportStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
             _transportStatsLabel.Text = result.Success
-                ? $"通过：{result.NalUnitsSent} 个NAL单元全部往返一致（含FU-A分片重组）。"
+                ? $"通过：{result.NalUnitsSent} 个NAL单元全部往返一致（含FU-A分片重组、PayloadType不匹配丢包校验）。"
                 : $"失败（发送{result.NalUnitsSent}个/收到{result.NalUnitsReceived}个）：{result.FailureReason}";
         }
         catch (Exception ex)
@@ -519,7 +519,7 @@ public sealed class MainForm : Form
             var result = await RawTransportSelfTest.RunAsync();
             _rawTransportStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
             _rawTransportStatsLabel.Text = result.Success
-                ? $"通过：{result.PayloadsSent} 个payload全部往返一致，GapEvents=0（本机回环）。"
+                ? $"通过：{result.PayloadsSent} 个payload全部往返一致，GapEvents=0（本机回环，含PayloadType不匹配丢包校验）。"
                 : $"失败（发送{result.PayloadsSent}个/收到{result.PayloadsReceived}个，GapEvents={result.GapEvents}）：{result.FailureReason}";
         }
         catch (Exception ex)

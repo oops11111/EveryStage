@@ -62,7 +62,80 @@ public static class TransportSelfTest
             }
         }
 
+        string? mismatchFailure = await RunPayloadTypeMismatchCheckAsync();
+        if (mismatchFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, mismatchFailure);
+
         return new Result(true, testPayloads.Count, receivedCount, null);
+    }
+
+    /// <summary>Verifies <see cref="RtpReceiver"/>'s <c>expectedPayloadType</c> mismatch handling
+    /// (see this library's README "已知风险" item on this): a packet whose PayloadType doesn't match
+    /// what the receiver was constructed with should be dropped — not delivered via
+    /// <see cref="RtpReceiver.NalUnitReceived"/>, not counted in <see cref="RtpReceiver.PacketsReceived"/>
+    /// or <see cref="RtpReceiver.GapEvents"/> — while a correctly-typed packet on the same receiver
+    /// still arrives normally. Runs on its own fresh port/receiver rather than reusing the one above,
+    /// so this check's mismatched packet can never be confused with (or count as a gap relative to)
+    /// the sequence already verified there. Returns null on success, or a failure message.</summary>
+    private static async Task<string?> RunPayloadTypeMismatchCheckAsync()
+    {
+        const byte expectedType = 96;
+        const byte wrongType = 99;
+
+        int port = GetLikelyFreeUdpPort();
+        using var receiver = new RtpReceiver(port, expectedPayloadType: expectedType);
+
+        var received = new List<byte[]>();
+        var gate = new object();
+        var matchingArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        receiver.NalUnitReceived += (nal, _, _) =>
+        {
+            lock (gate)
+            {
+                received.Add(nal);
+                matchingArrived.TrySetResult();
+            }
+        };
+        receiver.Start();
+
+        var matchingPayload = MakeFakeNal(new Random(999), 100, nalType: 1);
+        var mismatchedPayload = MakeFakeNal(new Random(998), 100, nalType: 1);
+
+        // Sent in this order — mismatched first — precisely so a receiver that (incorrectly) didn't
+        // drop it would surface as an extra/wrong item in `received`, not just a timing coincidence
+        // that happened to let the correct packet win a race.
+        using (var wrongSender = new RtpSession(new IPEndPoint(IPAddress.Loopback, port), payloadType: wrongType))
+            await wrongSender.SendNalUnitAsync(mismatchedPayload, 0, isLastNalOfAccessUnit: true);
+
+        using (var rightSender = new RtpSession(new IPEndPoint(IPAddress.Loopback, port), payloadType: expectedType))
+            await rightSender.SendNalUnitAsync(matchingPayload, RtpVideoClock.ClockRate / 30, isLastNalOfAccessUnit: true);
+
+        var finished = await Task.WhenAny(matchingArrived.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        if (finished != matchingArrived.Task)
+            return "PayloadType mismatch check: timed out waiting for the correctly-typed NAL unit to arrive.";
+
+        // Give the (already-sent, already-processed-or-not) mismatched packet a little more time in
+        // case it's still in flight through the receive loop — on loopback UDP this is generous, not
+        // a tight race; the matching packet above already proves the receive loop has caught up to
+        // at least that point in the stream, sent after the mismatched one.
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+
+        lock (gate)
+        {
+            if (received.Count != 1)
+                return $"PayloadType mismatch check: expected exactly 1 delivered NAL unit (the correctly-typed one), got {received.Count} — the mismatched packet was not dropped as expected.";
+            if (!received[0].AsSpan().SequenceEqual(matchingPayload.Span))
+                return "PayloadType mismatch check: the one delivered NAL unit's bytes don't match the correctly-typed payload that was sent.";
+        }
+
+        if (receiver.PayloadTypeMismatches != 1)
+            return $"PayloadType mismatch check: expected PayloadTypeMismatches == 1, got {receiver.PayloadTypeMismatches}.";
+        if (receiver.PacketsReceived != 1)
+            return $"PayloadType mismatch check: expected PacketsReceived == 1 (the mismatched packet shouldn't count), got {receiver.PacketsReceived}.";
+        if (receiver.GapEvents != 0)
+            return $"PayloadType mismatch check: expected GapEvents == 0 (a dropped mismatch isn't a sequence gap), got {receiver.GapEvents}.";
+
+        return null;
     }
 
     private static List<ReadOnlyMemory<byte>> BuildTestPayloads()

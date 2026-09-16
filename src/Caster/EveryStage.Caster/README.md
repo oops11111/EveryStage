@@ -608,6 +608,14 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     完全不出现。**没有做的部分**：`_liveCastStatsLabel`的`Bounds`高度（108）本来就是个已知偏紧的
     空间（见该控件构造处、以及RTT那两行旁边的NOTE），这次又叠了第六种可能出现的行，没有借机重新
     评估这个布局——理由跟其他几行一样，为一个预期几乎永远不出现的行去改布局，不值得。
+64. **【已实现】`TransportSelfTest`/`RawTransportSelfTest`新增PayloadType不匹配丢包校验后，
+    两个自检按钮的成功文案跟着更新**：`EveryStage.Transport`那两个自检各自新增了
+    `RunPayloadTypeMismatchCheckAsync`小节（见该库README风险第4条"更新"段落），验证"用错误
+    PayloadType构造的包会被丢弃、用正确PayloadType构造的包仍然正常送达"——`OnTransportSelfTestClick`/
+    `OnRawTransportSelfTestClick`的成功文案原来只提"NAL单元全部往返一致（含FU-A分片重组）"/
+    "payload全部往返一致，GapEvents=0"，没有反映这次新增的校验内容，这次一并在文案里加上
+    "含PayloadType不匹配丢包校验"，避免这两个按钮点击后显示的"通过"文案实际上比它真正验证的范围
+    要窄。
 
 ## 尚未开始
 
