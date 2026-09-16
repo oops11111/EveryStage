@@ -36,7 +36,8 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项，"被监看"旁边现在有一行提示：这个功能本身还没实现，见"已知风险"第70条）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
 | `UI/EditPairedDevicePermissionsDialog.cs` | §7 | 配对之后修改已配对设备的信任/被投放/被监看这三个字段（见"已知风险"第70条）——之前只有首次配对时的 `PairingConfirmationDialog` 能设置它们 |
-| `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
+| `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回；右下角托管`UI/ToastStack.cs`(§11"异常提示"，见"已知风险"第77条) |
+| `UI/ToastNotification.cs`、`UI/ToastStack.cs` | §11 | "右下角Toast通知栈"：按严重程度分色(红=严重/黄=提示)，可选的可执行按钮(重试/移除)——见"已知风险"第77条 |
 | `UI/Panels/FilesPanel.cs` | §8.2 | 文件面板：`ListView`缩略图网格 + 类型筛选(全部/图片/视频/文档/音频) + 导入对话框 + 从资源管理器拖拽导入 + 移除(二次确认) + 双击播放(`PlaybackEngine.RequestPlay`)，导入/移除都接入`FileOperationLogger` |
 | `UI/Panels/DevicesPanel.cs` | §8.2 | 设备面板：已配对设备列表(信任状态/被投放/被监看/配对时间) + 移除配对(接入`DeviceConnectionLogger.LogUnpaired`，见"已知风险"第74条) + 编辑权限(见"已知风险"第70条) |
 | `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(真正可折叠、且折叠状态会持久化，见"已知风险"第72条) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 播放方式/音频属性/停留时长/完成后动作(见"已知风险"第71、73条) + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改及播放属性变更 |
@@ -692,6 +693,38 @@ Caster知道终端机确实收到了东西。
     在真实Windows/GPU环境跑过（没有dotnet），锁是否真的按预期覆盖所有三个访问路径完全依赖代码
     审阅；`Resize`发生频率低、`PresentFrame`发生频率高，两者互斥意味着`Resize`偶尔要等一次
     `PresentFrame`完成（反过来也一样），这个延迟量级在真机上是否可接受没有测过。
+77. **【新增】PLANNING.md §11"异常提示：右下角Toast通知栈"——这个仓库里第一个完全没有任何代码、
+    也从未被任何README提及过的PLANNING.md具体UI元素，直到这一轮才发现这个缺口**：§11原文"按严重
+    程度分色（红=严重/黄=提示），涉及播放的异常需带可执行按钮（重试/移除），非关键提示不强加按钮"，
+    在这次发现之前完全没有任何实现，也没有作为已知缺口出现在任何一个README里——最接近的东西是
+    `MainWindow._statusLabel`那一行常驻文字（用于`PlaybackDeclinedByCastSwitch`，第9条），跟"通知栈"
+    完全不是一回事：没有堆叠、没有颜色、没有按钮。新增`UI/ToastNotification.cs`（一条Toast：消息+
+    严重程度色条+关闭按钮+可选的动作按钮）和`UI/ToastStack.cs`（管理堆叠、定位到`MainWindow`右下角，
+    新Toast出现在栈底、旧的被推高——同时也刻意不使用WinForms的`Anchor`机制来处理"自身`Height`变化时
+    重新定位"这件事：这个沙箱没有dotnet无法验证`Anchor`在这种场景下的确切行为，改成每次内容变化都
+    根据`Parent.ClientSize`当前值重新计算`Location`，逻辑上更容易脱离编译器独立确认对不对）。
+    这次给它接上的第一个（也是目前唯一一个）真正的生产者：`PlaybackEngine`新增
+    `PlaybackAbnormallyInterrupted`事件，在`OnVideoFailed`/`OnAudioFailed`里紧跟着已有的
+    `LogAbnormalInterruption`日志调用之后触发——**这本身也是这次意外发现的第二个缺口**：一次解码/
+    渲染异常之前只会被记进日志，画面就那样冻结在最后一帧上，没有任何面向操作者的提示，`OnVideoFailed`
+    自己的旧注释还写着"PLANNING.md doesn't say"（哪知道其实§11写得很清楚，只是当初没找到）。
+    "重试"按钮调用新增的`PlaybackEngine.RetryCurrentFile()`（重新播放`CurrentFile`，不改动
+    `_currentActivity`/`_currentFileIndex`，就是"再试一次这个文件"而不是"换一个"）。"移除"按钮
+    根据新增的`PlaybackEngine.CurrentActivity`（`null`还是非`null`）在两个已有的移除操作之间二选一：
+    有活动上下文就复用`ActivitiesPanel.OnRemoveFile`的逻辑（从活动文件列表移除+
+    `LogActivityModified`+保存+刷新树），没有（比如从文件面板直接双击播放的）就复用
+    `FilesPanel.OnRemoveClick`的逻辑（从文件库移除+`LogFileRemoved`+刷新网格）——刻意跳过这两个
+    面板按钮各自原有的二次确认弹窗，因为点一个命名明确的Toast动作按钮本身已经是深思熟虑的操作，
+    不需要再确认一次。**这次没有解决的残留风险**：(1) 从活动里"移除"之后，没有同步修正
+    `PlaybackEngine`内部的`_currentFileIndex`（现在可能指向列表里一个不同的文件，因为列表变短了）
+    ——下一次自动前进可能会跳到意料之外的文件，需要操作者手动通过悬浮预览窗导航或者重新连接来
+    恢复一致状态，这次没有尝试同步修正这个索引；(2) `ToastStack`固定宽度320px，如果`MainWindow`
+    被用户缩小到比这更窄，Toast可能部分或全部超出窗口左边界，没有设置`MinimumSize`防御这种情况；
+    (3) "非关键提示不强加按钮"这一半——非关键、不需要动作按钮的Toast（比如可以把现有的
+    `PlaybackDeclinedByCastSwitch`迁移过来）——这次完全没有触碰，`_statusLabel`那条既有机制原封
+    不动地保留，`ToastStack`目前只有"播放异常"这一种红色/严重级别的生产者；(4) 整个功能从来没有
+    在真实Windows机器上跑过、也没有dotnet编译验证过，`ToastNotification`的固定布局尺寸是否真的
+    在真机的默认字体/DPI下不裁剪文字完全没有验证。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

@@ -22,12 +22,22 @@ namespace EveryStage.Terminal.UI;
 /// The 投屏开关 here is a plain <see cref="CheckBox"/>, not the slide-switch visual PLANNING.md §8.1
 /// calls for ("滑动开关，非按钮") — that's a Phase 5 visual-design concern (themes, Acrylic/Mica,
 /// consistent control styling), out of scope for getting the underlying behavior wired up correctly.
+///
+/// Also hosts <see cref="ToastStack"/> (PLANNING.md §11's "右下角Toast通知栈"), pinned on top of
+/// whichever panel is currently showing — its only producer today is
+/// <see cref="PlaybackEngine.PlaybackAbnormallyInterrupted"/>, see
+/// <see cref="OnPlaybackAbnormallyInterrupted"/>.
 /// </summary>
 public sealed class MainWindow : Form
 {
     private readonly OutputStateMachine _stateMachine;
     private readonly PlaybackEngine? _playback;
+    private readonly FileLibraryStore _library;
+    private readonly ScenarioStore _scenarioStore;
+    private readonly ScenarioRepository _scenarioRepository;
+    private readonly FileOperationLogger _fileOpLog;
     private readonly Panel _contentHost;
+    private readonly ToastStack _toastStack;
     private readonly CheckBox _castSwitchCheckbox;
     private readonly Label _statusLabel;
     private readonly System.Windows.Forms.Timer _declinedMessageTimer;
@@ -43,6 +53,9 @@ public sealed class MainWindow : Form
     {
         _stateMachine = stateMachine;
         _playback = playback;
+        _library = library;
+        _scenarioStore = scenarioStore;
+        _scenarioRepository = scenarioRepository;
 
         Text = "EveryStage 终端机";
         ClientSize = new Size(900, 600);
@@ -85,14 +98,14 @@ public sealed class MainWindow : Form
         // lock against themselves only, not each other, reopening a small chance of one write
         // failing with a sharing violation right as the other holds the file open. Sharing one
         // instance (and therefore one lock) removes that risk entirely rather than just accepting it.
-        var fileOpLog = new FileOperationLogger();
+        _fileOpLog = new FileOperationLogger();
 
-        _filesPanel = new FilesPanel(library, fileOpLog);
+        _filesPanel = new FilesPanel(library, _fileOpLog);
         _filesPanel.FilePlayRequested += file => _playback?.RequestPlay(file);
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);
         _activitiesPanel = new ActivitiesPanel(
-            scenarioStore, scenarioRepository, library, _playback, fileOpLog, stateMachine);
+            scenarioStore, scenarioRepository, library, _playback, _fileOpLog, stateMachine);
         _settingsPanel = new SettingsPanel(settingsStore, identity);
 
         filesButton.Click += (_, _) => ShowPanel(_filesPanel);
@@ -102,6 +115,13 @@ public sealed class MainWindow : Form
 
         Controls.Add(_contentHost);
         Controls.Add(nav);
+
+        // PLANNING.md §11 "异常提示"："右下角Toast通知栈" — added to Controls last (and pinned via
+        // its own OnParentChanged/SizeChanged handling, see ToastStack's doc comment) so it renders
+        // on top of _contentHost regardless of which panel is currently showing.
+        _toastStack = new ToastStack();
+        Controls.Add(_toastStack);
+        if (_playback != null) _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
 
         // See PlaybackEngine.PlaybackDeclinedByCastSwitch's own doc comment (README risk #9): a
         // "点文件" click while the cast switch is off used to be a completely silent no-op — this
@@ -161,12 +181,70 @@ public sealed class MainWindow : Form
         _declinedMessageTimer.Start();
     }
 
+    /// <summary>PLANNING.md §11 Toast "涉及播放的异常需带可执行按钮（重试/移除）" — this is that
+    /// requirement's first real implementation; previously a decode/render failure was only logged
+    /// (see <see cref="PlaybackEngine.PlaybackAbnormallyInterrupted"/>'s own doc comment), with
+    /// nothing shown to whoever might actually be standing at this Terminal. "移除" picks between two
+    /// already-existing removal operations depending on <see cref="PlaybackEngine.CurrentActivity"/>:
+    /// <see cref="RemoveFileFromActivity"/> (mirrors <c>ActivitiesPanel.OnRemoveFile</c>) when the
+    /// failing file was reached through an activity, <see cref="RemoveFileFromLibrary"/> (mirrors
+    /// <c>FilesPanel.OnRemoveClick</c>) when it was played directly with no activity context.
+    /// Deliberately skips the confirmation dialog those two panel buttons show before removing —
+    /// clicking a named action button on an error notification is already the deliberate act a
+    /// confirmation dialog exists to double-check for an ambient browsing click, not something this
+    /// needs a second prompt for.</summary>
+    private void OnPlaybackAbnormallyInterrupted(MediaFile file, string errorMessage)
+    {
+        string fileName = Path.GetFileName(file.SourcePath);
+        var owningActivity = _playback?.CurrentActivity;
+
+        var actions = new List<ToastAction>
+        {
+            new("重试", () => _playback?.RetryCurrentFile()),
+            owningActivity != null
+                ? new ToastAction("移除", () => RemoveFileFromActivity(owningActivity, file))
+                : new ToastAction("移除", () => RemoveFileFromLibrary(file)),
+        };
+
+        _toastStack.Show($"播放异常：{fileName}\n{errorMessage}", ToastSeverity.Critical, actions.ToArray());
+    }
+
+    /// <summary>Same operation as <c>ActivitiesPanel.OnRemoveFile</c> (file-list mutation + log +
+    /// save + tree refresh), reached from a Toast instead of that panel's own "移除文件" button.
+    /// **Residual risk, not fixed here**: this only removes the file from the activity's list — it
+    /// does not also advance <see cref="PlaybackEngine"/> away from it or otherwise reconcile its
+    /// internal <c>_currentFileIndex</c> against the now-shorter list, so a subsequent auto-advance
+    /// could land on a different file than expected until the operator manually navigates (floating
+    /// preview window) or reconnects. See this project's README for why that reconciliation wasn't
+    /// attempted this round.</summary>
+    private void RemoveFileFromActivity(Activity activity, MediaFile file)
+    {
+        var scenario = _scenarioStore.Scenarios.FirstOrDefault(s => s.Activities.Contains(activity));
+        activity.Files.Remove(file);
+        if (scenario != null) _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        _scenarioRepository.Save(_scenarioStore);
+        _activitiesPanel.RefreshTree();
+    }
+
+    /// <summary>Same operation as <c>FilesPanel.OnRemoveClick</c> (library removal + log + grid
+    /// refresh), reached from a Toast instead of that panel's own "移除" button.</summary>
+    private void RemoveFileFromLibrary(MediaFile file)
+    {
+        _library.Remove(file.Id);
+        _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
+        _filesPanel.Refresh_();
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
             _stateMachine.StateChanged -= OnStateChanged;
-            if (_playback != null) _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
+            if (_playback != null)
+            {
+                _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
+                _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
+            }
             _declinedMessageTimer.Dispose();
 
             // ShowPanel() only ever keeps the *currently active* panel inside _contentHost.Controls

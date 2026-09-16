@@ -84,9 +84,45 @@ public sealed class PlaybackEngine : IDisposable
     /// surface in that case.</summary>
     public event Action? LocalPlaybackStarting;
 
+    /// <summary>PLANNING.md §11's Toast "涉及播放的异常需带可执行按钮（重试/移除）" — raised (already
+    /// marshaled to the UI thread, unlike <see cref="VideoContentController.PlaybackFailed"/>/
+    /// <see cref="AudioContentController.PlaybackFailed"/> themselves) whenever the currently-playing
+    /// file's decode/render aborts abnormally, right after the same failure is logged via
+    /// <see cref="PlaybackLogger.LogAbnormalInterruption"/>. Carries the <see cref="MediaFile"/> that
+    /// failed (a "移除" UI needs to know which file, and — via <see cref="CurrentActivity"/> — which
+    /// activity, if any, to remove it from) and the exception's message (for display). This is the
+    /// first real consumer of this failure signal beyond the log entry itself — previously a decode
+    /// failure was logged and then the last frame simply stayed frozen on screen with no operator-
+    /// facing indication anything had gone wrong at all.</summary>
+    public event Action<MediaFile, string>? PlaybackAbnormallyInterrupted;
+
     /// <summary>What's currently on the extended display, for the floating preview window
     /// (PLANNING.md §8.3) to show — null when nothing is casting.</summary>
     public MediaFile? CurrentFile => _currentFile;
+
+    /// <summary>The activity <see cref="CurrentFile"/> belongs to, if it was reached via
+    /// <see cref="RequestPlay(Activity, int, PlaybackTrigger)"/> — null if it was played with no
+    /// activity context (<see cref="RequestPlay(MediaFile, PlaybackTrigger)"/>, e.g. a direct
+    /// double-click from the 文件 panel). A Toast's "移除" action (see
+    /// <see cref="PlaybackAbnormallyInterrupted"/>) uses this to decide which existing removal
+    /// operation applies: remove-from-activity when this is non-null, remove-from-library when it's
+    /// null — see this project's README for why there are two different "移除" operations rather
+    /// than one, and why a Toast handler has to pick between them rather than this class doing it
+    /// internally (it has no reference to <c>FileLibraryStore</c>/<c>ScenarioRepository</c> to act on
+    /// either one itself).</summary>
+    public Activity? CurrentActivity => _currentActivity;
+
+    /// <summary>Replays whatever <see cref="CurrentFile"/> currently is, in its existing
+    /// <see cref="CurrentActivity"/> context (if any) — PLANNING.md §11 Toast "重试". A no-op if
+    /// nothing has ever played. Does not touch <see cref="_currentActivity"/>/<see cref="_currentFileIndex"/>
+    /// at all (only <see cref="PlayFile"/> is called, the same private method <see cref="TryAdvance"/>
+    /// itself calls) — a retry is "try this exact file again", not "move to a different position in
+    /// the list", so the existing activity/index bookkeeping is left exactly as it already was.</summary>
+    public void RetryCurrentFile()
+    {
+        if (_currentFile == null) return;
+        PlayFile(_currentFile, PlaybackTrigger.ManualSkip);
+    }
 
     public bool IsPaused { get; private set; }
 
@@ -403,7 +439,8 @@ public sealed class PlaybackEngine : IDisposable
         {
             if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
             _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
-            // Same "no documented recovery behavior" reasoning as OnVideoFailed.
+            // Same PlaybackAbnormallyInterrupted reasoning as OnVideoFailed.
+            PlaybackAbnormallyInterrupted?.Invoke(file, ex.Message);
         }));
     }
 
@@ -501,8 +538,9 @@ public sealed class PlaybackEngine : IDisposable
         {
             if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
             _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
-            // No documented recovery behavior for a decode failure (retry? skip to the next item?
-            // PLANNING.md doesn't say) — leave whatever's on screen as-is rather than guess at one.
+            // PLANNING.md §11's Toast "涉及播放的异常需带可执行按钮（重试/移除）" — see
+            // PlaybackAbnormallyInterrupted's own doc comment for what built that UI on top of this.
+            PlaybackAbnormallyInterrupted?.Invoke(file, ex.Message);
         }));
     }
 
