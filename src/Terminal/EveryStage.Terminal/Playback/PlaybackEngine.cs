@@ -509,7 +509,19 @@ public sealed class PlaybackEngine : IDisposable
 
     private void RedrawWaveformFrame()
     {
+        // Bug fixed here: same shape as PdfContentRenderer/ImageContentRenderer.LoadAsync's own
+        // fix this round (see this project's README) — disposing _audioVisualFrame without also
+        // nulling it before the CreateWaveformFrame call below meant a failure there (GDI+
+        // Bitmap/Graphics allocation is rare but not impossible to fail, e.g. under real memory
+        // pressure) would leave _audioVisualFrame pointing at an already-disposed Bitmap instead of
+        // null. Unlike a one-shot LoadAsync, this method reruns on every _waveformTimer tick
+        // (~15fps) for as long as a Waveform-visual audio file keeps playing, so a failure here
+        // wouldn't be a one-time event — the very next tick would call Dispose() again on the same
+        // stale reference (harmless — Bitmap.Dispose() is idempotent) and keep retrying, but
+        // ContentSurface would be left displaying/repainting whatever it last successfully received
+        // via SetFrame, which is exactly the Bitmap this method just disposed.
         _audioVisualFrame?.Dispose();
+        _audioVisualFrame = null;
         _audioVisualFrame = AudioVisualRenderer.CreateWaveformFrame(_overlay.ContentSurface.ClientSize, _latestAudioLevel);
         _overlay.ContentSurface.SetFrame(_audioVisualFrame);
     }

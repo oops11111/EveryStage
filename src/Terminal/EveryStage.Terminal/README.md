@@ -1255,6 +1255,23 @@ Caster知道终端机确实收到了东西。
     翻到一个已经成功打开的文档的某一页）单独有同一个问题——它自己那次`_document.Render(...)`
     调用同样在`CurrentFrame?.Dispose()`之后没有把`CurrentFrame`清空，一并按同样方式修了。
     **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+103. **【新发现的真实bug，已修复】`PlaybackEngine.RedrawWaveformFrame()`同一次审计找到的第三个
+    实例——`_audioVisualFrame?.Dispose()`之后紧接着重新赋值，中间没有清成`null`**：跟上面
+    第102条`PdfContentRenderer`/`ImageContentRenderer`的`LoadAsync`是完全同一个形状，这次
+    出现在音频可视化这一侧。`ApplyAudioVisual`的`DefaultBackgroundImage`分支本身没有这个问题
+    （它上面已经统一做过一次`_audioVisualFrame = null`），但`RedrawWaveformFrame()`自己
+    独立又做了一次"`Dispose()`旧的、立刻赋值新的"，没有经过那次统一清空——如果
+    `AudioVisualRenderer.CreateWaveformFrame`（纯GDI+绘制，真实内存压力下的`Bitmap`/
+    `Graphics`分配失败虽然罕见但并非不可能）抛出异常，`_audioVisualFrame`就会卡在"已经
+    `Dispose()`过的旧对象"这个状态。**这次触发频率的特殊之处**：这个方法不是像`LoadAsync`
+    那样一次性调用，而是`_waveformTimer`每次tick（约15fps）都会重新执行一次，只要一个
+    `AudioVisual.Waveform`的音频文件还在播放就会持续触发，比`LoadAsync`每次播放新文件才
+    触发一次的频率高得多——失败一次之后下一次tick会在同一个已释放对象上再调用一次
+    `Dispose()`（无害，`Bitmap.Dispose()`是幂等的）然后重试，但`ContentSurface`会一直
+    停留在展示/重绘它最后一次成功收到的那个（其实已经被这次失败的调用释放掉的）帧。
+    **修复方式**：跟第102条完全一致——在`CreateWaveformFrame`调用之前先把`_audioVisualFrame`
+    清成`null`。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机
+    验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
