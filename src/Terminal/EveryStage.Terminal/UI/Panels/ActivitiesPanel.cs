@@ -395,6 +395,11 @@ public sealed class ActivitiesPanel : UserControl
             file.BackgroundAudioVisual = dialog.BackgroundAudioVisual;
         }
         _repository.Save(_store);
+        // Unlike OnEditPlayMode/OnEditStayDuration/OnEditCompletionAction just above/below (none of
+        // which change anything the tree actually displays), IsBackgroundAudio now affects the file
+        // node's own text (see BuildFileNodeText) — without this, toggling the checkbox wouldn't be
+        // visible here until some unrelated action happened to trigger a full RefreshTree.
+        RefreshTree();
     }
 
     /// <summary>Only reachable when a selected file's <c>Kind</c> is Image or Document — see
@@ -533,12 +538,25 @@ public sealed class ActivitiesPanel : UserControl
         {
             var activityNode = new TreeNode(activity.Name) { Tag = activity };
             foreach (var file in activity.Files)
-                activityNode.Nodes.Add(new TreeNode(Path.GetFileName(file.SourcePath)) { Tag = file });
+                activityNode.Nodes.Add(new TreeNode(BuildFileNodeText(file)) { Tag = file });
             if (activity.IsCollapsed) activityNode.Collapse(); else activityNode.Expand();
             _tree.Nodes.Add(activityNode);
         }
         UpdateButtonStates();
     }
+
+    /// <summary>Flags a background-audio file right in the tree, rather than requiring the operator
+    /// to open "音频属性..." on every audio file just to find out — previously the only place this
+    /// state was visible at all (besides that dialog's own checkbox) was
+    /// <c>AudioPropertiesDialog</c>'s red caveat label, shown only while that dialog is actually open.
+    /// Doubles as a reminder of PlaybackEngine's own fix for a real bug this state used to trigger
+    /// (see this project's README "已知风险" #84): a `PlayMode.SequentialAuto` activity reaching one
+    /// of these now skips straight past it instead of silently stalling forever, so an operator
+    /// scanning this tree and seeing this tag knows exactly why that file never visibly plays.</summary>
+    private static string BuildFileNodeText(MediaFile file) =>
+        file.IsBackgroundAudio
+            ? $"{Path.GetFileName(file.SourcePath)} [背景音频-尚未实现，会被跳过]"
+            : Path.GetFileName(file.SourcePath);
 
     /// <summary>Persists a real, user-initiated collapse/expand of an activity node back into
     /// <see cref="Activity.IsCollapsed"/> — see the comment on this class's AfterCollapse/AfterExpand
