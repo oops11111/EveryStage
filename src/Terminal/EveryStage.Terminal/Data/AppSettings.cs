@@ -22,9 +22,17 @@ public sealed class AppSettings
 
     /// <summary><see cref="Display.MonitorInfo.DeviceName"/> of the monitor to bind as the
     /// extended display, e.g. <c>"\\.\DISPLAY2"</c> — null means "first non-primary monitor found"
-    /// (<c>MonitorService</c>'s original, still-the-fallback behavior). Only takes effect on the
-    /// next Terminal start: <c>MonitorService.GetBoundExtendedDisplay</c> is called once at startup
-    /// and this repo has no live display-hotplug re-binding yet.</summary>
+    /// (<c>MonitorService</c>'s original, still-the-fallback behavior).
+    ///
+    /// This comment used to claim this "only takes effect on the next Terminal start" because
+    /// "this repo has no live display-hotplug re-binding yet" — that stopped being accurate once
+    /// <c>Program.HandleDisplaySettingsChanged</c> was added: it re-reads this setting's CURRENT
+    /// value (not a value cached at startup) every time <c>SystemEvents.DisplaySettingsChanged</c>
+    /// fires, and rebinds live if the freshly-preferred monitor differs from whatever is currently
+    /// bound. So a change here CAN take effect without a restart — but only opportunistically,
+    /// triggered by some actual display reconfiguration event happening to fire afterward (a
+    /// monitor being plugged/unplugged, resolution changing, etc.), not immediately the moment this
+    /// setting is saved. There is still no way to force an immediate re-bind on save alone.</summary>
     public string? PreferredMonitorDeviceName { get; set; }
 
     // --- 播放行为 ---

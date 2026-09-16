@@ -219,6 +219,15 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
     扩展屏选择"这一条路径上仍然成立——`OverlayWindow.Rebind`本身已经有了另一个真正的调用方
     （已绑定的扩展屏运行中途自己改分辨率/位置），但设置面板这条路径确实还是要重启才生效，因为
     这里触发`Rebind`的是`SystemEvents.DisplaySettingsChanged`，跟设置面板改选择完全是两回事。
+    **再次更新**：上一句"确实还是要重启才生效"说得比实际情况绝对了一点，这次核对
+    `AppSettings.PreferredMonitorDeviceName`的doc comment时顺手发现——`HandleDisplaySettingsChanged`
+    每次被触发时读的是`_settingsStore.Current.PreferredMonitorDeviceName`这个实时值，不是启动时
+    缓存的快照，所以严格来说：保存设置这个动作本身确实不会直接触发`Rebind`（这句话没错），但如果
+    保存之后、下次重启之前，*任何原因*触发了一次`SystemEvents.DisplaySettingsChanged`（哪怕跟这次
+    改动完全无关，比如中途又插拔了别的显示器），`HandleDisplaySettingsChanged`会用新保存的偏好
+    重新算一遍绑定，真有可能在运行中途悄悄切换扩展屏——不是"保证重启前不生效"，而是"不保证重启前
+    会生效，但也不保证不会"，这个不确定性本身也是操作者未必预期到的行为，值得记录成风险而不是
+    简单地说"要重启"。
 36. **"默认停留时长"是唯一立即生效的设置**：因为`PlaybackEngine`持有的是`SettingsStore`本身（不是
     某次读取的快照），每次`ArmStayDurationTimer`都重新读一次`Current.DefaultStayDurationSeconds`——
     这个字段选它作为"立即生效"的示范是有意的，用来验证"设置存储可以被多处共享读取、不需要额外的
