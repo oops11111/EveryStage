@@ -44,6 +44,24 @@ public sealed class DeviceIdentity
                 }
             }
             catch (JsonException) { } // corrupt file — fall through and mint a fresh identity.
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Different failure mode from JsonException above, and deliberately NOT treated the
+                // same way: File.Exists returning true doesn't mean File.ReadAllText can actually
+                // succeed — another process can hold an exclusive lock (antivirus scan, backup tool),
+                // or a permissions problem can block the read outright. This says nothing about
+                // whether the file's content is bad, so falling through to the mint-and-immediately-
+                // overwrite path below would permanently destroy a perfectly good, already-paired
+                // device identity just because reading it happened to race with something else
+                // touching the file — every peer that recognized this device by its old DeviceId
+                // would silently stop recognizing it after that. Return a fresh in-memory identity
+                // for this run only (so pairing during this session still has SOME identity to work
+                // with, rather than crashing the whole process at startup — the actual bug this catch
+                // exists to fix), but skip persisting it: a later restart, once whatever is locking
+                // the file lets go, still gets a chance to read the real one back correctly, instead
+                // of today's transient failure getting baked into tomorrow's identity too.
+                return new DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = Environment.MachineName, _persistedPath = path };
+            }
         }
 
         var identity = new DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = Environment.MachineName, _persistedPath = path };

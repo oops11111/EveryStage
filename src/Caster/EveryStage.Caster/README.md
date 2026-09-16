@@ -755,6 +755,20 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     `Display/VideoSurface`只构造一次，泄漏影响小得多），修复方式、详细分析见
     `EveryStage.Rendering`README对应条目——这次代码改动完全在共享库里，Caster自己的代码一行
     都没有改，值得在这里也记一笔说明为什么这条对Caster的实际意义更大。
+73. **【新发现的真实bug，已修复】`PairedTerminalStore.Load()`只防了"文件内容损坏"，没防"文件
+    暂时读不出来"**：跟Terminal那四个持久化存储（`FileLibraryStore`/`ScenarioRepository`/
+    `SettingsStore`/`PairedDeviceStore`）是完全同一个bug形状、同一次审计一起找到的——`try`块
+    只catch了`JsonException`，但`File.Exists(path)`确认存在之后`File.OpenRead`仍然可能因为
+    杀毒软件/备份工具短暂锁住文件而抛`IOException`，这个异常原来会直接从`Load()`穿透出去，而
+    `Load()`是`PairedTerminalStore`构造函数里同步调用的，会让Caster在真正开始跑之前就直接
+    崩溃退出——完全违背这个类自己注释里"a corrupt file must not crash-loop the app on every
+    startup"这句话本来想做到的事，只是原来的实现把"文件问题"窄化成了"内容损坏"一种情况。
+    **修复方式**：新增`catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)`
+    分支，直接返回空列表，但刻意不做`JsonException`分支那个"把原文件改名成`.corrupt-时间戳`
+    备份"的动作——文件只是暂时被锁住而非真损坏时，沿用同一套改名逻辑反而会把一份完好的已配对
+    终端列表永久藏到`Load()`以后再也不会去找的文件名下面。详细的"为什么不能共用同一个catch"
+    的推理见Terminal README对应条目（第93条），这里是完全同一套推理在Caster这一侧的应用。
+    **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始
 

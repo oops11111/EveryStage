@@ -80,6 +80,19 @@ public sealed class FileLibraryStore
             File.Copy(_storePath, _storePath + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: true);
             return new List<MediaFile>();
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Different failure mode from JsonException above, and deliberately handled without
+            // touching the file: File.Exists returning true above doesn't mean File.OpenRead can
+            // actually succeed — another process (antivirus scan, backup tool) can hold an exclusive
+            // lock, or a permissions problem can block the read entirely. Unlike the JsonException
+            // branch, this says nothing about whether the file's CONTENT is bad, so renaming it aside
+            // the same way would risk permanently hiding perfectly good data under a filename Load()
+            // never looks for again just because it was momentarily locked. Fail safe to an empty
+            // library for this run only, and leave the file untouched so a later restart (once
+            // whatever is locking it lets go) can read it normally.
+            return new List<MediaFile>();
+        }
     }
 
     private void Save()

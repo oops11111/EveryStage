@@ -92,3 +92,23 @@ LAN发现/配对的共享部分（PLANNING.md §7），两个消费方各自实�
   任何安全/认证机制"是同一个已经接受的产品决策，多一个无条件echo不比协议本身已经存在的明文/无
   签名风险更差，但意味着局域网里任何人都可以拿这两个消息类型探测一个Terminal是否在线、测量到它
   的往返时延，即使从未跟它配对过。
+- **【新发现的真实bug，已修复】`DeviceIdentity.LoadOrCreate`原来只防了"身份文件内容损坏"，没防
+  "身份文件暂时读不出来"，而后者反而更容易把前者的补救手段变成新的破坏**：原来的`try`只catch了
+  `JsonException`（对应"文件内容不是合法JSON"这种真损坏），`File.Exists(path)`返回`true`之后
+  `File.ReadAllText(path)`完全可能因为文件被其他进程（杀毒软件扫描、备份工具）短暂独占锁住、或者
+  权限问题而抛`IOException`/`UnauthorizedAccessException`——这两种异常原来的代码完全没catch，
+  会直接从`LoadOrCreate`里穿透出去；Terminal/Caster两边`Program.Main`里构造`_identity`都是
+  启动阶段最早期的一步，这个异常会让整个进程在真正开始跑之前就直接崩溃退出，比这份清单里其它任何
+  "某个子系统悄悄死掉"的bug都更严重——那些好歹进程还活着，这个是根本起不来。更麻烦的是就算加了
+  catch，如果照搬"文件损坏就下面`Directory.CreateDirectory`+`File.WriteAllText`兜底重新生成一份
+  新身份"这条已有的处理路径，会把一个只是暂时被锁住、内容其实完全正常的身份文件直接覆盖成一个
+  全新的`Guid`——这台设备此前跟别的设备建立的所有配对/信任关系，会因为一次纯粹偶发的文件锁竞争
+  就永久失效，比进程崩溃启动失败更隐蔽也更难排查（表现为"配对好的设备突然不认识了"，而不是一次
+  明显的启动崩溃）。**修复方式**：新增一个单独的`catch (Exception ex) when (ex is IOException or
+  UnauthorizedAccessException)`分支，只返回一个不落盘的临时内存身份供这一次运行使用，不执行
+  `File.WriteAllText`——真正的身份文件保持原样不动，等下次重启时（届时占用锁大概率已经释放）
+  还有机会被正常读到。`JsonException`分支的"确实损坏就重新生成并覆盖"这个既有行为本身没有改动，
+  只是不再跟"暂时读不出来"共用同一条处理路径。**没有做的部分**：这次改动本身没有在这个沙箱里
+  跑过（没有dotnet），没有真机验证过；`Directory.CreateDirectory`/`File.WriteAllText`这两行本身
+  在"文件从未存在过"（第一次运行）这条路径上如果失败，这次没有额外处理，这次改动范围只到"文件
+  已存在但读不出来"这一种场景。

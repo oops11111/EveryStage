@@ -992,6 +992,31 @@ Caster知道终端机确实收到了东西。
     枚举之后、真正操作之前进程碰巧退出了）。**没有做的部分**：这次改动本身没有在这个沙箱里跑过
     （没有dotnet），没有真机验证过——包括"这台机器到底有没有默认音频输出设备"以及
     `GetProcessID`真实签名这两件事本身，都还是要在真机第一次编译/运行时才能确认。
+93. **【新发现的真实bug，已修复】`FileLibraryStore`/`ScenarioRepository`/`SettingsStore`/
+    `PairedDeviceStore`四个持久化存储的`Load()`都只防了"文件内容损坏"，没防"文件暂时读不出来"**：
+    四个类的`Load()`原来都是同一个形状——`File.Exists(path)`确认文件存在之后，`try`块里
+    `File.OpenRead`+`JsonSerializer.Deserialize`，`catch`只接`JsonException`，注释都明确写着
+    "an unattended device must not crash-loop on a corrupt file"。但`File.Exists`返回`true`到
+    `File.OpenRead`真正执行之间存在一个经典的TOCTOU缝隙：文件完全可能在这两步之间被杀毒软件/
+    备份工具短暂独占锁住，这时`File.OpenRead`抛的是`IOException`，不是`JsonException`——这四个
+    `Load()`都是从各自类的构造函数里同步调用的，而这四个类又都是`Program.Main`启动阶段最早期
+    构造的对象之一，这个未捕获的异常会让Terminal在真正开始跑之前就直接崩溃退出，完全违背这四处
+    注释自己写明的"不能因为文件问题crash-loop"这个目标——只是这些注释把"文件问题"窄化成了"内容
+    损坏"一种情况，遗漏了"读不出来"这另一种更常见的情况（尤其是杀毒软件扫描，在无人值守设备上
+    是持续发生的常态，不是小概率事件）。**修复方式**：四个`Load()`都新增一个单独的
+    `catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)`分支，直接
+    返回一份内存里的默认值（跟`JsonException`分支返回值完全一样），但**不做**`JsonException`
+    分支那个"把原文件改名成`.corrupt-时间戳`备份"的动作——这是这次修复里刻意区分的关键点：内容
+    确实损坏时改名备份是对的（原文件反正也用不了了，留着给人排查）；但文件只是暂时被锁住、内容
+    其实完全正常的情况下，如果沿用同一套"改名"处理，反而会把一份好端端的数据永久藏到`Load()`
+    自己以后再也不会去找的文件名下面——比崩溃更隐蔽，因为进程还能正常跑起来，只是无声无息用回了
+    默认值，而原本的数据被自己的容错逻辑误伤了。所以这次新加的分支只返回默认值、完全不碰原文件，
+    让下次重启（届时锁大概率已经释放）还有机会正常读到它。Caster端`PairedTerminalStore`、
+    `EveryStage.Discovery`共享的`DeviceIdentity.LoadOrCreate`是同一次改动一起修的同一个bug，
+    分别见`EveryStage.Caster`/`EveryStage.Discovery`各自README对应条目——后者比这四个还严重一层，
+    见该README条目说明。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），
+    没有真机验证过；`File.Exists`本身在极端情况下（比如整个存储卷刚好离线）也可能有自己的
+    TOCTOU缝隙，这次没有进一步深挖到这个层级。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

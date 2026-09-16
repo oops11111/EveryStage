@@ -69,5 +69,18 @@ public sealed class SettingsStore
             File.Copy(_storePath, _storePath + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: true);
             return new AppSettings();
         }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Different failure mode from JsonException above, and deliberately NOT treated the same
+            // way: File.Exists returning true doesn't mean File.OpenRead can actually succeed —
+            // another process can hold an exclusive lock (antivirus scan, backup tool), or a
+            // permissions problem can block the read outright. This says nothing about whether the
+            // file's content is bad, so renaming it aside like the JsonException branch does would
+            // risk permanently hiding perfectly good settings under a filename Load() never looks for
+            // again just because it was momentarily locked. Fail safe to defaults for this run only,
+            // and leave the file itself untouched so a later restart (once whatever is locking it lets
+            // go) has a chance to read it normally.
+            return new AppSettings();
+        }
     }
 }
