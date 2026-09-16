@@ -162,6 +162,17 @@ public sealed class LiveCastSession : IDisposable
     private uint _aacBatchBaseTimestamp;
     private int _aacSamplesEmittedInBatch;
 
+    /// <summary>True from <see cref="Start"/> until <see cref="StopInternal"/> nulls
+    /// <see cref="_loopTask"/> back out — NOT the same as "the capture loop is actually still
+    /// executing": a <c>ScreenCaptureLostException</c>/other exception can make
+    /// <see cref="RunLoop"/> itself exit early (see its own doc comment) while
+    /// <see cref="_loopTask"/> stays non-null (nobody has called <see cref="Stop"/> yet), so this
+    /// keeps reporting true — a deliberate "zombie" state, not a bug: it's exactly what makes
+    /// <see cref="Start"/>'s own <c>if (IsRunning) return;</c> guard safe. Because that guard blocks
+    /// a second <see cref="Start"/> call (and therefore <see cref="_cts"/> ever being reassigned to a
+    /// different instance) until <see cref="Stop"/> has fully run, <see cref="RunLoop"/>'s own
+    /// <c>finally</c> block can safely call <c>_cts?.Cancel()</c> on itself after an early exit
+    /// without any risk of that racing a newer session's <see cref="_cts"/>.</summary>
     public bool IsRunning => _loopTask != null;
 
     /// <summary>Wall-clock time since <see cref="Start"/> restarted <see cref="_clock"/> — the same
@@ -466,6 +477,21 @@ public sealed class LiveCastSession : IDisposable
         }
         finally
         {
+            // Whenever this loop stops running for any reason OTHER than an external Stop() call —
+            // a ScreenCaptureLostException, or any other unexpected exception from the convert/encode
+            // step above — RunSendLoop/RunAudioSendLoop/RunPingLoop previously kept running anyway,
+            // idly waiting on empty channels/timers, since nothing but StopInternal() ever cancelled
+            // _cts. That left three background loops (and the GPU/encoder resources StopInternal()
+            // would otherwise release) alive and doing nothing useful until the operator noticed the
+            // "投屏出错" state MainForm shows and manually clicked "停止投屏" — this cast IS actively
+            // operated by a person watching this screen (unlike the Terminal, which PLANNING.md
+            // requires to self-heal unattended), so requiring that click to fully tear down/restart is
+            // still the right UX; this fix is only about not leaving three loops spinning uselessly in
+            // the meantime. Calling Cancel() here when this loop is instead exiting because Stop()
+            // itself already cancelled _cts is a harmless no-op — CancellationTokenSource.Cancel() is
+            // idempotent, and see IsRunning's own doc comment for why a concurrent new Start() call
+            // reassigning _cts to a different instance out from under this can't actually happen.
+            _cts?.Cancel();
             StatsUpdated?.Invoke();
         }
     }

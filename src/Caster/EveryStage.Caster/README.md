@@ -650,6 +650,29 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     **仍然没有做的部分**：这个自检本身也没有在这个沙箱里真正跑过——虽然它是这个仓库目前唯一一个
     不需要Windows/GPU/网络就能跑的自检，但沙箱依然没有`dotnet`运行时，"不需要Windows"和"这次真的
     跑过"是两件独立的事，这次仍然只做到了前者。
+67. **【新发现的真实bug，已修复】屏幕捕获意外丢失（`ScreenCaptureLostException`）之后，另外三个
+    后台循环会继续空转，直到操作员注意到"投屏出错"手动点"停止投屏"**：委托一个子agent专门排查
+    Terminal那边"队列静默卡死"同一种形状的bug时，它顺带查了`LiveCastSession.RunLoop`，发现
+    这条不完全是同一种形状（这条不是"静默"的——`LastError`会被设置，`MainForm.RefreshLiveCastStats`
+    立刻会显示红色"投屏出错"），但确实是个真实的清理不完整问题：`RunLoop`原来在
+    `ScreenCaptureLostException`（以及任何其他捕获到的异常）发生时，只设置`LastError`然后
+    `break`退出自己的循环，从来不会取消`_cts`——`RunSendLoop`/`RunAudioSendLoop`/`RunPingLoop`
+    三个后台循环因此会继续跑下去，各自在空Channel/定时器上空等，直到操作员看到错误提示、手动点击
+    "停止投屏"（`StopInternal()`）才会真正被清理。**为什么这次决定只做部分修复，不是自动回到待机**：
+    投屏机是操作员正在主动使用的界面，跟PLANNING.md要求"无人值守"的Terminal不是同一类场景——
+    错误发生后要求操作员看一眼再手动点"停止投屏"，本身就是合理、预期内的UX，这次没有改成"出错就
+    自动回到待机"这种更大的产品行为改动；只是三个后台循环在这段等待期间纯粹空转、没有实际用处，
+    这才是这次要修的部分。**修复方式**：`RunLoop`的`finally`块里新增`_cts?.Cancel()`——不能直接在
+    `RunLoop`自己的异常处理里调用`Stop()`/`StopInternal()`，因为`StopInternal()`会
+    `_loopTask?.Wait(...)`等待`RunLoop`自己这个任务完成，从`RunLoop`自己的线程内部这样调用会
+    死锁；只取消`_cts`，让另外三个循环的`token.IsCancellationRequested`检查自然生效退出，GPU/
+    编码器等资源的实际释放仍然留给`Stop()`/`StopInternal()`，等操作员点击"停止投屏"时才发生。
+    `IsRunning`因此新增了一段doc comment解释一个容易被忽略的细节：它反映的是"`Stop()`有没有被
+    调用过"，不是"`RunLoop`是否真的还在跑"——这次修复能安全在`RunLoop`自己的`finally`里调用
+    `_cts?.Cancel()`而不用担心撞上一个新`Start()`带来的新`_cts`实例，依据的正是`IsRunning`这个
+    "僵尸态"保证了`Start()`自己的`if (IsRunning) return;`门禁在旧会话真正被`Stop()`收尾之前
+    不会放行新会话。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机
+    验证过。
 
 ## 尚未开始
 
