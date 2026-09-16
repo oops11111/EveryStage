@@ -1181,7 +1181,17 @@ Caster知道终端机确实收到了东西。
     Terminal实例"这种情况。这次选择的折中是：至少`AppDomain.CurrentDomain.UnhandledException`
     （已经在`Main()`里注册）能保证这个失败被记进crash日志，不会像Caster修复之前那样连日志
     都没有——但进程本身仍然会崩溃，没有做到跟GPU失败那条一样的优雅降级。这个不对称是这次
-    审计权衡之后的有意选择，不是遗漏。
+    审计权衡之后的有意选择，不是遗漏。**补充说明，避免这条读起来像"`_discovery`是这段
+    构造函数里唯一没保护的部分"**：往下`var library = new FileLibraryStore(); _mainWindow
+    = new MainWindow(...); _mainWindow.Show(); _tray = new TrayIconController(...)`这几行
+    同样完全在这个`try/catch`保护范围之外、同样在`Application.Run()`之前执行——这条笔记
+    只单独点名`_discovery`，是因为它是这几个里唯一有一个具体、真实可触发的失败场景（固定
+    UDP端口冲突）的一个，不是因为它是唯一没受保护的一个。`FileLibraryStore`自己的`Load()`
+    早就用这个仓库统一的JSON持久化容错模式处理了`JsonException`/`IOException`/
+    `UnauthorizedAccessException`（见第73条附近），残余风险很小；`MainWindow`/
+    `TrayIconController`是纯UI控件构造，没有已知的具体触发条件。三者都被判断为风险明显
+    低于`_discovery`，所以没有单独展开分析，但"完全没有异常防护"这个事实对它们同样成立，
+    这里补充说明是为了不让这条笔记的措辞显得比实际情况更精确。
 100. **【修复】`DailyRollingLogWriter`的构造函数（`Directory.CreateDirectory`+`CleanupOldFiles`）
     之前完全没有异常防护，而这正是`CrashLogger`——上面第99条那整套"至少能记进crash日志"
     安全网本身——所依赖的底层类**：这个类自己的`Write()`方法早就把"写入失败（磁盘满、文件被
