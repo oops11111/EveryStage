@@ -66,8 +66,21 @@ public sealed class TerminalDiscoveryClient : IDisposable
         }
     }
 
+    // Bug fixed here, see this project's README: must be >= Terminal.Devices.DiscoveryService's own
+    // PendingRequestTimeout (2 minutes — how long it keeps a PairRequestMessage waiting for someone
+    // to actually click through PairingConfirmationDialog) plus a little margin for that Terminal's
+    // own pruning only running once per BeaconInterval (3s), not continuously. Kept as an
+    // independently-declared constant here rather than shared across projects (same "two small,
+    // independent implementations" convention this codebase already uses elsewhere) — MUST be kept
+    // in sync by hand with DiscoveryService.PendingRequestTimeout if either one ever changes.
+    private static readonly TimeSpan DefaultPairingRequestTimeout = TimeSpan.FromMinutes(2) + TimeSpan.FromSeconds(15);
+
     /// <summary>Sends a pairing request and awaits the Terminal's response. Returns null on timeout
-    /// (no distinction from "declined" at the caller level today — see this project's README on why).</summary>
+    /// (no distinction from "declined" at the caller level today — see this project's README on why).
+    /// The default timeout deliberately matches (with margin) how long the Terminal itself is
+    /// willing to wait for a human to actually click through its confirmation dialog — see
+    /// <see cref="DefaultPairingRequestTimeout"/>'s own comment for why a much shorter one used to
+    /// undermine that Terminal-side generosity entirely.</summary>
     public async Task<DiscoveryProtocol.PairResponseMessage?> RequestPairingAsync(
         DiscoveredTerminal terminal, DeviceIdentity myIdentity, TimeSpan? timeout = null)
     {
@@ -86,7 +99,7 @@ public sealed class TerminalDiscoveryClient : IDisposable
             byte[] payload = DiscoveryProtocol.Encode(request);
             await _socket.SendAsync(payload, payload.Length, new IPEndPoint(terminal.Address, DiscoveryProtocol.Port));
 
-            using var timeoutCts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(15));
+            using var timeoutCts = new CancellationTokenSource(timeout ?? DefaultPairingRequestTimeout);
             try
             {
                 return await tcs.Task.WaitAsync(timeoutCts.Token);

@@ -791,10 +791,13 @@ public sealed class MainForm : Form
             // Re-checks Live (not just non-null) rather than reusing the `entry` this method
             // started with: RefreshTerminalList() runs on its own 1s timer independently of this
             // await, and could have rebuilt the list — replacing the selected item with a fresh
-            // TerminalListEntry instance — while a pairing request was in flight (its 15s default
-            // timeout is longer than a single refresh tick). If the selected terminal's beacon
-            // happened to lapse during that wait, re-enabling the button without this check would
-            // let the user immediately retry against what the list now shows as offline.
+            // TerminalListEntry instance — while a pairing request was in flight (its default
+            // timeout, now over 2 minutes to actually cover how long a human might take to click
+            // through the Terminal's own confirmation dialog — see TerminalDiscoveryClient's own
+            // comment on that fix — is far longer than a single refresh tick). If the selected
+            // terminal's beacon happened to lapse during that wait, re-enabling the button without
+            // this check would let the user immediately retry against what the list now shows as
+            // offline.
             _startButton.Text = "开始投屏";
             _startButton.Enabled = _terminalListBox.SelectedItem is TerminalListEntry { Live: not null };
         }

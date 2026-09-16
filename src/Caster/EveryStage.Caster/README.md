@@ -705,6 +705,29 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     fire-and-forget Task异常变得比现状更糟。**没有做的部分**：这次改动本身没有在这个沙箱里
     跑过（没有dotnet），`UnhandledExceptionMode.CatchException`之后消息循环是否真的能在UI线程
     异常之后干净地继续运行，完全依赖.NET文档描述的行为，没有真机验证过。
+70. **【新发现的真实bug，已修复】`RequestPairingAsync`默认15秒就放弃，比Terminal那边真正愿意
+    等的时间短了整整8倍**：这两个超时本该服务同一件事——等一个真人在Terminal那边点开
+    `PairingConfirmationDialog`、看一眼、决定接受还是拒绝——但`TerminalDiscoveryClient.
+    RequestPairingAsync`原来默认只等15秒（`timeout ?? TimeSpan.FromSeconds(15)`），而Terminal
+    端`DiscoveryService.PendingRequestTimeout`早就明确设成2分钟，注释原话就是给"一个人去点弹窗"
+    留出的时间。这意味着：只要操作员看到弹窗、决定要不要接受花了超过15秒（对一个需要真人反应的
+    交互来说完全正常），Caster这边就已经先一步放弃、弹出"终端机未响应（超时）"——即使Terminal
+    那边这个请求根本还没死，还在`_pendingRequests`里安静等着，接下来1分45秒里操作员真的点了
+    "接受"也没用：那时候Caster早就在`finally`块里把这个`requestId`从自己的`_pendingPairRequests`
+    里移除了，`HandlePairResponse`收到这份迟到的`PairResponseMessage`时只会走"未知/已经处理过的
+    RequestId，安全地什么都不做"这条路径（见`EveryStage.Discovery`README对这类"两边握手协议"
+    风险的一贯态度），配对请求就这样人间蒸发，操作员在Caster这边看到的却是"超时"而不是"正在等你
+    确认"。Terminal自己特意设的2分钟耐心，被Caster自己的15秒等不到就先放弃直接架空了。
+    **修复方式**：新增`DefaultPairingRequestTimeout`常量，值是`Terminal.Devices.DiscoveryService.
+    PendingRequestTimeout`（2分钟）再加15秒余量——余量是因为Terminal那边的过期清理
+    （`PruneExpiredPendingRequests`）只在每次`BeaconInterval`（3秒）触发的beacon广播循环里顺带
+    检查一次，不是持续监视，实际过期时间点可能比整2分钟晚最多几秒，Caster这边的等待时间必须
+    覆盖这整个窗口，不能卡着整2分钟这个点。**故意没有做的部分**：这两个常量分别独立声明在各自
+    项目里，没有抽成共享常量——跟这个仓库"两个独立实现"的一贯做法一致，代价是以后如果任何一边
+    改了这个数字，需要手动记得去改另一边，这次在两处都补了交叉引用注释提醒这件事。**没有做的
+    部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过——包括"一个真人平均
+    需要多久点开并回应这个弹窗"这个判断本身，2分钟本来就是Terminal那边凭感觉定的一个数字，这次
+    只是让Caster跟它保持一致，不是重新论证这个数字本身对不对。
 
 ## 尚未开始
 

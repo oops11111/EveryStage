@@ -943,6 +943,19 @@ Caster知道终端机确实收到了东西。
     没有在这个沙箱里跑过（没有dotnet），没有真机验证过——包括这条风险本身描述的"正常情况下是
     空操作"这个判断，也完全是代码审阅推出来的，没有在真实Windows多显示器环境下观察过
     `SetWindowPos`带`SWP_NOMOVE`前后的实际行为差异。
+90. **【新发现的真实bug，修复在Caster那边】`PendingRequestTimeout`特意留出的2分钟人工确认窗口，
+    曾经被Caster自己15秒就放弃的默认超时架空**：`PendingRequestTimeout = TimeSpan.FromMinutes(2)`
+    这个常量、以及它注释里"给一个人去点弹窗留出时间"这句话，从写下来那一刻起就隐含一个前提——
+    发起配对请求的那一端也愿意等这么久。审计的时候发现Caster端`TerminalDiscoveryClient.
+    RequestPairingAsync`原来的默认超时只有15秒，只要操作员点`PairingConfirmationDialog`花的
+    时间超过15秒（对一个需要真人反应的交互来说完全正常），Caster就会先一步弹出"终端机未响应
+    （超时）"，即使这个请求在Terminal这边`_pendingRequests`里根本还没死——接下来即使操作员真的
+    点了"接受"，Caster那时候早就把这个`requestId`忘了，`PairResponseMessage`送到时只会被当成
+    "未知/已处理过的RequestId"安静丢弃，配对请求人间蒸发。详细分析、修复方式（新增
+    `DefaultPairingRequestTimeout`常量，`PendingRequestTimeout`加15秒余量，两边各自独立声明、
+    互相加了交叉引用注释提醒手动保持同步）见`EveryStage.Caster`README——这次改动完全在Caster
+    那一侧，Terminal这边`PendingRequestTimeout`本身没有改，单纯是这个bug的根源就是这个常量
+    这一轮才第一次被真正对照检查过，值得在这里也记一笔。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
