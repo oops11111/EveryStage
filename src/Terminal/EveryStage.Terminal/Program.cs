@@ -77,7 +77,7 @@ internal static class Program
         var repository = new ScenarioRepository();
         var store = repository.Load();
 
-        using var context = new TerminalApplicationContext(store, repository);
+        using var context = new TerminalApplicationContext(store, repository, crashLogger);
         Application.Run(context);
     }
 }
@@ -110,6 +110,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private IPEndPoint? _castingCasterEndPoint;
     private readonly System.Windows.Forms.Timer _castStatusTimer;
     private readonly DeviceConnectionLogger _connectionLog = new();
+    private readonly CrashLogger _crashLogger;
 
     // How many _castStatusTimer ticks (1s each) between LogConnectionQuality runs — a diagnostic
     // *log* entry every second would spam the on-disk log with what's meant to be a periodic
@@ -118,10 +119,11 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private const int ConnectionQualityCheckEveryNTicks = 15;
     private int _castStatusTickCount;
 
-    public TerminalApplicationContext(ScenarioStore store, ScenarioRepository repository)
+    public TerminalApplicationContext(ScenarioStore store, ScenarioRepository repository, CrashLogger crashLogger)
     {
         _store = store;
         _repository = repository;
+        _crashLogger = crashLogger;
         _uiContext = SynchronizationContext.Current
             ?? throw new InvalidOperationException("Expected Program.Main to have installed a WindowsFormsSynchronizationContext first.");
 
@@ -134,25 +136,57 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         var extendedDisplay = MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName);
         if (extendedDisplay != null)
         {
-            _overlay = new OverlayWindow(extendedDisplay);
-            // One D3D11 device/swap chain for the overlay's video HWND, shared between local video
-            // playback and a live device cast — see VideoSurface's doc comment for why this can't
-            // be two independent ones anymore.
-            _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
-            _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore);
-            _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
-            _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
+            // Bug fixed here: this whole block used to run with no try/catch at all, directly inside
+            // this constructor — Program.Main's own construction of this class
+            // (`new TerminalApplicationContext(...)`) is likewise unguarded, and happens BEFORE
+            // Application.Run even starts the message loop, so an exception here doesn't go through
+            // Application.ThreadException at all; it propagates straight out of Main(). AppDomain.
+            // UnhandledException still catches it (registered earlier in Main()) and logs it via
+            // crashLogger, but that handler can't stop the process terminating (isTerminating is
+            // always true for it) — the entire unattended Terminal would fail to start, before ever
+            // showing a tray icon, purely because of a GPU/D3D11 problem in VideoSurface's
+            // construction (no compatible hardware/driver on this machine — a real, not
+            // hypothetical, condition this repo has flagged repeatedly elsewhere). That is a far
+            // worse outcome than PLANNING.md's own "no extended display bound yet" state (the
+            // extendedDisplay == null branch below), which this Terminal is already written to
+            // tolerate gracefully — the tray/main window/discovery/pairing all still work with
+            // _overlay null. Degrading to that same state on a GPU failure, instead of refusing to
+            // start at all, is strictly better for an unattended device: log it, then keep going.
+            try
+            {
+                _overlay = new OverlayWindow(extendedDisplay);
+                // One D3D11 device/swap chain for the overlay's video HWND, shared between local video
+                // playback and a live device cast — see VideoSurface's doc comment for why this can't
+                // be two independent ones anymore.
+                _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
+                _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore);
+                _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
+                _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
 
-            // Runtime display-configuration changes (PLANNING.md §5, this project's README "已知
-            // 风险" on OverlayWindow.Rebind/VideoSurface.Resize previously existing but never having
-            // a caller) — covers "the extended display this Terminal already bound at startup moved
-            // or changed resolution" (Rebind/Resize) and "that same display got unplugged entirely"
-            // (a clean Disconnect(), see HandleDisplaySettingsChanged's own doc comment for exactly
-            // what each branch does and what is still NOT handled — a display being plugged in for
-            // the first time when none was bound at startup). Only subscribed when an overlay
-            // actually exists — with no bound display at startup there is nothing here for a later
-            // display change to rebind anyway (see the "no display bound" case below).
-            SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+                // Runtime display-configuration changes (PLANNING.md §5, this project's README "已知
+                // 风险" on OverlayWindow.Rebind/VideoSurface.Resize previously existing but never having
+                // a caller) — covers "the extended display this Terminal already bound at startup moved
+                // or changed resolution" (Rebind/Resize) and "that same display got unplugged entirely"
+                // (a clean Disconnect(), see HandleDisplaySettingsChanged's own doc comment for exactly
+                // what each branch does and what is still NOT handled — a display being plugged in for
+                // the first time when none was bound at startup). Only subscribed when an overlay
+                // actually exists — with no bound display at startup there is nothing here for a later
+                // display change to rebind anyway (see the "no display bound" case below).
+                SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
+            }
+            catch (Exception ex)
+            {
+                _crashLogger.LogUnhandledException("TerminalApplicationContext.ExtendedDisplayInit", ex);
+                _previewWindow?.Dispose();
+                _previewWindow = null;
+                if (_playback != null) _playback.LocalPlaybackStarting -= OnLocalPlaybackStarting;
+                _playback?.Dispose();
+                _playback = null;
+                _videoSurface?.Dispose();
+                _videoSurface = null;
+                _overlay?.Dispose();
+                _overlay = null;
+            }
         }
         // extendedDisplay == null: no second monitor attached yet. §5/§7 don't specify a "no
         // display bound" UX beyond implying it's a real, visible configuration state — the tray
@@ -160,7 +194,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // exists to surface a proper "未检测到扩展屏" notice. No overlay also means no
         // VideoSurface/PlaybackEngine/preview window yet, and OnCastStartRequested below already
         // no-ops when _overlay is null; MainWindow's file panel tolerates _playback being null
-        // (RequestPlay just never gets called) until a display shows up.
+        // (RequestPlay just never gets called) until a display shows up. A GPU-init failure just
+        // above degrades into this exact same state.
 
         _stateMachine.StateChanged += OnOutputStateChanged;
 

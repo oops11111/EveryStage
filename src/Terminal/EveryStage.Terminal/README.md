@@ -1142,6 +1142,31 @@ Caster知道终端机确实收到了东西。
     `MediaFactory.MFShutdown()`再重新抛出异常，保证不管构造函数是正常完成还是在任何一个阶段
     中途失败，`MFStartup`/`MFShutdown`的配对关系都不会被打破。**没有做的部分**：这次改动本身
     没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+99. **【新发现的真实bug，已修复，比第97条更早发生、影响更彻底】`TerminalApplicationContext`
+    构造函数里绑定扩展屏的那一段（`OverlayWindow`/`VideoSurface`/`PlaybackEngine`/
+    `FloatingPreviewWindow`的构造）原来完全没有异常防护，而`Program.Main`里构造这个类本身
+    也同样没有——如果这台机器绑定了扩展屏、但`VideoSurface`内部的D3D11设备初始化失败（这台
+    机器没有兼容的GPU/驱动，这个仓库其它地方已经反复记录过是真实场景），异常会直接从
+    `Main()`穿出去。`Application.ThreadException`在这里完全帮不上忙——这段代码在
+    `Application.Run()`真正启动消息循环*之前*就执行了，根本没有机会经过那个兜底；
+    `AppDomain.CurrentDomain.UnhandledException`（在`Main()`里更早注册）倒是能接住并且
+    通过`crashLogger`记下这次崩溃，但这个事件本身无法阻止进程终止（`isTerminating`对它
+    永远是`true`）——结果是：整个无人值守的Terminal进程会在连托盘图标都还没显示出来之前就
+    直接崩溃退出，仅仅因为这台机器的GPU不兼容。这比第97条`RunPresentLoop`那个"能让整个进程
+    崩溃"的bug还要更早发生、影响更彻底——第97条至少要先成功接受一次设备投屏才会触发，这一条
+    在Terminal刚启动、只是"这台机器恰好绑定了一块扩展屏"这个最普通的场景下就可能触发。而
+    PLANNING.md本身早就为"没有绑定扩展屏"这种情况设计了一套完整的优雅降级路径——托盘图标、
+    主窗口、设备发现、配对这些功能在`_overlay`为`null`时全部正常工作，这条降级路径这次修复
+    之前只覆盖了"用户确实没插第二块显示器"这一种触发条件，从未覆盖"插了，但GPU初始化失败了"
+    这另一种同样会导致"没有可用的扩展屏"这个最终状态的路径。**修复方式**：给这一段包一层
+    `try/catch`，失败时通过新增的`CrashLogger`字段（`Program.Main`把它已经在用的那个
+    `crashLogger`局部变量传进`TerminalApplicationContext`的构造函数，而不是另开一个新实例
+    ——避免`FileOperationLogger`那条已知风险提醒过的"两个独立实例写同一个日志文件有极小概率
+    冲突"这种情况）记下这次失败，然后把`_overlay`/`_videoSurface`/`_playback`/
+    `_previewWindow`（连带清理已经成功构造的那些）全部清回`null`，让构造函数剩余部分把这次
+    GPU失败当成跟"压根没绑定扩展屏"完全一样的状态继续走下去，而不是让整个进程直接死掉。
+    **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过——包括
+    GPU初始化失败在真机上具体是通过什么异常类型/时机表现出来的，本身也只是推断，没有实测过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
