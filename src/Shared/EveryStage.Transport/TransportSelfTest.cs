@@ -66,6 +66,10 @@ public static class TransportSelfTest
         if (mismatchFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, mismatchFailure);
 
+        string? resilienceFailure = await RunDispatchExceptionResilienceCheckAsync();
+        if (resilienceFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, resilienceFailure);
+
         return new Result(true, testPayloads.Count, receivedCount, null);
     }
 
@@ -134,6 +138,71 @@ public static class TransportSelfTest
             return $"PayloadType mismatch check: expected PacketsReceived == 1 (the mismatched packet shouldn't count), got {receiver.PacketsReceived}.";
         if (receiver.GapEvents != 0)
             return $"PayloadType mismatch check: expected GapEvents == 0 (a dropped mismatch isn't a sequence gap), got {receiver.GapEvents}.";
+
+        return null;
+    }
+
+    /// <summary>Verifies the defensive hardening this session added around
+    /// <see cref="RtpReceiver.NalUnitReceived"/>'s dispatch (see <see cref="RtpReceiver.DispatchExceptions"/>'s
+    /// own doc comment): a subscriber throwing must not kill the receive loop for every SUBSEQUENT
+    /// packet, and must be counted. Until now nothing verified the counter actually increments, or —
+    /// more importantly, since a counter that never moves is a much smaller problem than a receive
+    /// loop that silently dies — that the loop genuinely keeps processing packets afterward, which is
+    /// the actual property this fix exists to guarantee. Runs on its own fresh port/receiver, same
+    /// reasoning as <see cref="RunPayloadTypeMismatchCheckAsync"/>.</summary>
+    private static async Task<string?> RunDispatchExceptionResilienceCheckAsync()
+    {
+        int port = GetLikelyFreeUdpPort();
+        using var receiver = new RtpReceiver(port);
+
+        var received = new List<byte[]>();
+        var gate = new object();
+        bool firstCallSeen = false;
+        var secondArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        receiver.NalUnitReceived += (nal, _, _) =>
+        {
+            lock (gate)
+            {
+                if (!firstCallSeen)
+                {
+                    firstCallSeen = true;
+                    // Deliberate — this is what RtpReceiver.DispatchExceptions/its surrounding
+                    // try/catch exist to survive. A lock statement releases its Monitor via a
+                    // compiler-generated finally even when the guarded code throws, so this doesn't
+                    // risk deadlocking the receive loop on its next iteration.
+                    throw new InvalidOperationException("Deliberate self-test exception — verifying the receive loop survives a subscriber throwing.");
+                }
+                received.Add(nal);
+                secondArrived.TrySetResult();
+            }
+        };
+        receiver.Start();
+
+        using var sender = new RtpSession(new IPEndPoint(IPAddress.Loopback, port), payloadType: 96);
+        var firstNal = MakeFakeNal(new Random(554), 100, nalType: 1);
+        var secondNal = MakeFakeNal(new Random(553), 100, nalType: 1);
+
+        await sender.SendNalUnitAsync(firstNal, 0, isLastNalOfAccessUnit: true);
+        // Give the receive loop a moment to reach (and throw on) the first NAL unit before sending
+        // the second — this is what proves the two are handled as genuinely separate loop
+        // iterations, not that the second just happened to win a race before the first was ever
+        // dispatched.
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+        await sender.SendNalUnitAsync(secondNal, RtpVideoClock.ClockRate / 30, isLastNalOfAccessUnit: true);
+
+        var finished = await Task.WhenAny(secondArrived.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        if (finished != secondArrived.Task)
+            return "Dispatch-exception resilience check: timed out waiting for the SECOND NAL unit to arrive after the first subscriber call deliberately threw — the receive loop did not survive.";
+
+        lock (gate)
+        {
+            if (received.Count != 1 || !received[0].AsSpan().SequenceEqual(secondNal.Span))
+                return "Dispatch-exception resilience check: the second NAL unit's bytes don't match what was sent, or wasn't the only one recorded.";
+        }
+
+        if (receiver.DispatchExceptions != 1)
+            return $"Dispatch-exception resilience check: expected DispatchExceptions == 1, got {receiver.DispatchExceptions}.";
 
         return null;
     }

@@ -84,6 +84,10 @@ public static class RawTransportSelfTest
         if (mismatchFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, receiver.GapEvents, mismatchFailure);
 
+        string? resilienceFailure = await RunDispatchExceptionResilienceCheckAsync();
+        if (resilienceFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, receiver.GapEvents, resilienceFailure);
+
         return new Result(true, testPayloads.Count, receivedCount, receiver.GapEvents, null);
     }
 
@@ -143,6 +147,69 @@ public static class RawTransportSelfTest
             return $"PayloadType mismatch check: expected PacketsReceived == 1 (the mismatched packet shouldn't count), got {receiver.PacketsReceived}.";
         if (receiver.GapEvents != 0)
             return $"PayloadType mismatch check: expected GapEvents == 0 (a dropped mismatch isn't a sequence gap), got {receiver.GapEvents}.";
+
+        return null;
+    }
+
+    /// <summary>Same check as <see cref="TransportSelfTest"/>'s own copy of this method, adapted to
+    /// <see cref="RawRtpReceiver"/>/<see cref="RtpSession.SendRawPayloadAsync"/> instead of the
+    /// NAL-framed path — see that copy's doc comment for what <see cref="RawRtpReceiver.DispatchExceptions"/>
+    /// defends against and why this needed its own runnable check rather than just documenting the
+    /// counter's existence. Deliberately duplicated rather than shared, same "two small, independent
+    /// implementations" reasoning as the rest of this class (see its own doc comment).</summary>
+    private static async Task<string?> RunDispatchExceptionResilienceCheckAsync()
+    {
+        int port = GetLikelyFreeUdpPort();
+        using var receiver = new RawRtpReceiver(port);
+
+        var received = new List<byte[]>();
+        var gate = new object();
+        bool firstCallSeen = false;
+        var secondArrived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        receiver.PayloadReceived += (payload, _) =>
+        {
+            lock (gate)
+            {
+                if (!firstCallSeen)
+                {
+                    firstCallSeen = true;
+                    // Deliberate — this is what RawRtpReceiver.DispatchExceptions/its surrounding
+                    // try/catch exist to survive. A lock statement releases its Monitor via a
+                    // compiler-generated finally even when the guarded code throws, so this doesn't
+                    // risk deadlocking the receive loop on its next iteration.
+                    throw new InvalidOperationException("Deliberate self-test exception — verifying the receive loop survives a subscriber throwing.");
+                }
+                received.Add(payload);
+                secondArrived.TrySetResult();
+            }
+        };
+        receiver.Start();
+
+        using var sender = new RtpSession(new IPEndPoint(IPAddress.Loopback, port), payloadType: 97);
+        var firstPayload = MakeFakePayload(new Random(552), 80);
+        var secondPayload = MakeFakePayload(new Random(551), 80);
+
+        await sender.SendRawPayloadAsync(firstPayload, 0);
+        // Give the receive loop a moment to reach (and throw on) the first payload before sending
+        // the second — this is what proves the two are handled as genuinely separate loop
+        // iterations, not that the second just happened to win a race before the first was ever
+        // dispatched.
+        await Task.Delay(TimeSpan.FromMilliseconds(200));
+        await sender.SendRawPayloadAsync(secondPayload, 1024);
+
+        var finished = await Task.WhenAny(secondArrived.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        if (finished != secondArrived.Task)
+            return "Dispatch-exception resilience check: timed out waiting for the SECOND payload to arrive after the first subscriber call deliberately threw — the receive loop did not survive.";
+
+        lock (gate)
+        {
+            if (received.Count != 1 || !received[0].AsSpan().SequenceEqual(secondPayload.Span))
+                return "Dispatch-exception resilience check: the second payload's bytes don't match what was sent, or wasn't the only one recorded.";
+        }
+
+        if (receiver.DispatchExceptions != 1)
+            return $"Dispatch-exception resilience check: expected DispatchExceptions == 1, got {receiver.DispatchExceptions}.";
 
         return null;
     }

@@ -149,6 +149,16 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
     跟`GapEvents`/`PayloadTypeMismatches`当初"先加计数器、后面再决定怎么用"是同一个顺序，这次
     只做到第一步，预期这个计数器永远是0。**没有做的部分**：这次改动本身没有在这个沙箱里跑过
     （没有dotnet），没有真机验证过。
+11. **【新增，补上第10条的自检覆盖】`TransportSelfTest`/`RawTransportSelfTest`现在真的验证了
+    第10条那层`try/catch`确实生效**：第10条落地之后，一直没有任何自检去实际验证它——只是文档里
+    说"新增了`DispatchExceptions`计数器"，从没有一个测试真的让一个订阅方抛出异常，确认这个循环
+    真的活下来了。一个只统计"发生过几次"但从来没被验证过的计数器，比"循环干脆没有存活下来但没人
+    发现"这种更严重的失败模式要小得多——所以这次新增的`RunDispatchExceptionResilienceCheckAsync`
+    （两个类里各自独立实现了一份，跟这两个类一贯的"两份小的独立实现，不共享抽象"是同一个做法）
+    刻意验证的不是"计数器变成1"这一件事，而是：订阅方在收到第一个NAL单元/音频包时故意抛出异常，
+    第二个包紧接着发送，断言第二个包确实通过`NalUnitReceived`/`PayloadReceived`正常送达（证明
+    接收循环在第一次异常之后还在跑下一轮），送达的字节内容正确，且`DispatchExceptions`恰好等于1。
+    **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始
 
