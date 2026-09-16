@@ -119,7 +119,18 @@ Demo专属的——两边需要完全一样的解码/渲染行为，所以放进
     "回滚到旧状态、假装这次调用没发生"需要对`ResizeBuffers`调用之后交换链本身处于什么状态
     做出没有真机就无法验证的假设，贸然修改风险比现状更高。触发条件本身也相当罕见——显示器
     热插拔时分辨率变化触发`ResizeBuffers`，这个调用本身失败是Direct3D里不常见的失败模式。
-    这次选择只记录、不修，等真机验证阶段这条风险要么被排除、要么再决定怎么改。
+    这次选择只记录、不修，等真机验证阶段这条风险要么被排除、要么再决定怎么改。**补充说明，
+    避免这条读起来像`Resize()`是这个类里唯一一个非事务性方法**：`SwapChainPresenter.
+    EnsureProcessor`（`PresentFrame`每一帧都会调用，不是只在显示器变化时才触发）和
+    `EveryStage.Caster.Encode.BgraToNv12Converter.EnsureProcessor`（`Convert`每一帧都会
+    调用）是完全同一种形状——都是先`_processor?.Dispose(); _enumerator?.Dispose();`，再
+    `_enumerator = _videoDevice.CreateVideoProcessorEnumerator(...)`，再`_processor =
+    _videoDevice.CreateVideoProcessor(_enumerator, 0)`——如果`CreateVideoProcessorEnumerator`
+    成功但`CreateVideoProcessor`抛出异常，`_processor`字段会卡在"已经`Dispose()`过的旧值"，
+    下一帧`PresentFrame`/`Convert`直接用`_processor!`就会在一个已释放对象上失败。这两处
+    比`Resize()`触发频率更高（每一帧都可能触发，不是只在分辨率变化时），但没有单独展开
+    分析——原因、风险评估和"为什么不修"的理由跟上面`Resize()`完全相同，这里只是澄清"完全
+    没有事务性保护"这个事实同样适用于它们，不是`Resize()`独有的问题。
 
 在 Windows 上第一次编译成功、把 `src/Poc/ZeroCopyRenderDemo` 跑通验收标准之后，这份清单里已确认
 没问题的条目可以直接删掉，只留下真正还需要注意的坑。
