@@ -112,3 +112,18 @@ LAN发现/配对的共享部分（PLANNING.md §7），两个消费方各自实�
   跑过（没有dotnet），没有真机验证过；`Directory.CreateDirectory`/`File.WriteAllText`这两行本身
   在"文件从未存在过"（第一次运行）这条路径上如果失败，这次没有额外处理，这次改动范围只到"文件
   已存在但读不出来"这一种场景。
+- **【新发现的真实bug，已修复】`DeviceIdentity`原来的两处写入（`LoadOrCreate`里首次生成身份、
+  `Save()`里保存改名）都直接用`File.WriteAllText`，是这个仓库里唯一没有跟其它JSON存储用同一套
+  原子写入约定的一处**：`FileLibraryStore`/`ScenarioRepository`/`SettingsStore`/
+  `PairedDeviceStore`/`PairedTerminalStore`这五个存储全部都是"先写到`.tmp`临时文件，再用
+  `File.Replace`（首次保存时用`File.Move`）原子性地换到正式文件名"这套写法，唯独
+  `DeviceIdentity`这两处直接`File.WriteAllText`到正式文件名——`WriteAllText`语义上等价于先
+  截断文件再写入，如果写入过程中进程崩溃/断电，正式文件会被留在"已经截断、内容还没写完"的
+  中间状态。这一点对`DeviceIdentity`而言比对其它五个存储更值得在意：这份文件就是上面那条
+  `LoadOrCreate`修复专门想保护的"这台设备此前跟别的设备建立的所有配对/信任关系"所系的那份身份
+  数据，如果真的被写坏，下次启动时`LoadOrCreate`要么撞上`JsonException`分支、要么解析出一个
+  字段不全的对象，两种情况都会重新生成一个全新`Guid`、永久丢失所有已配对设备对这台机器的
+  信任——跟上面那条修复要防的是同一种后果，只是触发原因从"读的时候被锁住"换成了"写的时候没写完"。
+  **修复方式**：新增私有的`WriteAtomic`方法，跟其它五个存储用完全一样的"先写`.tmp`、再
+  `File.Replace`/`File.Move`"套路，`LoadOrCreate`和`Save()`两处都改成调用它。**没有做的部分**：
+  这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。

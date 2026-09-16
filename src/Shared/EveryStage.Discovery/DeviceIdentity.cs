@@ -66,7 +66,7 @@ public sealed class DeviceIdentity
 
         var identity = new DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = Environment.MachineName, _persistedPath = path };
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, JsonSerializer.Serialize(identity));
+        WriteAtomic(path, identity);
         return identity;
     }
 
@@ -78,6 +78,32 @@ public sealed class DeviceIdentity
     {
         if (_persistedPath == null)
             throw new InvalidOperationException("DeviceIdentity.Save() requires an instance obtained via LoadOrCreate.");
-        File.WriteAllText(_persistedPath, JsonSerializer.Serialize(this));
+        WriteAtomic(_persistedPath, this);
+    }
+
+    /// <summary>Bug fixed here: both call sites above used to write with plain
+    /// <see cref="File.WriteAllText(string, string)"/>, unlike every other JSON-backed store in this
+    /// codebase (<c>FileLibraryStore</c>/<c>ScenarioRepository</c>/<c>SettingsStore</c>/
+    /// <c>PairedDeviceStore</c>/<c>PairedTerminalStore</c>), which all write to a <c>.tmp</c> file
+    /// first and only then atomically <see cref="File.Replace"/>/<see cref="File.Move"/> it into
+    /// place. A crash or power loss mid-<c>WriteAllText</c> (which truncates the destination file
+    /// before writing the new content) can leave this specific file — this device's own permanent
+    /// identity, the one file in this whole codebase whose corruption/loss this project's own
+    /// <see cref="LoadOrCreate"/> fix (see this class's <c>catch (Exception ex) when (ex is
+    /// IOException or UnauthorizedAccessException)</c> branch) already goes out of its way to avoid —
+    /// truncated or empty. <see cref="LoadOrCreate"/> would then either hit its <c>JsonException</c>
+    /// branch or successfully parse a near-empty object, and in both cases mint a brand-new identity
+    /// on the very next boot, permanently losing every peer's trust relationship with this device's
+    /// old one. Matching the atomic-write convention every other store in this codebase already uses
+    /// removes that risk the same way it already removes it for them.</summary>
+    private static void WriteAtomic(string path, DeviceIdentity identity)
+    {
+        string tempPath = path + ".tmp";
+        File.WriteAllText(tempPath, JsonSerializer.Serialize(identity));
+
+        if (File.Exists(path))
+            File.Replace(tempPath, path, destinationBackupFileName: null);
+        else
+            File.Move(tempPath, path);
     }
 }
