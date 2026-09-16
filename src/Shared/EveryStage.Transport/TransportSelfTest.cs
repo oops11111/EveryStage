@@ -74,7 +74,48 @@ public static class TransportSelfTest
         if (clockFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, clockFailure);
 
+        string? splitterFailure = RunAnnexBNalSplitterExtraPaddingCheck();
+        if (splitterFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, splitterFailure);
+
         return new Result(true, testPayloads.Count, receivedCount, null);
+    }
+
+    /// <summary>Verifies the bug fixed in <see cref="AnnexBNalSplitter.Split"/> (see that method's
+    /// own doc comment for the full reasoning) actually stays fixed: extra zero bytes between one
+    /// NAL unit's real content and the next start code — Annex B permits an arbitrary number of
+    /// leading_zero_8bits before a start code, not just the usual 2-3 — used to get silently
+    /// absorbed into the PRECEDING NAL unit's returned slice as a spurious trailing zero byte,
+    /// since the scanner's single-byte fallback only records where the start code it ends up
+    /// matching begins, not where the zero run before it actually started. Pure byte-array input,
+    /// no sockets/hardware at all — same category as <see cref="RunRtpVideoClockRoundTripCheck"/>.
+    /// Returns null on success, or a failure message.</summary>
+    private static string? RunAnnexBNalSplitterExtraPaddingCheck()
+    {
+        // One extra zero byte (at index 6) beyond the 2 that would normally immediately precede
+        // the second start code's own leading zeros — this is exactly the shape that used to leak
+        // a trailing 0x00 into the first NAL unit's slice.
+        byte[] annexB =
+        {
+            0x00, 0x00, 0x01,             // first start code (3-byte)
+            0x67, 0x41, 0x42,             // first NAL unit's real content
+            0x00, 0x00,                   // extra padding zero bytes, not part of either NAL
+            0x00, 0x00, 0x01,             // second start code (4-byte, one byte of it overlapping the padding above)
+            0x68, 0x43, 0x44,             // second NAL unit's real content
+        };
+
+        var nalUnits = AnnexBNalSplitter.Split(annexB).Select(m => m.ToArray()).ToList();
+        if (nalUnits.Count != 2)
+            return $"AnnexBNalSplitter extra-padding check: expected exactly 2 NAL units, got {nalUnits.Count}.";
+
+        byte[] expectedFirst = { 0x67, 0x41, 0x42 };
+        byte[] expectedSecond = { 0x68, 0x43, 0x44 };
+        if (!nalUnits[0].AsSpan().SequenceEqual(expectedFirst))
+            return $"AnnexBNalSplitter extra-padding check: first NAL unit should be exactly {{{string.Join(", ", expectedFirst.Select(b => $"0x{b:X2}"))}}}, got {{{string.Join(", ", nalUnits[0].Select(b => $"0x{b:X2}"))}}} — a spurious trailing zero byte from the padding between the two start codes leaked through.";
+        if (!nalUnits[1].AsSpan().SequenceEqual(expectedSecond))
+            return $"AnnexBNalSplitter extra-padding check: second NAL unit should be exactly {{{string.Join(", ", expectedSecond.Select(b => $"0x{b:X2}"))}}}, got {{{string.Join(", ", nalUnits[1].Select(b => $"0x{b:X2}"))}}}.";
+
+        return null;
     }
 
     /// <summary>Verifies <see cref="RtpVideoClock.FromElapsed(TimeSpan, uint)"/>/

@@ -57,6 +57,26 @@ public static class AnnexBNalSplitter
         {
             int nalStart = nalStarts[n];
             int nalEnd = n + 1 < codeBegins.Count ? codeBegins[n + 1] : span.Length;
+
+            // Bug fixed here: naively ending this slice at the NEXT recognized start code's own
+            // codeBegins position is wrong whenever extra zero bytes sit between this NAL's real
+            // content and that next start code without themselves being recognized as part of it —
+            // e.g. more than the usual 2-3 leading_zero_8bits before a start code (Annex B allows
+            // an arbitrary number): the scanner's single-byte-at-a-time fallback (see the `i++`
+            // above) only ever records where the start code IT ENDS UP MATCHING begins, not where
+            // the run of zero bytes before it actually started, so any earlier zero byte(s) in that
+            // run get silently absorbed into THIS NAL's slice as if they were genuine payload.
+            // Concretely: `00 00 01 67 41 42 00 00 00 00 01 68 43 44` (one extra zero byte before
+            // the second, 4-byte start code) used to return the first NAL as `67 41 42 00` instead
+            // of `67 41 42`. Trimming trailing zero bytes here is spec-guaranteed safe, not a
+            // heuristic: rbsp_trailing_bits (ITU-T H.264 §7.3.2.11) requires a NAL unit's RBSP to
+            // end with a rbsp_stop_one_bit — a genuinely well-formed NAL's last real byte can never
+            // be 0x00, so any all-zero byte(s) at the very end of a slice are always padding,
+            // whether from the encoder's own trailing_zero_8bits or (as here) an artifact of this
+            // scan, never content that would be wrongly stripped.
+            while (nalEnd > nalStart && span[nalEnd - 1] == 0)
+                nalEnd--;
+
             if (nalEnd > nalStart)
                 yield return annexBBytes.Slice(nalStart, nalEnd - nalStart);
         }
