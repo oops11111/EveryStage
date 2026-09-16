@@ -822,6 +822,27 @@ Caster知道终端机确实收到了东西。
     这次改动本身没有在这个沙箱里跑过（没有dotnet），依据完全是重新阅读现有代码逻辑推出来的，没有
     真机验证过恢复后是否真的严丝合缝（比如`WasapiOut`暂停期间`BufferedWaveProvider`是否有边界
     情况没考虑到）。
+84. **【新发现的真实bug，已修复】活动的顺序自动播放队列，如果排到一个"背景音频"文件，之前会
+    静默卡死在那里，永远不会往下走**：修上面第83条给`PlaybackEngine.Pause`加视频分支时，顺带
+    重新核对了`PlayFile`里`MediaKind.Audio`分支对`IsBackgroundAudio == true`那个早就存在的
+    `return;`——这条分支本身该不该做背景音频叠加播放（需要真正的多轨并发模型）不是这次要解决的，
+    但这个`return;`意味着这个文件的完成事件永远不会触发：既没有启动`VideoController`/
+    `AudioController`（不会有`PlaybackCompleted`事件），也没有武装停留时长定时器（不会有Tick），
+    `HandleCompletion`因此永远不会被调用，`PlayMode.SequentialAuto`的活动队列排到这一项就会
+    永远停在那里——不是"没做完这个功能"这么简单，是一个真正的功能性bug：只要活动里混了一个
+    背景音频文件（`AudioPropertiesDialog`的"背景音频"复选框早就能勾选，见风险第62条的音频属性
+    编辑UI），整个活动从这里开始的所有后续内容都放不出来了。**修复方式**：不是把这条
+    分支接进`HandleCompletion`的`OnCompletion`大switch里——`Loop`对一个从来没真正播放过任何东西
+    的文件没有意义，而且会立刻在同一个分支里重新进入自己，变成一个不停自旋的死循环，比原来的
+    "静默卡死"更糟；只处理`NextItem`+`PlayMode.SequentialAuto`这一种真正需要修的组合，通过
+    `BeginInvoke`延后调用`TryAdvance(1, ...)`直接跳到下一项（跟`OnVideoCompleted`/
+    `OnAudioCompleted`一样的"延后到下一次UI线程消息循环再处理，不要在`PlayFile`自己还没退出的
+    时候重入"套路）；`ManualSelect`/`Loop`/`HoldOnLastFrame`这三种组合保持原样"卡在这一项不动"——
+    这不是bug，是`PlayMode.ManualSelect`一直以来的正常语义（操作员手动决定下一项播什么），只有
+    `SequentialAuto`+`NextItem`这一种组合下"卡住不动"才是真正的bug（活动本该自动往下走，而不是
+    等操作员发现playback已经停了）。**没有解决的部分**：背景音频叠加播放本身依然完全没有实现，
+    这次只是让"没实现"从"整个活动卡死"降级成"跳过它，继续放下一项"；这次改动本身没有在这个沙箱
+    里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

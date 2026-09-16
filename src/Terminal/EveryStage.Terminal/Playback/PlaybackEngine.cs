@@ -352,6 +352,34 @@ public sealed class PlaybackEngine : IDisposable
                     // a genuinely concurrent playback-track model this class doesn't have (see this
                     // class's doc comment). Left unhandled rather than silently mis-rendering it
                     // through the image path. The non-background half (below) has real behavior now.
+                    //
+                    // Without the block below, an activity's PlayMode.SequentialAuto queue would
+                    // silently stall here forever the moment it reaches a background-audio file
+                    // (reachable today via AudioPropertiesDialog's checkbox): _currentFile is already
+                    // set above, but nothing in this branch ever arms a stay-duration timer or starts
+                    // a video/audio controller whose completion event could call HandleCompletion, so
+                    // nothing would ever advance past it. Deliberately does NOT route through
+                    // HandleCompletion's own OnCompletion switch to fix this — none of NextItem/
+                    // Loop/HoldOnLastFrame have a meaningful interpretation for a file that never
+                    // actually played anything, and Loop specifically would re-enter this exact
+                    // branch again immediately, forever, spinning the UI thread in a tight loop
+                    // rather than merely stalling. NextItem+SequentialAuto is the one combination
+                    // that actually needs fixing (everything else — ManualSelect, Loop,
+                    // HoldOnLastFrame — correctly just holds here, same as any other file kind would
+                    // under those same settings, until the operator manually moves on via
+                    // NextManual()/PreviousManual(); that's PlayMode.ManualSelect's normal contract,
+                    // not a bug). Deferred via BeginInvoke, same "call back in on a later UI-thread
+                    // iteration" pattern OnVideoCompleted/OnAudioCompleted already use, so this
+                    // PlayFile call finishes unwinding before anything advances past it.
+                    if (file.OnCompletion == CompletionAction.NextItem && EffectivePlayMode(file) == PlayMode.SequentialAuto)
+                    {
+                        var thisFile = file;
+                        _overlay.BeginInvoke(new Action(() =>
+                        {
+                            if (!ReferenceEquals(thisFile, _currentFile)) return; // stale — moved on already.
+                            TryAdvance(1, PlaybackTrigger.ActivityAuto);
+                        }));
+                    }
                     return;
                 }
                 _videoController?.Stop();
@@ -550,7 +578,14 @@ public sealed class PlaybackEngine : IDisposable
             return;
         }
 
-        if (_stayDurationTimer == null) return; // A not-yet-reachable background-audio _currentFile: no-op.
+        // Reaches here for a background-audio _currentFile (PlayFile's own MediaKind.Audio case
+        // returns immediately for one, leaving _currentFile pointing at a file nothing ever actually
+        // started playing — see that method's doc comment; this is reachable today via
+        // AudioPropertiesDialog letting a user flip IsBackgroundAudio on a file an activity's
+        // sequence then reaches) — _stayDurationTimer is also null here since nothing was ever armed
+        // for it, so this correctly no-ops rather than touching _remainingOnPause/IsPaused for state
+        // that was never really "playing" in the first place.
+        if (_stayDurationTimer == null) return;
 
         TimeSpan elapsed = DateTime.UtcNow - _stayDurationArmedAt;
         TimeSpan remaining = _stayDurationTotal - elapsed;
