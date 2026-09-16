@@ -870,6 +870,23 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     风格的`MessageBox.Show`说明"监听UDP端口失败"、给出两个最可能的原因（另一个投屏机实例在
     跑/端口被别的程序占用），然后正常返回而不是让异常继续往外抛。**没有做的部分**：这次改动
     本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+80. **【新增】新增`DeviceIdentitySelfTest`（`EveryStage.Discovery`共享库）+ Caster这一侧
+    第九个自检按钮"运行设备身份持久化自检"**：`DeviceIdentity`这个类这一轮已经修了两个真实bug
+    （`LoadOrCreate`的`IOException`/`UnauthorizedAccessException`处理——见本README第79条隔壁、
+    `EveryStage.Discovery`README对应条目——以及把两处写入换成跟其它存储一致的原子写入约定），
+    但在这之前完全没有任何自检覆盖过它的持久化行为，是这个仓库里唯一一个"两次真实bug修复、
+    零测试覆盖"的持久化类（那两处修复本身分别记在`EveryStage.Discovery`README对应条目和
+    本README第73条`PairedTerminalStore.Load()`那条附近，`DeviceIdentity`跟`PairedTerminalStore`
+    是同一次改动一起修的同一类bug）——跟第78条给`PairedTerminalStoreSelfTest`补"文件暂时锁住"
+    分支覆盖是同一次审计一起发现的同一类缺口，只是这次缺口是"完全没有自检"而不是"自检覆盖不全"。
+    **新增内容**：`DeviceIdentitySelfTest.Run()`跟`PairedTerminalStoreSelfTest`是完全同一个
+    形状——首次创建、重新加载确认拿到同一个`DeviceId`、改名后`Save()`并重新加载确认改名生效、
+    损坏文件后`LoadOrCreate`必须重新生成一个新身份而不是抛异常、文件被独占锁住时必须降级成
+    一个不落盘的临时身份且完全不碰原文件、解锁后原文件内容必须原封不动还能正常读回——五个
+    步骤跟`DeviceIdentity.LoadOrCreate`/`Save()`自己的实际行为逐一对应。UI这一侧`MainForm`
+    新增第九个自检按钮，`ClientSize`从963长到1043，类doc comment里"eight independent
+    self-tests"相应改成"nine"，说明文字里的"以下八个按钮"也改成"以下九个按钮"。**没有做的
+    部分**：这次新增的代码本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始
 

@@ -13,10 +13,10 @@ namespace EveryStage.Caster.UI;
 /// (target terminal list + start button + privacy notice) and, once paired, a second panel that now
 /// really streams: picking a terminal and pairing successfully immediately starts a real
 /// <see cref="LiveCastSession"/> (capture -> NV12 -> H.264 -> RTP, sent to the Terminal). Below that,
-/// eight independent self-tests remain available as standalone diagnostics for isolating which stage
+/// nine independent self-tests remain available as standalone diagnostics for isolating which stage
 /// (capture, encode, video transport, audio capture, AAC encode/decode, audio transport, the
-/// discovery/pairing wire format, or the paired-terminal list's own on-disk persistence) is at fault
-/// if live casting misbehaves: screen capture
+/// discovery/pairing wire format, the paired-terminal list's own on-disk persistence, or the device
+/// identity's own on-disk persistence) is at fault if live casting misbehaves: screen capture
 /// (<see cref="CaptureSelfTestRunner"/>), H.264 encoding (<see cref="EncodeSelfTestRunner"/>, capture
 /// -> NV12 -> hardware encoder), RTP transport (<see cref="TransportSelfTest"/>, a real loopback UDP
 /// round-trip with synthetic NAL-shaped payloads), audio capture
@@ -35,10 +35,13 @@ namespace EveryStage.Caster.UI;
 /// capture/encode/transport pipeline at all; it exists because <c>EveryStage.Discovery</c>'s JSON
 /// wire format had never been executed even once before this round, only reasoned about), and the
 /// paired-terminal list's own on-disk persistence (<see cref="PairedTerminalStoreSelfTest"/>, a
-/// save/reload/remove/corrupt-file round trip against a temp directory — the only one of these eight
-/// that needs no GPU/network/audio hardware at all, only standard .NET file I/O; still never actually
-/// executed here either, since this sandbox has no `dotnet` runtime regardless — see this project's
-/// README). None of the eight self-tests touch the live cast session or each other — including the two
+/// save/reload/remove/corrupt-file round trip against a temp directory), and the device identity's
+/// own on-disk persistence (<see cref="DeviceIdentitySelfTest"/>, the same save/reload/corrupt-file/
+/// locked-file shape applied to <see cref="DeviceIdentity"/> instead — the shared class both Terminal
+/// and Caster call <c>LoadOrCreate</c> on). These last two are the only ones of these nine that need
+/// no GPU/network/audio hardware at all, only standard .NET file I/O; still never actually executed
+/// here either, since this sandbox has no `dotnet` runtime regardless — see this project's README.
+/// None of the nine self-tests touch the live cast session or each other — including the two
 /// audio-capturing ones (WASAPI loopback and AAC encode/decode) running
 /// concurrently with a live cast's own <c>AudioCaptureSource</c> and each other,
 /// which this repo has never verified on a real machine but expects to work since WASAPI loopback
@@ -124,6 +127,8 @@ public sealed class MainForm : Form
     private readonly Label _discoveryStatsLabel;
     private readonly Button _pairedTerminalStoreSelfTestButton;
     private readonly Label _pairedTerminalStoreStatsLabel;
+    private readonly Button _deviceIdentitySelfTestButton;
+    private readonly Label _deviceIdentityStatsLabel;
 
     private DiscoveredTerminal? _pairedTerminal;
     private LiveCastSession? _liveCastSession;
@@ -178,8 +183,10 @@ public sealed class MainForm : Form
         // Bounds comment below) below the AAC one, then to 883 to fit a seventh section
         // (EveryStage.Discovery's own wire-format self-test) below the raw transport one, then to 963
         // to fit an eighth section (PairedTerminalStore's own on-disk round-trip self-test) below the
-        // discovery one — see this class's doc comment.
-        ClientSize = new Size(320, 963);
+        // discovery one, then to 1043 to fit a ninth section (DeviceIdentity's own on-disk round-trip
+        // self-test — the same shared EveryStage.Discovery class both Terminal and Caster call
+        // LoadOrCreate() on) below the paired-terminal-store one — see this class's doc comment.
+        ClientSize = new Size(320, 1043);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -261,8 +268,8 @@ public sealed class MainForm : Form
 
         var diagnosticsNoteLabel = new Label
         {
-            Text = "以下八个按钮各自独立、互不影响，是采集/编码/传输/音频/AAC编码/音频传输/发现协议/配对列表\n" +
-                   "持久化各环节各自的自检工具，用来在投屏出问题时单独定位是哪一步——不会影响正在进行的投屏。",
+            Text = "以下九个按钮各自独立、互不影响，是采集/编码/传输/音频/AAC编码/音频传输/发现协议/两项持久化\n" +
+                   "各环节各自的自检工具，用来在投屏出问题时单独定位是哪一步——不会影响正在进行的投屏。",
             ForeColor = Color.DimGray,
             Bounds = new Rectangle(12, 226, 296, 40),
         };
@@ -310,13 +317,21 @@ public sealed class MainForm : Form
         _discoverySelfTestButton.Click += OnDiscoverySelfTestClick;
         _discoveryStatsLabel = new Label { Bounds = new Rectangle(12, 831, 296, 40), ForeColor = Color.DimGray };
 
-        // PairedTerminalStoreSelfTest (see its own doc comment) — unlike the other seven, this one
+        // PairedTerminalStoreSelfTest (see its own doc comment) — unlike the first six, this one
         // isn't reasoned-about-but-never-executed the same way: it only needs standard .NET file I/O,
         // no GPU/network/audio hardware, though this sandbox still has no dotnet runtime to actually
         // run it with either (see this project's README).
         _pairedTerminalStoreSelfTestButton = new Button { Text = "运行配对列表持久化自检 (临时目录)", Bounds = new Rectangle(12, 875, 296, 32) };
         _pairedTerminalStoreSelfTestButton.Click += OnPairedTerminalStoreSelfTestClick;
         _pairedTerminalStoreStatsLabel = new Label { Bounds = new Rectangle(12, 911, 296, 40), ForeColor = Color.DimGray };
+
+        // DeviceIdentitySelfTest (see its own doc comment) — same "only needs standard .NET file
+        // I/O" category as PairedTerminalStoreSelfTest just above, applied to the OTHER shared
+        // JSON-persistence class in this codebase (EveryStage.Discovery.DeviceIdentity, used by both
+        // Terminal and Caster) rather than duplicating that reasoning here.
+        _deviceIdentitySelfTestButton = new Button { Text = "运行设备身份持久化自检 (临时目录)", Bounds = new Rectangle(12, 955, 296, 32) };
+        _deviceIdentitySelfTestButton.Click += OnDeviceIdentitySelfTestClick;
+        _deviceIdentityStatsLabel = new Label { Bounds = new Rectangle(12, 991, 296, 40), ForeColor = Color.DimGray };
 
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
@@ -329,6 +344,7 @@ public sealed class MainForm : Form
             _rawTransportSelfTestButton, _rawTransportStatsLabel,
             _discoverySelfTestButton, _discoveryStatsLabel,
             _pairedTerminalStoreSelfTestButton, _pairedTerminalStoreStatsLabel,
+            _deviceIdentitySelfTestButton, _deviceIdentityStatsLabel,
         });
 
         Controls.Add(_pairedPanel);
@@ -626,6 +642,37 @@ public sealed class MainForm : Form
         finally
         {
             _pairedTerminalStoreSelfTestButton.Enabled = true;
+        }
+    }
+
+    private void OnDeviceIdentitySelfTestClick(object? sender, EventArgs e)
+    {
+        // Synchronous, same reasoning as OnPairedTerminalStoreSelfTestClick just above —
+        // DeviceIdentitySelfTest.Run() only does local file I/O against a temp directory.
+        _deviceIdentitySelfTestButton.Enabled = false;
+        _deviceIdentityStatsLabel.ForeColor = Color.DimGray;
+        _deviceIdentityStatsLabel.Text = "运行中...";
+
+        try
+        {
+            var result = DeviceIdentitySelfTest.Run();
+            _deviceIdentityStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
+            _deviceIdentityStatsLabel.Text = result.Success
+                ? "通过：创建/重新加载/改名保存/损坏文件回退/锁定文件回退全部符合预期（临时目录，不影响真实设备身份）。"
+                : $"失败：{result.FailureReason}";
+        }
+        catch (Exception ex)
+        {
+            // DeviceIdentitySelfTest.Run() already catches internally and reports failures via its
+            // Result, but this mirrors every other self-test button's own catch block for the same
+            // "a self-test throwing outright is itself a reportable finding" reasoning, in case
+            // something outside that try/catch (e.g. Path.GetTempPath() itself failing) ever throws.
+            _deviceIdentityStatsLabel.ForeColor = Color.DarkRed;
+            _deviceIdentityStatsLabel.Text = $"自检本身出错：{ex.Message}";
+        }
+        finally
+        {
+            _deviceIdentitySelfTestButton.Enabled = true;
         }
     }
 
