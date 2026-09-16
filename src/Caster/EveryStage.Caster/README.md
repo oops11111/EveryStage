@@ -558,6 +558,28 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     第56条），这次给"真实RTT估算"那一行多加了一行过时提示，是继续往这个已知紧张的高度里塞内容，
     没有借这次机会去修；`IsRttStale`的10秒阈值跟这个仓库其他所有计时常量一样，没有真实网络环境
     可以验证是否合适。
+60. **【已实现，原为已知缺口】`TerminalDiscoveryClient.TerminalListChanged`事件终于有了订阅方**：
+    这个事件从这个类写出来那一轮起就在`HandleBeacon`里正确触发（新终端机出现/信息变化时），但
+    `MainForm`一直只靠`_listRefreshTimer`（1秒一次）轮询`GetTerminals()`来刷新列表，从未订阅这个
+    事件——不是坏的，只是让"刚开机、第一次广播beacon的终端机出现在列表里"这件事平白多等最多约1秒
+    才被看见。这次`MainForm`新增`OnTerminalListChanged`订阅它，收到时通过`BeginInvoke`回到UI线程
+    调用`RefreshTerminalList()`——`_listRefreshTimer`本身完全没有移除，`TerminalListChanged`按设计
+    就不覆盖"终端机过期消失"这种情况（见该事件旁边`PruneExpired`那段注释：过期检测故意留给轮询
+    覆盖），这次订阅只是让"新增/更新"这一半立即生效，不是替换轮询机制。**唯一需要防御的边界情况**：
+    `Program.cs`里`discoveryClient.Start()`发生在`new MainForm(...)`之前，理论上一个beacon可能在
+    这个窗体还没创建好窗口句柄之前就到达并触发这个事件——`OnTerminalListChanged`因此先检查
+    `IsHandleCreated`，为`false`就直接跳过（反正`_listRefreshTimer`马上就会自己刷新一次），而不是
+    冒着对着还没句柄的窗体调用`BeginInvoke`抛异常的风险。`Dispose`里对称地取消订阅，避免窗体销毁
+    过程中这个回调还在对着已经拆到一半的窗体尝试`BeginInvoke`。
+61. **【已实现，原为已知缺口】`PairedTerminal.PairedAt`（配对时间）终于有了读取方**：这个字段从
+    `PairedTerminal`这个record写出来那一轮起就在`ShowPaired`成功配对时被正确赋值、持久化进
+    `caster-paired-terminals.json`，但从来没有任何地方读取过它——待机列表里离线条目除了"（离线）"
+    后缀什么额外信息都不给，用户没法一眼看出"这是刚配对5分钟前的终端机"还是"这是几个月没见过、
+    大概可以移除了的终端机"。`TerminalListEntry`新增`PairedAt`字段（在线条目从`_pairedTerminals.
+    Find(t.DeviceId)?.PairedAt`查，离线条目直接用`PairedTerminal`自带的值，从未配对过的在线设备
+    两者都是`null`），`DisplayText`在有值时追加"· 配对于yyyy-MM-dd"。刻意没有像Terminal端
+    `DevicesPanel`那样做成多列`ListView`——待机列表本身就是一个简单`ListBox`，为了一个字段重做
+    整个列表控件不值得，追加到现有的单行文字里足够。
 
 ## 尚未开始
 

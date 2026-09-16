@@ -120,10 +120,20 @@ public sealed class MainForm : Form
     /// would be actively misleading rather than merely stale. <see cref="DisplayText"/> (not
     /// <see cref="DiscoveredTerminal"/>'s own <c>DeviceName</c>) is what <see cref="_terminalListBox"/>
     /// binds its <c>DisplayMember</c> to, so the "（离线）" suffix shows up without needing a custom
-    /// <c>ListBox</c> item renderer.</summary>
-    private sealed record TerminalListEntry(Guid DeviceId, string DeviceName, DiscoveredTerminal? Live)
+    /// <c>ListBox</c> item renderer.
+    ///
+    /// <see cref="PairedAt"/> (<see cref="Discovery.PairedTerminal.PairedAt"/> — null for a live
+    /// terminal this Caster has never actually paired with) previously had no reader anywhere: it
+    /// was captured at pairing time and then just sat in <c>PairedTerminalStore</c>'s persisted JSON.
+    /// Surfacing it here answers the one question the offline half of this list can't otherwise
+    /// answer at a glance — "is this a terminal I paired with five minutes ago, or one I haven't
+    /// seen in months and might as well remove?" — without needing a full multi-column
+    /// <c>ListView</c> the way Terminal's own <c>DevicesPanel</c> uses for the same data.</summary>
+    private sealed record TerminalListEntry(Guid DeviceId, string DeviceName, DiscoveredTerminal? Live, DateTimeOffset? PairedAt)
     {
-        public string DisplayText => Live != null ? DeviceName : $"{DeviceName}（离线）";
+        public string DisplayText =>
+            (Live != null ? DeviceName : $"{DeviceName}（离线）")
+            + (PairedAt is { } pairedAt ? $" · 配对于{pairedAt.LocalDateTime:yyyy-MM-dd}" : "");
     }
 
     /// <summary>One entry of the standby panel's monitor picker — <see cref="OutputIndex"/> is
@@ -292,6 +302,16 @@ public sealed class MainForm : Form
         _listRefreshTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _listRefreshTimer.Tick += (_, _) => RefreshTerminalList();
         _listRefreshTimer.Start();
+
+        // TerminalDiscoveryClient.TerminalListChanged (see its own doc comment) previously had no
+        // subscriber anywhere — this 1s timer alone already covered every case it needs to
+        // (including the removal/expiry case TerminalListChanged deliberately doesn't cover, see
+        // that class's own comment on why), just with up to ~1s of avoidable staleness for the
+        // "a brand-new terminal just started beaconing" case specifically. Subscribing doesn't
+        // replace the timer (still needed for expiry) — it only makes that one case feel instant
+        // instead of waiting for the next tick, which matters most exactly when someone is watching
+        // this standby list for a Terminal they just powered on.
+        _discoveryClient.TerminalListChanged += OnTerminalListChanged;
 
         _captureStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _captureStatsTimer.Tick += (_, _) => RefreshCaptureStats();
@@ -515,6 +535,24 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>Raised from <see cref="TerminalDiscoveryClient"/>'s background receive loop —
+    /// marshal to the UI thread before touching <see cref="_terminalListBox"/>. Guards against a
+    /// beacon racing ahead of this form's own window handle: <c>Program.cs</c> calls
+    /// <c>discoveryClient.Start()</c> before constructing <see cref="MainForm"/> at all, so in
+    /// principle a beacon could arrive before this form has a handle to <see cref="Control.BeginInvoke(Delegate)"/>
+    /// onto — vanishingly unlikely on a real LAN and impossible to verify timing for in this sandbox,
+    /// but <see cref="_listRefreshTimer"/>'s own poll covers this exact update a moment later
+    /// regardless, so silently skipping here rather than risking an exception is the safe choice.</summary>
+    private void OnTerminalListChanged()
+    {
+        if (!IsHandleCreated) return;
+        // Explicit new Action(...) rather than a bare method group: Control.BeginInvoke(Delegate)
+        // takes the abstract Delegate base type, which a method group can't convert to directly —
+        // same wrapping this repo's Terminal side already uses for the same reason
+        // (OverlayWindow.BeginInvoke(new Action(...)) in PlaybackEngine.cs).
+        BeginInvoke(new Action(RefreshTerminalList));
+    }
+
     private void RefreshTerminalList()
     {
         // Preserve selection across refreshes by DeviceId rather than list index, since the list is
@@ -530,11 +568,11 @@ public sealed class MainForm : Form
         // half), not twice.
         var liveIds = liveTerminals.Select(t => t.DeviceId).ToHashSet();
         var entries = liveTerminals
-            .Select(t => new TerminalListEntry(t.DeviceId, t.DeviceName, t))
+            .Select(t => new TerminalListEntry(t.DeviceId, t.DeviceName, t, _pairedTerminals.Find(t.DeviceId)?.PairedAt))
             .Concat(_pairedTerminals.All
                 .Where(p => !liveIds.Contains(p.DeviceId))
                 .OrderBy(p => p.DeviceName)
-                .Select(p => new TerminalListEntry(p.DeviceId, p.DeviceName, null)))
+                .Select(p => new TerminalListEntry(p.DeviceId, p.DeviceName, null, p.PairedAt)))
             .ToList();
 
         _terminalListBox.BeginUpdate();
@@ -852,6 +890,11 @@ public sealed class MainForm : Form
     {
         if (disposing)
         {
+            // MainForm doesn't own _discoveryClient (Program.cs's `using` does, and disposes it
+            // after this form) — unsubscribing here just prevents a stale TerminalListChanged
+            // handler from firing BeginInvoke against a form that's mid-teardown, not a leak of
+            // _discoveryClient itself.
+            _discoveryClient.TerminalListChanged -= OnTerminalListChanged;
             _listRefreshTimer.Dispose();
             _captureStatsTimer.Dispose();
             _captureSelfTest.Dispose();
