@@ -22,6 +22,49 @@ internal static class Program
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
+        // This session found three real bugs sharing one root cause: an exception on a background
+        // thread or in a fire-and-forget Task, thrown from a narrower type than whatever caught it
+        // expected (or caught by nothing at all), silently killing a whole background loop/callback
+        // chain forever with zero visible symptom — see EveryStage.Discovery's
+        // DiscoveryProtocol.Decode and this project's own PlaybackEngine.PlayImageAsync/
+        // PlayDocumentAsync fixes for two of them (this project's README documents both). Those two
+        // are fixed at their own source now, but nothing stopped a THIRD, not-yet-found instance of
+        // the same shape from existing somewhere else in this codebase, or from being introduced
+        // later — and separately, nothing at all protected the UI thread itself: any WinForms event
+        // handler (a button click, a menu item) throwing would hit .NET's default unhandled-exception
+        // behavior, which for an unattended device (PLANNING.md §14.4's whole framing) means the
+        // Terminal stops functioning until someone physically restarts it — a far worse outcome than
+        // any single subsystem getting stuck. These three handlers are this session's answer: not a
+        // fix for a specific bug, but the safety net PLANNING.md's own "无人值守" requirement implies
+        // should have existed from the start. See CrashLogger's own doc comment for why this writes
+        // to a fourth, ad-hoc log category rather than one of PLANNING.md §14.4's three named ones.
+        var crashLogger = new CrashLogger();
+
+        // UnhandledExceptionMode.CatchException routes a UI-thread exception (e.g. a Toast action
+        // button's callback throwing) to ThreadException below INSTEAD OF .NET's default crash/WER
+        // dialog behavior — and critically, the message loop keeps running afterward. Must be set
+        // before Application.Run, and ideally before any Control exists at all.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => crashLogger.LogUnhandledException("Application.ThreadException", e.Exception);
+
+        // Last-chance logging for an exception that reaches the very top on some OTHER thread —
+        // .NET does NOT let this handler prevent the process from terminating (isTerminating is
+        // always true in practice for this event), so this can only make sure the reason gets
+        // written down before the Terminal goes dark, not actually keep it running.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            crashLogger.LogUnhandledException("AppDomain.UnhandledException", e.ExceptionObject as Exception);
+
+        // Catches exactly the PlayImageAsync/PlayDocumentAsync bug's shape (a fire-and-forget Task
+        // whose fault nobody ever awaits) for any OTHER instance of it this session's own fixes
+        // didn't happen to find. SetObserved() marks the exception handled so it doesn't also
+        // trigger a second-chance report — this handler's whole job is to make sure it gets logged
+        // instead of vanishing, not to let it crash anything further.
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            crashLogger.LogUnhandledException("TaskScheduler.UnobservedTaskException", e.Exception);
+            e.SetObserved();
+        };
+
         // Guarantee a WindowsFormsSynchronizationContext exists on this thread before anything
         // that runs on a background thread (DiscoveryService's UDP loops) needs to marshal work
         // back onto it. WinForms normally installs one automatically the first time a Control is

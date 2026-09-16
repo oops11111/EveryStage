@@ -684,6 +684,27 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     进行中和未来的`RequestPairingAsync`/`PingAsync`调用都会跑完自己的超时返回null，表现跟普通
     丢包一样，但这次永远不会恢复。详细分析、修复方式、新增自检见`EveryStage.Discovery`README——
     这次改动完全在共享库里，`TerminalDiscoveryClient.HandleDatagram`一行代码都没有改。
+69. **【新增】这个进程第一次有了顶层的"UI线程异常/后台Task未观察异常"兜底，但比Terminal那边
+    做得更轻**：见Terminal README对应新增条目的完整推理——`grep -rn
+    "UnobservedTaskException|UnhandledException" src/`确认这个仓库此前任何地方都没有注册过
+    任何一种顶层异常兜底，第67、68条这一轮连续找到的两个真实bug（`ScreenCaptureLostException`
+    后台循环空转、`DiscoveryProtocol.Decode`会杀死接收循环）都是这同一个大缺口下的具体症状，
+    修复各自都只堵住了已经发现的位置，不能排除还有没找到的第三个实例。`Program.Main()`里补上
+    `Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException)`+
+    `Application.ThreadException`（UI线程异常不再让整个进程崩溃，弹一个"发生了未预期的错误，
+    但程序会尝试继续运行"的对话框，消息循环继续跑）和`TaskScheduler.UnobservedTaskException`
+    （单纯`SetObserved()`）。**为什么比Terminal那边做得更轻——两个明确的、故意的删减**：
+    (1) 没有`AppDomain.UnhandledException`——这个事件本来就无法阻止进程真正终止，它唯一的价值
+    是"死之前留一条日志线索"，但这个项目完全没有任何持久化日志基础设施（跟Terminal不同，
+    PLANNING.md §14.4的三类日志要求本来就只针对"无人值守"的Terminal，Caster是操作员正在盯着
+    屏幕主动操作的界面），为了这一个处理器专门造一套日志系统，规模超过这个风险本身；
+    (2) `UnobservedTaskException`没有弹`MessageBox`——这个事件触发在GC终结哪个线程上不确定，
+    不一定是UI线程，从这里弹UI存在跨线程访问控件的风险（`MainForm`别处自己一直很小心地用
+    `BeginInvoke`做UI线程封送），`SetObserved()`本身也没有真正记录任何东西（这个项目没有日志
+    可写），这个处理器诚实地说唯一价值是"面向未来"——不是修一个已知缺口，是防止以后新引入的
+    fire-and-forget Task异常变得比现状更糟。**没有做的部分**：这次改动本身没有在这个沙箱里
+    跑过（没有dotnet），`UnhandledExceptionMode.CatchException`之后消息循环是否真的能在UI线程
+    异常之后干净地继续运行，完全依赖.NET文档描述的行为，没有真机验证过。
 
 ## 尚未开始
 

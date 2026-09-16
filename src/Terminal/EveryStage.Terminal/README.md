@@ -901,6 +901,30 @@ Caster知道终端机确实收到了东西。
     `DiscoveryProtocolSelfTest.CheckMalformedInputsDontThrow`自检见`EveryStage.Discovery`README
     ——这次改动完全在共享库里，Terminal这边的`DiscoveryService.HandleDatagram`一行代码都没有改，
     单纯是这次影响面覆盖了这一侧，值得在这里也记一笔。
+88. **【新增】这个进程第一次有了顶层的"UI线程异常/后台Task未观察异常/其他线程未捕获异常"兜底，
+    以及配套的第四类日志（`CrashLogger`）**：第86、87条这一轮连续找到3个"某个后台线程/
+    fire-and-forget Task抛出的异常，因为没有兜底而彻底消失，对应的后台循环/回调链从此永久失效"
+    形状的真实bug，但那两条各自的修复只堵住了已经发现的两个具体位置——`grep -rn
+    "UnobservedTaskException|UnhandledException" src/`确认这个仓库此前任何地方都没有注册过
+    `Application.ThreadException`/`AppDomain.UnhandledException`/
+    `TaskScheduler.UnobservedTaskException`中的任何一个，意味着还有可能存在没被这轮排查找到的
+    第三个、第四个实例，或者以后新增代码引入新的一个。这次在`Program.Main()`里补上这三个顶层
+    处理器，不是针对某个具体bug的修复，是PLANNING.md自己"无人值守"这个要求本来就该有、但从一开始
+    就没有的安全网：`Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException)`+
+    `Application.ThreadException`——把UI线程（比如Toast某个action按钮的回调）抛出的异常从.NET
+    默认的"整个进程崩溃"行为改成"记录下来，消息循环继续跑"，这对一台没人值守、崩溃后没人会去手动
+    重启的设备来说是本质区别；`AppDomain.CurrentDomain.UnhandledException`——虽然无法阻止进程
+    真正终止，但至少在"整个Terminal彻底黑屏消失"之前把原因写进日志，而不是留下一个完全没有线索
+    的空白；`TaskScheduler.UnobservedTaskException`——专门对应第86条那种bug的形状本身，任何
+    这轮排查没找到的、未来新引入的fire-and-forget Task异常，至少会被记下来而不是彻底消失，同时
+    `SetObserved()`避免触发二次异常报告。**为什么新增一个第四类日志而不是塞进现成的三类里**：
+    PLANNING.md §14.4明确点名的三类（文件操作/播放投屏/设备连接）"分三类物理独立存储，便于按
+    问题类型定位"——一个通用的未处理异常可能是任何一类问题、也可能都不是，硬塞进某一类反而会
+    误导"按问题类型定位"这个初衷；`CrashLogger`独立于这三类之外存在，专门只服务这次新增的三个
+    顶层处理器，不冒充PLANNING.md命名过的类别之一。**没有做的部分**：这次改动本身没有在这个
+    沙箱里跑过（没有dotnet），`UnhandledExceptionMode.CatchException`之后WinForms消息循环
+    是否真的能在UI线程异常之后干净地继续运行、不留下部分初始化到一半的控件状态，完全依赖.NET
+    文档描述的行为，没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
