@@ -28,8 +28,30 @@ public sealed class DailyRollingLogWriter
         _categoryPrefix = categoryPrefix;
         _retention = retention ?? TimeSpan.FromDays(30);
 
-        Directory.CreateDirectory(_directory);
-        CleanupOldFiles();
+        // Bug fixed here: these two calls used to run unprotected, unlike this same class's own
+        // Write() a few lines down — an inconsistency within a single class, not just across
+        // classes. This constructor is on the most dangerous possible call path: CrashLogger (one
+        // of the four categories built on this shared writer) is constructed as literally the FIRST
+        // statement of Program.Main(), before Application.ThreadException/AppDomain.
+        // UnhandledException/TaskScheduler.UnobservedTaskException are even registered — so an
+        // exception here (a permissions problem or a full disk on this brand-new unattended device,
+        // or CleanupOldFiles' Directory.EnumerateFiles hitting the same) would crash the whole
+        // Terminal with absolutely no record anywhere, not even the "at least it got logged before
+        // dying" outcome every other startup-time failure this session has fixed still gets — the
+        // one job this specific piece of diagnostic infrastructure exists for. Matches Write()'s own
+        // established philosophy ("a write failing ... must never take the Terminal down with it")
+        // by simply extending it to construction time: on failure, this writer still comes into
+        // existence, just permanently unable to actually write anything — Write()'s own try/catch
+        // already tolerates that outcome indefinitely (every future call fails the same way and is
+        // silently swallowed), which is a far better failure mode for an unattended device than not
+        // starting at all.
+        try
+        {
+            Directory.CreateDirectory(_directory);
+            CleanupOldFiles();
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 
     public void Write(string eventType, object? fields = null)

@@ -1182,6 +1182,27 @@ Caster知道终端机确实收到了东西。
     （已经在`Main()`里注册）能保证这个失败被记进crash日志，不会像Caster修复之前那样连日志
     都没有——但进程本身仍然会崩溃，没有做到跟GPU失败那条一样的优雅降级。这个不对称是这次
     审计权衡之后的有意选择，不是遗漏。
+100. **【修复】`DailyRollingLogWriter`的构造函数（`Directory.CreateDirectory`+`CleanupOldFiles`）
+    之前完全没有异常防护，而这正是`CrashLogger`——上面第99条那整套"至少能记进crash日志"
+    安全网本身——所依赖的底层类**：这个类自己的`Write()`方法早就把"写入失败（磁盘满、文件被
+    外部工具短暂锁住）绝不能拖垮这台无人值守设备"当成明确的设计原则并且用`try/catch`落实了，
+    但同一个类的构造函数里做的完全同一类文件系统I/O（`Directory.CreateDirectory`、
+    `CleanupOldFiles`内部的`Directory.EnumerateFiles`）却没有同样的保护——这是同一个类内部
+    两处行为不一致，不是跨类的问题。而这个构造函数偏偏又在最危险的调用路径上：`CrashLogger`
+    （这个共享写入类支持的四个日志分类之一）是`Program.Main()`里的第一条有意义的语句，
+    在`Application.ThreadException`/`AppDomain.CurrentDomain.UnhandledException`/
+    `TaskScheduler.UnobservedTaskException`这三个安全网注册*之前*就执行——如果这里抛出异常
+    （权限问题或者磁盘满了，对一台全新部署、第一次启动的无人值守设备完全谈不上假设性），
+    整个Terminal会崩溃得连"至少记进crash日志"这个第99条都提到的最低保障都没有，比这次审计
+    发现的所有其它问题都更彻底：连负责记录"进程为什么死了"的基础设施本身都没能活下来。
+    **修复方式**：给构造函数里`Directory.CreateDirectory`/`CleanupOldFiles`这两行也包一层
+    跟`Write()`完全一致的`try/catch (IOException) {} catch (UnauthorizedAccessException) {}`
+    ——失败时这个写入器对象仍然能构造成功，只是往后永远写不进任何东西，而这个"永远写失败"的
+    结果早就被`Write()`自己的`try/catch`无限期兼容了，对一台无人值守设备来说，这比"因为
+    日志目录建不出来就直接不启动"要好得多。这个修复同时覆盖了`CrashLogger`和另外三个共享
+    同一个`DailyRollingLogWriter`的日志分类（`FileOperationLogger`/`PlaybackLogger`/
+    `DeviceConnectionLogger`），因为它们的构造函数问题完全出在这一个共享的底层类里。
+    **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
