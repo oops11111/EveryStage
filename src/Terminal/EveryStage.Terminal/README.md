@@ -39,7 +39,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
 | `UI/Panels/FilesPanel.cs` | §8.2 | 文件面板：`ListView`缩略图网格 + 类型筛选(全部/图片/视频/文档/音频) + 导入对话框 + 从资源管理器拖拽导入 + 移除(二次确认) + 双击播放(`PlaybackEngine.RequestPlay`)，导入/移除都接入`FileOperationLogger` |
 | `UI/Panels/DevicesPanel.cs` | §8.2 | 设备面板：已配对设备列表(信任状态/被投放/被监看/配对时间) + 移除配对 + 编辑权限(见"已知风险"第70条) |
-| `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(真正可折叠、且折叠状态会持久化，见"已知风险"第72条) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 播放方式/音频属性/停留时长(见"已知风险"第71条) + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改及播放属性变更 |
+| `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(真正可折叠、且折叠状态会持久化，见"已知风险"第72条) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 播放方式/音频属性/停留时长/完成后动作(见"已知风险"第71、73条) + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改及播放属性变更 |
 | `UI/TextInputDialog.cs`, `UI/LibraryFilePickerDialog.cs` | — | 活动面板用到的两个小弹窗：单行文本输入(方案/活动命名)、从文件库选一个文件 |
 | `UI/Panels/SettingsPanel.cs` | §8.2 | 设置面板：`TabControl`五个分类(通用/显示/播放行为/网络与设备/关于)；`Data/AppSettings.cs`+`Data/SettingsStore.cs`是这次新加的数据模型和JSON持久化(同样是atomic write) |
 
@@ -635,6 +635,19 @@ Caster知道终端机确实收到了东西。
     加的防护逻辑，只是恰好利用了这个既有事实。**没有额外做的部分**：文件叶子节点没有自己的子节点，
     物理上不可能触发折叠/展开事件，`OnActivityCollapseStateChanged`里的`node?.Tag is not Activity`
     判断只是防御性的，不是这次发现的真实场景。
+73. **【已实现，原为已知缺口】`MediaFile.OnCompletion`（PLANNING.md §6"播放完成后动作：自动下一项/
+    循环/停留等待"）终于有了编辑入口——跟上一条`StayDuration`同一类"行为早就对了、UI从来没补上"
+    的缺口**：`PlaybackEngine.HandleCompletion`从这个仓库第一次真正实现播放行为那一轮起就在正确
+    读取并执行`OnCompletion`（`NextItem`/`Loop`/`HoldOnLastFrame`三选一），`ActivitiesPanel.CloneFile`
+    也一直在正确复制它，但从来没有任何UI能把它从默认值`NextItem`改成别的。新增
+    `UI/CompletionActionDialog.cs`——跟`PlayModeDialog`处理`Activity.DefaultPlayMode`时用的
+    `allowInherit: false`分支是同一种布局（一个`ComboBox`+确定/取消，没有"覆盖/继承"勾选框），
+    因为`OnCompletion`在数据模型里根本没有"继承活动默认值"这个概念（不存在
+    `Activity.DefaultCompletionAction`）。`ActivitiesPanel`新增"完成后动作..."按钮，**故意不像
+    `_stayDurationButton`/`_audioPropertiesButton`那样按`MediaKind`限制启用条件**——只要选中了
+    文件就启用，因为`HandleCompletion`本身对视频、独立播放的音频、图片/文档的停留计时器这几条路径
+    一视同仁，没有理由让某个`Kind`的文件不能设置这个属性。保存时同样接入
+    `FileOperationLogger.LogPlaybackPropertyChanged`，用`ToString()`记录枚举值变化。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

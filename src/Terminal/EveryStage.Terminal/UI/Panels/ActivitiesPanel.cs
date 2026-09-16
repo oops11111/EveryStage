@@ -39,6 +39,7 @@ public sealed class ActivitiesPanel : UserControl
     private readonly Button _playModeButton;
     private readonly Button _audioPropertiesButton;
     private readonly Button _stayDurationButton;
+    private readonly Button _completionActionButton;
     private readonly Button _removeButton;
     private readonly Button _moveUpButton;
     private readonly Button _moveDownButton;
@@ -102,6 +103,17 @@ public sealed class ActivitiesPanel : UserControl
         // button existed to do it — see this project's README "已知风险".
         _stayDurationButton = new Button { Text = "停留时长...", AutoSize = true, Enabled = false };
         _stayDurationButton.Click += (_, _) => OnEditStayDuration();
+        // Enabled for any selected file regardless of Kind — unlike StayDuration/AudioProperties,
+        // MediaFile.OnCompletion applies uniformly (PlaybackEngine.HandleCompletion is reached from
+        // video, standalone audio, and the image/document stay-duration timer alike, see that
+        // method's own callers). No activity-level counterpart exists in the data model at all (no
+        // Activity.DefaultCompletionAction), so — unlike PlayMode — there's nothing to fall back to
+        // editing when only an activity is selected. Same "先做行为、再做UI" gap as StayDuration
+        // before it: HandleCompletion has read and correctly acted on OnCompletion since the round
+        // that gave PlaybackEngine its first real behavior at all, but nothing ever let anyone set
+        // it away from its NextItem default for a specific file — see this project's README.
+        _completionActionButton = new Button { Text = "完成后动作...", AutoSize = true, Enabled = false };
+        _completionActionButton.Click += (_, _) => OnEditCompletionAction();
         _removeButton = new Button { Text = "移除文件", AutoSize = true, Enabled = false };
         _removeButton.Click += (_, _) => OnRemoveFile();
         _moveUpButton = new Button { Text = "上移", AutoSize = true, Enabled = false };
@@ -111,7 +123,8 @@ public sealed class ActivitiesPanel : UserControl
         activityBar.Controls.AddRange(new Control[]
         {
             newActivityButton, renameActivityButton, deleteActivityButton, _playModeButton,
-            _audioPropertiesButton, _stayDurationButton, _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
+            _audioPropertiesButton, _stayDurationButton, _completionActionButton,
+            _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
         });
 
         _tree = new TreeView { Dock = DockStyle.Fill };
@@ -410,6 +423,26 @@ public sealed class ActivitiesPanel : UserControl
         _repository.Save(_store);
     }
 
+    /// <summary>Only reachable when a file is selected — see <see cref="UpdateButtonStates"/>.
+    /// Unlike <see cref="OnEditStayDuration"/>/<see cref="OnEditAudioProperties"/>, not restricted to
+    /// a particular <see cref="MediaKind"/>: <c>MediaFile.OnCompletion</c> applies to every kind
+    /// alike (see this button's own construction comment).</summary>
+    private void OnEditCompletionAction()
+    {
+        var (_, activity, file) = GetSelection();
+        if (activity == null || file == null) return;
+
+        using var dialog = new CompletionActionDialog($"完成后动作 — {Path.GetFileName(file.SourcePath)}", file.OnCompletion);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (dialog.SelectedCompletionAction == file.OnCompletion) return; // no actual change — nothing to log/save.
+
+        string oldValue = file.OnCompletion.ToString();
+        string newValue = dialog.SelectedCompletionAction.ToString();
+        file.OnCompletion = dialog.SelectedCompletionAction;
+        _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.OnCompletion), oldValue, newValue);
+        _repository.Save(_store);
+    }
+
     private void OnRemoveFile()
     {
         var (scenario, activity, file) = GetSelection();
@@ -471,6 +504,7 @@ public sealed class ActivitiesPanel : UserControl
         _playModeButton.Enabled = activity != null;
         _audioPropertiesButton.Enabled = file != null && file.Kind == MediaKind.Audio;
         _stayDurationButton.Enabled = file != null && file.Kind is MediaKind.Image or MediaKind.Document;
+        _completionActionButton.Enabled = file != null;
         _removeButton.Enabled = file != null;
         _moveUpButton.Enabled = file != null;
         _moveDownButton.Enabled = file != null;
