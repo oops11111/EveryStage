@@ -90,6 +90,36 @@ public static class PairedTerminalStoreSelfTest
             if (!corruptCopyExists)
                 return new Result(false, "Loading a corrupt file should have left a renamed '.corrupt-*' copy of it behind, but none was found.");
 
+            // Locked-file fallback (PairedTerminalStore.Load's OTHER catch branch, added in a later
+            // round than the JsonException one above — see this project's README on why it needed a
+            // separate branch: a locked-but-otherwise-fine file must fail safe WITHOUT the ".corrupt-*"
+            // rename the JsonException branch does, since renaming a perfectly good file aside just
+            // because it was momentarily unreadable would permanently hide it from every future Load().
+            // First restore the file to known-good, valid content (overwriting the corrupt bytes
+            // store4 left behind above), then hold an exclusive lock on it (FileShare.None — no other
+            // handle, including a read-only one, is allowed while this Stream is open) to simulate
+            // another process (antivirus scan, backup tool) having it open, and confirm a
+            // PairedTerminalStore constructed against the locked path fails safe to empty rather than
+            // throwing IOException out of its constructor.
+            store2.Upsert(terminalB); // re-save valid content (terminalB is still what store2 holds in memory).
+            long validFileLength = new FileInfo(storePath).Length;
+            using (new FileStream(storePath, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                var storeWhileLocked = new PairedTerminalStore(storePath);
+                if (storeWhileLocked.All.Count != 0)
+                    return new Result(false, $"A store loaded while the file is locked should fail safe to empty (this run's own file lock, not the file's own content, is what should trigger the fallback), but All.Count was {storeWhileLocked.All.Count}.");
+            }
+
+            // Lock released — the ORIGINAL valid content must still be there, untouched and
+            // unrenamed, unlike the JsonException/corrupt-content case above. This is the assertion
+            // that actually distinguishes the two branches: both fail safe to an empty in-memory list
+            // for THIS load attempt, but only one of them is allowed to have touched the file on disk.
+            if (new FileInfo(storePath).Length != validFileLength)
+                return new Result(false, "The file's on-disk content changed as a side effect of loading it while locked — it should have been left completely untouched.");
+            var storeAfterUnlock = new PairedTerminalStore(storePath);
+            if (storeAfterUnlock.All.Count != 1 || storeAfterUnlock.Find(terminalB.DeviceId) == null)
+                return new Result(false, "After the lock was released, the original valid content should still load back correctly — the locked-read attempt must not have corrupted or discarded it.");
+
             return new Result(true, null);
         }
         catch (Exception ex)

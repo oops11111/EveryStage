@@ -835,6 +835,24 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     `gpu`/`capture`两个局部变量都改成可空并在`catch`里对称地`Dispose()`（`D3D11Device()`
     自己失败时`capture`本来就还是`null`，跟修复前"只释放`gpu`"这一半保持行为一致）。
     **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+78. **【新增】`PairedTerminalStoreSelfTest`补上了"文件暂时锁住"这条分支的覆盖，之前只测了
+    "文件内容损坏"那一半**：`PairedTerminalStore.Load()`本身在更早一轮加了一个单独的
+    `catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)`分支（见本
+    README第73条），专门处理"文件暂时被其他进程锁住"跟"文件内容真的损坏"（`JsonException`分支）
+    这两种情况需要不同的善后方式——损坏的文件可以放心改名成`.corrupt-*`备份，但被锁住的文件
+    内容其实完好，改名反而会把好数据永久藏起来。但这次审计发现，`PairedTerminalStoreSelfTest`
+    自己一直只测了`JsonException`那一半（`File.WriteAllText`写入非法JSON那一步），从来没有
+    验证过"文件被锁住"这条路径是不是真的按预期表现——这正是这个仓库一贯的做法（每次给某个bug
+    加修复，都顺手给对应自检补上覆盖，例如`DiscoveryProtocolSelfTest.CheckMalformedInputsDontThrow`
+    之于`DiscoveryProtocol.Decode`的修复），这次是把这个既有习惯回头补到一个当时漏掉的地方。
+    **新增的测试步骤**：用`FileStream`以`FileShare.None`独占打开`storePath`模拟"另一个进程正在
+    占用这个文件"，在锁定期间构造一个新的`PairedTerminalStore`，验证它不抛异常、安全降级成空
+    列表；释放锁之后再验证文件本身的字节长度完全没变、且能被正常读回——后面这条断言才是真正
+    区分"锁住"和"损坏"两条分支的关键：两者都会让*这一次*加载得到空列表，但只有"损坏"分支被
+    允许真的动这个文件，"锁住"分支必须完全不碰它。**没有做的部分**：这次改动本身没有在这个
+    沙箱里跑过（没有dotnet），没有真机验证过——包括`FileShare.None`独占锁在真实Windows文件
+    系统上是否真的会让`File.OpenRead`按预期抛`IOException`，也只是基于.NET文档推断，没有
+    实测验证过。
 
 ## 尚未开始
 
