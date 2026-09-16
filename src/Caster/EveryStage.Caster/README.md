@@ -580,6 +580,22 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     两者都是`null`），`DisplayText`在有值时追加"· 配对于yyyy-MM-dd"。刻意没有像Terminal端
     `DevicesPanel`那样做成多列`ListView`——待机列表本身就是一个简单`ListBox`，为了一个字段重做
     整个列表控件不值得，追加到现有的单行文字里足够。
+62. **【核实为有意设计，非缺口】`CaptureSelfTestRunner`/`EncodeSelfTestRunner`/
+    `AudioCaptureSelfTestRunner`/`AacEncodeSelfTestRunner`/`LiveCastSession`这五个类各自的
+    `StatsUpdated`事件，从来没有任何订阅方，但不应该被当成待修的缺口去接线**：排查
+    `TerminalListChanged`（第60条）的时候顺手查了这个仓库里所有`public event Action? StatsUpdated`
+    声明，发现全部五个类都是同一个模式——声明、在多处触发，但`MainForm`统统改用独立的轮询定时器
+    （`_captureStatsTimer`/`_encodeStatsTimer`/`_audioCaptureStatsTimer`/`_aacEncodeStatsTimer`/
+    `_liveCastStatsTimer`，都是500ms一次）去读取属性，从未订阅对应的事件。**核实后判断这是刻意的
+    设计，不是遗漏**：跟`TerminalListChanged`（beacon大约每3秒一次，是低频事件）不同，这五个
+    `StatsUpdated`里至少`LiveCastSession`那个是在`OnAccessUnitEncoded`结尾触发的——也就是**每个
+    视频访问单元编码完成就触发一次**，实际投屏时这个频率是30-60次/秒量级。如果真的把这个事件订阅
+    起来直接触发UI刷新（就像给`TerminalListChanged`做的那样），会在UI线程上产生每秒几十次的
+    `BeginInvoke`调用，这跟现有500ms轮询"用一个粗粒度定时器摊平高频事件"的设计意图正好相反，
+    是在制造新问题而不是修复缺口。**结论**：这五个`StatsUpdated`事件保留下来更可能是给未来某个
+    还不存在的消费方准备的可选基础设施（比如另一套UI、遥测、日志），而不是"忘了接线"，故意不去
+    给它们找一个第一个调用方——跟这个仓库这次找到的其他几十个"缺调用方"的例子性质不同，这次是
+    "确认过，这个不该被接线"，不是新的已知缺口。
 
 ## 尚未开始
 
