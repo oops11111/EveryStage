@@ -35,6 +35,33 @@ LAN发现/配对的共享部分（PLANNING.md §7），两个消费方各自实�
   信任列表持久化、`DeviceIdentity`加载）完全没有被这个自检触及——它只验证协议的线格式本身无损，
   不验证两个真实服务会不会真的按预期时序把消息发出/处理对，这仍然要等到真实Windows双机联调才能
   验证，风险等级不变。
+- **【新发现的真实bug，已修复】`DiscoveryProtocol.Decode`会因为一个陌生数据包而永久杀死整个接收
+  循环，两端都会中招**：委托一个子agent专门排查发现/配对握手这条链路里"跟`PlaybackEngine`那几个
+  静默卡死bug同一种形状"的问题，找到的这一个影响面最大——`Decode`原来是`using var doc =
+  JsonDocument.Parse(data); if (!doc.RootElement.TryGetProperty("type", out var typeProp)) return
+  null;`。`JsonDocument.Parse`能接受任何合法JSON作为根元素，不只是对象——一个裸数字、裸字符串、
+  裸布尔值、`null`字面量、或者数组都是合法JSON——但`JsonElement.TryGetProperty`/`GetString`在
+  根元素不是对象、或者"type"字段不是字符串的时候，抛的是`InvalidOperationException`，不是
+  `JsonException`。Terminal的`DiscoveryService.HandleDatagram`和Caster的
+  `TerminalDiscoveryClient.HandleDatagram`两边原来都只catch了`JsonException`（注释原话都是"not
+  one of ours — ignore, don't crash the loop"）——这个端口（见下一条，`47990`从来没检查过跟其他
+  软件是否冲突）上随便一个形如`42`或`{"type":123}`的陌生数据包，就会让异常直接穿透两层catch，
+  砸穿各自接收循环所在的裸`Task.Run`，而这个仓库里任何地方都没有
+  `AppDomain.UnhandledException`/`TaskScheduler.UnobservedTaskException`兜底，所以这个异常
+  会彻底消失、不留任何日志或可见症状——中招的那一侧从此再也无法处理任何后续发现/配对/投屏状态
+  流量（Terminal一侧的beacon广播循环是独立的`Task`，所以Terminal表面上看起来还活着，实际上再也
+  answer不了配对请求/cast_start/cast_stop/ping）。比这份清单第一条本来就接受的"消息可能在传输
+  中丢失"这个best-effort限制严重得多——丢包会在下次重试时大概率恢复，这个bug是永久性的，一次
+  触发就彻底失效。**修复方式**：直接在`Decode`这个共享方法内部加两处`ValueKind`检查（根元素必须
+  是`Object`、"type"字段必须是`String`，否则提前返回`null`，走跟"不认识的type值"完全一样的处理
+  路径），而不是分别在两个调用方各自加宽catch类型——修一处保护两个现有调用方和未来任何新调用方。
+  `DiscoveryProtocolSelfTest`新增`CheckMalformedInputsDontThrow`，直接调用`Decode`喂8种畸形
+  输入（裸数字/裸字符串/裸数组/裸布尔/`null`/`type`是数字/`type`是对象/完全没有`type`字段），
+  确认全部返回`null`而不抛异常——这是纯函数调用，不需要走网络。**没有做的部分**：这次改动本身
+  没有在这个沙箱里跑过（没有dotnet），没有真机验证过；这次审计没有再往`Decode`每个`case`分支里
+  的`Deserialize<T>()`调用深挖——那些走的是`JsonSerializer`的完整反序列化管线，按.NET文档的
+  一般契约应该统一抛`JsonException`，跟这次修的`TryGetProperty`/`GetString`裸DOM API不是同一
+  类调用，但这个假设本身也没有专门测试过。
 - `DiscoveryProtocol.Port = 47990` 是随手挑的，没有检查是否和其他常见软件冲突。
 - 协议整体缺 PIN 码字段——PLANNING.md §7 "弹窗/PIN码"里"PIN码"这一半完全没实现，如果产品侧决定
   需要，得在这里加字段，两端一起改。

@@ -581,7 +581,7 @@ public sealed class MainForm : Form
             var result = await DiscoveryProtocolSelfTest.RunAsync();
             _discoveryStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
             _discoveryStatsLabel.Text = result.Success
-                ? $"通过：{result.MessagesVerified} 种消息全部往返一致（本机回环，含全部8种消息类型）。"
+                ? $"通过：{result.MessagesVerified} 种消息全部往返一致（本机回环，含全部8种消息类型、畸形数据包不抛异常校验）。"
                 : $"失败（已验证{result.MessagesVerified}种）：{result.FailureReason}";
         }
         catch (Exception ex)

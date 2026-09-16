@@ -886,6 +886,21 @@ Caster知道终端机确实收到了东西。
     **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过
     `LoadAsync`抛出的具体异常类型是否真的都能被这个`catch (Exception ex)`接住（理论上应该都能，
     但没有验证过是否有需要特殊处理的异步取消类异常混在里面）。
+87. **【新发现的真实bug，已修复】`DiscoveryService`的UDP接收循环会被一个陌生数据包永久杀死，
+    修复在`EveryStage.Discovery`共享库里**：委托另一个子agent专门排查发现/配对握手这条链路后
+    找到的——`DiscoveryProtocol.Decode`原来只在`JsonDocument.Parse`本身失败时才会抛
+    `JsonException`（`HandleDatagram`确实catch了这个类型），但如果收到的数据包本身是合法JSON、
+    只是形状不对（比如裸数字`42`、或者`{"type":123}`这种"type"字段不是字符串的对象），
+    `JsonElement.TryGetProperty`/`GetString`会抛`InvalidOperationException`——这个类型完全没被
+    catch住，会直接穿透`HandleDatagram`、砸穿`ReceiveLoopAsync`所在的裸`Task.Run`，而这个仓库
+    里没有任何`AppDomain.UnhandledException`/`TaskScheduler.UnobservedTaskException`兜底，
+    异常就此彻底消失。`BeaconLoopAsync`是独立的`Task`，所以Terminal表面上看起来还在正常广播
+    beacon，实际上从这一刻起再也无法处理任何配对请求/`cast_start`/`cast_stop`/ping——所有后续
+    Caster交互都会变成超时，跟普通丢包表现完全一样，但这次是永久性的，不会恢复。详细分析、修复
+    方式（`Decode`内部加`ValueKind`检查，不是给`HandleDatagram`加宽catch类型）、新增的
+    `DiscoveryProtocolSelfTest.CheckMalformedInputsDontThrow`自检见`EveryStage.Discovery`README
+    ——这次改动完全在共享库里，Terminal这边的`DiscoveryService.HandleDatagram`一行代码都没有改，
+    单纯是这次影响面覆盖了这一侧，值得在这里也记一笔。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

@@ -22,6 +22,12 @@ namespace EveryStage.Discovery;
 /// a much larger test), and does not test the two real services' handshake logic (beacon ->
 /// pair_request -> pair_response, etc.) — only that the wire format itself is lossless for every
 /// message type this protocol defines, one at a time, independent of any handshake sequencing.
+///
+/// Also runs <see cref="CheckMalformedInputsDontThrow"/> (see its own doc comment) — added after
+/// this session found a real bug this round-trip-only coverage would never have caught: a stray,
+/// valid-but-non-object-shaped JSON datagram made <see cref="DiscoveryProtocol.Decode"/> throw
+/// <see cref="InvalidOperationException"/> instead of returning null, which both real receive loops'
+/// narrower <c>catch (JsonException)</c> let straight through.
 /// </summary>
 public static class DiscoveryProtocolSelfTest
 {
@@ -59,7 +65,58 @@ public static class DiscoveryProtocolSelfTest
             verified++;
         }
 
+        string? malformedInputFailure = CheckMalformedInputsDontThrow();
+        if (malformedInputFailure != null)
+            return new Result(false, verified, malformedInputFailure);
+
         return new Result(true, verified, null);
+    }
+
+    /// <summary>Verifies <see cref="DiscoveryProtocol.Decode"/> never throws for a stray datagram
+    /// that happens to be valid JSON but doesn't match this protocol's own message shape — the exact
+    /// bug this session found and fixed (see <see cref="DiscoveryProtocol.Decode"/>'s own doc
+    /// comment): <c>JsonElement.TryGetProperty</c>/<c>GetString</c> throw
+    /// <see cref="InvalidOperationException"/>, not <see cref="System.Text.Json.JsonException"/>, for
+    /// a root element that isn't a JSON object or a "type" field that isn't a string, and neither of
+    /// this protocol's two real receive loops (<c>Terminal.Devices.DiscoveryService</c>,
+    /// <c>Caster.Discovery.TerminalDiscoveryClient</c>) ever caught anything but
+    /// <see cref="System.Text.Json.JsonException"/> around this call — an uncaught exception here
+    /// would previously have killed whichever side's background receive loop hit it, permanently and
+    /// silently (no <c>AppDomain.UnhandledException</c>/<c>TaskScheduler.UnobservedTaskException</c>
+    /// handler exists in either app). Doesn't need any network I/O — <see cref="DiscoveryProtocol.Decode"/>
+    /// is a pure function of its input bytes, so this just calls it directly.</summary>
+    private static string? CheckMalformedInputsDontThrow()
+    {
+        (string Label, string Json)[] inputs =
+        {
+            ("a bare JSON number", "42"),
+            ("a bare JSON string", "\"hello\""),
+            ("a bare JSON array", "[1,2,3]"),
+            ("a bare JSON boolean", "true"),
+            ("the JSON literal null", "null"),
+            ("an object whose \"type\" field is a number", "{\"type\":123}"),
+            ("an object whose \"type\" field is an object", "{\"type\":{}}"),
+            ("an object with no \"type\" field at all", "{\"foo\":\"bar\"}"),
+        };
+
+        foreach (var (label, json) in inputs)
+        {
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(json);
+            DiscoveryProtocol.Message? result;
+            try
+            {
+                result = DiscoveryProtocol.Decode(bytes);
+            }
+            catch (Exception ex)
+            {
+                return $"Decode threw for {label} ('{json}'): {ex.GetType().Name}: {ex.Message}";
+            }
+
+            if (result != null)
+                return $"Decode should have returned null for {label} ('{json}'), but returned a {result.GetType().Name}.";
+        }
+
+        return null;
     }
 
     /// <summary>Field-by-field comparison, one <c>switch</c> arm per message type — reflection-based

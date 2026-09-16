@@ -216,11 +216,40 @@ public static class DiscoveryProtocol
 
     /// <summary>Returns null for anything that isn't a recognized message of ours — a stray
     /// broadcast from an unrelated app sharing this port by coincidence should be ignored, not
-    /// crash the receive loop.</summary>
+    /// crash the receive loop. **Bug fixed here, found by an audit subagent hunting for the same
+    /// "silently kills a background receive loop forever" shape this project had already found and
+    /// fixed once in `RawRtpReceiver` (see this library's own README)**: <see cref="JsonDocument.Parse"/>
+    /// happily accepts any valid JSON token as the root — a bare number, string, boolean, `null`, or
+    /// array is all valid JSON, not just an object — but <see cref="JsonElement.TryGetProperty"/>
+    /// throws <see cref="InvalidOperationException"/> (NOT <see cref="JsonException"/>) if
+    /// <see cref="JsonElement.ValueKind"/> isn't <see cref="JsonValueKind.Object"/>. Both this
+    /// project's real call sites (<c>Terminal.Devices.DiscoveryService.HandleDatagram</c>,
+    /// <c>Caster.Discovery.TerminalDiscoveryClient.HandleDatagram</c>) only ever caught
+    /// <see cref="JsonException"/> around this call — a stray non-object-but-valid-JSON datagram on
+    /// this shared, unauthenticated, arbitrarily-chosen port (see this library's README on
+    /// <see cref="Port"/> never having been checked against other LAN software) would throw straight
+    /// through both of those try/catches, out of the bare <c>Task.Run</c> each side's receive loop
+    /// runs as, and die there completely unobserved (no
+    /// <c>AppDomain.UnhandledException</c>/<c>TaskScheduler.UnobservedTaskException</c> handler exists
+    /// anywhere in either app) — permanently killing that side's ability to process ANY further
+    /// discovery/pairing/cast-status traffic, with zero log entry and zero visible symptom at the
+    /// moment it happens (the beacon-broadcast loop on the Terminal side is a separate `Task`, so a
+    /// Terminal in this state keeps *looking* alive while being unable to answer anything). Far worse
+    /// than the "messages can be lost on the wire" best-effort limitation this protocol already
+    /// accepts (a lost packet is retried and mostly succeeds next attempt; this kills 100% of future
+    /// traffic on whichever side hits it, forever). Fixed at the source, in this one shared method,
+    /// rather than broadening each call site's own catch clause independently — protects both
+    /// existing callers and any future one without relying on each remembering to do it themselves.</summary>
     public static Message? Decode(byte[] data)
     {
         using var doc = JsonDocument.Parse(data);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object) return null; // not an object at all — same "not one of ours" treatment as an unrecognized "type" value below.
         if (!doc.RootElement.TryGetProperty("type", out var typeProp)) return null;
+        // Second instance of the exact same throw-on-wrong-ValueKind shape the check above fixes:
+        // JsonElement.GetString() throws InvalidOperationException (not JsonException) for any
+        // ValueKind other than String or Null — a stray datagram shaped like {"type": 123} or
+        // {"type": true} would otherwise hit this immediately below.
+        if (typeProp.ValueKind != JsonValueKind.String) return null;
 
         return typeProp.GetString() switch
         {

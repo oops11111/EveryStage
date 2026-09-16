@@ -673,6 +673,17 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     "僵尸态"保证了`Start()`自己的`if (IsRunning) return;`门禁在旧会话真正被`Stop()`收尾之前
     不会放行新会话。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机
     验证过。
+68. **【新发现的真实bug，已修复】`TerminalDiscoveryClient`的UDP接收循环会被一个陌生数据包永久
+    杀死，修复在`EveryStage.Discovery`共享库里**：跟Terminal端`DiscoveryService`中的是完全同一个
+    bug——两边的`HandleDatagram`都是从`EveryStage.Discovery`的`DiscoveryProtocol.Decode`
+    复制的同一套调用+catch模式，`Decode`原来在收到形状不对但语法合法的JSON（比如裸数字、
+    `{"type":123}`）时会抛`InvalidOperationException`而不是两边都在catch的`JsonException`，
+    直接杀死各自的接收循环、永久且不留任何痕迹。Caster这一侧中招后的表现：`HandleBeacon`不再
+    触发，`PruneExpired`（每次`GetTerminals()`轮询都会跑）会把所有之前发现过的终端机悄悄从列表
+    里过期清空，即使它们其实还在正常广播；`HandlePairResponse`/`HandlePong`也不再触发，所有
+    进行中和未来的`RequestPairingAsync`/`PingAsync`调用都会跑完自己的超时返回null，表现跟普通
+    丢包一样，但这次永远不会恢复。详细分析、修复方式、新增自检见`EveryStage.Discovery`README——
+    这次改动完全在共享库里，`TerminalDiscoveryClient.HandleDatagram`一行代码都没有改。
 
 ## 尚未开始
 
