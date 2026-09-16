@@ -87,6 +87,14 @@ public static class DiscoveryProtocol
         public Guid DeviceId { get; set; }
         public int Width { get; set; }
         public int Height { get; set; }
+
+        /// <summary>Checked against every video RTP packet's own <c>RtpPacket.PayloadType</c> by
+        /// <c>Terminal.Receiving.CastReceiver</c>'s <c>EveryStage.Transport.RtpReceiver</c> — a
+        /// mismatch is dropped, treated exactly like a packet that failed to decode at all (see that
+        /// library's README). Not a real SDP-style negotiation: both ends just happen to use the
+        /// same hardcoded constant, so this is a defensive check against a stray/foreign packet on
+        /// the same port, not something ever expected to actually fire in this project's own
+        /// traffic.</summary>
         public byte PayloadType { get; set; }
 
         /// <summary>False when the Caster couldn't start audio capture at all (e.g.
@@ -97,6 +105,9 @@ public static class DiscoveryProtocol
         public bool HasAudio { get; set; }
         public int AudioSampleRate { get; set; }
         public int AudioChannels { get; set; }
+
+        /// <summary>Same role as <see cref="PayloadType"/> above, checked by
+        /// <c>EveryStage.Transport.RawRtpReceiver</c> instead — see that field's own doc comment.</summary>
         public byte AudioPayloadType { get; set; }
 
         /// <summary>True means each <see cref="AudioRtpPort"/> payload is one ADTS-framed AAC access

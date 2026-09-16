@@ -29,6 +29,11 @@ LAN发现/配对的共享部分（PLANNING.md §7），两个消费方各自实�
 - `DiscoveryProtocol.Port = 47990` 是随手挑的，没有检查是否和其他常见软件冲突。
 - 协议整体缺 PIN 码字段——PLANNING.md §7 "弹窗/PIN码"里"PIN码"这一半完全没实现，如果产品侧决定
   需要，得在这里加字段，两端一起改。
+- **【更新】`CastStartMessage.PayloadType`/`AudioPayloadType`现在终于有了真正的消费方**：这两个
+  字段早就存在，但接收端（`EveryStage.Transport`的`RtpReceiver`/`RawRtpReceiver`）从来没有检查过
+  收到的RTP包是否跟它们一致——见`EveryStage.Transport`README风险第4条。这不是真正的SDP式协商，
+  只是"跟本项目自己硬编码的常量比对"，两端预期永远一致，这个校验存在的意义是防御同一端口上的
+  陌生/无关RTP包，不是当前会真的触发的场景。
 - 不含任何安全/认证机制（明文JSON，无签名无加密）——这与PLANNING.md §14.3 "不加密：内网传输明文"
   的产品决策一致，不是遗漏。
 - **【新增】`CastStartMessage.AudioIsAac`没有协议版本协商保护**：这个字段告诉Terminal该把
