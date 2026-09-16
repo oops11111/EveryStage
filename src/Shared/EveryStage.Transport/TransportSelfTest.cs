@@ -70,7 +70,60 @@ public static class TransportSelfTest
         if (resilienceFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, resilienceFailure);
 
+        string? clockFailure = RunRtpVideoClockRoundTripCheck();
+        if (clockFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, clockFailure);
+
         return new Result(true, testPayloads.Count, receivedCount, null);
+    }
+
+    /// <summary>Verifies <see cref="RtpVideoClock.FromElapsed(TimeSpan, uint)"/>/
+    /// <see cref="RtpVideoClock.ToElapsedTicks"/>'s own documented round-trip and wraparound
+    /// behavior — pure math, no sockets/GPU/audio hardware at all, the most self-contained check in
+    /// this whole self-test (not even async). Confirms two things those methods' own doc comments
+    /// only ever reasoned about in prose, never actually exercised: (1) a normal-range elapsed
+    /// duration round-trips through FromElapsed -> ToElapsedTicks losslessly, and (2)
+    /// <see cref="RtpVideoClock.FromElapsed(TimeSpan, uint)"/>'s "wraps naturally... receivers are
+    /// supposed to handle that" comment is actually true of this implementation, not just a stated
+    /// intent — a duration past the (2^32 / clockRate)-second boundary really does wrap to a
+    /// small-looking timestamp that <see cref="RtpVideoClock.ToElapsedTicks"/> converts back to a
+    /// dramatically smaller elapsed value, exactly the "indistinguishable from an early one"
+    /// ambiguity that method's own doc comment warns callers about. Returns null on success, or a
+    /// failure message.</summary>
+    private static string? RunRtpVideoClockRoundTripCheck()
+    {
+        // An exact multiple of clockRate avoids any fractional-truncation ambiguity in
+        // FromElapsed's own `(ulong)ticks` cast, so this round trip should be exact, not just close.
+        var normal = TimeSpan.FromSeconds(1.5);
+        uint normalRtp = RtpVideoClock.FromElapsed(normal, RtpVideoClock.ClockRate);
+        if (normalRtp != 135000)
+            return $"RtpVideoClock round-trip check: FromElapsed(1.5s, 90000Hz) should be exactly 135000, got {normalRtp}.";
+
+        long roundTrippedTicks = RtpVideoClock.ToElapsedTicks(normalRtp, RtpVideoClock.ClockRate);
+        if (roundTrippedTicks != normal.Ticks)
+            return $"RtpVideoClock round-trip check: ToElapsedTicks(FromElapsed(1.5s)) should return exactly 1.5s of ticks ({normal.Ticks}), got {roundTrippedTicks}.";
+
+        // Wraparound: past (2^32 / clockRate) seconds (~47721.86s at 90kHz — about 13.26 hours),
+        // FromElapsed must wrap modulo 2^32 rather than throw or silently clamp — documented as
+        // deliberate RFC 3550 behavior, not a bug, but until now nothing actually exercised it.
+        // expectedWrapped is computed independently via `%` rather than mirroring FromElapsed's own
+        // cast, so this is actually checking the implementation, not just restating it.
+        var pastWrap = TimeSpan.FromSeconds(47722);
+        ulong totalUnits = (ulong)(pastWrap.TotalSeconds * RtpVideoClock.ClockRate);
+        uint expectedWrapped = (uint)(totalUnits % (1UL << 32));
+        uint actualWrapped = RtpVideoClock.FromElapsed(pastWrap, RtpVideoClock.ClockRate);
+        if (actualWrapped != expectedWrapped)
+            return $"RtpVideoClock wraparound check: expected FromElapsed to wrap to {expectedWrapped}, got {actualWrapped}.";
+
+        // The documented consequence: converting the wrapped value back looks like a dramatically
+        // smaller elapsed time than the 47722 seconds that actually passed — this is the exact
+        // ambiguity ToElapsedTicks's own doc comment warns about, now actually demonstrated rather
+        // than just asserted in a comment.
+        long wrappedBackTicks = RtpVideoClock.ToElapsedTicks(actualWrapped, RtpVideoClock.ClockRate);
+        if (wrappedBackTicks >= pastWrap.Ticks)
+            return "RtpVideoClock wraparound check: converting the wrapped timestamp back should yield a dramatically smaller elapsed value than what actually passed (that's the whole point of the documented ambiguity) — it didn't.";
+
+        return null;
     }
 
     /// <summary>Verifies <see cref="RtpReceiver"/>'s <c>expectedPayloadType</c> mismatch handling
