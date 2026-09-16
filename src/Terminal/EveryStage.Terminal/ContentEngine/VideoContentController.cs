@@ -79,6 +79,28 @@ public sealed class VideoContentController : IDisposable
         _playbackThread.Start();
     }
 
+    /// <summary>Pauses in place — unlike <see cref="Stop"/> (which tears the decode source down
+    /// entirely), this leaves <see cref="RunPlaybackLoopCore"/>'s thread, decode source, and the
+    /// currently-decoded-but-not-yet-presented frame all exactly where they are. This works because
+    /// that loop's pacing is driven entirely by <see cref="_audioClock"/>'s
+    /// <see cref="AudioPlaybackClock.PositionTicks"/> (the spin-wait
+    /// <c>while (... audioClock.PositionTicks &lt; frame.Value.TimestampTicks - FrameBudgetTicks) ...</c>):
+    /// pausing the clock (real WASAPI pause, see <see cref="AudioPlaybackClock.Pause"/>'s own doc
+    /// comment) freezes <c>PositionTicks</c> in place, which means that spin-wait simply never
+    /// exits — no video frame gets presented, no next audio chunk gets read, and the swap chain
+    /// naturally keeps displaying whatever it last presented (a swap chain shows its last frame
+    /// until something calls <c>Present</c> again), all without this class needing to separately
+    /// track or restore "where the decode was" the way tearing down and rebuilding
+    /// <see cref="VideoDecodeSource"/> would require. <see cref="Resume"/> lets
+    /// <c>PositionTicks</c> start advancing again from exactly where it was, and the same frame the
+    /// loop was already waiting on gets presented once it catches up — no discontinuity, no
+    /// re-decoding. No-op if nothing is currently playing (<see cref="_audioClock"/> null).</summary>
+    public void Pause() => _audioClock?.Pause();
+
+    /// <summary>Resumes playback paused by <see cref="Pause"/> from the exact position it left off —
+    /// see that method's own doc comment. No-op if nothing is currently playing.</summary>
+    public void Resume() => _audioClock?.Resume();
+
     /// <summary>Stops playback without tearing down the swap chain/device — mirrors "断" only
     /// affecting the overlay's visibility, not its underlying GPU resources.</summary>
     public void Stop()

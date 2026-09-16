@@ -775,11 +775,13 @@ Caster知道终端机确实收到了东西。
     "`_stayDurationTimer == null`就直接返回"的判断改成先分支处理"当前文件是非背景音频"这一种情况
     → `FloatingPreviewWindow.RefreshFromEngine`原来"暂停按钮只对图片/PDF启用"的判断加上音频这一种
     情况（不加这一步的话新增的能力从UI根本按不到，是真正让这条链路有第一个调用方的最后一步，不是
-    可有可无的收尾）。**仍然没有做的部分**：视频的暂停/恢复仍然是文档化的no-op（未改变，见
-    `PlaybackEngine.Pause`自己的doc comment）；"横向播放条"四项缺失能力里，进度拖动/音量/独立投屏
+    可有可无的收尾）。**仍然没有做的部分**："横向播放条"四项缺失能力里，进度拖动/音量/独立投屏
     按钮这三项依然完全没有实现，见"尚未开始"对应条目更新；这次改动本身没有在这个沙箱里跑过（没有
     dotnet），`WasapiOut.Pause()`之后再调用`Play()`是否真的从暂停处继续而不是从头开始，完全依赖
-    NAudio文档描述的`IWavePlayer`语义，没有真机验证过。
+    NAudio文档描述的`IWavePlayer`语义，没有真机验证过。**更新（见第83条）**：这条原本还说"视频的
+    暂停/恢复仍然是文档化的no-op"——重新读`VideoContentController.RunPlaybackLoopCore`之后发现
+    这个判断错了，视频的节奏本来就完全由同一个`AudioPlaybackClock`驱动，第83条已经把这里的暂停/
+    恢复也接上了。
 82. **【已实现，原为已知缺口】独立音频播放现在也有音量调节了**：紧接着第81条暂停/恢复用的同一个
     "先补底层能力再决定要不要接UI"顺序——`WasapiOut`本来就暴露的`Volume`属性（0.0-1.0）之前完全
     没有被这个仓库的任何代码读写过。链路：`AudioPlaybackClock`新增`Volume`属性（直接包
@@ -796,6 +798,30 @@ Caster知道终端机确实收到了东西。
     剩下两项缺失能力（进度拖动/独立投屏按钮）依然完全没有实现，见"尚未开始"对应条目更新；这次改动
     本身没有在这个沙箱里跑过（没有dotnet），`WasapiOut.Volume`的取值范围/超出`[0,1]`时的行为完全
     依赖NAudio文档描述，没有真机验证过。
+83. **【已实现，原为已知缺口】视频播放现在也有真正的暂停/恢复了——之前"这个仓库没有做"的判断
+    是错的，只是没人重新验证过**：`PlaybackEngine.Pause`自己的doc comment以及第81条最初都说过
+    "视频暂停需要`VideoContentController`支持原地挂起再恢复，这个仓库没有做"，这个说法在写下来的
+    时候依据的是`Stop()`会把解码源整个拆掉——但`Stop()`和"能不能暂停"其实是两个独立的问题，重新读
+    一遍`RunPlaybackLoopCore`才发现：
+    视频这条循环的节奏（要不要呈现下一帧、要不要继续读下一个音频块）完全由`_audioClock.PositionTicks`
+    驱动，跟独立音频播放用的是同一个`AudioPlaybackClock`类。也就是说第81条给`AudioPlaybackClock`
+    加的`Pause()`/`Resume()`（包`WasapiOut.Pause()`/`Play()`）对视频这条循环同样有效：暂停时
+    `PositionTicks`停止前进，`RunPlaybackLoopCore`里那个`while (... audioClock.PositionTicks <
+    frame.Value.TimestampTicks - FrameBudgetTicks) ...`自旋等待就永远不会退出——不会呈现下一帧，
+    不会读下一个音频块，SwapChain本来就会一直显示上一次`Present`呈现的画面（没有新的`Present`调用
+    之前它不会自己变化），已经解码出来但还没呈现的那一帧（`frame`这个局部变量持有的纹理）也还
+    没被释放，恢复时从它当时卡住的地方继续，不需要重新解码，也不会跳帧。**没有触碰的部分**：
+    `VideoContentController.Stop()`本身完全没有变——真正的"停止"仍然会把解码源整个拆掉，这次新增
+    的`Pause()`/`Resume()`是`Stop()`之外的第三、第四个方法，不是给`Stop()`本身加了保留状态的能力。
+    链路：`VideoContentController`新增`Pause`/`Resume`（转发到`_audioClock`，跟
+    `AudioContentController`的同名方法几乎一样）→ `PlaybackEngine.Pause`/`Resume`加上
+    `MediaKind.Video`分支 → `FloatingPreviewWindow.RefreshFromEngine`"暂停按钮启用条件"加上
+    `MediaKind.Video`。**没有音频轨道的视频这种情况没有专门处理**：`VideoContentController.Play`
+    本来就无条件构造`AudioPlaybackClock`（不管视频有没有音频轨道），这是这次改动之前就有的既有
+    行为，这次的暂停/恢复只是复用这个早就存在的假设，没有让它变得更好或更差。**仍然没有做的部分**：
+    这次改动本身没有在这个沙箱里跑过（没有dotnet），依据完全是重新阅读现有代码逻辑推出来的，没有
+    真机验证过恢复后是否真的严丝合缝（比如`WasapiOut`暂停期间`BufferedWaveProvider`是否有边界
+    情况没考虑到）。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

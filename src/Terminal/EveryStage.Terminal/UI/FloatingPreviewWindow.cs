@@ -202,12 +202,12 @@ public sealed class FloatingPreviewWindow : Form
 
         bool isStandaloneAudio = file.Kind == MediaKind.Audio && !file.IsBackgroundAudio;
 
-        // Pause is meaningful for image/PDF (freezes the stay-duration clock) and now standalone
-        // audio too (real WASAPI pause-in-place, see PlaybackEngine.Pause's doc comment) — still not
-        // video, and not background audio (which never reaches PlayStandaloneAudio in the first
-        // place, see that method's doc comment), so this mirrors PlaybackEngine.Pause's own guard
-        // exactly rather than re-deriving a slightly different condition here.
-        _pauseButton.Enabled = file.Kind is MediaKind.Image or MediaKind.Document || isStandaloneAudio;
+        // Pause is meaningful for image/PDF (freezes the stay-duration clock), standalone audio, and
+        // now video too (all three now have real pause-in-place — see PlaybackEngine.Pause's doc
+        // comment) — still not background audio (which never reaches PlayStandaloneAudio in the
+        // first place, see that method's doc comment), so this mirrors PlaybackEngine.Pause's own
+        // guard exactly rather than re-deriving a slightly different condition here.
+        _pauseButton.Enabled = file.Kind is MediaKind.Image or MediaKind.Document or MediaKind.Video || isStandaloneAudio;
         _pauseButton.Text = _playback.IsPaused ? "继续" : "暂停";
 
         // Volume only means anything for standalone audio — image/PDF/video have no audio track of
