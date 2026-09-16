@@ -1084,6 +1084,38 @@ Caster知道终端机确实收到了东西。
     完全同一个bug、同一次审计一起修的，见`EveryStage.Caster`README对应条目——那一侧甚至更关键，
     因为`CastStatusMessage`分支直接决定了`LiveCastSession`能不能收到Terminal的投屏状态回报。
     **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+97. **【新发现的真实bug，已修复，全仓库唯一会真正让整个进程崩溃（而不只是某个子系统悄悄死掉）
+    的一处】`CastReceiver.RunPresentLoop`原来完全没有异常防护，而它是全仓库三个用裸`Thread`
+    （不是`Task`）跑后台循环的地方里，唯一没有包`try/catch`的那一个**：`AudioContentController`/
+    `VideoContentController`各自的`RunPlaybackLoop`都已经把`RunPlaybackLoopCore`包了一层
+    `try/catch`（异常时触发`PlaybackFailed`事件），唯独`CastReceiver`的`RunPresentLoop`（有音频
+    时才会启动的、按`AudioPlaybackClock.PositionTicks`节拍呈现解码帧的后台线程）原来是直接裸跑
+    循环体，一次`Present(frame)`失败（比如`VideoSurface.PresentFrame`内部D3D11视频处理器调用
+    因为GPU设备丢失/重置而抛异常——这个仓库其它地方已经不止一次记录过这是真实会发生的场景）就会
+    直接从这个`Thread`的入口方法穿出去。裸`Thread`（不同于`Task`）如果异常穿透入口方法，.NET
+    会让整个进程崩溃退出——不是"这个子系统安静死掉、其它功能还能用"，是`AppDomain.
+    UnhandledException`兜底（第88条）虽然能把这次崩溃记进`crash`日志分类，但完全没办法阻止
+    进程真的终止。这是全仓库审计过的三处裸`Thread`后台循环里，唯一还留着这个"能让整个无人值守
+    终端机进程直接崩掉"级别缺口的一处。**修复方式**：把原来的循环体拆成`RunPresentLoopCore`，
+    `RunPresentLoop`改成只做`try { RunPresentLoopCore(token); } catch (Exception ex) { LastError
+    = ex.Message; PresentLoopFailed = true; } finally { 清空并释放_pendingFrames里剩下的帧 }`
+    这个包装——异常不再穿透线程入口，只会让这一次投屏的呈现管线报告"坏了"。新增
+    `PresentLoopFailed`属性并接入`TerminalApplicationContext.CheckDecodeHealth`的判定条件：
+    没有直接复用已有的`ConsecutiveVideoDecodeErrors`/`LastError`，是因为这两个值会被
+    `OnNalUnitReceived`的下一次成功解码重置为0/null——而这个present线程死掉之后，RTP接收路径
+    完全可能继续独立地成功解码（只是解码出来的帧再也没有线程去消费/呈现了），会在
+    `CheckDecodeHealth`真正读到这个信号之前就被后续的解码成功"洗白"，让这个健康检查形同虚设。
+    `PresentLoopFailed`是一个单向锁存（这个`CastReceiver`实例一旦present线程死了就永久是
+    `true`，不会被任何后续成功解码重置），从根上避免了这个竞态。**顺手修复的第二个问题**：原来
+    循环体末尾"清空`_pendingFrames`剩余帧、释放GPU纹理引用"这行代码，在循环体因为等待中途检测到
+    取消而走`return`（`if (token.IsCancellationRequested) { frame.Texture.Dispose(); return; }`）
+    这条路径时会被完全跳过——而这条路径很可能是"断"/`StopCasting()`时最常见的退出路径，不是
+    冷门边界情况，意味着每次这样正常停止投屏都可能悄悄泄漏队列里剩下的GPU纹理引用。这次把清空
+    步骤挪进新`RunPresentLoop`包装方法的`finally`块，不管`RunPresentLoopCore`是正常跑完循环、
+    提前`return`、还是抛异常，都保证会执行到。**没有做的部分**：这次改动本身没有在这个沙箱里
+    跑过（没有dotnet），没有真机验证过——包括GPU设备丢失/重置在真机上到底以什么具体异常类型/
+    时机出现，本身也只是基于这个仓库其它地方已经记录过的"GPU设备丢失是真实场景"这个共识推断
+    出来的，没有实测触发过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

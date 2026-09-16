@@ -355,7 +355,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     {
         if (_castReceiver == null) return;
         if (_castReceiver.ConsecutiveVideoDecodeErrors < MaxConsecutiveDecodeErrorsBeforeDisconnect
-            && _castReceiver.ConsecutiveAudioPlaybackErrors < MaxConsecutiveDecodeErrorsBeforeDisconnect)
+            && _castReceiver.ConsecutiveAudioPlaybackErrors < MaxConsecutiveDecodeErrorsBeforeDisconnect
+            && !_castReceiver.PresentLoopFailed)
         {
             return;
         }
@@ -364,6 +365,10 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // that's gone silent — Terminal is meant to run unattended (PLANNING.md's whole framing), so
         // there's nobody watching to notice a stuck decoder and manually hit "断"; falling back to
         // standby on its own is better than staying "connected" to a stream it can no longer render.
+        // PresentLoopFailed alone (with both Consecutive* counters still low) means exactly that:
+        // decoding is still succeeding but nothing is presenting it anymore — see that property's own
+        // doc comment for why it needs its own un-racy signal instead of piggybacking on either
+        // counter above.
         StopCasting();
         _stateMachine.Disconnect();
     }

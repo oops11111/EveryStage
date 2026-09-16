@@ -118,6 +118,23 @@ public sealed class CastReceiver : IDisposable
     /// that's gone silent.</summary>
     public int ConsecutiveVideoDecodeErrors { get; private set; }
 
+    /// <summary>True once <see cref="RunPresentLoop"/>'s background <see cref="Thread"/> has died from
+    /// an unhandled exception (e.g. <see cref="VideoSurface.PresentFrame"/> failing on a lost/reset
+    /// GPU device) — deliberately a one-way latch, never reset back to false for this instance's
+    /// lifetime, unlike <see cref="ConsecutiveVideoDecodeErrors"/>/<see cref="LastError"/> just above.
+    /// Those two get reset by the very next successful <see cref="OnNalUnitReceived"/> call, which
+    /// keeps happening independently on the RTP receive path even after this present thread has
+    /// already died — decoding can keep succeeding into a queue nothing is draining anymore. Reusing
+    /// either of them for this signal would let a burst of otherwise-healthy incoming packets mask a
+    /// dead present thread from <see cref="TerminalApplicationContext.CheckDecodeHealth"/> for as long
+    /// as decoding kept succeeding, which defeats the point of that policy check entirely for exactly
+    /// this failure. A raw <see cref="Thread"/> (unlike a <c>Task</c>) that lets an exception escape
+    /// its entry point crashes the whole process, not just this one subsystem — <see cref="RunPresentLoop"/>
+    /// now catches instead, and sets this so <c>CheckDecodeHealth</c> still gets a reliable, un-racy
+    /// signal that this cast's video pipeline is permanently gone and the cast should be disconnected,
+    /// even though decoding itself may keep reporting success.</summary>
+    public bool PresentLoopFailed { get; private set; }
+
     /// <summary>Combined video+audio "gap events / (received + gap events)" ratio as a percentage —
     /// see <see cref="RtpReceiver.GapEvents"/>'s own doc comment for why this is an honest
     /// approximation, not an exact packet-loss percentage (it under-counts multi-packet gaps as a
@@ -409,14 +426,39 @@ public sealed class CastReceiver : IDisposable
         _pendingFrames.Enqueue(new PendingFrame(texture, arraySlice, width, height, presentationTicks));
     }
 
-    /// <summary>Background thread that paces decoded-frame presentation against
-    /// <see cref="AudioPlaybackClock.PositionTicks"/> — the live-cast equivalent of
-    /// <c>VideoContentController.RunPlaybackLoopCore</c>'s identical wait/drop logic for local file
-    /// playback, adapted to run against a queue fed asynchronously by the RTP receive thread instead
-    /// of pulling frames synchronously from a decode source. Runs only while <see cref="HasAudio"/>
-    /// is true (see <see cref="Start"/>); with no audio, <see cref="OnFrameDecoded"/> presents
-    /// immediately and this loop never starts.</summary>
+    /// <summary>Entry point for <see cref="_presentThread"/> — a raw <see cref="Thread"/>, not a
+    /// <c>Task</c>, which matters here specifically: an exception escaping a <see cref="Thread"/>'s
+    /// entry point crashes the entire process (unlike an unobserved <c>Task</c> fault, which only
+    /// silently kills that one background operation). <see cref="RunPresentLoopCore"/> does the
+    /// actual work; this wrapper's only job is making sure a failure there degrades to "this cast's
+    /// video pipeline is broken" instead of "the whole Terminal just crashed" — see
+    /// <see cref="PresentLoopFailed"/>'s own doc comment for why that flag exists instead of reusing
+    /// <see cref="LastError"/>/<see cref="ConsecutiveVideoDecodeErrors"/>. The leftover-frame drain
+    /// moved here (into a <c>finally</c>) rather than staying at the end of the core loop's body: the
+    /// core loop's own early <c>return</c> on mid-wait cancellation used to skip straight past that
+    /// drain, leaking every frame still sitting in <see cref="_pendingFrames"/> at the time — a
+    /// <c>finally</c> here runs no matter which of "loop condition went false", "cancelled mid-wait",
+    /// or "threw" ended <see cref="RunPresentLoopCore"/>.</summary>
     private void RunPresentLoop(CancellationToken token)
+    {
+        try
+        {
+            RunPresentLoopCore(token);
+        }
+        catch (Exception ex)
+        {
+            LastError = ex.Message;
+            PresentLoopFailed = true;
+        }
+        finally
+        {
+            // Drain and dispose whatever's left so cancellation, an early return, or the catch above
+            // doesn't leak GPU texture references still sitting in the queue.
+            while (_pendingFrames.TryDequeue(out var leftover)) leftover.Texture.Dispose();
+        }
+    }
+
+    private void RunPresentLoopCore(CancellationToken token)
     {
         var waitStopwatch = new Stopwatch();
 
@@ -467,9 +509,6 @@ public sealed class CastReceiver : IDisposable
 
             Present(frame);
         }
-
-        // Drain and dispose whatever's left so cancellation doesn't leak GPU texture references.
-        while (_pendingFrames.TryDequeue(out var leftover)) leftover.Texture.Dispose();
     }
 
     private void Present(PendingFrame frame)
