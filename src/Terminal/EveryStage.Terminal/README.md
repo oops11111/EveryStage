@@ -1017,6 +1017,32 @@ Caster知道终端机确实收到了东西。
     见该README条目说明。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），
     没有真机验证过；`File.Exists`本身在极端情况下（比如整个存储卷刚好离线）也可能有自己的
     TOCTOU缝隙，这次没有进一步深挖到这个层级。
+94. **【新发现的真实bug，已修复】`OutputStateMachine.StateChanged`原来是一次性`?.Invoke(...)`
+    多播调用，一个订阅者抛异常会让排在它后面的其它订阅者这次完全收不到通知**：这是审查上一条
+    （第92条，`AudioTakeoverService`）过程中顺手发现的更上一层问题——即使把`AudioTakeoverService`
+    自己的COM调用全部加上了防护，`StateChanged`这个事件本身的订阅者列表还有好几个：按
+    `TerminalApplicationContext`构造函数里的实际注册顺序，依次是`PlaybackEngine`（在
+    `_playback = new PlaybackEngine(...)`那一行内部完成订阅）、`Program`自己的
+    `OnOutputStateChanged`（也就是调用`AudioTakeoverService.Restore()`紧接着调
+    `StopCasting()`的那一个）、`MainWindow`/`ActivitiesPanel`，最后是`TrayIconController`。
+    .NET多播委托的`Invoke`不是"每个订阅者互相隔离、一个抛异常不影响其它"——它就是一次连续调用，
+    只要其中任何一个抛出，异常直接从`Invoke`穿出去，排在它后面、原本也该被通知到的订阅者这一次
+    根本不会被调用。`PlaybackEngine.OnOutputStateChanged`（`_videoController?.Stop()`/
+    `_audioController?.Stop()`，两者内部都有`_audioClock?.Dispose()`/`_source?.Dispose()`这类
+    对Media Foundation/WASAPI资源的COM释放调用）排在最前面——如果这里面任何一次`Dispose()`因为
+    设备丢失之类原因抛出异常（这个仓库其它地方已经不止一次记录过GPU/设备丢失是真实会发生的
+    场景），`Program`自己那个真正负责"断"时`StopCasting()`的处理器就会被跳过，跟第92条描述的
+    "`StopCasting()`不执行、`CastReceiver`继续对着隐藏窗口收流"是同一个后果，只是触发路径从
+    `AudioTakeoverService`内部换成了"排在它前面的另一个完全不相关的订阅者"——即使`Program`自己
+    的处理器本身写得再仔细也没用，因为它根本没有机会被调用。**修复方式**：`OutputStateMachine`
+    新增`RaiseStateChanged`/`RaiseCastSwitchChanged`两个私有方法，通过
+    `StateChanged?.GetInvocationList()`拿到订阅者列表后逐个手动调用、每个订阅者单独包一层
+    try/catch，取代原来的`StateChanged?.Invoke(...)`一次性多播调用——这样任何一个订阅者抛异常
+    都只影响它自己，不会连累列表里排在它后面的其它订阅者。`CastSwitchChanged`目前只有
+    `TrayIconController`一个订阅者，但同一次改动一起做了同样的隔离，理由见方法自己的doc
+    comment。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过；
+    这个类本身没有logger，所以每个订阅者失败时具体是谁失败、失败原因是什么，这次没有记录下来，
+    只是保证了"不连累别人"这一点。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

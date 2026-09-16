@@ -18,6 +18,17 @@ public enum OutputState { Idle, Active }
 /// Not thread-affine by itself; callers driving this from multiple threads (e.g. a UI thread and
 /// a network-request handler) should serialize their calls (a single dispatcher/lock), since the
 /// state read + transition here isn't atomic against concurrent callers on its own.
+///
+/// <see cref="StateChanged"/> has several independent subscribers by the time
+/// <c>TerminalApplicationContext</c> finishes constructing (in registration order:
+/// <c>PlaybackEngine</c>, this class's own <c>Program.OnOutputStateChanged</c> — which calls
+/// <c>AudioTakeoverService.Restore()</c> then <c>StopCasting()</c> on "断" — <c>MainWindow</c>/
+/// <c>ActivitiesPanel</c>, then <c>TrayIconController</c>). A plain <c>StateChanged?.Invoke(...)</c>
+/// runs every subscriber as one multicast call: if an earlier one throws, .NET does not continue on
+/// to the rest — every subscriber registered after the one that threw silently never sees this
+/// state change at all. <see cref="RaiseStateChanged"/>/<see cref="RaiseCastSwitchChanged"/> invoke
+/// each subscriber individually specifically so that one subscriber's bug can never take the others
+/// down with it — see their own doc comments.
 /// </summary>
 public sealed class OutputStateMachine
 {
@@ -39,7 +50,7 @@ public sealed class OutputStateMachine
             if (CastSwitchOn == on) return;
             CastSwitchOn = on;
         }
-        CastSwitchChanged?.Invoke(on);
+        RaiseCastSwitchChanged(on);
     }
 
     /// <summary>Local file click. Returns true if this call actually started (or was already
@@ -63,7 +74,7 @@ public sealed class OutputStateMachine
             if (State == OutputState.Idle) return;
             State = OutputState.Idle;
         }
-        StateChanged?.Invoke(OutputState.Idle);
+        RaiseStateChanged(OutputState.Idle);
     }
 
     private bool TransitionToActive()
@@ -73,7 +84,50 @@ public sealed class OutputStateMachine
             if (State == OutputState.Active) return true;
             State = OutputState.Active;
         }
-        StateChanged?.Invoke(OutputState.Active);
+        RaiseStateChanged(OutputState.Active);
         return true;
+    }
+
+    /// <summary>Invokes each <see cref="StateChanged"/> subscriber one at a time instead of as a
+    /// single multicast call, so that one subscriber throwing doesn't also silently skip every
+    /// subscriber registered after it for this same state change — see this class's own doc comment
+    /// for the concrete subscriber list and why that matters here specifically (the subscriber that
+    /// runs <c>StopCasting()</c> on "断" is not the first one registered).</summary>
+    private void RaiseStateChanged(OutputState state)
+    {
+        foreach (var handler in StateChanged?.GetInvocationList() ?? Array.Empty<Delegate>())
+        {
+            try
+            {
+                ((Action<OutputState>)handler)(state);
+            }
+            catch (Exception)
+            {
+                // Deliberately swallowed here rather than re-thrown after the loop: this class has
+                // no logger of its own to record which subscriber failed, and PLANNING.md's "无人
+                // 值守" framing already means every subscriber above is written to treat its own
+                // failures as best-effort (see e.g. AudioTakeoverService's own doc comment) — the
+                // one new guarantee this method adds is that a failure in one no longer costs every
+                // OTHER subscriber their notification too.
+            }
+        }
+    }
+
+    /// <summary>Same per-subscriber isolation as <see cref="RaiseStateChanged"/>, for the same
+    /// reason — currently only <c>TrayIconController</c> subscribes to <see cref="CastSwitchChanged"/>,
+    /// but there is no guarantee that stays true, and the two events sharing one raising convention
+    /// is easier to keep correct than special-casing "this one only has one subscriber today".</summary>
+    private void RaiseCastSwitchChanged(bool on)
+    {
+        foreach (var handler in CastSwitchChanged?.GetInvocationList() ?? Array.Empty<Delegate>())
+        {
+            try
+            {
+                ((Action<bool>)handler)(on);
+            }
+            catch (Exception)
+            {
+            }
+        }
     }
 }
