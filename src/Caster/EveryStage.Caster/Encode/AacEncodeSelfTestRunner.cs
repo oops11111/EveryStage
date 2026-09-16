@@ -57,44 +57,49 @@ public sealed class AacEncodeSelfTestRunner : IDisposable
         TotalPcmBytesIn = 0;
         TotalDecodedPcmBytes = 0;
 
-        AudioCaptureSource capture;
-        AacAudioEncoder encoder;
-        AacAudioDecoder decoder;
         try
         {
-            capture = new AudioCaptureSource();
+            // Bug fixed here: each object used to be built into a local variable and only assigned
+            // to _capture/_encoder/_decoder after all three constructors succeeded — if
+            // AudioCaptureSource and AacAudioEncoder both constructed fine but AacAudioDecoder then
+            // threw (a real, expected outcome: no AAC decoder MFT registered, an unsupported
+            // negotiated format), those two already-live objects (a WASAPI capture handle, an
+            // MFT-backed encoder with its own MediaFactory.MFStartup()/MFShutdown() pairing) became
+            // unreachable local variables that nothing ever called Dispose() on — a leak on every
+            // failed self-test attempt. Assigning straight to the fields as each step succeeds
+            // (matching EncodeSelfTestRunner's own established pattern for this exact shape of
+            // partial-construction-failure leak) means the catch block's Stop() call below can find
+            // and clean up whichever of the three DID construct successfully.
+            _capture = new AudioCaptureSource();
             // AacAudioEncoder/AacAudioDecoder both assume 16-bit PCM at whatever sample rate/channel
             // count AudioCaptureSource reports — same assumption AudioCaptureSource itself already
             // guarantees (it converts WASAPI's native float32 mix format down to 16-bit PCM before
             // ever raising PcmCaptured).
-            encoder = new AacAudioEncoder(capture.SampleRate, capture.Channels);
-            decoder = new AacAudioDecoder(capture.SampleRate, capture.Channels);
+            _encoder = new AacAudioEncoder(_capture.SampleRate, _capture.Channels);
+            _decoder = new AacAudioDecoder(_capture.SampleRate, _capture.Channels);
         }
         catch (Exception ex)
         {
             // Same "construction failure is a normal, expected outcome" reasoning
             // AudioCaptureSelfTestRunner already applies to AudioCaptureSource alone — here it also
-            // covers AacAudioEncoder/AacAudioDecoder's own construction (no AAC encoder/decoder MFT
-            // registered, an unsupported negotiated format, etc.).
+            // covers AacAudioEncoder/AacAudioDecoder's own construction.
             LastError = ex.Message;
+            Stop(); // disposes whichever of _capture/_encoder/_decoder got constructed before the failure.
             StatsUpdated?.Invoke();
             return;
         }
 
-        SampleRate = capture.SampleRate;
-        Channels = capture.Channels;
+        SampleRate = _capture.SampleRate;
+        Channels = _capture.Channels;
 
-        encoder.AccessUnitEncoded += OnAccessUnitEncoded;
-        encoder.EncodingFailed += OnEncodingFailed;
-        decoder.PcmDecoded += OnPcmDecoded;
-        decoder.DecodingFailed += OnDecodingFailed;
-        capture.PcmCaptured += OnPcmCaptured;
-        capture.CaptureFailed += OnCaptureFailed;
+        _encoder.AccessUnitEncoded += OnAccessUnitEncoded;
+        _encoder.EncodingFailed += OnEncodingFailed;
+        _decoder.PcmDecoded += OnPcmDecoded;
+        _decoder.DecodingFailed += OnDecodingFailed;
+        _capture.PcmCaptured += OnPcmCaptured;
+        _capture.CaptureFailed += OnCaptureFailed;
 
-        _encoder = encoder;
-        _decoder = decoder;
-        _capture = capture;
-        capture.Start();
+        _capture.Start();
         StatsUpdated?.Invoke();
     }
 

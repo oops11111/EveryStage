@@ -806,6 +806,22 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     连带释放已经拿到的`_events`）再重新抛出异常，保证不管构造函数是正常完成还是中途失败，
     `MFStartup`/`MFShutdown`的配对关系都不会被打破。**没有做的部分**：这次改动本身没有在这个
     沙箱里跑过（没有dotnet），没有真机验证过。
+76. **【新发现的真实bug，已修复】`AacEncodeSelfTestRunner.Start()`原来把三个构造出来的对象先放进
+    局部变量，等三个构造函数全部成功之后才一次性赋给`_capture`/`_encoder`/`_decoder`三个字段——
+    如果`AudioCaptureSource`和`AacAudioEncoder`都构造成功、但`AacAudioDecoder`构造失败（真实
+    场景：这台机器没有注册AAC解码器MFT、或者协商出的格式不受支持），已经成功构造的这两个对象
+    就变成了没有任何字段引用它们的局部变量，`catch`块原来只设置`LastError`就直接`return`，
+    从来没有人调用过它们的`Dispose()`——每次这条自检的构造失败路径被触发，就泄漏一个WASAPI
+    采集句柄和一个自带`MediaFactory.MFStartup()`/`MFShutdown()`配对的AAC编码器MFT。这跟这一轮
+    在别处系统性修的"构造函数中途失败导致资源清理路径被跳过"（见第75条、`EveryStage.Rendering`
+    README第7条）是完全同一类问题，只是这次出现在自检runner自己组合多个构造函数的地方，不是某个
+    类自己的构造函数内部——对比它的姐妹类`EncodeSelfTestRunner.Start()`会发现后者从一开始就是
+    每构造一个对象就立刻赋给对应字段，`catch`块调用的`StopInternal()`因此总能找到已经构造成功
+    的那些字段去释放，这次的`AacEncodeSelfTestRunner`是这一类自检runner里唯一没有遵循这个既有
+    正确写法的一个。**修复方式**：改成每个对象构造成功就立刻赋给`_capture`/`_encoder`/`_decoder`
+    对应的字段，`catch`块里调用`Stop()`（本来就已经对每个字段做了`null`检查，可以安全地在只有
+    部分对象构造成功时调用）代替原来"什么都不清理"的处理。**没有做的部分**：这次改动本身没有在
+    这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始
 
