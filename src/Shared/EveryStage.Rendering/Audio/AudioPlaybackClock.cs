@@ -33,6 +33,19 @@ public sealed class AudioPlaybackClock : IDisposable
 
     public void Start() => _output.Play();
 
+    /// <summary>Pauses WASAPI playback in place — <see cref="PositionTicks"/> stops advancing at
+    /// whatever byte count has actually been rendered so far, and <see cref="Resume"/> continues from
+    /// there. Does not touch <see cref="_buffer"/>: whatever's already queued stays queued (subject to
+    /// its own <c>DiscardOnBufferOverflow</c> policy if a caller keeps calling <see cref="Enqueue"/>
+    /// while paused — this class doesn't stop that, since a paused audio player choosing not to keep
+    /// decoding is the caller's own responsibility, see <c>Terminal.ContentEngine.AudioContentController</c>'s
+    /// own <c>Pause</c> method (a different project, so not linkable from here) for why its decode
+    /// loop naturally stops enqueueing once this is paused anyway).</summary>
+    public void Pause() => _output.Pause();
+
+    /// <summary>Resumes playback paused by <see cref="Pause"/> from the exact position it left off.</summary>
+    public void Resume() => _output.Play();
+
     public void Enqueue(byte[] pcm) => _buffer.AddSamples(pcm, 0, pcm.Length);
 
     /// <summary>Current hardware playback position, converted to 100ns ticks so it's directly

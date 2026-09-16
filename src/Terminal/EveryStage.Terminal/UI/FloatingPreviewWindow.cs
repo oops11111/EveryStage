@@ -164,8 +164,13 @@ public sealed class FloatingPreviewWindow : Form
         _fileLabel.Text = $"{Path.GetFileName(file.SourcePath)}\n[{file.Kind}]";
         _thumbnail.Image = _playback.CurrentThumbnail; // null for video — see PlaybackEngine.CurrentThumbnail.
 
-        // Pause is only meaningful for image/PDF today (see PlaybackEngine.Pause's doc comment).
-        _pauseButton.Enabled = file.Kind is MediaKind.Image or MediaKind.Document;
+        // Pause is meaningful for image/PDF (freezes the stay-duration clock) and now standalone
+        // audio too (real WASAPI pause-in-place, see PlaybackEngine.Pause's doc comment) — still not
+        // video, and not background audio (which never reaches PlayStandaloneAudio in the first
+        // place, see that method's doc comment), so this mirrors PlaybackEngine.Pause's own guard
+        // exactly rather than re-deriving a slightly different condition here.
+        _pauseButton.Enabled = file.Kind is MediaKind.Image or MediaKind.Document
+            || (file.Kind == MediaKind.Audio && !file.IsBackgroundAudio);
         _pauseButton.Text = _playback.IsPaused ? "继续" : "暂停";
 
         // Null (empty text) for anything that isn't a multi-page Document — see this class's and

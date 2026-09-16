@@ -73,6 +73,23 @@ public sealed class AudioContentController : IDisposable
         _playbackThread.Start();
     }
 
+    /// <summary>Pauses in place — unlike <see cref="VideoContentController"/> (whose <c>Stop()</c>
+    /// tears the decode source down entirely, see its own doc comment on why video pause-in-place
+    /// isn't implemented), audio can pause safely here because <see cref="AudioPlaybackClock"/>'s
+    /// underlying WASAPI output has a real pause primitive (<c>WasapiOut.Pause()</c>) that leaves
+    /// playback position exactly where it stopped — nothing about the decode source/thread needs to
+    /// be torn down or reconstructed. The background <see cref="RunPlaybackLoopCore"/> loop doesn't
+    /// need to be told to pause separately: it already only decodes/enqueues as far ahead of
+    /// <see cref="AudioPlaybackClock.PositionTicks"/> as <see cref="AheadBudgetTicks"/> allows, and
+    /// that position stops advancing the moment WASAPI is paused — so the loop naturally blocks in
+    /// its existing wait spin the same way it would if playback were simply running slow, not
+    /// stopped. No-op if nothing is currently playing (<see cref="_audioClock"/> null).</summary>
+    public void Pause() => _audioClock?.Pause();
+
+    /// <summary>Resumes playback paused by <see cref="Pause"/> from the exact position it left off —
+    /// see that method's own doc comment. No-op if nothing is currently playing.</summary>
+    public void Resume() => _audioClock?.Resume();
+
     public void Stop()
     {
         _playbackCts?.Cancel();

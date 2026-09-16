@@ -35,9 +35,10 @@ namespace EveryStage.Terminal.UI.Panels;
 /// building a real one means decoding a frame/first page, which is extra work beyond what a file
 /// browser strictly needs), audio's "横向播放条" treatment (§8.2 describes audio rows differently
 /// from the grid — non-background audio playback itself has real behavior now via
-/// <see cref="ContentEngine.AudioContentController"/>, but that controller has no pause/resume, seek,
-/// or volume control at all, which is most of what a real play bar would need to actually do
-/// something rather than just look like PLANNING.md's mockup), and dragging a library item onto an
+/// <see cref="ContentEngine.AudioContentController"/>, which now also has real pause/resume (see this
+/// project's README "已知风险"), but still no seek or volume control at all, which is most of the
+/// rest of what a real play bar would need to actually do something rather than just look like
+/// PLANNING.md's mockup), and dragging a library item onto an
 /// activity (there is no activity list UI yet in this same window for it to be dragged onto).
 /// </summary>
 public sealed class FilesPanel : UserControl

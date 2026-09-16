@@ -488,16 +488,34 @@ public sealed class PlaybackEngine : IDisposable
     }
 
     /// <summary>
-    /// Floating-preview-window "暂停" (PLANNING.md §8.3) for image/PDF content: freezes the
-    /// stay-duration auto-advance clock in place. Deliberately does nothing for video — pausing
-    /// video mid-frame and resuming from that exact position would need <c>VideoContentController</c>
-    /// to support suspend/resume-in-place, which it doesn't (its <c>Stop()</c> tears the decode
-    /// source down entirely). Rather than fake a "pause" that actually restarts the video from the
-    /// beginning, this is a documented no-op for that case until real pause/resume exists.
+    /// Floating-preview-window "暂停" (PLANNING.md §8.3), with two genuinely different mechanisms
+    /// depending on <see cref="_currentFile"/>'s kind: for image/PDF content, freezes the
+    /// stay-duration auto-advance clock in place; for standalone (non-background) audio, now a real
+    /// pause-in-place via <see cref="AudioContentController.Pause"/> (see that method's own doc
+    /// comment on why this is safe for audio specifically). Still deliberately does nothing for
+    /// video — pausing video mid-frame and resuming from that exact position would need
+    /// <c>VideoContentController</c> to support suspend/resume-in-place, which it doesn't (its
+    /// <c>Stop()</c> tears the decode source down entirely). Rather than fake a "pause" that actually
+    /// restarts the video from the beginning, this remains a documented no-op for that case until
+    /// real pause/resume exists there too.
     /// </summary>
     public void Pause()
     {
-        if (IsPaused || _currentFile == null || _stayDurationTimer == null) return;
+        if (IsPaused || _currentFile == null) return;
+
+        // IsBackgroundAudio is excluded here the same way PlayFile's own switch excludes it from ever
+        // reaching PlayStandaloneAudio in the first place (see that method's doc comment) — a
+        // background-audio MediaFile can be _currentFile without anything ever actually having been
+        // handed to _audioController for it, so pausing here would either no-op against whatever
+        // unrelated file _audioController last played, or against nothing at all.
+        if (_currentFile.Kind == MediaKind.Audio && !_currentFile.IsBackgroundAudio)
+        {
+            _audioController?.Pause();
+            IsPaused = true;
+            return;
+        }
+
+        if (_stayDurationTimer == null) return; // Video (or a not-yet-reachable background-audio _currentFile): no-op, see this method's own doc comment.
 
         TimeSpan elapsed = DateTime.UtcNow - _stayDurationArmedAt;
         TimeSpan remaining = _stayDurationTotal - elapsed;
@@ -507,12 +525,20 @@ public sealed class PlaybackEngine : IDisposable
         IsPaused = true;
     }
 
-    /// <summary>Resumes a stay-duration countdown paused by <see cref="Pause"/>, from where it left
-    /// off. No-op if nothing is paused.</summary>
+    /// <summary>Resumes whatever <see cref="Pause"/> paused — a stay-duration countdown from where
+    /// it left off, or (for standalone audio) real WASAPI playback via
+    /// <see cref="AudioContentController.Resume"/>. No-op if nothing is paused.</summary>
     public void Resume()
     {
         if (!IsPaused || _currentFile == null) return;
         IsPaused = false;
+
+        if (_currentFile.Kind == MediaKind.Audio && !_currentFile.IsBackgroundAudio)
+        {
+            _audioController?.Resume();
+            return;
+        }
+
         _stayDurationTimer?.Dispose();
         _stayDurationTimer = null;
         ArmStayDurationTimer(_currentFile, _remainingOnPause, isFreshStart: false);

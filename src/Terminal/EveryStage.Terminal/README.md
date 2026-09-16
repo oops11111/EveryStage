@@ -761,6 +761,25 @@ Caster知道终端机确实收到了东西。
     这个协议本身没有版本协商（见`EveryStage.Discovery`README对应新增条目）——一个跑旧代码的
     Terminal发的报告没有这个字段，Caster这边反序列化会得到默认值`0`，跟"确实没有发生不匹配"在协议
     层面完全无法区分。
+81. **【已实现，原为已知缺口】独立音频播放现在有真正的暂停/恢复了**：见"尚未开始"里"音频以横向
+    播放条展示"那条列的四项缺失能力，"暂停/恢复"是其中风险最小的一项——不像"进度拖动"需要
+    `AudioDecodeSource`支持seek、"音量"需要给`AudioPlaybackClock`加音量控制、"独立投屏按钮"连
+    PLANNING.md本身都没说清楚具体含义，暂停/恢复只需要`AudioPlaybackClock`底下的`WasapiOut`本来
+    就有的`Pause()`/`Play()`两个原语——跟`VideoContentController`不同（它的`Stop()`把解码源整个
+    拆掉，真正的暂停/恢复需要支持"原地挂起再恢复"，这个仓库没有做），`AudioPlaybackClock`不需要
+    拆解码源：`Pause()`只是让WASAPI输出暂停，`PositionTicks`停在原地不再前进，后台解码循环
+    （`AudioContentController.RunPlaybackLoopCore`）本来就是"不能超前`PositionTicks`太多就
+    停下来等"的节奏，`PositionTicks`一停，解码循环自己就会自然阻塞在已有的等待逻辑里，不需要另外
+    教它"暂停"这个概念。链路：`AudioPlaybackClock`新增`Pause`/`Resume`（包`WasapiOut.Pause`/
+    `Play`）→ `AudioContentController`新增同名方法转发 → `PlaybackEngine.Pause`/`Resume`原来
+    "`_stayDurationTimer == null`就直接返回"的判断改成先分支处理"当前文件是非背景音频"这一种情况
+    → `FloatingPreviewWindow.RefreshFromEngine`原来"暂停按钮只对图片/PDF启用"的判断加上音频这一种
+    情况（不加这一步的话新增的能力从UI根本按不到，是真正让这条链路有第一个调用方的最后一步，不是
+    可有可无的收尾）。**仍然没有做的部分**：视频的暂停/恢复仍然是文档化的no-op（未改变，见
+    `PlaybackEngine.Pause`自己的doc comment）；"横向播放条"四项缺失能力里，进度拖动/音量/独立投屏
+    按钮这三项依然完全没有实现，见"尚未开始"对应条目更新；这次改动本身没有在这个沙箱里跑过（没有
+    dotnet），`WasapiOut.Pause()`之后再调用`Play()`是否真的从暂停处继续而不是从头开始，完全依赖
+    NAudio文档描述的`IWavePlayer`语义，没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -786,14 +805,16 @@ Caster知道终端机确实收到了东西。
   目前把音频文件跟图片/视频/文档放进同一个`ListView`缩略图网格，完全没有单独的横向行样式；这次
   排查PLANNING.md跟README的差异时发现这句话之前只在`FilesPanel`类doc comment里提过一次（且原话
   "audio playback itself isn't implemented anywhere in this repo yet"已经过时并顺手改正），从来
-  没有作为已知缺口出现在README里。**没有直接去做的原因**：横向播放条要求的五个功能里，只有
-  "播放"这一半勉强有底子（`ContentEngine.AudioContentController`能播放，但完全没有暂停/恢复能力
-  ——`PlaybackEngine.Pause`/`Resume`目前只操作图片/文档的停留时长倒计时，从来不是真正的音频
-  暂停）；"进度"（拖动跳转到任意位置）需要`AudioDecodeSource`支持seek，这个仓库的Media Foundation
-  封装从来没有做过这件事；"音量"目前完全没有任何调节入口（`AudioPlaybackClock`/`WasapiOut`都没有
+  没有作为已知缺口出现在README里。**【更新】"播放"这一半现在更完整了**：`ContentEngine.
+  AudioContentController`不仅能播放，现在也有真正的暂停/恢复能力了（见"已知风险"第81条，
+  `PlaybackEngine.Pause`/`Resume`不再对音频只操作停留时长倒计时）。**仍然没有做的部分**：
+  "进度"（拖动跳转到任意位置）需要`AudioDecodeSource`支持seek，这个仓库的Media Foundation封装
+  从来没有做过这件事；"音量"目前完全没有任何调节入口（`AudioPlaybackClock`/`WasapiOut`都没有
   暴露音量控制）；"独立投屏按钮"具体含义PLANNING.md本身没有展开（跟双击播放已有的行为是否是同一
-  件事也不确定）。这四项加起来是真正需要新增播放引擎能力的工作，风险等级和规模跟WPS COM互操作、
-  背景音轨叠加播放是同一档，不是这次能顺手补上的UI接线，故意没有尝试
+  件事也不确定）。这三项加起来仍然是真正需要新增播放引擎能力/产品决策的工作，风险等级和规模跟
+  WPS COM互操作、背景音轨叠加播放是同一档，不是这次能顺手补上的UI接线，故意没有尝试；真正的
+  "横向播放条"UI本身（含进度条/音量滑块等控件布局）也完全没有开始，`FilesPanel`仍然把音频文件
+  放进跟图片/视频/文档相同的缩略图网格里，见该类doc comment。
 - PLANNING.md §11"批量选择"里的"加入活动"/"统一设置属性"（见"已知风险"第79条，"删除"那一半已经
   实现）——"加入活动"需要新的跨面板管线（在`FilesPanel`这里选文件、去哪个活动/方案添加，这个面板
   目前完全不认识`ScenarioStore`/`ScenarioRepository`），"统一设置属性"需要先决定好清空/合并冲突值
