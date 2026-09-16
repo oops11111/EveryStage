@@ -1116,6 +1116,23 @@ Caster知道终端机确实收到了东西。
     跑过（没有dotnet），没有真机验证过——包括GPU设备丢失/重置在真机上到底以什么具体异常类型/
     时机出现，本身也只是基于这个仓库其它地方已经记录过的"GPU设备丢失是真实场景"这个共识推断
     出来的，没有实测触发过。
+98. **【新发现的真实bug，已修复】`H264HardwareDecoder`构造函数一旦`MediaFactory.MFStartup()`
+    成功之后剩余部分抛出异常，这次`MFStartup`引用计数永远不会被平衡回来**：跟
+    `EveryStage.Rendering`那次审计（见该项目README第7条）是同一次系统性排查一起找到的同一类
+    bug——这个类的构造函数形状是`_decoder = ActivateFirstHardwareDecoder();`（内部先调用
+    `MFStartup()`再枚举/激活硬件解码器MFT，枚举不到硬件解码器时会抛异常）之后紧跟着
+    `ConfigureInputType`/`ConfigureNv12OutputType`/`BindDeviceManager`等一长串同样可能失败的
+    配置步骤，构造函数才真正返回。原来只有`Dispose()`里调了`MFShutdown()`——如果
+    `ActivateFirstHardwareDecoder`内部枚举不到硬件解码器（这是真实场景：不是所有机器都有兼容的
+    硬件H.264解码器），或者后续任何一步配置失败，这个`H264HardwareDecoder`实例就永远不会真正
+    构造完成，`CastReceiver`也就永远不会有一个实例去调`Dispose()`，`MFStartup()`增加的引用
+    计数就此永久泄漏——而且这不是一次性的：如果某台Terminal机器确实缺少兼容的硬件解码器，
+    它每次接受一次设备投屏都会重新尝试构造一次`H264HardwareDecoder`，也就重新泄漏一次，直到
+    整个Terminal进程退出为止。**修复方式**：`ActivateFirstHardwareDecoder`自己内部（枚举/激活
+    失败的路径）和构造函数剩余部分（配置失败的路径）各自新增一层`try/catch`，失败时都调用
+    `MediaFactory.MFShutdown()`再重新抛出异常，保证不管构造函数是正常完成还是在任何一个阶段
+    中途失败，`MFStartup`/`MFShutdown`的配对关系都不会被打破。**没有做的部分**：这次改动本身
+    没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

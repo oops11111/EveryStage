@@ -789,6 +789,23 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     直接`return`，`switch`内部失败则让循环继续处理下一个数据包，不再让单次处理失败连累后续
     所有数据包都收不到。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），
     没有真机验证过。
+75. **【新发现的真实bug，已修复】`H264HardwareEncoder`/`AacAudioEncoder`两个类的构造函数，一旦
+    `MediaFactory.MFStartup()`成功之后剩余部分抛出异常，这次`MFStartup`引用计数永远不会被
+    平衡回来**：跟`EveryStage.Rendering`（该项目README第7条）、`EveryStage.Terminal`的
+    `H264HardwareDecoder`（该项目README第98条）是同一次系统性排查一起找到的同一类bug——这两个
+    类的构造函数形状都是`_encoder = ActivateFirstXxxEncoder();`（内部先调用`MFStartup()`再
+    枚举/激活MFT，枚举不到时会抛异常）之后紧跟着一长串同样可能失败的配置步骤（`H264HardwareEncoder`
+    还多了`_events = _encoder.QueryInterface<IMFMediaEventGenerator>()`这一步），构造函数才
+    真正返回。原来只有`Dispose()`里调了`MFShutdown()`——如果枚举不到对应MFT（`H264HardwareEncoder`
+    的硬件编码器枚举不到是真实场景：不是所有机器都有兼容的硬件H.264编码器），或者后续任何一步
+    配置失败，这个实例就永远不会真正构造完成，`LiveCastSession`也就永远不会有一个实例去调
+    `Dispose()`，`MFStartup()`增加的引用计数就此永久泄漏——而且不是一次性的：每次尝试开始投屏
+    都会重新构造一次，也就重新泄漏一次，直到Caster进程退出为止。**修复方式**：两个类各自的
+    `ActivateFirstXxxEncoder`内部（枚举/激活失败的路径）和构造函数剩余部分（配置失败的路径）
+    都新增一层`try/catch`，失败时调用`MediaFactory.MFShutdown()`（`H264HardwareEncoder`还会
+    连带释放已经拿到的`_events`）再重新抛出异常，保证不管构造函数是正常完成还是中途失败，
+    `MFStartup`/`MFShutdown`的配对关系都不会被打破。**没有做的部分**：这次改动本身没有在这个
+    沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始
 

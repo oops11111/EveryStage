@@ -61,17 +61,34 @@ public sealed class AacAudioEncoder : IDisposable
         _bytesPerSecond = sampleRate * channels * 2L; // 16-bit PCM.
 
         _encoder = ActivateFirstAacEncoder();
-        UnlockAsyncProcessingIfNeeded(_encoder);
 
-        // Input type must be set before enumerating output types — see ConfigureOutputType's doc
-        // comment for why (the opposite order from H264HardwareEncoder, which sets output first).
-        ConfigureInputType(_encoder, sampleRate, channels);
-        ConfigureOutputType(_encoder);
+        // Bug fixed here (same shape as H264HardwareDecoder/H264HardwareEncoder/AudioDecodeSource/
+        // VideoDecodeSource/AacAudioDecoder's own constructor fixes, see any of their doc comments):
+        // ActivateFirstAacEncoder() above already called MediaFactory.MFStartup() successfully by
+        // the time execution reaches this line — but if any of the calls below throws, this
+        // constructor never finishes, so no AacAudioEncoder instance ever exists for its owner
+        // (LiveCastSession, once per cast with audio) to later Dispose() and hit the MFShutdown()
+        // call below.
+        try
+        {
+            UnlockAsyncProcessingIfNeeded(_encoder);
 
-        // NOTE: same unverified exact enum member names as H264HardwareEncoder's identical two
-        // calls — native values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING / MFT_MESSAGE_NOTIFY_START_OF_STREAM.
-        _encoder.ProcessMessage(MFTMessageType.NotifyBeginStreaming, IntPtr.Zero);
-        _encoder.ProcessMessage(MFTMessageType.NotifyStartOfStream, IntPtr.Zero);
+            // Input type must be set before enumerating output types — see ConfigureOutputType's doc
+            // comment for why (the opposite order from H264HardwareEncoder, which sets output first).
+            ConfigureInputType(_encoder, sampleRate, channels);
+            ConfigureOutputType(_encoder);
+
+            // NOTE: same unverified exact enum member names as H264HardwareEncoder's identical two
+            // calls — native values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING / MFT_MESSAGE_NOTIFY_START_OF_STREAM.
+            _encoder.ProcessMessage(MFTMessageType.NotifyBeginStreaming, IntPtr.Zero);
+            _encoder.ProcessMessage(MFTMessageType.NotifyStartOfStream, IntPtr.Zero);
+        }
+        catch
+        {
+            _encoder.Dispose();
+            MediaFactory.MFShutdown();
+            throw;
+        }
     }
 
     /// <summary>Encodes one chunk of interleaved 16-bit PCM, synchronously, on whichever thread calls
@@ -168,27 +185,41 @@ public sealed class AacAudioEncoder : IDisposable
     {
         MediaFactory.MFStartup().CheckError();
 
-        var outputType = new MFTRegisterTypeInfo { GuidMajorType = MFMediaType_Audio, GuidSubtype = MFAudioFormat_AAC };
-
-        // No MFTEnumFlag.Hardware here (unlike H264HardwareEncoder's identical call) — the built-in
-        // AAC encoder is a software MFT, and filtering for hardware would just find nothing.
-        MediaFactory.MFTEnumEx(
-            MFT_CATEGORY_AUDIO_ENCODER,
-            MFTEnumFlag.SortAndFilter,
-            null,
-            outputType,
-            out IMFActivate[] activates).CheckError();
-
-        if (activates == null || activates.Length == 0)
-            throw new InvalidOperationException("No AAC encoder MFT found on this machine (MFTEnumEx returned none).");
-
+        // Everything below is wrapped so that MFStartup() above is never left unbalanced by this
+        // method throwing before ever returning a usable IMFTransform — see this class's
+        // constructor for the other half of the same bug, and H264HardwareDecoder/
+        // H264HardwareEncoder/AacAudioDecoder's identical fix for the same shape. No AAC encoder MFT
+        // found at all is a real, not just hypothetical, condition — without this, that failure
+        // would leak one MFStartup() reference count every time casting with audio is attempted.
         try
         {
-            return activates[0].ActivateObject<IMFTransform>();
+            var outputType = new MFTRegisterTypeInfo { GuidMajorType = MFMediaType_Audio, GuidSubtype = MFAudioFormat_AAC };
+
+            // No MFTEnumFlag.Hardware here (unlike H264HardwareEncoder's identical call) — the built-in
+            // AAC encoder is a software MFT, and filtering for hardware would just find nothing.
+            MediaFactory.MFTEnumEx(
+                MFT_CATEGORY_AUDIO_ENCODER,
+                MFTEnumFlag.SortAndFilter,
+                null,
+                outputType,
+                out IMFActivate[] activates).CheckError();
+
+            if (activates == null || activates.Length == 0)
+                throw new InvalidOperationException("No AAC encoder MFT found on this machine (MFTEnumEx returned none).");
+
+            try
+            {
+                return activates[0].ActivateObject<IMFTransform>();
+            }
+            finally
+            {
+                foreach (var activate in activates) activate.Dispose();
+            }
         }
-        finally
+        catch
         {
-            foreach (var activate in activates) activate.Dispose();
+            MediaFactory.MFShutdown();
+            throw;
         }
     }
 

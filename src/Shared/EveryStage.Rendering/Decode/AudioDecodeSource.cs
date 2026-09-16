@@ -29,34 +29,50 @@ public sealed class AudioDecodeSource : IDisposable
     {
         MediaFactory.MFStartup().CheckError();
 
-        // No attributes are actually needed for a pure audio read (no D3D hardware transform to
-        // enable) — constructing a (currently empty) attributes object mirrors
-        // MFCreateSourceReaderFromURL's call shape in VideoDecodeSource rather than guessing whether
-        // Vortice's binding accepts a null IMFAttributes here, matching this project's convention of
-        // not introducing a new unverified parameter shape when an already-used one is available.
-        MediaFactory.MFCreateAttributes(out var attributes, 0).CheckError();
-        using (attributes)
+        // Bug fixed here (same shape as H264HardwareDecoder/H264HardwareEncoder's own constructor
+        // fixes, see either's doc comment): MFStartup() above already succeeded by the time
+        // execution reaches this line — but if anything below throws, this constructor never
+        // finishes, so no AudioDecodeSource instance ever exists for its owner to later Dispose()
+        // and hit the MFShutdown() call below. Without this try/catch, a bad/corrupt/unsupported
+        // audio file (a real, not hypothetical, condition — this class exists specifically to open
+        // arbitrary user-supplied files) would leak one MFStartup() reference count every time.
+        try
         {
-            MediaFactory.MFCreateSourceReaderFromURL(filePathOrUrl, attributes, out _reader).CheckError();
-        }
+            // No attributes are actually needed for a pure audio read (no D3D hardware transform to
+            // enable) — constructing a (currently empty) attributes object mirrors
+            // MFCreateSourceReaderFromURL's call shape in VideoDecodeSource rather than guessing whether
+            // Vortice's binding accepts a null IMFAttributes here, matching this project's convention of
+            // not introducing a new unverified parameter shape when an already-used one is available.
+            MediaFactory.MFCreateAttributes(out var attributes, 0).CheckError();
+            using (attributes)
+            {
+                MediaFactory.MFCreateSourceReaderFromURL(filePathOrUrl, attributes, out _reader).CheckError();
+            }
 
-        MediaFactory.MFCreateMediaType(out var audioType).CheckError();
-        using (audioType)
+            MediaFactory.MFCreateMediaType(out var audioType).CheckError();
+            using (audioType)
+            {
+                audioType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+                audioType.Set(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+                _reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, audioType);
+            }
+
+            using var actualAudioType = _reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
+            AudioChannels = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioNumChannels());
+            AudioSampleRate = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioSamplesPerSecond());
+
+            _reader.SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, true);
+            // Deliberately never calls SetStreamSelection for the video stream sentinel — leaving it
+            // unselected (the IMFSourceReader default for a stream this class never asks about) means
+            // ReadSample is never called against it and this class never has to handle a video sample it
+            // has no surface to present.
+        }
+        catch
         {
-            audioType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
-            audioType.Set(MF_MT_SUBTYPE, MFAudioFormat_PCM);
-            _reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, audioType);
+            _reader?.Dispose();
+            MediaFactory.MFShutdown();
+            throw;
         }
-
-        using var actualAudioType = _reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
-        AudioChannels = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioNumChannels());
-        AudioSampleRate = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioSamplesPerSecond());
-
-        _reader.SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, true);
-        // Deliberately never calls SetStreamSelection for the video stream sentinel — leaving it
-        // unselected (the IMFSourceReader default for a stream this class never asks about) means
-        // ReadSample is never called against it and this class never has to handle a video sample it
-        // has no surface to present.
     }
 
     /// <summary>Returns null once the audio stream reports end-of-stream. Same PCM-off-as-CPU-memory

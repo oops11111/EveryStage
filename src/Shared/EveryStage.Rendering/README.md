@@ -45,6 +45,27 @@ Demo专属的——两边需要完全一样的解码/渲染行为，所以放进
    开始投屏都会`new`一个新的，这个泄漏是每次投屏循环都会发生一次，不是一次性的。**修复方式**：
    拆成三行，每个中间步骤都用`using var`接住，只把最终需要长期持有的`IDXGIFactory2`赋给字段。
    **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+7. **【新发现的真实bug，已修复】`AudioDecodeSource`/`VideoDecodeSource`/`AacAudioDecoder`三个类的
+   构造函数，一旦`MediaFactory.MFStartup()`成功之后构造函数剩余部分抛出异常，这次
+   `MFStartup`引用计数永远不会被对应的`MFShutdown()`平衡回来**：这三个类（连同Caster端的
+   `H264HardwareEncoder`/`AacAudioEncoder`，见各自README对应条目）构造函数的通用形状都是
+   "先`MFStartup()`，再做一长串可能失败的MFT/SourceReader配置步骤，最后才让构造函数正常返回"。
+   问题在于：这些类都只在各自的`Dispose()`里调用`MFShutdown()`，而如果构造函数在`MFStartup()`
+   成功**之后**、构造函数真正返回**之前**的任何一步抛出异常——比如`VideoDecodeSource`/
+   `AudioDecodeSource`打开一个损坏/不支持编码的媒体文件（这是真实场景，不是假设：这两个类
+   存在的意义就是打开任意用户提供的文件），或者`AacAudioDecoder`所在机器没有AAC解码器MFT——
+   这个实例就永远不会真正构造完成，也就永远不会有人调用它的`Dispose()`，这次`MFStartup()`
+   增加的引用计数就永久泄漏，直到整个进程退出为止。这跟第6条`D3D11Device`的COM泄漏是同一次
+   系统性审计一起找到的，都是"构造函数中途失败导致资源清理路径被跳过"这同一个大类下的具体
+   实例。**修复方式**：三个类都在`MFStartup()`成功之后新增一层`try/catch`，把构造函数剩余
+   部分包起来，失败时手动释放已经拿到的MFT/reader、调用`MFShutdown()`再把异常重新抛出，
+   保证不管构造函数是正常完成还是中途失败，`MFStartup`/`MFShutdown`的配对关系都不会被打破。
+   `VideoDecodeSource`额外发现了一个独立的小问题一起修了：构造函数里`attributes`/`videoType`/
+   `audioType`三个`IMFAttributes`/`IMFMediaType`局部变量原来都没有包`using`（跟这个类自己下面
+   `actualVideoType`/`actualAudioType`、以及`AudioDecodeSource`里对应的`audioType`已经在用的
+   写法不一致），每次构造`VideoDecodeSource`（也就是每次开始播放本地视频文件）都会各自泄漏
+   一个原生COM句柄，这次一并用`using`接住。**没有做的部分**：这次改动本身没有在这个沙箱里
+   跑过（没有dotnet），没有真机验证过。
 
 在 Windows 上第一次编译成功、把 `src/Poc/ZeroCopyRenderDemo` 跑通验收标准之后，这份清单里已确认
 没问题的条目可以直接删掉，只留下真正还需要注意的坑。

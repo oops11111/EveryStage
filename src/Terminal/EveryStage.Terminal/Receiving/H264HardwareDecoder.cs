@@ -73,17 +73,35 @@ public sealed class H264HardwareDecoder : IDisposable
     {
         _decoder = ActivateFirstHardwareDecoder();
 
-        ConfigureInputType(_decoder, width, height);
-        ConfigureNv12OutputType(_decoder);
-        BindDeviceManager(_decoder, gpu);
+        // Bug fixed here (see this class's own Dispose() comment for the normal-teardown half of
+        // the same MFStartup/MFShutdown pairing bug): ActivateFirstHardwareDecoder() above already
+        // called MediaFactory.MFStartup() successfully by the time execution reaches this line —
+        // but if any of the four calls below throws, this constructor never finishes, so no
+        // H264HardwareDecoder instance ever exists for CastReceiver to later Dispose() and hit the
+        // MFShutdown() call this class's Dispose() makes. Without this try/catch, that MFStartup()
+        // reference-count increment would leak permanently every time construction fails this way —
+        // and unlike a one-time startup failure, this can repeat: a machine that genuinely has no
+        // compatible hardware decoder configuration would leak once per attempted device cast.
+        try
+        {
+            ConfigureInputType(_decoder, width, height);
+            ConfigureNv12OutputType(_decoder);
+            BindDeviceManager(_decoder, gpu);
 
-        _outputProvidesOwnSamples = OutputProvidesOwnSamples(_decoder);
+            _outputProvidesOwnSamples = OutputProvidesOwnSamples(_decoder);
 
-        // NOTE: verify these two message constants' exact Vortice enum member names, same caveat as
-        // H264HardwareEncoder — native values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING /
-        // MFT_MESSAGE_NOTIFY_START_OF_STREAM.
-        _decoder.ProcessMessage(MFTMessageType.NotifyBeginStreaming, IntPtr.Zero);
-        _decoder.ProcessMessage(MFTMessageType.NotifyStartOfStream, IntPtr.Zero);
+            // NOTE: verify these two message constants' exact Vortice enum member names, same caveat as
+            // H264HardwareEncoder — native values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING /
+            // MFT_MESSAGE_NOTIFY_START_OF_STREAM.
+            _decoder.ProcessMessage(MFTMessageType.NotifyBeginStreaming, IntPtr.Zero);
+            _decoder.ProcessMessage(MFTMessageType.NotifyStartOfStream, IntPtr.Zero);
+        }
+        catch
+        {
+            _decoder.Dispose();
+            MediaFactory.MFShutdown();
+            throw;
+        }
     }
 
     /// <summary>Feeds one complete Annex-B-framed access unit (one encoded frame's worth of NAL
@@ -181,30 +199,46 @@ public sealed class H264HardwareDecoder : IDisposable
     {
         MediaFactory.MFStartup().CheckError();
 
-        var inputType = new MFTRegisterTypeInfo { GuidMajorType = MFMediaType_Video, GuidSubtype = MFVideoFormat_H264 };
-
-        // NOTE: MFTEnumEx's exact Vortice signature (parameter order, whether flags is a [Flags]
-        // enum called MFTEnumFlag or similar) is unverified — same caveat as
-        // H264HardwareEncoder.ActivateFirstHardwareEncoder, mirrored here with input/output type
-        // arguments swapped (this asks "which MFTs accept H264 input", not "which produce H264
-        // output").
-        MediaFactory.MFTEnumEx(
-            MFT_CATEGORY_VIDEO_DECODER,
-            MFTEnumFlag.Hardware | MFTEnumFlag.SortAndFilter,
-            inputType,
-            null,
-            out IMFActivate[] activates).CheckError();
-
-        if (activates == null || activates.Length == 0)
-            throw new InvalidOperationException("No hardware H.264 decoder MFT found on this machine (MFTEnumEx returned none).");
-
+        // Everything below is wrapped so that MFStartup() above is never left unbalanced by this
+        // method throwing before ever returning a usable IMFTransform — see the constructor's own
+        // try/catch (which covers everything AFTER this method returns) for the other half of the
+        // same bug. MFTEnumEx finding no hardware decoder at all (a real, not just hypothetical,
+        // condition on a machine without a compatible GPU/driver) is exactly the case this exists
+        // for: without this, that specific failure would leak one MFStartup() reference count every
+        // single time a device cast is attempted against such a machine, for the Terminal's entire
+        // uptime.
         try
         {
-            return activates[0].ActivateObject<IMFTransform>();
+            var inputType = new MFTRegisterTypeInfo { GuidMajorType = MFMediaType_Video, GuidSubtype = MFVideoFormat_H264 };
+
+            // NOTE: MFTEnumEx's exact Vortice signature (parameter order, whether flags is a [Flags]
+            // enum called MFTEnumFlag or similar) is unverified — same caveat as
+            // H264HardwareEncoder.ActivateFirstHardwareEncoder, mirrored here with input/output type
+            // arguments swapped (this asks "which MFTs accept H264 input", not "which produce H264
+            // output").
+            MediaFactory.MFTEnumEx(
+                MFT_CATEGORY_VIDEO_DECODER,
+                MFTEnumFlag.Hardware | MFTEnumFlag.SortAndFilter,
+                inputType,
+                null,
+                out IMFActivate[] activates).CheckError();
+
+            if (activates == null || activates.Length == 0)
+                throw new InvalidOperationException("No hardware H.264 decoder MFT found on this machine (MFTEnumEx returned none).");
+
+            try
+            {
+                return activates[0].ActivateObject<IMFTransform>();
+            }
+            finally
+            {
+                foreach (var activate in activates) activate.Dispose();
+            }
         }
-        finally
+        catch
         {
-            foreach (var activate in activates) activate.Dispose();
+            MediaFactory.MFShutdown();
+            throw;
         }
     }
 

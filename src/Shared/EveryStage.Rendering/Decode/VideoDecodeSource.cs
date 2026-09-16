@@ -31,34 +31,66 @@ public sealed class VideoDecodeSource : IDisposable
     {
         MediaFactory.MFStartup().CheckError();
 
-        MediaFactory.MFCreateAttributes(out var attributes, 2).CheckError();
-        attributes.Set(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1u);
-        attributes.Set(MF_SOURCE_READER_D3D_MANAGER, gpu.DeviceManager);
+        // Bug fixed here (same shape as H264HardwareDecoder/H264HardwareEncoder/AudioDecodeSource's
+        // own constructor fixes, see any of their doc comments): MFStartup() above already
+        // succeeded by the time execution reaches this line — but if anything below throws, this
+        // constructor never finishes, so no VideoDecodeSource instance ever exists for its owner to
+        // later Dispose() and hit the MFShutdown() call below. Without this try/catch, a bad/
+        // corrupt/unsupported video file (a real, not hypothetical, condition — this class exists
+        // specifically to open arbitrary user-supplied files) would leak one MFStartup() reference
+        // count every time.
+        try
+        {
+            // Bug also fixed here: attributes/videoType/audioType below were never wrapped in
+            // `using` (unlike AudioDecodeSource's equivalent audioType, and this class's own
+            // actualVideoType/actualAudioType just below, which already do this correctly) — each is
+            // its own IMFAttributes/IMFMediaType COM object that MFCreateSourceReaderFromURL/
+            // SetCurrentMediaType only ever reads from, never takes ownership of, so all three used
+            // to leak one native handle per VideoDecodeSource construction (i.e. every time local
+            // video playback starts).
+            MediaFactory.MFCreateAttributes(out var attributes, 2).CheckError();
+            using (attributes)
+            {
+                attributes.Set(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1u);
+                attributes.Set(MF_SOURCE_READER_D3D_MANAGER, gpu.DeviceManager);
+                MediaFactory.MFCreateSourceReaderFromURL(filePathOrUrl, attributes, out _reader).CheckError();
+            }
 
-        MediaFactory.MFCreateSourceReaderFromURL(filePathOrUrl, attributes, out _reader).CheckError();
+            // Force NV12 on the video stream: keeps the decoder's native DXVA surface format flowing
+            // straight through instead of an internal color-conversion transform breaking the
+            // zero-copy chain ahead of us.
+            MediaFactory.MFCreateMediaType(out var videoType).CheckError();
+            using (videoType)
+            {
+                videoType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+                videoType.Set(MF_MT_SUBTYPE, MFVideoFormat_NV12);
+                _reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, videoType);
+            }
 
-        // Force NV12 on the video stream: keeps the decoder's native DXVA surface format flowing
-        // straight through instead of an internal color-conversion transform breaking the
-        // zero-copy chain ahead of us.
-        MediaFactory.MFCreateMediaType(out var videoType).CheckError();
-        videoType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        videoType.Set(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-        _reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, videoType);
+            MediaFactory.MFCreateMediaType(out var audioType).CheckError();
+            using (audioType)
+            {
+                audioType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+                audioType.Set(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+                _reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, audioType);
+            }
 
-        MediaFactory.MFCreateMediaType(out var audioType).CheckError();
-        audioType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
-        audioType.Set(MF_MT_SUBTYPE, MFAudioFormat_PCM);
-        _reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, audioType);
+            using var actualVideoType = _reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+            (VideoWidth, VideoHeight) = ReadFrameSize(actualVideoType);
 
-        using var actualVideoType = _reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
-        (VideoWidth, VideoHeight) = ReadFrameSize(actualVideoType);
+            using var actualAudioType = _reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
+            AudioChannels = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioNumChannels());
+            AudioSampleRate = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioSamplesPerSecond());
 
-        using var actualAudioType = _reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
-        AudioChannels = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioNumChannels());
-        AudioSampleRate = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioSamplesPerSecond());
-
-        _reader.SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, true);
-        _reader.SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, true);
+            _reader.SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, true);
+            _reader.SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, true);
+        }
+        catch
+        {
+            _reader?.Dispose();
+            MediaFactory.MFShutdown();
+            throw;
+        }
     }
 
     /// <summary>Returns null once the video stream reports end-of-stream.</summary>
