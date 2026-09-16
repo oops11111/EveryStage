@@ -39,7 +39,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
 | `UI/Panels/FilesPanel.cs` | §8.2 | 文件面板：`ListView`缩略图网格 + 类型筛选(全部/图片/视频/文档/音频) + 导入对话框 + 从资源管理器拖拽导入 + 移除(二次确认) + 双击播放(`PlaybackEngine.RequestPlay`)，导入/移除都接入`FileOperationLogger` |
 | `UI/Panels/DevicesPanel.cs` | §8.2 | 设备面板：已配对设备列表(信任状态/被投放/被监看/配对时间) + 移除配对 + 编辑权限(见"已知风险"第70条) |
-| `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(可折叠) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改 |
+| `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(可折叠) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 播放方式/音频属性/停留时长(见"已知风险"第71条) + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改及播放属性变更 |
 | `UI/TextInputDialog.cs`, `UI/LibraryFilePickerDialog.cs` | — | 活动面板用到的两个小弹窗：单行文本输入(方案/活动命名)、从文件库选一个文件 |
 | `UI/Panels/SettingsPanel.cs` | §8.2 | 设置面板：`TabControl`五个分类(通用/显示/播放行为/网络与设备/关于)；`Data/AppSettings.cs`+`Data/SettingsStore.cs`是这次新加的数据模型和JSON持久化(同样是atomic write) |
 
@@ -603,6 +603,20 @@ Caster知道终端机确实收到了东西。
     这次故意没有尝试；权限变更本身也没有接入任何日志（`DeviceConnectionLogger`目前只有配对/断开/
     连接质量几类，没有"权限变更"这一类，PLANNING.md §14.4也没有明确要求记录这个），如果以后需要
     审计权限变更历史，需要单独设计。
+71. **【已实现，原为已知缺口】`MediaFile.StayDuration`（单文件停留时长覆盖）终于有了编辑入口——
+    这次不只是"缺了UI"，是`SettingsPanel`自己的说明文字之前一直在描述一个不存在的功能**：
+    `StayDuration`从这个字段加进数据模型那一轮起，`PlaybackEngine.ArmStayDurationTimer`就在读它、
+    `ActivitiesPanel.CloneFile`深拷贝活动文件时也在正确地复制它，行为这一半完全没问题——但从来没有
+    任何UI能够设置它，跟`PlayMode`/`AllowManualSkip`/`IsBackgroundAudio`这几个字段当初"先有行为，
+    UI跟进"的缺口是同一类。比那几个更严重的是：`SettingsPanel`"默认停留时长"那段说明文字（"单个
+    文件自己设置的停留时长（活动面板里配置）始终优先于这里的默认值"）在这次改动之前一直在向用户
+    描述一个从来没做出来的功能——不是文档滞后于代码，是文档提前"承诺"了代码还没兑现的东西。这次
+    新增`UI/StayDurationDialog.cs`（跟`SettingsPanel`"启用默认停留时长"同一套"勾选框启用/禁用一个
+    `NumericUpDown`"写法，只是这次作用在单个文件的覆盖值上），`ActivitiesPanel`新增"停留时长..."
+    按钮，只在选中一个`Kind`是`Image`或`Document`的文件节点时启用（PLANNING.md §6"停留时长（图片/
+    文档）"），保存时通过`FileOperationLogger.LogPlaybackPropertyChanged`记录变更，取消覆盖（值
+    变回`null`）时`oldValue`/`newValue`跟`OnEditPlayMode`一样让`null`原样记成JSON null而不是字符串
+    "null"，同一套已经确立的约定。这样一来，`SettingsPanel`那段说明文字现在终于是真的了。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -622,5 +636,5 @@ Caster知道终端机确实收到了东西。
   comment"deliberately out of scope"那一段；`IsBackgroundAudio`/`BackgroundAudioVisual`这两个
   字段已经在第61条里有真正的行为了，从这条移出）——在`FadeDuration`/`VolumeFollowsFade`本身有真正
   的播放行为之前，这个仓库不打算为它们加编辑UI，同样的"先做行为、再做UI"的顺序，见风险#55-57、
-  61-62（`PlayMode`/`AllowManualSkip`/`FileOperationLogger.LogPlaybackPropertyChanged`/音频播放
-  行为+编辑UI已经按这个顺序做完了）
+  61-62、71（`PlayMode`/`AllowManualSkip`/`FileOperationLogger.LogPlaybackPropertyChanged`/音频
+  播放行为+编辑UI、`StayDuration`编辑UI都已经按这个顺序做完了）

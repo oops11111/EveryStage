@@ -38,6 +38,7 @@ public sealed class ActivitiesPanel : UserControl
     private readonly Button _addFileButton;
     private readonly Button _playModeButton;
     private readonly Button _audioPropertiesButton;
+    private readonly Button _stayDurationButton;
     private readonly Button _removeButton;
     private readonly Button _moveUpButton;
     private readonly Button _moveDownButton;
@@ -92,6 +93,15 @@ public sealed class ActivitiesPanel : UserControl
         // PlayMode's editor above already established.
         _audioPropertiesButton = new Button { Text = "音频属性...", AutoSize = true, Enabled = false };
         _audioPropertiesButton.Click += (_, _) => OnEditAudioProperties();
+        // Only ever enabled for a selected file whose Kind is Image or Document (PLANNING.md §6
+        // "停留时长（图片/文档）") — same "先做行为、再做UI" gap as PlayMode/AllowManualSkip/
+        // IsBackgroundAudio before it, except MediaFile.StayDuration's own reading behavior
+        // (PlaybackEngine.ArmStayDurationTimer) already existed and worked; only this editing entry
+        // point was ever missing. Worse than a plain gap: SettingsPanel's own "默认停留时长" help
+        // text already claimed a per-file override could be "配置" from "活动面板" before this
+        // button existed to do it — see this project's README "已知风险".
+        _stayDurationButton = new Button { Text = "停留时长...", AutoSize = true, Enabled = false };
+        _stayDurationButton.Click += (_, _) => OnEditStayDuration();
         _removeButton = new Button { Text = "移除文件", AutoSize = true, Enabled = false };
         _removeButton.Click += (_, _) => OnRemoveFile();
         _moveUpButton = new Button { Text = "上移", AutoSize = true, Enabled = false };
@@ -101,7 +111,7 @@ public sealed class ActivitiesPanel : UserControl
         activityBar.Controls.AddRange(new Control[]
         {
             newActivityButton, renameActivityButton, deleteActivityButton, _playModeButton,
-            _audioPropertiesButton, _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
+            _audioPropertiesButton, _stayDurationButton, _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
         });
 
         _tree = new TreeView { Dock = DockStyle.Fill };
@@ -364,6 +374,32 @@ public sealed class ActivitiesPanel : UserControl
         _repository.Save(_store);
     }
 
+    /// <summary>Only reachable when a selected file's <c>Kind</c> is Image or Document — see
+    /// <see cref="UpdateButtonStates"/>. Same no-activity-level-counterpart reasoning as
+    /// <see cref="OnEditAudioProperties"/>: <c>MediaFile.StayDuration</c> is only ever a per-file
+    /// override of the 设置 面板's single global default, there is no per-activity default to fall
+    /// back to editing when nothing is selected.</summary>
+    private void OnEditStayDuration()
+    {
+        var (_, activity, file) = GetSelection();
+        if (activity == null || file == null || file.Kind is not (MediaKind.Image or MediaKind.Document)) return;
+
+        using var dialog = new StayDurationDialog($"停留时长 — {Path.GetFileName(file.SourcePath)}", file.StayDuration);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (dialog.SelectedStayDuration == file.StayDuration) return; // no actual change — nothing to log/save.
+
+        // LogPlaybackPropertyChanged, same per-property granularity OnEditPlayMode/
+        // OnEditAudioProperties already use — same established convention as OnEditPlayMode's own
+        // oldValue/newValue (see this method's README entry): a null TimeSpan? passes straight
+        // through as a real null, not the string "null", since LogPlaybackPropertyChanged's two
+        // value parameters are themselves string?.
+        string? oldValue = file.StayDuration?.ToString();
+        string? newValue = dialog.SelectedStayDuration?.ToString();
+        file.StayDuration = dialog.SelectedStayDuration;
+        _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.StayDuration), oldValue, newValue);
+        _repository.Save(_store);
+    }
+
     private void OnRemoveFile()
     {
         var (scenario, activity, file) = GetSelection();
@@ -424,6 +460,7 @@ public sealed class ActivitiesPanel : UserControl
         _addFileButton.Enabled = activity != null;
         _playModeButton.Enabled = activity != null;
         _audioPropertiesButton.Enabled = file != null && file.Kind == MediaKind.Audio;
+        _stayDurationButton.Enabled = file != null && file.Kind is MediaKind.Image or MediaKind.Document;
         _removeButton.Enabled = file != null;
         _moveUpButton.Enabled = file != null;
         _moveDownButton.Enabled = file != null;
