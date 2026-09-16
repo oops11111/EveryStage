@@ -28,7 +28,25 @@ public sealed class AudioPlaybackClock : IDisposable
         // a separately-optimized low-latency audio path, so we don't fight for exclusive-mode
         // access here.
         _output = new WasapiOut(AudioClientShareMode.Shared, useEventSync: true, latency: 50);
-        _output.Init(_buffer);
+        // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
+        // step one" shape as EveryStage.Rendering's D3D11Device/SwapChainPresenter constructor
+        // fixes (see that library's README) — Init() is a real WASAPI call that can genuinely fail
+        // (format negotiation, the default render device changing/disappearing between
+        // construction and Init), and if it does, this constructor never finishes, so no
+        // AudioPlaybackClock instance ever exists for a caller (VideoContentController.Play/
+        // AudioContentController.Play, both of which construct one fresh per file played) to later
+        // Dispose() and release the WasapiOut instance already created. Calls only Dispose() here,
+        // not the Stop() this class's own Dispose() also calls — Stop() on a WasapiOut whose Init()
+        // never succeeded is untested territory this fix has no reason to risk.
+        try
+        {
+            _output.Init(_buffer);
+        }
+        catch
+        {
+            _output.Dispose();
+            throw;
+        }
     }
 
     public void Start() => _output.Play();

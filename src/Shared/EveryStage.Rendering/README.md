@@ -89,6 +89,18 @@ Demo专属的——两边需要完全一样的解码/渲染行为，所以放进
    参数本身的所有权（这是`VideoSurface`自己的资源，见`SwapChainPresenter`/`VideoSurface`各自的
    doc comment），所以它的`catch`块刻意不释放`gpu`。**没有做的部分**：这次改动本身没有在这个
    沙箱里跑过（没有dotnet），没有真机验证过。
+9. **【新发现的真实bug，已修复】`AudioPlaybackClock`构造函数里`_output = new WasapiOut(...)`
+   成功之后紧接着的`_output.Init(_buffer)`没有异常防护**：同一次审计顺着第8条的模式往音频这边
+   也查了一遍，找到的第四个实例——`WasapiOut`的构造本身几乎不会失败，但`Init()`是一次真实的
+   WASAPI初始化调用，格式协商失败、构造和`Init`之间默认播放设备被拔掉/切换，都是真实可能触发
+   的失败场景，不是假设性的。一旦`Init()`抛出异常，这个构造函数永远不会正常完成，调用方
+   （`VideoContentController.Play`/`AudioContentController.Play`，两者都是每次播放新文件就
+   `new`一个全新的`AudioPlaybackClock`）永远拿不到实例去调用`Dispose()`，已经构造好的
+   `WasapiOut`就永久占用一份WASAPI音频客户端资源。**修复方式**：把`_output.Init(_buffer)`
+   包进`try/catch`，失败时只调用`_output.Dispose()`——不调用这个类自己`Dispose()`里同时
+   调用的`_output.Stop()`，因为在一个`Init()`从未成功过的`WasapiOut`实例上调用`Stop()`是
+   这次修复没有理由去冒险验证的未知行为。**没有做的部分**：这次改动本身没有在这个沙箱里
+   跑过（没有dotnet），没有真机验证过。
 
 在 Windows 上第一次编译成功、把 `src/Poc/ZeroCopyRenderDemo` 跑通验收标准之后，这份清单里已确认
 没问题的条目可以直接删掉，只留下真正还需要注意的坑。
