@@ -13,21 +13,27 @@ namespace EveryStage.Caster.UI;
 /// (target terminal list + start button + privacy notice) and, once paired, a second panel that now
 /// really streams: picking a terminal and pairing successfully immediately starts a real
 /// <see cref="LiveCastSession"/> (capture -> NV12 -> H.264 -> RTP, sent to the Terminal). Below that,
-/// six independent self-tests remain available as standalone diagnostics for isolating which stage
-/// (capture, encode, video transport, audio capture, AAC encode/decode, or audio transport) is at
-/// fault if live casting misbehaves: screen capture (<see cref="CaptureSelfTestRunner"/>), H.264
-/// encoding (<see cref="EncodeSelfTestRunner"/>, capture -> NV12 -> hardware encoder), RTP transport
-/// (<see cref="TransportSelfTest"/>, a real loopback UDP round-trip with synthetic NAL-shaped
-/// payloads), audio capture (<see cref="AudioCaptureSelfTestRunner"/>, added a round after the other
-/// three — see this project's README on why WASAPI loopback capture had no independent self-test
-/// until now), AAC encode/decode (<see cref="AacEncodeSelfTestRunner"/>, capture ->
-/// <see cref="AacAudioEncoder"/> -> <see cref="EveryStage.Rendering.Decode.AacAudioDecoder"/> — this
-/// repo's first audio-encoding *and* decoding MFTs, chained into a full in-process round trip; the
-/// live cast session's own audio path has since been switched over to the same codec, see this
-/// project's README), and raw/audio RTP transport (<see cref="RawTransportSelfTest"/>,
-/// <see cref="TransportSelfTest"/>'s counterpart for <see cref="RtpSession.SendRawPayloadAsync"/>/
-/// <see cref="RawRtpReceiver"/> — the path audio actually uses, with no NAL/FU-A framing). None of
-/// the six self-tests touch the live cast session or each other — including the two
+/// seven independent self-tests remain available as standalone diagnostics for isolating which stage
+/// (capture, encode, video transport, audio capture, AAC encode/decode, audio transport, or the
+/// discovery/pairing wire format itself) is at fault if live casting misbehaves: screen capture
+/// (<see cref="CaptureSelfTestRunner"/>), H.264 encoding (<see cref="EncodeSelfTestRunner"/>, capture
+/// -> NV12 -> hardware encoder), RTP transport (<see cref="TransportSelfTest"/>, a real loopback UDP
+/// round-trip with synthetic NAL-shaped payloads), audio capture
+/// (<see cref="AudioCaptureSelfTestRunner"/>, added a round after the other three — see this
+/// project's README on why WASAPI loopback capture had no independent self-test until now), AAC
+/// encode/decode (<see cref="AacEncodeSelfTestRunner"/>, capture -> <see cref="AacAudioEncoder"/> ->
+/// <see cref="EveryStage.Rendering.Decode.AacAudioDecoder"/> — this repo's first audio-encoding *and*
+/// decoding MFTs, chained into a full in-process round trip; the live cast session's own audio path
+/// has since been switched over to the same codec, see this project's README), raw/audio RTP
+/// transport (<see cref="RawTransportSelfTest"/>, <see cref="TransportSelfTest"/>'s counterpart for
+/// <see cref="RtpSession.SendRawPayloadAsync"/>/<see cref="RawRtpReceiver"/> — the path audio
+/// actually uses, with no NAL/FU-A framing), and the discovery protocol's own wire format
+/// (<see cref="DiscoveryProtocolSelfTest"/>, a loopback UDP round-trip through
+/// <see cref="DiscoveryProtocol.Encode"/>/<see cref="DiscoveryProtocol.Decode"/> for every message
+/// type this protocol defines — unlike the six above, this one has nothing to do with the live
+/// capture/encode/transport pipeline at all; it exists because <c>EveryStage.Discovery</c>'s JSON
+/// wire format had never been executed even once before this round, only reasoned about). None of
+/// the seven self-tests touch the live cast session or each other — including the two
 /// audio-capturing ones (WASAPI loopback and AAC encode/decode) running
 /// concurrently with a live cast's own <c>AudioCaptureSource</c> and each other,
 /// which this repo has never verified on a real machine but expects to work since WASAPI loopback
@@ -109,6 +115,8 @@ public sealed class MainForm : Form
     private readonly Label _aacEncodeStatsLabel;
     private readonly Button _rawTransportSelfTestButton;
     private readonly Label _rawTransportStatsLabel;
+    private readonly Button _discoverySelfTestButton;
+    private readonly Label _discoveryStatsLabel;
 
     private DiscoveredTerminal? _pairedTerminal;
     private LiveCastSession? _liveCastSession;
@@ -160,8 +168,10 @@ public sealed class MainForm : Form
         // one, then to 733 when that fifth section's stats label grew a 4th line once
         // AacAudioDecoder joined the round trip, then to 813 to fit a sixth section (raw/audio RTP
         // transport self-test, see this class's doc comment and _rawTransportStatsLabel's own
-        // Bounds comment below) below the AAC one — see this class's doc comment.
-        ClientSize = new Size(320, 813);
+        // Bounds comment below) below the AAC one, then to 883 to fit a seventh section
+        // (EveryStage.Discovery's own wire-format self-test) below the raw transport one — see this
+        // class's doc comment.
+        ClientSize = new Size(320, 883);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -243,8 +253,8 @@ public sealed class MainForm : Form
 
         var diagnosticsNoteLabel = new Label
         {
-            Text = "以下六个按钮各自独立、互不影响，是采集/编码/传输/音频采集/AAC音频编码/音频传输各环节\n" +
-                   "各自的自检工具，用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
+            Text = "以下七个按钮各自独立、互不影响，是采集/编码/传输/音频采集/AAC音频编码/音频传输/发现协议\n" +
+                   "各环节各自的自检工具，用来在投屏出问题时单独定位是哪一步——它们不会影响上面正在进行的投屏。",
             ForeColor = Color.DimGray,
             Bounds = new Rectangle(12, 226, 296, 40),
         };
@@ -285,6 +295,13 @@ public sealed class MainForm : Form
         _rawTransportSelfTestButton.Click += OnRawTransportSelfTestClick;
         _rawTransportStatsLabel = new Label { Bounds = new Rectangle(12, 751, 296, 40), ForeColor = Color.DimGray };
 
+        // EveryStage.Discovery.DiscoveryProtocolSelfTest (see its own doc comment) — this library's
+        // README风险第1条一直说"全部内容都没有在真实网络环境验证过"，这次给协议本身的编解码/UDP
+        // 往返补上第一个真正跑得起来的检查，跟上面几个自检同一个"独立按钮、互不影响"的精神。
+        _discoverySelfTestButton = new Button { Text = "运行发现协议自检 (本机回环)", Bounds = new Rectangle(12, 795, 296, 32) };
+        _discoverySelfTestButton.Click += OnDiscoverySelfTestClick;
+        _discoveryStatsLabel = new Label { Bounds = new Rectangle(12, 831, 296, 40), ForeColor = Color.DimGray };
+
         _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
         _pairedPanel.Controls.AddRange(new Control[]
         {
@@ -294,6 +311,7 @@ public sealed class MainForm : Form
             _audioCaptureSelfTestButton, _audioCaptureStatsLabel,
             _aacEncodeSelfTestButton, _aacEncodeStatsLabel,
             _rawTransportSelfTestButton, _rawTransportStatsLabel,
+            _discoverySelfTestButton, _discoveryStatsLabel,
         });
 
         Controls.Add(_pairedPanel);
@@ -532,6 +550,33 @@ public sealed class MainForm : Form
         finally
         {
             _rawTransportSelfTestButton.Enabled = true;
+        }
+    }
+
+    private async void OnDiscoverySelfTestClick(object? sender, EventArgs e)
+    {
+        _discoverySelfTestButton.Enabled = false;
+        _discoveryStatsLabel.ForeColor = Color.DimGray;
+        _discoveryStatsLabel.Text = "运行中...";
+
+        try
+        {
+            var result = await DiscoveryProtocolSelfTest.RunAsync();
+            _discoveryStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
+            _discoveryStatsLabel.Text = result.Success
+                ? $"通过：{result.MessagesVerified} 种消息全部往返一致（本机回环，含全部8种消息类型）。"
+                : $"失败（已验证{result.MessagesVerified}种）：{result.FailureReason}";
+        }
+        catch (Exception ex)
+        {
+            // Same "a self-test throwing outright is itself a reportable finding" reasoning as
+            // OnTransportSelfTestClick above.
+            _discoveryStatsLabel.ForeColor = Color.DarkRed;
+            _discoveryStatsLabel.Text = $"自检本身出错：{ex.Message}";
+        }
+        finally
+        {
+            _discoverySelfTestButton.Enabled = true;
         }
     }
 

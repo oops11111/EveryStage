@@ -25,7 +25,16 @@ LAN发现/配对的共享部分（PLANNING.md §7），两个消费方各自实�
 
 - 全部内容都**没有在真实网络环境验证过**——这是协议第一次有两个独立实现（Terminal的
   `DiscoveryService`、Caster的`TerminalDiscoveryClient`）需要真正对上，此前只有Terminal一侧存在
-  的时候，协议对不对根本无从验证。
+  的时候，协议对不对根本无从验证。**【更新】这句话现在只对"两个真实服务的握手时序"还成立**：新增
+  的`DiscoveryProtocolSelfTest`（见`Caster.UI.MainForm`"运行发现协议自检"按钮）第一次真正跑了一遍
+  `DiscoveryProtocol.Encode` → 真实本机回环UDP → `DiscoveryProtocol.Decode`，覆盖协议定义的全部
+  8种消息类型各自一份、逐字段比对往返前后是否一致——之前这个协议的JSON编解码逻辑（尤其是
+  `Encode`里"用`JsonNode`拆开再手动塞进小写`type`字段"这个手写trick）连这么基础的问题都从来没有
+  真正执行验证过，只靠代码审阅推理过"看起来应该没问题"。**这次没有覆盖的部分**：`DiscoveryService`/
+  `TerminalDiscoveryClient`两个真实服务自己的握手逻辑（beacon广播→配对请求→配对响应这一整套时序、
+  信任列表持久化、`DeviceIdentity`加载）完全没有被这个自检触及——它只验证协议的线格式本身无损，
+  不验证两个真实服务会不会真的按预期时序把消息发出/处理对，这仍然要等到真实Windows双机联调才能
+  验证，风险等级不变。
 - `DiscoveryProtocol.Port = 47990` 是随手挑的，没有检查是否和其他常见软件冲突。
 - 协议整体缺 PIN 码字段——PLANNING.md §7 "弹窗/PIN码"里"PIN码"这一半完全没实现，如果产品侧决定
   需要，得在这里加字段，两端一起改。

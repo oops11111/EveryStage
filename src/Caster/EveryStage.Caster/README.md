@@ -616,6 +616,18 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     "payload全部往返一致，GapEvents=0"，没有反映这次新增的校验内容，这次一并在文案里加上
     "含PayloadType不匹配丢包校验"，避免这两个按钮点击后显示的"通过"文案实际上比它真正验证的范围
     要窄。
+65. **【新增】第七个自检按钮："运行发现协议自检 (本机回环)"，接入
+    `EveryStage.Discovery.DiscoveryProtocolSelfTest`**：`EveryStage.Discovery`README风险第1条
+    一直说"全部内容都没有在真实网络环境验证过"，但连这句话里更基础的那一半——协议自己的JSON
+    编解码逻辑本身是否往返无损——都从来没有真正跑过。这次新增的自检把协议定义的全部8种消息类型
+    （beacon/pair_request/pair_response×2种取值/cast_start/cast_stop/cast_status/ping/pong）各
+    构造一份带有非默认值的实例，逐个走真实本机回环UDP（`Encode`→`UdpClient`→`Decode`），逐字段
+    比对往返前后是否一致。窗口`ClientSize`从813长到883（+70）以放下第七组"按钮+说明标签"，
+    `diagnosticsNoteLabel`"以下六个按钮"改成"以下七个按钮"。**跟其他六个自检的本质区别**：前六个
+    都是投屏这条主链路（采集/编码/传输/音频）某一段的自检，这个不是——它跟`LiveCastSession`/
+    屏幕捕获完全无关，验证的是配对/发现这条完全独立的协议本身。**没有覆盖的部分**：见
+    `EveryStage.Discovery`README风险第1条"更新"段落——这个自检只验证协议线格式无损，不验证
+    `DiscoveryService`/`TerminalDiscoveryClient`两个真实服务自己的握手时序/信任列表逻辑。
 
 ## 尚未开始
 
