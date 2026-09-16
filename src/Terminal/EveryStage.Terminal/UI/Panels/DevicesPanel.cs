@@ -1,4 +1,5 @@
 using EveryStage.Terminal.Devices;
+using EveryStage.Terminal.Logging;
 
 namespace EveryStage.Terminal.UI.Panels;
 
@@ -14,13 +15,15 @@ namespace EveryStage.Terminal.UI.Panels;
 public sealed class DevicesPanel : UserControl
 {
     private readonly PairedDeviceStore _pairedDevices;
+    private readonly DeviceConnectionLogger _connectionLog;
     private readonly ListView _listView;
     private readonly Button _removeButton;
     private readonly Button _editPermissionsButton;
 
-    public DevicesPanel(PairedDeviceStore pairedDevices)
+    public DevicesPanel(PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog)
     {
         _pairedDevices = pairedDevices;
+        _connectionLog = connectionLog;
         Dock = DockStyle.Fill;
 
         _listView = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true };
@@ -69,6 +72,10 @@ public sealed class DevicesPanel : UserControl
         if (confirm != DialogResult.Yes) return;
 
         _pairedDevices.Remove(device.DeviceId);
+        // DeviceConnectionLogger.LogUnpaired's first real caller (PLANNING.md §14.4's "配对/取消
+        // 配对" — LogPaired/LogConnected/LogDisconnected were already wired from DiscoveryService,
+        // but nothing ever called this one) — see this project's README "已知风险".
+        _connectionLog.LogUnpaired(device.DeviceId.ToString());
         Refresh_();
     }
 

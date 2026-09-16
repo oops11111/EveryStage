@@ -39,7 +39,7 @@ public sealed class MainWindow : Form
     public MainWindow(
         OutputStateMachine stateMachine, PlaybackEngine? playback, FileLibraryStore library,
         PairedDeviceStore pairedDevices, ScenarioStore scenarioStore, ScenarioRepository scenarioRepository,
-        SettingsStore settingsStore, DeviceIdentity identity)
+        SettingsStore settingsStore, DeviceIdentity identity, DeviceConnectionLogger connectionLog)
     {
         _stateMachine = stateMachine;
         _playback = playback;
@@ -90,7 +90,7 @@ public sealed class MainWindow : Form
         _filesPanel = new FilesPanel(library, fileOpLog);
         _filesPanel.FilePlayRequested += file => _playback?.RequestPlay(file);
 
-        _devicesPanel = new DevicesPanel(pairedDevices);
+        _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);
         _activitiesPanel = new ActivitiesPanel(
             scenarioStore, scenarioRepository, library, _playback, fileOpLog, stateMachine);
         _settingsPanel = new SettingsPanel(settingsStore, identity);

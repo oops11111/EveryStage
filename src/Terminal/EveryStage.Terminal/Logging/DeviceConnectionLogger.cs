@@ -23,6 +23,10 @@ public sealed class DeviceConnectionLogger
     public void LogPaired(string deviceId, string deviceName) =>
         _writer.Write("device_paired", new { deviceId, deviceName });
 
+    /// <summary>Went uncalled from this class's first round until <c>DevicesPanel</c>'s "移除配对"
+    /// button existed to call it — see this project's README "已知风险" (the same "existed since an
+    /// early logging round, no caller until the round that built the UI action it corresponds to"
+    /// shape as <see cref="LogQualityMetric"/>'s own history above).</summary>
     public void LogUnpaired(string deviceId) =>
         _writer.Write("device_unpaired", new { deviceId });
 

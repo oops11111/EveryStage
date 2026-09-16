@@ -147,7 +147,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         };
 
         var library = new FileLibraryStore();
-        _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity);
+        _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity, _connectionLog);
         _mainWindow.Show();
 
         _tray = new TrayIconController(_stateMachine);
