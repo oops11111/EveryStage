@@ -40,7 +40,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `UI/ToastNotification.cs`、`UI/ToastStack.cs` | §11 | "右下角Toast通知栈"：按严重程度分色(红=严重/黄=提示)，可选的可执行按钮(重试/移除)——见"已知风险"第77条 |
 | `UI/Panels/FilesPanel.cs` | §8.2 | 文件面板：`ListView`缩略图网格 + 类型筛选(全部/图片/视频/文档/音频) + 导入对话框 + 从资源管理器拖拽导入 + 批量选择+移除(二次确认，见"已知风险"第79条) + 双击播放(`PlaybackEngine.RequestPlay`)，导入/移除都接入`FileOperationLogger` |
 | `UI/Panels/DevicesPanel.cs` | §8.2 | 设备面板：已配对设备列表(信任状态/被投放/被监看/配对时间) + 移除配对(接入`DeviceConnectionLogger.LogUnpaired`，见"已知风险"第74条) + 编辑权限(见"已知风险"第70条) |
-| `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(真正可折叠、且折叠状态会持久化，见"已知风险"第72条) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 播放方式/音频属性/停留时长/完成后动作(见"已知风险"第71、73条) + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改及播放属性变更 |
+| `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(真正可折叠、且折叠状态会持久化，见"已知风险"第72条) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 播放方式/音频属性/停留时长/完成后动作(见"已知风险"第55-57、61-62、71、73条) + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改及播放属性变更 |
 | `UI/TextInputDialog.cs`, `UI/LibraryFilePickerDialog.cs` | — | 活动面板用到的两个小弹窗：单行文本输入(方案/活动命名)、从文件库选一个文件 |
 | `UI/Panels/SettingsPanel.cs` | §8.2 | 设置面板：`TabControl`五个分类(通用/显示/播放行为/网络与设备/关于)；`Data/AppSettings.cs`+`Data/SettingsStore.cs`是这次新加的数据模型和JSON持久化(同样是atomic write) |
 
@@ -64,8 +64,10 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
    但不支持 WIC 能处理的部分高位深/HDR 格式——如果产品需要展示这类图片，需要换成直接的 WIC interop。
 7. **`VideoContentController` 的 D3D11/Media Foundation 部分**：继承自 `EveryStage.Rendering`，
    已知风险清单见该库的 README.md（NuGet版本、GUID字面量、COM重载签名等），这里不重复列。这个类
-   自己新增的部分——独立播放线程的启动/取消/Join、`_presenterLock` 保护并发 Present/Resize——
-   逻辑上是新代码，同样没有在真实环境跑过。
+   自己新增的部分——独立播放线程的启动/取消/Join——逻辑上是新代码，同样没有在真实环境跑过。
+   **更新（见第76条）**：这条原本还提到"`_presenterLock` 保护并发 Present/Resize"，但第76条发现
+   这把锁从来没有真正生效过（真正调用`Resize`的地方根本不经过这个类），已经在那一轮的修复里整个
+   移除，互斥逻辑改成在真正被共享的`Display/VideoSurface`里实现——这里不再有自己的锁。
 8. **`PlaybackEngine` 假设所有公开方法都在 UI 线程调用**：目前成立是因为
    `ImageContentRenderer`/`PdfContentRenderer` 的 `LoadAsync` 恰好同步完成，`await` 之后天然还在
    UI 线程的 `SynchronizationContext` 上——一旦这两个 `LoadAsync` 改成真正异步的文件I/O，这个假设
@@ -304,7 +306,7 @@ Caster知道终端机确实收到了东西。
     窗口是两个独立选的数字，没有共享定义或互相校准，纯粹因为分别针对不同问题（这边判断"媒体流是否
     还在流动"，那边判断"状态回报是否还在到达"，本来就是不同性质的信号，数字不同本身不是bug，但
     两个数字都是凭感觉定的，没有依据支撑10秒/5秒这两个具体值本身，也没考虑过它们要不要保持某种
-    比例关系。`CheckCastLiveness`和`SendCastStatus`共用同一个`_castStatusTimer`（1秒一次）—这个
+    比例关系）。`CheckCastLiveness`和`SendCastStatus`共用同一个`_castStatusTimer`（1秒一次）—这个
     设计选择本身没问题，但意味着以后如果要分别调整"状态回报频率"和"超时检测频率"，需要先把两者
     从共享的定时器里拆开。
 
@@ -654,8 +656,8 @@ Caster知道终端机确实收到了东西。
     `LogDisconnected`三个从`DiscoveryService`那一侧早就有真正的调用方了，唯独`LogUnpaired`从这个
     类第一轮写出来起就没人调用过：`DevicesPanel`"移除配对"按钮的`OnRemoveClick`只调用了
     `_pairedDevices.Remove(device.DeviceId)`，没有记任何日志——用户主动取消配对这件事，PLANNING.md
-    明确点名要记录，之前完全没有落地。这次把`DeviceConnectionLogger`（`Program.cs`里`Terminal
-    ApplicationContext`早就持有的那个共享实例，之前只传给了`DiscoveryService`）一路传进
+    明确点名要记录，之前完全没有落地。这次把`DeviceConnectionLogger`（`Program.cs`里
+    `TerminalApplicationContext`早就持有的那个共享实例，之前只传给了`DiscoveryService`）一路传进
     `MainWindow`构造函数、再传进`DevicesPanel`构造函数，`OnRemoveClick`确认移除后调用
     `_connectionLog.LogUnpaired(device.DeviceId.ToString())`。跟这个仓库其他几次"补上一个从早期
     日志轮次起就没有调用方的方法"（`LogPlaybackPropertyChanged`、`LogQualityMetric`）是同一个模式：
