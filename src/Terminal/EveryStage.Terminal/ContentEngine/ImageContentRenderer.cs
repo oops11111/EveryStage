@@ -20,7 +20,17 @@ public sealed class ImageContentRenderer : IContentRenderer
 
     public Task LoadAsync(string path)
     {
+        // Bug fixed here: same shape as PdfContentRenderer.LoadAsync's own fix (see that class's
+        // doc comment for the full reasoning) — this used to Dispose() the old CurrentFrame without
+        // nulling it out, so a failure below (the file was deleted/moved/corrupted since being
+        // added to an activity — a real condition PlaybackEngine's own doc comments already
+        // acknowledge) left CurrentFrame pointing at an already-disposed Bitmap instead of null.
+        // PlaybackEngine reuses one ImageContentRenderer instance for its whole lifetime and does
+        // NOT clear _currentFile on a failed load, so PlaybackEngine.CurrentThumbnail (read by
+        // FloatingPreviewWindow) would keep handing out this disposed Bitmap for WinForms to draw
+        // until the next successful LoadAsync overwrote it.
         CurrentFrame?.Dispose();
+        CurrentFrame = null;
 
         // Load fully into memory and detach from the file handle: Image.FromFile keeps the file
         // locked open for the image's lifetime otherwise, which would block the file being

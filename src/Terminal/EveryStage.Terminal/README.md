@@ -1233,6 +1233,28 @@ Caster知道终端机确实收到了东西。
     `_decoder.FrameDecoded`（跟这个类自己`Dispose()`的清理顺序保持一致）、调用`_decoder.
     Dispose()`，再重新抛出异常。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有
     dotnet），没有真机验证过。
+102. **【新发现的真实bug，已修复】`PdfContentRenderer`/`ImageContentRenderer`的`LoadAsync`
+    只`Dispose()`了旧的`_document`/`CurrentFrame`，没有把它们清成`null`——新的加载失败时，
+    这两个字段会永久卡在"指向一个已经被释放的对象"这个状态，而不是`null`**：`PlaybackEngine`
+    对这两个渲染器都只构造一个实例、终生复用（`private readonly PdfContentRenderer _pdfRenderer
+    = new();`/`ImageContentRenderer`同理），而且`OnImageOrDocumentFailed`（`PlayImageAsync`/
+    `PlayDocumentAsync`失败时的统一处理，本README上一轮记录过）刻意不清空`_currentFile`——
+    这两点结合起来意味着：一次加载失败（这个类自己的doc comment和`PlayImageAsync`/
+    `PlayDocumentAsync`早就承认是真实场景，不是假设：文件被加入活动之后又被删除/移动/损坏）
+    之后，`PlaybackEngine.CurrentThumbnail`（`FloatingPreviewWindow`读取的"缩略画面预览"，
+    PLANNING.md §8.3）会继续返回这个已经被`Dispose()`过的`Bitmap`，直到下一次加载成功为止；
+    `PdfContentRenderer`这边还多一层：`NextPage()`/`PreviousPage()`的`_document == null`
+    保护形同虚设（`_document`不是`null`，是一个已释放的对象），调用会直接在已释放对象上抛
+    `ObjectDisposedException`。这些异常本身会被`Application.ThreadException`接住、不会崩溃
+    整个进程，但`FloatingPreviewWindow`每次重绘这个预览缩略图都会重新命中同一个异常，直到
+    有人再成功加载一次新文件为止。**修复方式**：两个类的`LoadAsync`都改成先把`_document`/
+    `CurrentFrame`/`PageCount`清成`null`/`0`，再尝试新的加载——这样加载失败时这些字段正确
+    停留在"什么都没有"这个已经被`NextPage`/`PreviousPage`/`CurrentThumbnail`自己的判空逻辑
+    正确处理的状态，而不是一个看起来非空、实际已经失效的引用。`PdfContentRenderer.
+    RenderCurrentPage()`（`LoadAsync`内部调用，也被`NextPage`/`PreviousPage`直接调用，用于
+    翻到一个已经成功打开的文档的某一页）单独有同一个问题——它自己那次`_document.Render(...)`
+    调用同样在`CurrentFrame?.Dispose()`之后没有把`CurrentFrame`清空，一并按同样方式修了。
+    **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
