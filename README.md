@@ -78,7 +78,7 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
   （`H264HardwareDecoder` 驱动一个假设为同步的H.264解码器MFT + `CastReceiver` 接收RTP、用marker
   位重组Annex-B访问单元、解码后通过 `EveryStage.Rendering` 的 `SwapChainPresenter` 显示到覆盖
   窗口，现在还有对称的音频侧：收到PCM直接喂给`AudioPlaybackClock`播放，同样独立于视频、失败时独立
-  降级)，配合 `DiscoveryService` 新增的 `CastStartMessage`/`CastStopMessage`处理（只信任已配对且
+  降级），配合 `DiscoveryService` 新增的 `CastStartMessage`/`CastStopMessage`处理（只信任已配对且
   `AllowCast`的设备）驱动 `OutputStateMachine`/`OverlayWindow`。本地播放与设备投屏共享覆盖窗口
   `VideoHost`的问题（新增 `Terminal/.../Display/VideoSurface.cs`，两者现在用同一个D3D11设备/
   交换链而不是各自建一个绑到同一HWND，并靠`PlaybackEngine.StopForDeviceCast`/
