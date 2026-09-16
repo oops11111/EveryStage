@@ -925,6 +925,24 @@ Caster知道终端机确实收到了东西。
     沙箱里跑过（没有dotnet），`UnhandledExceptionMode.CatchException`之后WinForms消息循环
     是否真的能在UI线程异常之后干净地继续运行、不留下部分初始化到一半的控件状态，完全依赖.NET
     文档描述的行为，没有真机验证过。
+89. **【新发现的真实bug，已修复】`OverlayWindow.ReassertTopMost`每2秒重新维护z-order的同时，
+    一直在悄悄把窗口挪回原处**：`SWP_NOMOVE`这个Win32常量早就被声明了
+    （`private const uint SWP_NOMOVE = 0x0002;`），但从来没有真正出现在`SetWindowPos`调用自己
+    的flags参数里——原来那行是`SWP_NOSIZE | SWP_NOACTIVATE`，唯独漏了`SWP_NOMOVE`。这个方法自己
+    的doc comment说得很清楚，它的职责只是"keep nagging the z-order"，不是重新定位——`SWP_NOSIZE`
+    已经在正确地屏蔽宽高参数（调用时传的`0, 0`本来就是占位符），但X/Y坐标那两个参数因为没有
+    `SWP_NOMOVE`屏蔽，每次调用都会真的执行一次"移动到(X,Y)"。**实际影响很小，但不是零**：因为
+    这个坐标本来就是`Monitor.Bounds.X/Y`，跟窗口构造时`Bounds = monitor.Bounds`设置的位置完全
+    一样（这个无边框覆盖窗口本来也没有任何途径会被移动——不接受用户拖动，唯一的"真的换地方"入口
+    是`Rebind(MonitorInfo)`，走的是完全独立的`Bounds`属性赋值，不经过这个方法），所以正常情况下
+    这是一次移动到自己当前位置的空操作，视觉上不会有可观察到的效果；但这终究是一次多余的
+    `SetWindowPos`移动调用，每2秒触发一次`WM_WINDOWPOSCHANGING`/`WM_WINDOWPOSCHANGED`，跟这个
+    方法自己声明的意图（"只管z-order，别的都不动"）不符，那个从声明起就没被用过的`SWP_NOMOVE`
+    常量就是最直接的线索。**修复方式**：把`SWP_NOMOVE`加进flags里，让这次调用变成真正纯粹的
+    z-order重申，跟旁边`SWP_NOSIZE`"宽高也不要动"的待遇一致。**没有做的部分**：这次改动本身
+    没有在这个沙箱里跑过（没有dotnet），没有真机验证过——包括这条风险本身描述的"正常情况下是
+    空操作"这个判断，也完全是代码审阅推出来的，没有在真实Windows多显示器环境下观察过
+    `SetWindowPos`带`SWP_NOMOVE`前后的实际行为差异。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

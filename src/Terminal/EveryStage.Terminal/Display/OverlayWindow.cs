@@ -113,7 +113,15 @@ public sealed class OverlayWindow : Form
     private void ReassertTopMost()
     {
         if (!IsHandleCreated) return;
-        SetWindowPos(Handle, HWND_TOPMOST, Monitor.Bounds.X, Monitor.Bounds.Y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        // Bug fixed here: SWP_NOMOVE was declared (above) but never actually included in these
+        // flags — every 2-second tick was therefore an unconditional move-to-(X,Y) as well as a
+        // z-order reassert, even though this method's whole job (per its own doc comment) is "keep
+        // nagging the z-order", not repositioning. Harmless in the common case since X/Y already
+        // match Monitor.Bounds (nothing else ever moves this borderless overlay), but a real, if
+        // silent, deviation from what the code clearly intended — the unused constant sitting right
+        // there is the tell. Now genuinely a pure z-order-only reassert, matching SWP_NOSIZE's own
+        // "don't touch dimensions either" treatment right next to it.
+        SetWindowPos(Handle, HWND_TOPMOST, Monitor.Bounds.X, Monitor.Bounds.Y, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     protected override void Dispose(bool disposing)
