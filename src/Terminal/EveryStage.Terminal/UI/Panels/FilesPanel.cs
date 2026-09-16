@@ -19,16 +19,26 @@ namespace EveryStage.Terminal.UI.Panels;
 /// originated from still existing — see this project's README ("已知风险" #22) on this copy-not-
 /// reference behavior being a deliberate, previously-documented choice, not something decided here.
 ///
-/// Not implemented (see this project's README "已知风险" for the full writeup of why): real
-/// video/PDF/audio thumbnails (video and document items show a generic placeholder icon — building a
-/// real one means decoding a frame/first page, which is extra work beyond what a file browser
-/// strictly needs), audio's "横向播放条" treatment (§8.2 describes audio rows differently from the
-/// grid — non-background audio playback itself has real behavior now via
+/// PLANNING.md §11's "批量选择" now half-works: <see cref="_listView"/> allows <c>MultiSelect</c> and
+/// "移除" (<see cref="OnRemoveClick"/>) handles any number of selected files at once — reusing the
+/// existing always-visible toolbar button rather than a separate floating one, since it already only
+/// enables once something is selected, the same enable-on-selection spirit §11's "选中后悬浮工具栏
+/// 出现" describes. The other two actions §11 lists for the same selection, "加入活动" and "统一
+/// 设置属性", are NOT implemented — see this project's README "尚未开始" for why each needs either
+/// new cross-panel plumbing (an activity picker reachable from here, which panel/scenario context to
+/// add into) or product decisions PLANNING.md doesn't specify (how a multi-file property editor
+/// should show/resolve conflicting existing values across the selection) that this round didn't
+/// attempt.
+///
+/// Not implemented (see this project's README "已知风险"/"尚未开始" for the full writeup of why):
+/// real video/PDF/audio thumbnails (video and document items show a generic placeholder icon —
+/// building a real one means decoding a frame/first page, which is extra work beyond what a file
+/// browser strictly needs), audio's "横向播放条" treatment (§8.2 describes audio rows differently
+/// from the grid — non-background audio playback itself has real behavior now via
 /// <see cref="ContentEngine.AudioContentController"/>, but that controller has no pause/resume, seek,
 /// or volume control at all, which is most of what a real play bar would need to actually do
-/// something rather than just look like PLANNING.md's mockup), batch selection with a floating
-/// toolbar (§11), and dragging a library item onto an activity (there is no activity list UI yet in
-/// this same window for it to be dragged onto).
+/// something rather than just look like PLANNING.md's mockup), and dragging a library item onto an
+/// activity (there is no activity list UI yet in this same window for it to be dragged onto).
 /// </summary>
 public sealed class FilesPanel : UserControl
 {
@@ -72,7 +82,13 @@ public sealed class FilesPanel : UserControl
             Dock = DockStyle.Fill,
             View = View.LargeIcon,
             LargeImageList = _thumbnails,
-            MultiSelect = false, // batch selection (§11) isn't implemented yet — see class doc comment.
+            // PLANNING.md §11 "批量选择": Ctrl/Shift+点击 multi-select now works and "删除" (below)
+            // handles any number of selected items — see class doc comment for why "加入活动"/
+            // "统一设置属性" (the other two actions §11 describes for the same selection) aren't
+            // attempted here, and why this reuses the existing always-visible toolbar's "移除" button
+            // rather than building a separate floating one for the same enable/disable-on-selection
+            // behavior "选中后悬浮工具栏出现" already describes in spirit.
+            MultiSelect = true,
         };
         _listView.SelectedIndexChanged += (_, _) => _removeButton.Enabled = _listView.SelectedItems.Count > 0;
         _listView.DoubleClick += (_, _) =>
@@ -118,18 +134,31 @@ public sealed class FilesPanel : UserControl
             ImportPaths(paths);
     }
 
+    /// <summary>PLANNING.md §11 "批量选择" — the "删除" half of it (see class doc comment for why
+    /// "加入活动"/"统一设置属性" aren't attempted here). Handles any number of selected items, not
+    /// just one, now that <see cref="_listView"/> allows <c>MultiSelect</c>.</summary>
     private void OnRemoveClick(object? sender, EventArgs e)
     {
-        if (_listView.SelectedItems.Count == 0 || _listView.SelectedItems[0].Tag is not MediaFile file) return;
+        var files = _listView.SelectedItems.Cast<ListViewItem>()
+            .Select(item => item.Tag as MediaFile)
+            .Where(file => file != null)
+            .Cast<MediaFile>()
+            .ToList();
+        if (files.Count == 0) return;
 
+        string prompt = files.Count == 1
+            ? $"确定要从文件库中移除 \"{Path.GetFileName(files[0].SourcePath)}\" 吗？"
+            : $"确定要从文件库中移除选中的 {files.Count} 个文件吗？";
         var confirm = MessageBox.Show(this,
-            $"确定要从文件库中移除 \"{Path.GetFileName(file.SourcePath)}\" 吗？\n" +
-            "已经添加到某个活动里的副本不受影响——活动保存的是独立拷贝，不是对这个文件库条目的引用。",
+            prompt + "\n已经添加到某个活动里的副本不受影响——活动保存的是独立拷贝，不是对这个文件库条目的引用。",
             "移除文件", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (confirm != DialogResult.Yes) return;
 
-        _library.Remove(file.Id);
-        _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
+        foreach (var file in files)
+        {
+            _library.Remove(file.Id);
+            _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
+        }
         Refresh_();
     }
 
