@@ -170,25 +170,44 @@ public sealed class DiscoveryService : IDisposable
         try { message = DiscoveryProtocol.Decode(data); }
         catch (System.Text.Json.JsonException) { return; } // not one of ours — ignore, don't crash the loop.
 
-        switch (message)
+        try
         {
-            case DiscoveryProtocol.PairRequestMessage req:
-                HandlePairRequest(req, remoteEndPoint);
-                break;
-            case DiscoveryProtocol.CastStartMessage start:
-                HandleCastStart(start, remoteEndPoint);
-                break;
-            case DiscoveryProtocol.CastStopMessage stop:
-                HandleCastStop(stop);
-                break;
-            case DiscoveryProtocol.PingMessage ping:
-                HandlePing(ping, remoteEndPoint);
-                break;
-            case DiscoveryProtocol.PongMessage pong:
-                HandlePong(pong);
-                break;
-            // BeaconMessage: this is the Terminal side, which only ever sends beacons, never needs
-            // to react to one — that's Caster-side discovery UI's job.
+            switch (message)
+            {
+                case DiscoveryProtocol.PairRequestMessage req:
+                    HandlePairRequest(req, remoteEndPoint);
+                    break;
+                case DiscoveryProtocol.CastStartMessage start:
+                    HandleCastStart(start, remoteEndPoint);
+                    break;
+                case DiscoveryProtocol.CastStopMessage stop:
+                    HandleCastStop(stop);
+                    break;
+                case DiscoveryProtocol.PingMessage ping:
+                    HandlePing(ping, remoteEndPoint);
+                    break;
+                case DiscoveryProtocol.PongMessage pong:
+                    HandlePong(pong);
+                    break;
+                // BeaconMessage: this is the Terminal side, which only ever sends beacons, never needs
+                // to react to one — that's Caster-side discovery UI's job.
+            }
+        }
+        catch (Exception)
+        {
+            // This switch is called directly from ReceiveLoopAsync's while loop with nothing else
+            // wrapping it — the try/catch above this one only ever protected Decode() itself, not
+            // what happens with whatever Decode successfully returns. Any of these five handlers
+            // throwing (a subscriber to PairingRequested/CastStartRequested/CastStopRequested
+            // throwing, HandlePairRequest's own internal logic, etc.) would otherwise propagate
+            // straight out of HandleDatagram and out of the while loop's body, permanently ending
+            // this Terminal's entire discovery receive loop for the rest of the process's life — the
+            // same "one bad datagram kills a whole background loop forever with zero visible symptom"
+            // shape as the DiscoveryProtocol.Decode bug this project's README already documents
+            // fixing, just one level further down the same call path than that fix reached. One
+            // datagram's handler failing is best-effort, like every other discovery-protocol
+            // interaction in this repo — it must not cost every SUBSEQUENT datagram its chance to be
+            // handled too.
         }
     }
 

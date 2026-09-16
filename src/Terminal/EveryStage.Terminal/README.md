@@ -1062,6 +1062,28 @@ Caster知道终端机确实收到了东西。
     本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过——包括这个泄漏在真实长期运行下到底
     需要多久才会真的把GDI配额耗尽到出现可观察问题，本身也只是基于.NET/Win32文档描述的
     `ImageList`/`Image`所有权语义推断出来的，没有实测验证过。
+96. **【新发现的真实bug，已修复，比之前"Decode杀死接收循环"那个bug更深一层】
+    `DiscoveryService.HandleDatagram`的`switch`分发本身完全没有异常防护，只有`Decode`这一步
+    被保护了**：第87条记录的`DiscoveryProtocol.Decode`那个bug（一个陌生数据包会让
+    `TryGetProperty`/`GetString`抛`InvalidOperationException`、直接杀死整个UDP接收循环）已经
+    在共享库里修过了，但审计这次没有到此为止——`HandleDatagram`原来的结构是`try { message =
+    Decode(data); } catch (JsonException) { return; }`，然后紧接着一个完全不在任何`try`保护范围
+    内的`switch (message) { ... }`，分发给`HandlePairRequest`/`HandleCastStart`/
+    `HandleCastStop`/`HandlePing`/`HandlePong`五个处理方法。这个`switch`本身是从
+    `ReceiveLoopAsync`的`while`循环体里直接调用`HandleDatagram(...)`，循环体自己也没有额外包一层
+    try/catch——也就是说，只要这五个处理方法中任何一个抛出异常（比如`PairingRequested`/
+    `CastStartRequested`/`CastStopRequested`这几个事件的订阅方`Program`里的处理器本身抛出，或者
+    这几个`Handle*`方法自己内部逻辑抛出），异常会直接穿透`HandleDatagram`、穿透`while`循环体，
+    永久结束这个Terminal进程剩余生命周期里的整个发现协议接收循环——跟第87条修的`Decode`bug
+    是完全同一种"一个坏数据包/一次处理失败，永久杀死整个后台循环，零可见症状"的形状，只是触发
+    点从"解码阶段"往后挪到了"解码成功之后的分发阶段"，第87条那次修复没有覆盖到这一层。
+    **修复方式**：给这个`switch`语句本身也包一层`try/catch (Exception)`，跟保护`Decode()`的
+    那层`try/catch`相互独立、职责分开——`Decode`失败直接`return`（不认识这个数据包，正常现象），
+    `switch`内部失败则记录"这一个数据包的处理失败了"但让循环继续处理下一个数据包，不再让单次
+    处理失败连累后续所有数据包都收不到。Caster端`TerminalDiscoveryClient.HandleDatagram`是
+    完全同一个bug、同一次审计一起修的，见`EveryStage.Caster`README对应条目——那一侧甚至更关键，
+    因为`CastStatusMessage`分支直接决定了`LiveCastSession`能不能收到Terminal的投屏状态回报。
+    **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

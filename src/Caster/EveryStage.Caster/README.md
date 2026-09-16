@@ -769,6 +769,26 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     终端列表永久藏到`Load()`以后再也不会去找的文件名下面。详细的"为什么不能共用同一个catch"
     的推理见Terminal README对应条目（第93条），这里是完全同一套推理在Caster这一侧的应用。
     **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+74. **【新发现的真实bug，已修复，比第68条那个bug更深一层】`TerminalDiscoveryClient.HandleDatagram`
+    的`switch`分发本身完全没有异常防护，只有`Decode`这一步被保护了**：第68条修的是
+    `DiscoveryProtocol.Decode`本身会因为陌生数据包抛`InvalidOperationException`直接杀死接收
+    循环的bug（修在共享库`EveryStage.Discovery`里）。这次审计没有止步于此——`HandleDatagram`
+    原来的结构是`try { message = Decode(data); } catch (JsonException) { return; }`，紧接着一个
+    完全不在任何`try`保护范围内的`switch (message) { ... }`，分发给`HandleBeacon`/
+    `HandlePairResponse`/`CastStatusReceived?.Invoke`/`HandlePong`/`HandlePing`五个分支。这个
+    `switch`是从`ReceiveLoopAsync`的`while`循环体里直接调用的，循环体自己也没有额外包一层
+    try/catch——只要这五个分支中任何一个抛出异常（尤其是`CastStatusReceived`唯一的订阅方
+    `LiveCastSession.OnCastStatusReceived`本身抛出），异常会直接穿透`HandleDatagram`、穿透
+    `while`循环体，永久结束这个Caster进程剩余生命周期里的整个发现协议接收循环——跟第68条是
+    完全同一种"一个坏数据包/一次处理失败，永久杀死整个后台循环，零可见症状"的形状，只是触发点
+    从"解码阶段"往后挪到了"解码成功之后的分发阶段"，第68条那次修复没有覆盖到这一层。这一侧比
+    Terminal那一侧（见`EveryStage.Terminal`README对应条目）更关键：`CastStatusMessage`分支
+    直接决定了`LiveCastSession`能不能收到Terminal的投屏状态回报，这条通道一旦被杀死，正在
+    投屏的这一次投屏会永远收不到任何后续状态更新，直到进程重启。**修复方式**：给这个`switch`
+    语句本身也包一层`try/catch (Exception)`，跟保护`Decode()`的那层相互独立——`Decode`失败
+    直接`return`，`switch`内部失败则让循环继续处理下一个数据包，不再让单次处理失败连累后续
+    所有数据包都收不到。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），
+    没有真机验证过。
 
 ## 尚未开始
 
