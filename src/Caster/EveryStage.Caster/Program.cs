@@ -42,10 +42,39 @@ internal static class Program
         var identity = DeviceIdentity.LoadOrCreate("caster");
         var pairedTerminals = new PairedTerminalStore();
 
-        using var discoveryClient = new TerminalDiscoveryClient();
-        discoveryClient.Start();
+        TerminalDiscoveryClient discoveryClient;
+        try
+        {
+            discoveryClient = new TerminalDiscoveryClient();
+        }
+        catch (Exception ex)
+        {
+            // Bug fixed here: binding the discovery UDP socket to its fixed port
+            // (DiscoveryProtocol.Port) can fail with SocketException if that port is already in use
+            // — a real scenario, not hypothetical: a stale Caster process that didn't shut down
+            // cleanly still holding it, or two Caster instances launched on the same machine (this
+            // project's own EveryStage.Discovery README already flags exactly that kind of
+            // same-machine collision as something worth testing for). This happens before
+            // Application.Run() even starts the message loop, so Application.ThreadException
+            // (registered above) never sees it — and unlike the Terminal side, this process has no
+            // AppDomain.UnhandledException handler either (see this method's own comment above on
+            // why a persistent crash log wasn't added here), so without this catch the operator
+            // would see nothing but a raw, unstyled .NET crash dialog with no indication of what
+            // actually went wrong, instead of this app's own established "MessageBox, not a crash"
+            // convention every other unexpected failure in this process already gets.
+            MessageBox.Show(
+                $"无法启动设备发现（监听UDP端口{DiscoveryProtocol.Port}失败）：\n\n{ex.Message}\n\n" +
+                "可能是另一个EveryStage投屏机实例正在运行，或者该端口被其他程序占用。",
+                "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
 
-        using var mainForm = new MainForm(discoveryClient, identity, pairedTerminals);
-        Application.Run(mainForm);
+        using (discoveryClient)
+        {
+            discoveryClient.Start();
+
+            using var mainForm = new MainForm(discoveryClient, identity, pairedTerminals);
+            Application.Run(mainForm);
+        }
     }
 }

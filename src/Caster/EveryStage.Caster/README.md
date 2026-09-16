@@ -853,6 +853,23 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     沙箱里跑过（没有dotnet），没有真机验证过——包括`FileShare.None`独占锁在真实Windows文件
     系统上是否真的会让`File.OpenRead`按预期抛`IOException`，也只是基于.NET文档推断，没有
     实测验证过。
+79. **【新发现的真实bug，已修复，跟`EveryStage.Terminal`那一条同一次审计一起找到】
+    `Program.Main`里`new TerminalDiscoveryClient()`原来完全没有异常防护，而这个构造函数会
+    绑定一个固定端口的UDP socket**：`TerminalDiscoveryClient`构造函数里
+    `_socket.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryProtocol.Port));`如果这个
+    端口（47990）已经被占用会抛`SocketException`——这是真实场景，不是假设：本机同时跑两个
+    Caster实例（`EveryStage.Discovery`README自己就提到过"同一台开发机上测试时互相覆盖"这类
+    场景）、或者上一次Caster没能正常退出留下的僵尸进程还占着这个端口，都会触发。这段代码在
+    `Application.Run()`真正启动消息循环*之前*就执行，`Application.ThreadException`（上面
+    刚注册的）完全帮不上忙；而且跟Terminal不一样，这个进程从来没有注册过
+    `AppDomain.CurrentDomain.UnhandledException`（这个类自己的注释解释了为什么故意没加
+    ——这个应用没有常驻日志基础设施，专门为这个加一个不值得）——原来的代码一旦触发这条失败
+    路径，操作者看到的会是一个毫无样式的.NET原生崩溃对话框，没有任何说明，也完全不符合这个
+    进程其它所有意外失败早就在用的"弹一个MessageBox、不是崩溃"的统一体验。**修复方式**：把
+    `new TerminalDiscoveryClient()`包一层`try/catch`，失败时用跟这个进程其它地方完全一致
+    风格的`MessageBox.Show`说明"监听UDP端口失败"、给出两个最可能的原因（另一个投屏机实例在
+    跑/端口被别的程序占用），然后正常返回而不是让异常继续往外抛。**没有做的部分**：这次改动
+    本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始
 
