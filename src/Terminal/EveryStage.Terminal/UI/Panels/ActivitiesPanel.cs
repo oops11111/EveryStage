@@ -117,6 +117,16 @@ public sealed class ActivitiesPanel : UserControl
         _tree = new TreeView { Dock = DockStyle.Fill };
         _tree.AfterSelect += (_, _) => UpdateButtonStates();
         _tree.NodeMouseDoubleClick += OnNodeDoubleClick;
+        // Activity.IsCollapsed (PLANNING.md §6/§11's "可折叠") until now was collected (cloned by
+        // OnSaveAsScenario) but never actually driven the tree either way: RefreshTree unconditionally
+        // expanded every activity node regardless of this field, and nothing ever wrote a user's
+        // manual collapse/expand back into it — so it silently reverted on the very next RefreshTree
+        // call, which happens after nearly every edit in this panel (add/remove/move file, edit
+        // play mode, etc.). AfterCollapse/AfterExpand only ever fire for a real toggle on a node
+        // that's already part of this TreeView — RefreshTree's own Collapse()/Expand() calls happen
+        // on a freshly-constructed, not-yet-added TreeNode, so they don't loop back into this handler.
+        _tree.AfterCollapse += (_, e) => OnActivityCollapseStateChanged(e.Node, collapsed: true);
+        _tree.AfterExpand += (_, e) => OnActivityCollapseStateChanged(e.Node, collapsed: false);
 
         _statusBar = new Label { Dock = DockStyle.Bottom, Height = 24, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DimGray };
 
@@ -490,10 +500,25 @@ public sealed class ActivitiesPanel : UserControl
             var activityNode = new TreeNode(activity.Name) { Tag = activity };
             foreach (var file in activity.Files)
                 activityNode.Nodes.Add(new TreeNode(Path.GetFileName(file.SourcePath)) { Tag = file });
-            activityNode.Expand();
+            if (activity.IsCollapsed) activityNode.Collapse(); else activityNode.Expand();
             _tree.Nodes.Add(activityNode);
         }
         UpdateButtonStates();
+    }
+
+    /// <summary>Persists a real, user-initiated collapse/expand of an activity node back into
+    /// <see cref="Activity.IsCollapsed"/> — see the comment on this class's AfterCollapse/AfterExpand
+    /// subscriptions for why this doesn't also fire (and doesn't need to guard against) RefreshTree's
+    /// own Collapse()/Expand() calls. Ignored for a file leaf node (its <c>Tag</c> is a
+    /// <see cref="MediaFile"/>, not an <see cref="Activity"/>) — file nodes have no children of their
+    /// own to collapse/expand in the first place, so <c>node?.Tag is not Activity</c> is defensive
+    /// rather than something this method expects to actually hit.</summary>
+    private void OnActivityCollapseStateChanged(TreeNode? node, bool collapsed)
+    {
+        if (node?.Tag is not Activity activity || activity.IsCollapsed == collapsed) return;
+
+        activity.IsCollapsed = collapsed;
+        _repository.Save(_store);
     }
 
     private void OnFileStarted(MediaFile file)

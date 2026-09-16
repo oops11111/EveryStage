@@ -39,7 +39,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `UI/MainWindow.cs` | §8.1 | 主界面外壳：左侧导航(投屏开关/断/四个面板入口/状态) + 右侧内容区；关闭窗口只隐藏不退出进程（终端机要常驻），托盘菜单"打开主界面"或双击托盘图标可以召回 |
 | `UI/Panels/FilesPanel.cs` | §8.2 | 文件面板：`ListView`缩略图网格 + 类型筛选(全部/图片/视频/文档/音频) + 导入对话框 + 从资源管理器拖拽导入 + 移除(二次确认) + 双击播放(`PlaybackEngine.RequestPlay`)，导入/移除都接入`FileOperationLogger` |
 | `UI/Panels/DevicesPanel.cs` | §8.2 | 设备面板：已配对设备列表(信任状态/被投放/被监看/配对时间) + 移除配对 + 编辑权限(见"已知风险"第70条) |
-| `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(可折叠) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 播放方式/音频属性/停留时长(见"已知风险"第71条) + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改及播放属性变更 |
+| `UI/Panels/ActivitiesPanel.cs` | §8.2 | 活动面板：方案选择器(切换/新建/另存为/删除) + `TreeView`活动/文件层级(真正可折叠、且折叠状态会持久化，见"已知风险"第72条) + 新建/重命名/删除活动 + 从文件库添加/移除文件 + 上移/下移排序 + 播放方式/音频属性/停留时长(见"已知风险"第71条) + 输出状态条；双击播放，接入`FileOperationLogger`记录方案/活动的增删改及播放属性变更 |
 | `UI/TextInputDialog.cs`, `UI/LibraryFilePickerDialog.cs` | — | 活动面板用到的两个小弹窗：单行文本输入(方案/活动命名)、从文件库选一个文件 |
 | `UI/Panels/SettingsPanel.cs` | §8.2 | 设置面板：`TabControl`五个分类(通用/显示/播放行为/网络与设备/关于)；`Data/AppSettings.cs`+`Data/SettingsStore.cs`是这次新加的数据模型和JSON持久化(同样是atomic write) |
 
@@ -617,6 +617,24 @@ Caster知道终端机确实收到了东西。
     文档）"），保存时通过`FileOperationLogger.LogPlaybackPropertyChanged`记录变更，取消覆盖（值
     变回`null`）时`oldValue`/`newValue`跟`OnEditPlayMode`一样让`null`原样记成JSON null而不是字符串
     "null"，同一套已经确立的约定。这样一来，`SettingsPanel`那段说明文字现在终于是真的了。
+72. **【已实现，原为已知缺口】`Activity.IsCollapsed`（活动是否折叠）以前只是被采集、从来没有真正
+    驱动过`TreeView`，用户手动折叠的活动会在几乎每次操作后被静默重新展开**：`Activity`类doc
+    comment从写出来那一轮起就说这个字段对应PLANNING.md §6/§11的"可折叠"，`OnSaveAsScenario`克隆
+    活动时也在正确地复制它，但`RefreshTree`一直是`activityNode.Expand()`——不看这个字段，无条件
+    展开每一个活动节点；同时没有任何代码在用户手动折叠/展开某个活动节点时把结果写回`IsCollapsed`。
+    比"这个功能完全没做"更容易被忽略的是它造成的实际体验：`RefreshTree`在这个面板里几乎每个操作
+    之后都会被调用（加文件、删文件、上移/下移、编辑播放方式/音频属性/停留时长……），也就是说用户
+    刚手动折叠某个活动，紧接着做任何一个其他操作，那个活动就会被无声地重新展开——这不是"功能缺失"
+    的沉默失败，是一个看得见、会让人以为"点了没反应"的真实体验问题。这次的修复是双向的：(1)
+    `RefreshTree`改成按`activity.IsCollapsed`决定调用`Collapse()`还是`Expand()`，不再无条件展开；
+    (2) 新增`_tree.AfterCollapse`/`AfterExpand`订阅，用户真的手动切换某个活动节点的折叠状态时
+    把结果写回`IsCollapsed`并`_repository.Save(_store)`持久化。这两者之间刻意没有互相触发：
+    `RefreshTree`自己调用`Collapse()`/`Expand()`的时机是在一个刚`new`出来、还没加进`_tree.Nodes`
+    的`TreeNode`上，这时候调用不会经过`TreeView`的事件管线，不会触发`AfterCollapse`/`AfterExpand`，
+    也就不会又反过来触发一次没必要的`Save`——这是WinForms `TreeNode`本身的行为，不是这次改动特意
+    加的防护逻辑，只是恰好利用了这个既有事实。**没有额外做的部分**：文件叶子节点没有自己的子节点，
+    物理上不可能触发折叠/展开事件，`OnActivityCollapseStateChanged`里的`node?.Tag is not Activity`
+    判断只是防御性的，不是这次发现的真实场景。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
