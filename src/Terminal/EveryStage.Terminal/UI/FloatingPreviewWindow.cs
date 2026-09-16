@@ -117,10 +117,16 @@ public sealed class FloatingPreviewWindow : Form
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _refreshTimer.Tick += (_, _) => RefreshFromEngine();
 
-        // "意外关闭后从主面板召回" (PLANNING.md §8.3): the Phase 4 main panel that would offer a
-        // recall button doesn't exist yet, so the closest honest behavior today is "the window
-        // never actually closes on its own X button, only hides" — clicking X just re-hides it,
-        // same as normal auto-hide, rather than disposing an instance nothing could bring back.
+        // "意外关闭后从主面板召回" (PLANNING.md §8.3) — this comment used to justify not building a
+        // recall affordance by saying the Phase 4 main panel didn't exist yet; MainWindow has existed
+        // since an earlier round and that reasoning is now stale (see this project's README "已知
+        // 风险"), but a dedicated recall UI still isn't built: PLANNING.md §16第5项 itself lists the
+        // exact interaction ("悬浮预览窗与主面板预览缩略图的召回交互细节") as still "待确认/待验证",
+        // naming a "主面板预览缩略图" this repo has no equivalent of yet — building one specific
+        // recall UI now would mean guessing at an interaction PLANNING.md's own author hasn't settled
+        // on. What this line still does — the window never actually closes on its own X button, only
+        // hides — already substantially covers the practical concern ("意外关闭" can't really happen,
+        // there's nothing to accidentally lose) even without a dedicated recall button.
         FormClosing += (_, e) =>
         {
             e.Cancel = true;
