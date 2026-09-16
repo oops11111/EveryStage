@@ -971,6 +971,27 @@ Caster知道终端机确实收到了东西。
     沙箱里跑过（没有dotnet），没有真机验证过——包括这个引用计数泄漏在实际运行中到底会不会造成
     可观察的问题（比如某个内部资源池耗尽），本身也只是基于MF官方文档描述的引用计数语义推断出来
     的，没有实测验证过多次投屏循环之后是否真的有异常表现。
+92. **【新发现的真实bug，已修复】`AudioTakeoverService`的COM调用完全没有做异常防护，而它恰好被
+    两种最怕异常的方式调用着**：`MuteStillActiveSessions()`/`UnmuteSessionsWeMuted()`里
+    `enumerator.GetDefaultAudioEndpoint(...)`以及对每个`session`的`GetProcessID`/
+    `SimpleAudioVolume`访问，原来一个try/catch都没有——`MuteStillActiveSessions`自己的注释就
+    点名了"GetProcessID的具体签名（方法还是属性、uint还是int）需要对照实际安装的NAudio版本核实"
+    这种尚未验证过的interop细节，而`GetDefaultAudioEndpoint`本身在"没有配置/插入任何音频输出
+    设备"时会抛`COMException`——这对Terminal这种扩展屏一体机而言不是假设性的边界情况，它完全
+    可能就是真实的目标硬件形态。这个未加防护的方法被两个调用点用两种都会出问题的方式在用：
+    (a) `Program.OnOutputStateChanged`里`TakeoverAsync()`是"fire-and-forget"（`_ =
+    _audioTakeover.TakeoverAsync();`），异常只会在GC某次终结这个被丢弃的Task时才通过
+    `TaskScheduler.UnobservedTaskException`（见风险#88那次加的顶层安全网）冒出来，延迟不可预期；
+    (b) 更严重的是`Restore()`在同一个方法里被同步调用，紧跟着后面完全没有try/catch保护的
+    `StopCasting()`——如果`Restore()`抛出，`StopCasting()`根本不会执行，"断"这个操作会把
+    `CastReceiver`晾在那里继续对着已经隐藏的覆盖窗口收流解码，跟`StopCasting()`调用上方那条
+    注释明确警告要避免的情况一模一样，只是原来的代码从未真正防住它。**修复方式**：给
+    `MuteStillActiveSessions`/`UnmuteSessionsWeMuted`各自加了两层try/catch——外层包住
+    `enumerator`/`device`获取（专门应对"没有默认音频输出设备"），内层包住`for`循环体内单个
+    session的处理（专门应对"某一个session的COM调用失败不该连累其它session都没处理到"，比如
+    枚举之后、真正操作之前进程碰巧退出了）。**没有做的部分**：这次改动本身没有在这个沙箱里跑过
+    （没有dotnet），没有真机验证过——包括"这台机器到底有没有默认音频输出设备"以及
+    `GetProcessID`真实签名这两件事本身，都还是要在真机第一次编译/运行时才能确认。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

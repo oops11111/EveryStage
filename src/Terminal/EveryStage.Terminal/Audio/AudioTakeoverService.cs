@@ -49,25 +49,54 @@ public sealed class AudioTakeoverService : IDisposable
     {
         int ownProcessId = Environment.ProcessId;
 
-        using var enumerator = new MMDeviceEnumerator();
-        using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-        var sessions = device.AudioSessionManager.Sessions;
-
-        for (int i = 0; i < sessions.Count; i++)
+        try
         {
-            using var session = sessions[i];
+            using var enumerator = new MMDeviceEnumerator();
+            using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            var sessions = device.AudioSessionManager.Sessions;
 
-            // NOTE: verify GetProcessID's exact shape (method vs. property, uint vs. int) against
-            // the installed NAudio version — see the Phase 0 demo's README for why this project
-            // flags interop surface it couldn't compile-check in this sandbox.
-            int processId = (int)session.GetProcessID;
-            if (processId == ownProcessId) continue;
+            for (int i = 0; i < sessions.Count; i++)
+            {
+                try
+                {
+                    using var session = sessions[i];
 
-            if (session.State != AudioSessionState.AudioSessionStateActive) continue;
-            if (session.SimpleAudioVolume.Mute) continue; // leave pre-existing mutes alone
+                    // NOTE: verify GetProcessID's exact shape (method vs. property, uint vs. int) against
+                    // the installed NAudio version — see the Phase 0 demo's README for why this project
+                    // flags interop surface it couldn't compile-check in this sandbox.
+                    int processId = (int)session.GetProcessID;
+                    if (processId == ownProcessId) continue;
 
-            session.SimpleAudioVolume.Mute = true;
-            _mutedProcessIds.Add(processId);
+                    if (session.State != AudioSessionState.AudioSessionStateActive) continue;
+                    if (session.SimpleAudioVolume.Mute) continue; // leave pre-existing mutes alone
+
+                    session.SimpleAudioVolume.Mute = true;
+                    _mutedProcessIds.Add(processId);
+                }
+                catch (Exception)
+                {
+                    // One session's COM call failing (the process could exit between enumeration and
+                    // this loop reaching it, or the GetProcessID interop shape flagged above could be
+                    // wrong for the installed NAudio version) must not abort muting every OTHER session
+                    // in this sweep — best-effort per session, like every other opportunistic
+                    // OS-interop call in this repo.
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // No default render endpoint at all (COMException, "Element not found") is a real
+            // condition on this repo's own hardware target — a Terminal is an extended-display box
+            // and may have no audio output device configured/plugged in. See this method's caller
+            // for why this must never propagate: TakeoverAsync is fire-and-forget from the UI thread
+            // (an unhandled exception there would only ever surface, if at all, whenever the .NET GC
+            // happens to finalize the abandoned Task and raise TaskScheduler.UnobservedTaskException —
+            // see Program.cs's top-level handler for that), and Restore() below is called synchronously
+            // from Program.OnOutputStateChanged() immediately before StopCasting() with no try/catch of
+            // its own — an exception escaping here would skip StopCasting() entirely, leaving a
+            // CastReceiver running against a hidden overlay forever instead of being torn down. Both
+            // callers already treat "无法接管系统音频" as acceptable to just not happen; they were never
+            // written to survive it throwing instead.
         }
     }
 
@@ -75,18 +104,41 @@ public sealed class AudioTakeoverService : IDisposable
     {
         if (_mutedProcessIds.Count == 0) return;
 
-        using var enumerator = new MMDeviceEnumerator();
-        using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-        var sessions = device.AudioSessionManager.Sessions;
-
-        for (int i = 0; i < sessions.Count; i++)
+        try
         {
-            using var session = sessions[i];
-            int processId = (int)session.GetProcessID;
-            if (_mutedProcessIds.Contains(processId))
-                session.SimpleAudioVolume.Mute = false;
+            using var enumerator = new MMDeviceEnumerator();
+            using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            var sessions = device.AudioSessionManager.Sessions;
+
+            for (int i = 0; i < sessions.Count; i++)
+            {
+                try
+                {
+                    using var session = sessions[i];
+                    int processId = (int)session.GetProcessID;
+                    if (_mutedProcessIds.Contains(processId))
+                        session.SimpleAudioVolume.Mute = false;
+                }
+                catch (Exception)
+                {
+                    // Same "one session's failure must not abort the rest" reasoning as
+                    // MuteStillActiveSessions above.
+                }
+            }
+        }
+        catch (Exception)
+        {
+            // Same "no default render endpoint" reasoning as MuteStillActiveSessions above — this
+            // path matters even more here, since Restore() (this method's only caller besides
+            // Dispose()) runs synchronously and unguarded right before Program.OnOutputStateChanged's
+            // StopCasting() call.
         }
 
+        // Cleared even on failure above: if the takeover-time mute genuinely didn't happen (no
+        // default device), there is nothing left for a later Restore() to still be responsible for,
+        // and if it did happen but this unmute attempt failed, there is no retry path anyway — an
+        // empty set here is more honest than one that claims sessions are still muted when nothing
+        // further will ever act on that claim.
         _mutedProcessIds.Clear();
     }
 
