@@ -393,17 +393,61 @@ public sealed class PlaybackEngine : IDisposable
 
     private async Task PlayImageAsync(MediaFile file)
     {
-        await _imageRenderer.LoadAsync(file.SourcePath);
-        _overlay.ContentSurface.SetFrame(_imageRenderer.CurrentFrame);
-        ArmStayDurationTimer(file);
+        try
+        {
+            await _imageRenderer.LoadAsync(file.SourcePath);
+            _overlay.ContentSurface.SetFrame(_imageRenderer.CurrentFrame);
+            ArmStayDurationTimer(file);
+        }
+        catch (Exception ex)
+        {
+            OnImageOrDocumentFailed(file, ex);
+        }
     }
 
     private async Task PlayDocumentAsync(MediaFile file)
     {
-        _pdfRenderer.SetTargetSize(_overlay.ContentSurface.ClientSize);
-        await _pdfRenderer.LoadAsync(file.SourcePath);
-        _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
-        ArmStayDurationTimer(file);
+        try
+        {
+            _pdfRenderer.SetTargetSize(_overlay.ContentSurface.ClientSize);
+            await _pdfRenderer.LoadAsync(file.SourcePath);
+            _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
+            ArmStayDurationTimer(file);
+        }
+        catch (Exception ex)
+        {
+            OnImageOrDocumentFailed(file, ex);
+        }
+    }
+
+    /// <summary>Shared by <see cref="PlayImageAsync"/>/<see cref="PlayDocumentAsync"/> — until this
+    /// existed, a <see cref="ImageContentRenderer.LoadAsync"/>/<see cref="PdfContentRenderer.LoadAsync"/>
+    /// failure (the file was deleted/moved/corrupted since being added to an activity — a real,
+    /// reachable condition, not hypothetical: nothing re-verifies a file still exists/decodes at
+    /// click-time) had NOTHING catching it at all: <c>PlayFile</c> calls these two methods
+    /// fire-and-forget (<c>_ = PlayImageAsync(file);</c>), so the exception vanished into an
+    /// unobserved <see cref="Task"/> with no <c>AppDomain.UnhandledException</c>/
+    /// <c>TaskScheduler.UnobservedTaskException</c> handler anywhere in this app to even log it. Worse
+    /// than that: <see cref="ArmStayDurationTimer(MediaFile)"/> is the ONLY thing that ever arms
+    /// <c>HandleCompletion</c> for image/document content, so a failure here left
+    /// <see cref="PlayMode.SequentialAuto"/>'s auto-advance silently stalled forever on that file —
+    /// the same "queue quietly stops progressing" shape as the background-audio bug this project's
+    /// README already documents (risk #84), except that one at least never claimed to have started
+    /// anything, where this one already showed the file as playing (<see cref="FileStarted"/> fires
+    /// for it below) and then just stopped making progress with zero signal. Mirrors
+    /// <see cref="OnVideoFailed"/>/<see cref="OnAudioFailed"/>'s existing
+    /// <c>LogAbnormalInterruption</c> + <see cref="PlaybackAbnormallyInterrupted"/> handling exactly —
+    /// unlike those two (raised from a genuinely separate background playback thread, hence their own
+    /// <c>_overlay.BeginInvoke</c> marshaling), this runs on whatever <c>SynchronizationContext</c>
+    /// the initial <c>await</c> captured, which in this WinForms app's message loop is the UI thread
+    /// itself (same reason the non-exceptional path above already calls
+    /// <see cref="OverlayWindow.ContentSurface"/>/<see cref="ArmStayDurationTimer(MediaFile)"/>
+    /// directly with no marshaling of its own) — so no <c>BeginInvoke</c> is needed here either.</summary>
+    private void OnImageOrDocumentFailed(MediaFile file, Exception ex)
+    {
+        if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
+        _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
+        PlaybackAbnormallyInterrupted?.Invoke(file, ex.Message);
     }
 
     /// <summary>Standalone (non-background) audio playback — see this class's doc comment and

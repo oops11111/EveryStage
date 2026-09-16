@@ -857,6 +857,35 @@ Caster知道终端机确实收到了东西。
     问题。`RefreshTree()`本身会清空重建整个`TreeView`，选中状态会丢失——这跟`OnRenameActivity`/
     `OnDeleteActivity`已经在用的同一个`RefreshTree()`调用是同一个已经接受的代价，不是这次新引入的
     行为，没有为了保留选中状态去单独实现"只更新这一个节点的文字"这种这个类里从未用过的模式。
+86. **【新发现的真实bug，已修复】图片/文档解码失败会被完全吞掉，比视频/音频的失败路径更糟——
+    既不弹Toast也不写日志，还会让顺序自动播放静默卡死**：委托一个子agent专门去找"跟第84条背景
+    音频那个bug同一种形状"的问题，这条是它真正找到的一个——`PlayFile`对`MediaKind.Image`/
+    `MediaKind.Document`调用`PlayImageAsync`/`PlayDocumentAsync`是纯粹的fire-and-forget
+    （`_ = PlayImageAsync(file);`），这两个方法内部原来完全没有`try/catch`。`ImageContentRenderer.
+    LoadAsync`/`PdfContentRenderer.LoadAsync`在文件被外部删除/移动/损坏时会真的抛异常——这是
+    现实场景，不是假设：活动/文件面板都没有在"点击播放的那一刻"重新验证过文件还存不存在、还能不能
+    解码，只有主动删除路径本身会被UI拦下来，活动列表里引用的文件被外部删除是完全没有防御的。
+    异常抛出后落在一个从未被观察过的`Task`上直接消失——这个仓库里没有任何
+    `AppDomain.UnhandledException`/`TaskScheduler.UnobservedTaskException`兜底，连"进程有没有
+    因此崩溃"这种最基本的信号都没有。更糟的是`ArmStayDurationTimer`是图片/文档唯一会武装
+    `HandleCompletion`触发机制的地方，异常一发生这一步永远不会跑到，`PlayMode.SequentialAuto`
+    的自动播放从这里开始就永久卡死——跟第84条一样的"队列静默不再前进"，但比它还差：第84条那个
+    背景音频文件至少从来没有假装自己在播放，这里`FileStarted`已经在`PlayFile`最后触发过了（文件
+    "看起来"已经开始播放），然后就突然停在那儿，没有任何信号。视频/音频的解码失败路径
+    （`OnVideoFailed`/`OnAudioFailed`）早就有真正的处理：记日志+触发`PlaybackAbnormallyInterrupted`
+    弹出带"重试/移除"按钮的Toast（PLANNING.md §11的要求），图片/文档这条路径完全没有对应实现，
+    是这次才发现的缺口，不是文档里承认过的已知限制。**修复方式**：给`PlayImageAsync`/
+    `PlayDocumentAsync`各包一层`try/catch`，异常统一交给新增的`OnImageOrDocumentFailed`——跟
+    `OnVideoFailed`/`OnAudioFailed`一样"记日志+触发`PlaybackAbnormallyInterrupted`"，同样的
+    `ReferenceEquals(file, _currentFile)`防陈旧判断。**跟视频/音频那两个失败处理方法的一个真实
+    区别**：`OnVideoFailed`/`OnAudioFailed`是从真正独立的后台播放线程触发的，所以套了一层
+    `_overlay.BeginInvoke`把处理逻辑送回UI线程；`PlayImageAsync`/`PlayDocumentAsync`的
+    `await`之后的延续默认恢复在调用时捕获的`SynchronizationContext`上，这是一个WinForms消息循环
+    应用，也就是UI线程本身——改动前那行不带`BeginInvoke`直接调用`_overlay.ContentSurface.SetFrame`
+    的代码本来就已经依赖这个事实，这次的异常处理沿用同样的假设，不需要额外套一层`BeginInvoke`。
+    **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过
+    `LoadAsync`抛出的具体异常类型是否真的都能被这个`catch (Exception ex)`接住（理论上应该都能，
+    但没有验证过是否有需要特殊处理的异步取消类异常混在里面）。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
