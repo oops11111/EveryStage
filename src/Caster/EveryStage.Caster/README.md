@@ -543,6 +543,21 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     **仍未解决的部分**：第35条描述的"discovery socket整体变差（网络抖动/拥塞）导致状态通道系统性
     不健康"这种失败模式，两次发送很可能同时受影响，这次改动对此基本没有缓解——这两条风险原本就是
     两类不同的问题（偶发单包丢失 vs. 通道整体降级），这次只解决了前一半。
+59. **【已实现，原为已知缺口】两处"数据早就有了，UI从来没显示过"的缺口**：(1)
+    `LiveCastSession.LastRttMeasuredAt`自己的doc comment从写出来那一轮起就说"调用方可以用它判断
+    RTT估算是不是过时了"，但从来没有代码真的这样用过——如果终端机停止响应ping，`RealRoundTripEstimate`
+    会永远停在最后一次成功测量的数字上，UI上没有任何"这个数字可能已经不新鲜了"的提示，容易被误读成
+    "网络现在依然是这个延迟"。新增`IsRttStale`（超过10秒没有成功测量，同样是"连续错过几次而不是
+    一次就翻脸"的口径，跟`IsTerminalAlive`/`StatusStaleAfter`是同一套推理，只是这次真的套用到了
+    `LastRttMeasuredAt`身上），`MainForm`的"真实RTT估算"那一行在过时时追加一行醒目的提示。(2)
+    `LiveCastSession.TerminalHasAudio`/`TerminalVideoBytesReceived`/`TerminalAudioBytesReceived`
+    跟`TerminalFramesDecoded`同一批从`CastStatusMessage`解出来，协议/会话层完全接好了，但
+    `MainForm`的"终端机确认"那一行以前只显示`TerminalFramesDecoded`和两个Error字段，这三个字段
+    从来没有被显示过——这次补上了"视频已接收X字节"和（当`TerminalHasAudio`为真时）"音频已接收Y
+    字节"。**残留的、这次没有解决的部分**：`_liveCastStatsLabel`的Bounds高度本来就已知偏紧（见
+    第56条），这次给"真实RTT估算"那一行多加了一行过时提示，是继续往这个已知紧张的高度里塞内容，
+    没有借这次机会去修；`IsRttStale`的10秒阈值跟这个仓库其他所有计时常量一样，没有真实网络环境
+    可以验证是否合适。
 
 ## 尚未开始
 

@@ -275,6 +275,22 @@ public sealed class LiveCastSession : IDisposable
     /// Terminal is receiving anything right now.</summary>
     public bool IsTerminalAlive => LastStatusReceivedAt is { } at && DateTime.UtcNow - at < StatusStaleAfter;
 
+    // RunPingLoop's own attempt timeout is 3s and it retries every PingInterval (2s) on top of
+    // that, so a single missed cycle can already take ~5s before the next attempt even starts —
+    // this allows roughly two missed cycles (same "several in a row, not one" reasoning
+    // StatusStaleAfter uses above) before treating RealRoundTripEstimate as possibly outdated.
+    private static readonly TimeSpan RttStaleAfter = TimeSpan.FromSeconds(10);
+
+    /// <summary>True once <see cref="RealRoundTripEstimate"/> exists but hasn't been refreshed
+    /// recently — <see cref="LastRttMeasuredAt"/>'s own doc comment always said a caller could use
+    /// it to judge staleness, but until now nothing did, so a Terminal that stopped responding to
+    /// pings kept showing its last real RTT number forever with no indication it might no longer be
+    /// current (the same gap <see cref="StatusStaleAfter"/>/<see cref="IsTerminalAlive"/> already
+    /// closed for the status channel, just never mirrored here for the independent ping/pong one).
+    /// False both when no measurement has ever succeeded (nothing to go stale — check
+    /// <see cref="RealRoundTripEstimate"/> for that case) and while a recent one exists.</summary>
+    public bool IsRttStale => LastRttMeasuredAt is { } at && DateTime.UtcNow - at >= RttStaleAfter;
+
     /// <summary>Raised from the background capture/encode loop, or from the encoder's own event
     /// loop — marshal to the UI thread before touching UI (mirrors every other self-test runner in
     /// this project).</summary>

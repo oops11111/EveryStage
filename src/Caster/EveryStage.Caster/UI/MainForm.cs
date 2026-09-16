@@ -739,8 +739,17 @@ public sealed class MainForm : Form
         // hasn't reported a new decoded frame recently" is not on its own a reliable "media stream
         // stalled" signal, and a heuristic built on it risked crying wolf during completely normal
         // static-content casting — worse than the plain caveat this settles for instead).
+        // TerminalVideoBytesReceived/TerminalHasAudio/TerminalAudioBytesReceived come from the same
+        // CastStatusMessage as TerminalFramesDecoded above but, until now, had no caller anywhere in
+        // this UI — the protocol/session layer fully plumbed them through, nothing above ever
+        // displayed them. Kept as one compact "视频X字节，音频Y字节" clause rather than separate
+        // lines, matching the density of the existing "已解码N帧" clause it sits next to.
+        string terminalAudioNote = _liveCastSession.TerminalHasAudio
+            ? $"，音频已接收 {_liveCastSession.TerminalAudioBytesReceived} 字节"
+            : "";
         string terminalLine = _liveCastSession.IsTerminalAlive
-            ? $"终端机确认: 已解码 {_liveCastSession.TerminalFramesDecoded} 帧{latencyNote}" +
+            ? $"终端机确认: 已解码 {_liveCastSession.TerminalFramesDecoded} 帧，" +
+              $"视频已接收 {_liveCastSession.TerminalVideoBytesReceived} 字节{terminalAudioNote}{latencyNote}" +
               (_liveCastSession.TerminalVideoError != null ? $"（终端机视频出错：{_liveCastSession.TerminalVideoError}）" : "") +
               (_liveCastSession.TerminalAudioError != null ? $"（终端机音频出错：{_liveCastSession.TerminalAudioError}）" : "") +
               "\n（仅代表状态通道送达，不代表画面/声音本身一定在正常播放）"
@@ -752,12 +761,18 @@ public sealed class MainForm : Form
         // has gone quiet (or vice versa) — that divergence would itself be a useful diagnostic signal
         // this UI shouldn't hide by only showing RTT alongside a "confirmed" status line. Only shown
         // once at least one ping has ever succeeded — same "don't show a permanent placeholder" logic
-        // as backpressureLine/encoderBackpressureLine below. NOTE: this label's Bounds height (108)
-        // was already a known tight fit before this line existed (see the label's own construction
-        // comment) — this can clip on top of an already-showing backpressure warning; not fixed this
-        // round, same accepted-but-unverified risk that comment already flags.
+        // as backpressureLine/encoderBackpressureLine below. The second, conditional line uses the
+        // new LiveCastSession.IsRttStale — same "several missed cycles, not one" reasoning
+        // IsTerminalAlive already applies to the status channel, mirrored here because
+        // RealRoundTripEstimate previously kept showing its last real number forever with no
+        // indication it might no longer be current once the Terminal stopped responding to pings.
+        // NOTE: this label's Bounds height (108) was already a known tight fit before either RTT
+        // line existed (see the label's own construction comment) — two lines here now instead of
+        // one makes clipping on top of an already-showing backpressure warning more likely, not
+        // less; still not fixed this round, same accepted-but-unverified risk that comment flags.
         string rttLine = _liveCastSession.RealRoundTripEstimate is { } rtt
-            ? $"\n真实RTT估算: {rtt.TotalMilliseconds:F0}ms（不受两台机器时钟是否同步的影响）"
+            ? $"\n真实RTT估算: {rtt.TotalMilliseconds:F0}ms（不受两台机器时钟是否同步的影响）" +
+              (_liveCastSession.IsRttStale ? "\n⚠ 已超过10秒没有成功测量，这个数字可能已经过时" : "")
             : "";
 
         // Only shown once something has actually been dropped — on a healthy LAN both counters
