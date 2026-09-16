@@ -19,13 +19,16 @@ namespace EveryStage.Terminal.UI.Panels;
 /// originated from still existing — see this project's README ("已知风险" #22) on this copy-not-
 /// reference behavior being a deliberate, previously-documented choice, not something decided here.
 ///
-/// Not implemented (see this project's README for the full list): real video/PDF/audio thumbnails
-/// (video and document items show a generic placeholder icon — building a real one means decoding a
-/// frame/first page, which is extra work beyond what a file browser strictly needs), audio's
-/// "横向播放条" treatment (§8.2 describes audio rows differently from the grid — audio playback
-/// itself isn't implemented anywhere in this repo yet, so there is nothing to wire a play bar to),
-/// batch selection with a floating toolbar (§11), and dragging a library item onto an activity
-/// (there is no activity list UI yet in this same window for it to be dragged onto).
+/// Not implemented (see this project's README "已知风险" for the full writeup of why): real
+/// video/PDF/audio thumbnails (video and document items show a generic placeholder icon — building a
+/// real one means decoding a frame/first page, which is extra work beyond what a file browser
+/// strictly needs), audio's "横向播放条" treatment (§8.2 describes audio rows differently from the
+/// grid — non-background audio playback itself has real behavior now via
+/// <see cref="ContentEngine.AudioContentController"/>, but that controller has no pause/resume, seek,
+/// or volume control at all, which is most of what a real play bar would need to actually do
+/// something rather than just look like PLANNING.md's mockup), batch selection with a floating
+/// toolbar (§11), and dragging a library item onto an activity (there is no activity list UI yet in
+/// this same window for it to be dragged onto).
 /// </summary>
 public sealed class FilesPanel : UserControl
 {

@@ -756,3 +756,24 @@ Caster知道终端机确实收到了东西。
   的播放行为之前，这个仓库不打算为它们加编辑UI，同样的"先做行为、再做UI"的顺序，见风险#55-57、
   61-62、71（`PlayMode`/`AllowManualSkip`/`FileOperationLogger.LogPlaybackPropertyChanged`/音频
   播放行为+编辑UI、`StayDuration`编辑UI都已经按这个顺序做完了）
+- PLANNING.md §8.2"音频以横向播放条展示（含播放/进度/音量/循环/独立投屏按钮）"——`FilesPanel`
+  目前把音频文件跟图片/视频/文档放进同一个`ListView`缩略图网格，完全没有单独的横向行样式；这次
+  排查PLANNING.md跟README的差异时发现这句话之前只在`FilesPanel`类doc comment里提过一次（且原话
+  "audio playback itself isn't implemented anywhere in this repo yet"已经过时并顺手改正），从来
+  没有作为已知缺口出现在README里。**没有直接去做的原因**：横向播放条要求的五个功能里，只有
+  "播放"这一半勉强有底子（`ContentEngine.AudioContentController`能播放，但完全没有暂停/恢复能力
+  ——`PlaybackEngine.Pause`/`Resume`目前只操作图片/文档的停留时长倒计时，从来不是真正的音频
+  暂停）；"进度"（拖动跳转到任意位置）需要`AudioDecodeSource`支持seek，这个仓库的Media Foundation
+  封装从来没有做过这件事；"音量"目前完全没有任何调节入口（`AudioPlaybackClock`/`WasapiOut`都没有
+  暴露音量控制）；"独立投屏按钮"具体含义PLANNING.md本身没有展开（跟双击播放已有的行为是否是同一
+  件事也不确定）。这四项加起来是真正需要新增播放引擎能力的工作，风险等级和规模跟WPS COM互操作、
+  背景音轨叠加播放是同一档，不是这次能顺手补上的UI接线，故意没有尝试
+- PLANNING.md §11"批量选择：`Ctrl/Shift+点击`或长按进入选择模式；选中后悬浮工具栏出现（加入活动/
+  统一设置属性/删除），跨类型选中时屏蔽不适用的属性项"——`FilesPanel`的`ListView`目前固定
+  `MultiSelect = false`（构造处注释已经点明"batch selection (§11) isn't implemented yet"），
+  同样是这次排查PLANNING.md差异时发现从来没有进入过README的已知缺口。"跨类型选中时屏蔽不适用的
+  属性项"这半句本身就假设了一套"统一设置属性"对话框，而这个仓库连单文件的属性编辑（第71、73条
+  的停留时长/完成后动作）都是各自独立的对话框，还没有一个能同时编辑多个文件共同属性的统一入口——
+  批量选择本身（`MultiSelect = true`+悬浮工具栏）比"统一设置属性"要小得多、更接近纯UI接线，但
+  "统一设置属性"这半句需要先决定好清空/合并冲突值这类多选编辑的常见交互细节，PLANNING.md没有
+  展开，这次没有尝试整个功能
