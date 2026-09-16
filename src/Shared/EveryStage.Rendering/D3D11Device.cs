@@ -45,13 +45,6 @@ public sealed class D3D11Device : IDisposable
         Device = device!;
         ImmediateContext = context!;
 
-        // Video decode + present happen from different threads (MF work-queue thread vs. the
-        // window's render/present loop) so the device's multithread protection must be on.
-        using (var multithread = Device.QueryInterface<ID3D11Multithread>())
-        {
-            multithread.SetMultithreadProtected(true);
-        }
-
         // Bug fixed here: this used to be one chained expression —
         // Device.QueryInterface<IDXGIDevice>().GetParent<IDXGIAdapter>().GetParent<IDXGIFactory2>() —
         // which silently leaked the two intermediate COM objects (the IDXGIDevice and IDXGIAdapter
@@ -64,15 +57,56 @@ public sealed class D3D11Device : IDisposable
         // makes a new D3D11Device every time casting starts), so every cast start/stop cycle used to
         // leak one more IDXGIDevice + IDXGIAdapter reference that would never be released until
         // process exit.
-        using var dxgiDevice = Device.QueryInterface<IDXGIDevice>();
-        using var adapter = dxgiDevice.GetParent<IDXGIAdapter>();
-        DxgiFactory = adapter.GetParent<IDXGIFactory2>();
+        //
+        // A second, separate bug fixed here (found later, self-review — not the same one as above):
+        // that earlier fix only addressed leaking the two INTERMEDIATE COM objects within this one
+        // chained expression; it never addressed this constructor's own version of the exact
+        // "step one succeeds and gets kept, step two throws, nothing disposes step one" shape this
+        // session has since found and fixed in six separate MFStartup-based constructors elsewhere
+        // (see this project's READMEs) — an irony worth calling out explicitly, since this is the
+        // one class every one of those six depends on for the GPU device they in turn try to keep
+        // clean on their own partial-construction failures. Device/ImmediateContext are already
+        // assigned to properties by the time this comment's code runs (D3D11CreateDevice above
+        // already succeeded); if QueryInterface<ID3D11Multithread>/the DxgiFactory chain/
+        // MFCreateDXGIDeviceManager/ResetDevice throws anywhere below, this constructor never
+        // finishes, so no D3D11Device instance ever exists for a caller to later Dispose() and
+        // release whatever of Device/ImmediateContext/DxgiFactory/the not-yet-assigned local
+        // `manager` already succeeded — every one of them would otherwise leak a real GPU/COM
+        // resource for the rest of the process's life.
+        IMFDXGIDeviceManager? manager = null;
+        try
+        {
+            // Video decode + present happen from different threads (MF work-queue thread vs. the
+            // window's render/present loop) so the device's multithread protection must be on.
+            using (var multithread = Device.QueryInterface<ID3D11Multithread>())
+            {
+                multithread.SetMultithreadProtected(true);
+            }
 
-        MediaFactory.MFCreateDXGIDeviceManager(out var resetToken, out var manager).CheckError();
-        manager.ResetDevice(Device, resetToken).CheckError();
+            using var dxgiDevice = Device.QueryInterface<IDXGIDevice>();
+            using var adapter = dxgiDevice.GetParent<IDXGIAdapter>();
+            DxgiFactory = adapter.GetParent<IDXGIFactory2>();
 
-        DeviceManager = manager;
-        DeviceManagerResetToken = resetToken;
+            MediaFactory.MFCreateDXGIDeviceManager(out var resetToken, out manager).CheckError();
+            manager!.ResetDevice(Device, resetToken).CheckError();
+
+            DeviceManager = manager;
+            DeviceManagerResetToken = resetToken;
+        }
+        catch
+        {
+            // Cleanup order deliberately mirrors Dispose()'s own order below, and each step is
+            // independently null-safe: DxgiFactory/manager may never have been assigned depending on
+            // exactly where above the throw happened, but Device/ImmediateContext are unconditionally
+            // already live COM objects by this point (see the comment above), so those two are always
+            // disposed here, no null-check needed — same reasoning AacAudioDecoder's own constructor
+            // fix (this project's README) already applies to its single `_decoder` field.
+            manager?.Dispose();
+            DxgiFactory?.Dispose();
+            ImmediateContext.Dispose();
+            Device.Dispose();
+            throw;
+        }
     }
 
     public void Dispose()

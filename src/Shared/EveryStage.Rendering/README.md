@@ -66,6 +66,29 @@ Demo专属的——两边需要完全一样的解码/渲染行为，所以放进
    写法不一致），每次构造`VideoDecodeSource`（也就是每次开始播放本地视频文件）都会各自泄漏
    一个原生COM句柄，这次一并用`using`接住。**没有做的部分**：这次改动本身没有在这个沙箱里
    跑过（没有dotnet），没有真机验证过。
+8. **【新发现的真实bug，已修复】`D3D11Device`自己的构造函数、以及`SwapChainPresenter`的构造
+   函数，都有跟第7条完全同一种"构造函数中途失败，已经拿到的资源没人释放"的形状，只是触发条件
+   不是`MFStartup`而是分别持有Device/ImmediateContext/DxgiFactory/DeviceManager（前者）和
+   videoDevice/videoContext/swapChain/backBuffer（后者）这几个真实COM/GPU资源**：这两个类此前
+   都恰好没有被第6条/第7条那一轮系统性审计覆盖到——第6条只修了`D3D11Device`构造函数里一条链式
+   调用泄漏中间COM对象的问题，从未处理这同一个构造函数自己"`Device`/`ImmediateContext`已经赋值
+   给属性之后，`QueryInterface<ID3D11Multithread>`/`DxgiFactory`链/`MFCreateDXGIDeviceManager`/
+   `ResetDevice`中任何一步抛出异常，这两个已经成功的属性谁来释放"这个问题——这甚至有点讽刺：
+   第7条修的六个MFStartup类全都依赖这一个类给它们的GPU设备，而这一个类自己却从未受到同等的保护。
+   `SwapChainPresenter`的构造函数是完全相同形状的独立一份——`_videoDevice`/`_videoContext`两次
+   `QueryInterface`成功之后，`CreateSwapChainForHwnd`/`GetBuffer`任何一步失败，这两个已经拿到的
+   COM接口同样没人释放。两处失败共同的后果是：一旦`VideoSurface`（`Terminal.Display`）的构造
+   在这两步失败，`TerminalApplicationContext`自己的`try/catch`（见Terminal README）虽然已经
+   能接住这次异常、不让整个进程崩溃，但接不住的是这里泄漏掉的GPU资源——一台机器只要触发过一次
+   这种失败，就会在没有任何提示的情况下永久占用一份真实显卡资源，直到整个Terminal进程退出为止。
+   **修复方式**：两个构造函数都改成先用可空局部变量逐步持有每一步的结果，只有全部成功之后才
+   赋给字段，用`try/catch`包住中间过程，失败时按照跟各自`Dispose()`相同的顺序把已经成功的那些
+   局部变量清理掉再重新抛出异常——`D3D11Device`额外的细节是`Device`/`ImmediateContext`本身在
+   `D3D11CreateDevice`成功后就无条件赋值给了属性（这一步本身不会因为后续代码失败而需要回滚），
+   所以`catch`块里这两个不需要判空直接释放；`SwapChainPresenter`则不持有它收到的`D3D11Device`
+   参数本身的所有权（这是`VideoSurface`自己的资源，见`SwapChainPresenter`/`VideoSurface`各自的
+   doc comment），所以它的`catch`块刻意不释放`gpu`。**没有做的部分**：这次改动本身没有在这个
+   沙箱里跑过（没有dotnet），没有真机验证过。
 
 在 Windows 上第一次编译成功、把 `src/Poc/ZeroCopyRenderDemo` 跑通验收标准之后，这份清单里已确认
 没问题的条目可以直接删掉，只留下真正还需要注意的坑。

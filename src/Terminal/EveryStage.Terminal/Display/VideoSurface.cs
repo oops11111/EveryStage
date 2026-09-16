@@ -48,8 +48,28 @@ public sealed class VideoSurface : IDisposable
 
     public VideoSurface(IntPtr hostHandle, int width, int height)
     {
+        // Bug fixed here: same "step one succeeds and is assigned, step two throws, nothing
+        // disposes step one" shape this session already found and fixed inside D3D11Device's own
+        // constructor and six separate MFStartup-based constructors (see EveryStage.Rendering's
+        // README) — this is that identical pattern one level up, between two DIFFERENT classes
+        // instead of within one. Gpu is a real GPU device; if SwapChainPresenter's own constructor
+        // throws (a bad hostHandle, an unsupported swap-chain format for this adapter), this
+        // constructor never completes, so the caller never gets a VideoSurface reference back and
+        // can never call Dispose() on it — Gpu would otherwise leak for the rest of the process's
+        // life. TerminalApplicationContext's own try/catch around `new VideoSurface(...)` already
+        // stops that failure from crashing the whole Terminal (see this project's README), but it
+        // has no way to reach into a constructor that never returned an object to clean up the GPU
+        // device that constructor's first line already created.
         Gpu = new D3D11Device();
-        Presenter = new SwapChainPresenter(Gpu, hostHandle, width, height);
+        try
+        {
+            Presenter = new SwapChainPresenter(Gpu, hostHandle, width, height);
+        }
+        catch
+        {
+            Gpu.Dispose();
+            throw;
+        }
     }
 
     public void Resize(int width, int height)

@@ -32,26 +32,57 @@ public sealed class SwapChainPresenter : IDisposable
     public SwapChainPresenter(D3D11Device gpu, IntPtr hwnd, int width, int height)
     {
         _gpu = gpu;
-        _videoDevice = gpu.Device.QueryInterface<ID3D11VideoDevice>();
-        _videoContext = gpu.ImmediateContext.QueryInterface<ID3D11VideoContext>();
 
-        var desc = new SwapChainDescription1
+        // Bug fixed here: same "step N succeeds and gets kept, step N+1 throws, nothing disposes
+        // step N" shape as D3D11Device's own constructor fix (see that class's doc comment) — this
+        // constructor chains four separate COM/DXGI resources (_videoDevice/_videoContext/
+        // _swapChain/_backBuffer) with no rollback if a later one fails, e.g. CreateSwapChainForHwnd
+        // rejecting this hwnd/format combination after _videoDevice/_videoContext already succeeded.
+        // A caller whose `new SwapChainPresenter(...)` throws never gets an instance back to
+        // Dispose() whichever of these already succeeded — each would otherwise leak a live COM/GPU
+        // resource for the rest of the process's life. Deliberately does NOT dispose _gpu on
+        // failure here — this class never owns it (see this class's own field/VideoSurface's doc
+        // comment on why), only the four resources this constructor itself creates.
+        ID3D11VideoDevice? videoDevice = null;
+        ID3D11VideoContext? videoContext = null;
+        IDXGISwapChain1? swapChain = null;
+        ID3D11Texture2D? backBuffer = null;
+        try
         {
-            Width = (uint)width,
-            Height = (uint)height,
-            Format = Format.B8G8R8A8_UNorm,
-            BufferCount = 2,
-            BufferUsage = Usage.RenderTargetOutput,
-            SwapEffect = SwapEffect.FlipDiscard,
-            SampleDescription = new SampleDescription(1, 0),
-            AlphaMode = Vortice.DXGI.AlphaMode.Ignore,
-        };
+            videoDevice = gpu.Device.QueryInterface<ID3D11VideoDevice>();
+            videoContext = gpu.ImmediateContext.QueryInterface<ID3D11VideoContext>();
 
-        _swapChain = _gpu.DxgiFactory.CreateSwapChainForHwnd(_gpu.Device, hwnd, desc);
-        _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
-        _outputWidth = width;
-        _outputHeight = height;
-        CreateOutputView();
+            var desc = new SwapChainDescription1
+            {
+                Width = (uint)width,
+                Height = (uint)height,
+                Format = Format.B8G8R8A8_UNorm,
+                BufferCount = 2,
+                BufferUsage = Usage.RenderTargetOutput,
+                SwapEffect = SwapEffect.FlipDiscard,
+                SampleDescription = new SampleDescription(1, 0),
+                AlphaMode = Vortice.DXGI.AlphaMode.Ignore,
+            };
+
+            swapChain = gpu.DxgiFactory.CreateSwapChainForHwnd(gpu.Device, hwnd, desc);
+            backBuffer = swapChain.GetBuffer<ID3D11Texture2D>(0);
+
+            _videoDevice = videoDevice;
+            _videoContext = videoContext;
+            _swapChain = swapChain;
+            _backBuffer = backBuffer;
+            _outputWidth = width;
+            _outputHeight = height;
+            CreateOutputView();
+        }
+        catch
+        {
+            backBuffer?.Dispose();
+            swapChain?.Dispose();
+            videoContext?.Dispose();
+            videoDevice?.Dispose();
+            throw;
+        }
     }
 
     public void Resize(int width, int height)
