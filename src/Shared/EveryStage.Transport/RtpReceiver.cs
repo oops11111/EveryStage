@@ -19,9 +19,11 @@ public sealed class RtpReceiver : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private Task? _receiveLoop;
 
+    private readonly byte? _expectedPayloadType;
     private ushort? _lastSequenceNumber;
     private long _packetsReceived;
     private long _gapEvents;
+    private long _payloadTypeMismatches;
 
     /// <summary>Total RTP packets successfully decoded (<see cref="RtpPacket.TryDecode"/> succeeded)
     /// since this receiver started — read via <see cref="Interlocked"/> so a caller on another
@@ -43,6 +45,15 @@ public sealed class RtpReceiver : IDisposable
     /// <c>DeviceConnectionLogger.LogQualityMetric</c>), not treated as an exact percentage.</summary>
     public long GapEvents => Interlocked.Read(ref _gapEvents);
 
+    /// <summary>How many otherwise-valid RTP packets were dropped because their PayloadType didn't
+    /// match <see cref="_expectedPayloadType"/> — 0 always if this receiver was constructed without
+    /// one (the pre-existing, permissive default). Not expected to ever be non-zero in this project's
+    /// own Caster-to-Terminal traffic (both sides use the same hardcoded constant, see
+    /// <c>DiscoveryProtocol.CastStartMessage.PayloadType</c>'s own doc comment) — this exists as a
+    /// defensive check against a stray/foreign RTP-shaped datagram on the same port, or a future
+    /// protocol-version mismatch, not as a currently-expected occurrence.</summary>
+    public long PayloadTypeMismatches => Interlocked.Read(ref _payloadTypeMismatches);
+
     /// <summary>Raised from the background receive loop — marshal to another thread/UI as needed.
     /// The <c>bool</c> is the completing RTP packet's Marker bit, i.e. RFC 6184 §5.3 "this was the
     /// last NAL unit of its access unit" — passed through as-is rather than making every consumer
@@ -53,9 +64,17 @@ public sealed class RtpReceiver : IDisposable
     /// access unit from multiple NAL units can take the timestamp from any one of them.</summary>
     public event Action<byte[], bool, uint>? NalUnitReceived;
 
-    public RtpReceiver(int listenPort)
+    /// <param name="expectedPayloadType">When set, a decoded packet whose <see cref="RtpPacket.PayloadType"/>
+    /// doesn't match this value is dropped (counted in <see cref="PayloadTypeMismatches"/>) exactly
+    /// like a packet that failed to decode at all, rather than being processed — see
+    /// <see cref="EveryStage.Transport"/>'s README on why this previously-unused
+    /// <c>CastStartMessage.PayloadType</c> field now has a real consumer. Null (the default)
+    /// preserves this class's original behavior: accept any successfully-decoded packet regardless
+    /// of its PayloadType.</param>
+    public RtpReceiver(int listenPort, byte? expectedPayloadType = null)
     {
         _socket = new UdpClient(listenPort);
+        _expectedPayloadType = expectedPayloadType;
     }
 
     public void Start() => _receiveLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token));
@@ -79,6 +98,15 @@ public sealed class RtpReceiver : IDisposable
             }
 
             if (!RtpPacket.TryDecode(result.Buffer, out var packet)) continue; // not one of ours — ignore.
+
+            if (_expectedPayloadType.HasValue && packet.PayloadType != _expectedPayloadType.Value)
+            {
+                // Same "not one of ours" treatment as a failed decode above — excluded before
+                // TrackSequenceNumber so a foreign/stray packet can't pollute this stream's own
+                // sequence-number-based PacketsReceived/GapEvents tracking.
+                Interlocked.Increment(ref _payloadTypeMismatches);
+                continue;
+            }
 
             TrackSequenceNumber(packet.SequenceNumber);
 

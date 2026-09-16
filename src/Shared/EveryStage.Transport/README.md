@@ -56,12 +56,26 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
    检测到（整个NAL被丢弃，不会拼出损坏的帧）但不会尝试恢复。真正的丢包恢复(NACK/FEC，PLANNING.md
    §4.2提到的"WebRTC媒体传输能力"部分)完全没有实现——`TransportSelfTest`走的是本机回环，不会真的
    丢包，所以这条完全没有被自检覆盖到。
-4. **RTP的 PayloadType 数值**：`TransportSelfTest` 和 `LiveCastSession` 都硬编码了同一个占位值
-   (96，动态负载类型范围内的常见选择)——`DiscoveryProtocol.CastStartMessage` 现在确实携带了一个
-   `PayloadType` 字段，但 `RtpReceiver`/`RtpPacket.TryDecode` 完全不检查收到的包的PayloadType是否
-   跟预期一致（目前也没有多路复用的需要——`EveryStage.Caster`的README记录了"同一时间只支持一路
-   投屏"这个限制），所以这个字段目前只是传过去但没有被真正校验或使用——类似SDP协商的内容，本项目
-   仍然没有做任何真正的协商/校验机制。
+4. **【部分实现，原为已知缺口】RTP的 PayloadType 数值现在真的会被校验了**：`TransportSelfTest` 和
+   `LiveCastSession` 都硬编码了同一个占位值 (96/97，动态负载类型范围内的常见选择)——
+   `DiscoveryProtocol.CastStartMessage` 早就携带了`PayloadType`/`AudioPayloadType`字段，但之前
+   `RtpReceiver`/`RawRtpReceiver`完全不检查收到的包的PayloadType是否跟预期一致，这两个字段被
+   `DiscoveryService.CastStartInfo`接住之后就再没传下去过。这次`RtpReceiver`/`RawRtpReceiver`
+   （各自独立实现，同一套逻辑）新增可选的`expectedPayloadType`构造参数，收到的包如果PayloadType
+   不匹配就当成"不是我们的包"直接丢弃（计入新增的`PayloadTypeMismatches`计数器），处理方式
+   跟`RtpPacket.TryDecode`本身失败时完全一样——不传这个参数（`null`，默认值）保留原来的宽松行为，
+   向后兼容`TransportSelfTest`/`RawTransportSelfTest`自己（它们没有改，仍然不做这个校验）。
+   `Terminal.Receiving.CastReceiver`是这个参数第一个真正的生产调用方：从`DiscoveryService.
+   CastStartInfo.PayloadType`/`AudioPayloadType`一路传进来。**仍然不是真正的SDP式协商**——这里
+   校验的是"跟本项目自己硬编码的常量是否一致"，不是"跟对方声明的值协商出一个双方都接受的值"，本项目
+   仍然没有任何真正的协商机制；在这个仓库自己的Caster↔Terminal流量里`PayloadTypeMismatches`预期
+   永远是0（两边用的是同一套硬编码常量），这个校验存在的意义是防御同一端口上出现的陌生/无关RTP包，
+   或者以后协议版本不一致的情况，不是当前就会触发的场景。**这次没有做的部分**：`PayloadTypeMismatches`
+   目前只是一个计数器，没有接入`CastReceiver.EstimatedPacketLossPercent`或任何UI/日志展示——跟
+   `GapEvents`当初加进来但过了一轮才被真正用在诊断日志里是同一个"先加计数器、再决定怎么用"的顺序，
+   这次只做到第一步；`TransportSelfTest`/`RawTransportSelfTest`也没有专门测试"PayloadType不匹配的
+   包真的会被丢弃"这条新逻辑本身——两个自检传的都是`null`（不校验），这次改动本身也没有在这个沙箱
+   里跑过（没有dotnet），新增的判断分支是否真的按预期工作，完全依赖代码审阅而非实际执行验证过。
 5. **`TransportSelfTest` 用一次性 `UdpClient(0)` 探测空闲端口再关闭、`RtpReceiver` 再重新绑定
    同一个端口号**：两次绑定之间存在（概率很低的）端口被别的进程抢先占用的竞态，对本机自检这个用途
    可以接受，不是生产级的端口分配方式。
@@ -102,6 +116,7 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
 - 丢包恢复、拥塞控制、抖动缓冲（乱序重排）——`CastReceiver`（Terminal）现在是这个限制第一次在真实
   场景下有实际后果的地方：局域网上偶发丢包会让某个访问单元被丢弃/解码出瑕疵帧，音频则直接是可闻
   的爆音/跳跃（见风险第8条），而不是本机回环自检那种几乎不丢包的环境
-- RTP参数（PayloadType数值本身的校验、时钟基准以外的更多元数据）的协商/校验机制——目前完全靠硬
-  编码假设双方一致，`CastStartMessage.PayloadType`/`AudioPayloadType` 传了但没被消费端真正拿来做
-  任何检查（`RawRtpReceiver`/`RawTransportSelfTest`同样不检查收到的包的PayloadType，见风险第7条）
+- RTP参数真正的SDP式协商机制——PayloadType数值本身现在会被`RtpReceiver`/`RawRtpReceiver`校验了
+  （见风险第4条），但校验的只是"是否等于本项目自己硬编码的常量"，不是"双方协商出一个都接受的值"；
+  时钟基准以外的更多元数据（真正的SDP能表达的那些）仍然完全没有协商机制，`RawTransportSelfTest`
+  也没有专门测试PayloadType不匹配时的丢弃行为（见风险第4条最后一段）

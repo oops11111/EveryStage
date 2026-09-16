@@ -25,9 +25,11 @@ public sealed class RawRtpReceiver : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private Task? _receiveLoop;
 
+    private readonly byte? _expectedPayloadType;
     private ushort? _lastSequenceNumber;
     private long _packetsReceived;
     private long _gapEvents;
+    private long _payloadTypeMismatches;
 
     /// <summary>Same role/approximation caveats as <see cref="RtpReceiver.PacketsReceived"/> —
     /// deliberately independent code rather than shared, see this class's own doc comment on why.</summary>
@@ -38,6 +40,10 @@ public sealed class RawRtpReceiver : IDisposable
     /// no reordering support either).</summary>
     public long GapEvents => Interlocked.Read(ref _gapEvents);
 
+    /// <summary>Same role as <see cref="RtpReceiver.PayloadTypeMismatches"/> — deliberately
+    /// independent code rather than shared, see this class's own doc comment on why.</summary>
+    public long PayloadTypeMismatches => Interlocked.Read(ref _payloadTypeMismatches);
+
     /// <summary>Raised from the background receive loop — marshal to another thread/UI as needed.
     /// The <c>uint</c> is the packet's RTP timestamp — for the audio stream this is a wall-clock-
     /// derived value sharing the same epoch as the video stream's timestamps (see
@@ -45,9 +51,13 @@ public sealed class RawRtpReceiver : IDisposable
     /// <c>Terminal.Receiving.CastReceiver</c> pace video against audio at all.</summary>
     public event Action<byte[], uint>? PayloadReceived;
 
-    public RawRtpReceiver(int listenPort)
+    /// <param name="expectedPayloadType">Same meaning as <see cref="RtpReceiver"/>'s own constructor
+    /// parameter of the same name — null (the default) preserves this class's original permissive
+    /// behavior.</param>
+    public RawRtpReceiver(int listenPort, byte? expectedPayloadType = null)
     {
         _socket = new UdpClient(listenPort);
+        _expectedPayloadType = expectedPayloadType;
     }
 
     public void Start() => _receiveLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token));
@@ -71,6 +81,12 @@ public sealed class RawRtpReceiver : IDisposable
             }
 
             if (!RtpPacket.TryDecode(result.Buffer, out var packet)) continue; // not one of ours — ignore.
+
+            if (_expectedPayloadType.HasValue && packet.PayloadType != _expectedPayloadType.Value)
+            {
+                Interlocked.Increment(ref _payloadTypeMismatches);
+                continue; // same "not one of ours" treatment as a failed decode above.
+            }
 
             TrackSequenceNumber(packet.SequenceNumber);
 

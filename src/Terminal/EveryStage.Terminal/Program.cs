@@ -210,7 +210,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                 _castReceiver = new CastReceiver(
                     _videoSurface, info.Width, info.Height, DiscoveryProtocol.VideoRtpPort,
                     info.HasAudio, info.AudioSampleRate, info.AudioChannels, DiscoveryProtocol.AudioRtpPort,
-                    info.AudioIsAac);
+                    info.AudioIsAac, info.PayloadType, info.AudioPayloadType);
                 _castReceiver.Start();
             }
             catch (Exception)

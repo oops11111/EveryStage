@@ -167,7 +167,7 @@ public sealed class CastReceiver : IDisposable
 
     public CastReceiver(VideoSurface surface, int width, int height, int listenPort,
         bool hasAudio = false, int audioSampleRate = 0, int audioChannels = 0, int audioListenPort = 0,
-        bool audioIsAac = false)
+        bool audioIsAac = false, byte? payloadType = null, byte? audioPayloadType = null)
     {
         Width = width;
         Height = height;
@@ -176,7 +176,11 @@ public sealed class CastReceiver : IDisposable
         _decoder = new H264HardwareDecoder(_surface.Gpu, width, height);
         _decoder.FrameDecoded += OnFrameDecoded;
 
-        _rtpReceiver = new RtpReceiver(listenPort);
+        // payloadType/audioPayloadType (see EveryStage.Transport's README) come from
+        // DiscoveryProtocol.CastStartMessage.PayloadType/AudioPayloadType — this is that field's
+        // first real consumer; previously it was received and stored in
+        // DiscoveryService.CastStartInfo but never passed any further.
+        _rtpReceiver = new RtpReceiver(listenPort, payloadType);
         _rtpReceiver.NalUnitReceived += OnNalUnitReceived;
 
         if (hasAudio)
@@ -199,7 +203,7 @@ public sealed class CastReceiver : IDisposable
                     _audioDecoder.PcmDecoded += OnAacPcmDecoded;
                     _audioDecoder.DecodingFailed += OnAacDecodingFailed;
                 }
-                _audioRtpReceiver = new RawRtpReceiver(audioListenPort);
+                _audioRtpReceiver = new RawRtpReceiver(audioListenPort, audioPayloadType);
                 _audioRtpReceiver.PayloadReceived += OnAudioPayloadReceived;
                 HasAudio = true;
             }
