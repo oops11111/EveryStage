@@ -1,4 +1,5 @@
 using EveryStage.Rendering;
+using Vortice.Direct3D11;
 
 namespace EveryStage.Terminal.Display;
 
@@ -24,9 +25,24 @@ namespace EveryStage.Terminal.Display;
 /// the "two swap chains, two D3D devices, one HWND" half of the original problem; see this project's
 /// README for the parts that remain caller responsibility rather than something this class enforces
 /// on its own.
+///
+/// A second, independent concurrency gap found later (also self-review, not a hypothetical): a
+/// display-configuration change can call <see cref="Resize"/> (<c>Program.cs</c>'s
+/// <c>HandleDisplaySettingsChanged</c>, on the UI thread) at any time, including while whichever of
+/// <c>VideoContentController</c>/<c>CastReceiver</c> is currently active is mid-<c>PresentFrame</c>
+/// on its own background thread — and <see cref="SwapChainPresenter.Resize"/> disposes and recreates
+/// the exact same swap chain/back buffer/video processor fields <see cref="SwapChainPresenter.PresentFrame"/>
+/// reads. <see cref="_lock"/> now serializes <see cref="Resize"/> against <see cref="PresentFrame"/>
+/// here, on the actually-shared <see cref="Presenter"/>, rather than in either consumer separately —
+/// a lock inside just one consumer (this class used to have one, removed when this one was added)
+/// can never cover a call arriving through the other consumer or through <see cref="Resize"/> itself.
+/// Both <c>VideoContentController</c> and <c>CastReceiver</c> now call <see cref="PresentFrame"/>
+/// here instead of touching <see cref="Presenter"/> directly.
 /// </summary>
 public sealed class VideoSurface : IDisposable
 {
+    private readonly object _lock = new();
+
     public D3D11Device Gpu { get; }
     public SwapChainPresenter Presenter { get; }
 
@@ -36,7 +52,20 @@ public sealed class VideoSurface : IDisposable
         Presenter = new SwapChainPresenter(Gpu, hostHandle, width, height);
     }
 
-    public void Resize(int width, int height) => Presenter.Resize(width, height);
+    public void Resize(int width, int height)
+    {
+        lock (_lock) Presenter.Resize(width, height);
+    }
+
+    /// <summary>Thread-safe wrapper <see cref="ContentEngine.VideoContentController"/> and
+    /// <see cref="Receiving.CastReceiver"/> both call instead of touching <see cref="Presenter"/>
+    /// directly — see this class's own doc comment for why calling
+    /// <see cref="SwapChainPresenter.PresentFrame"/> without going through this method (or
+    /// concurrently with <see cref="Resize"/>) is unsafe.</summary>
+    public void PresentFrame(ID3D11Texture2D decodedTexture, int arraySlice, int frameWidth, int frameHeight, bool vsync)
+    {
+        lock (_lock) Presenter.PresentFrame(decodedTexture, arraySlice, frameWidth, frameHeight, vsync);
+    }
 
     public void Dispose()
     {

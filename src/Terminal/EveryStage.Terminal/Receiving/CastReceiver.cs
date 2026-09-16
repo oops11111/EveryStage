@@ -390,7 +390,7 @@ public sealed class CastReceiver : IDisposable
             // No audio clock to pace against — present immediately, same as before this round.
             using (texture)
             {
-                _surface.Presenter.PresentFrame(texture, arraySlice, width, height, vsync: false);
+                _surface.PresentFrame(texture, arraySlice, width, height, vsync: false);
             }
             FramesDecoded++;
             return;
@@ -468,7 +468,7 @@ public sealed class CastReceiver : IDisposable
     {
         using (frame.Texture)
         {
-            _surface.Presenter.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: false);
+            _surface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: false);
         }
         FramesDecoded++;
     }

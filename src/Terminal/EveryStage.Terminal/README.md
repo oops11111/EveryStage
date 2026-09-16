@@ -32,7 +32,7 @@ PLANNING.md §8.2只给了"通用/显示/播放行为/网络与设备/关于"五
 | `Playback/PlaybackEngine.cs` | §6, §9 | 把上面三种渲染器接到 Scenario/Activity/MediaFile 数据模型和投屏开关/断状态机上："点文件"→(开关判断)→选渲染器播放→按停留时长/完成动作(NextItem/Loop/HoldOnLastFrame)推进；提供悬浮预览窗按钮要用的手动上一项/下一项 |
 | `Logging/` | §14.4 | 三类物理独立的按天滚动日志：`FileOperationLogger`(文件操作)、`PlaybackLogger`(播放/投屏记录，已接入`PlaybackEngine`)、`DeviceConnectionLogger`(设备连接，已接入`DiscoveryService`)；JSON-lines格式 + 自动清理过期文件 |
 | `Devices/` | §7 | 设备发现(UDP广播 `DiscoveryService`)、配对(信任/手动确认、被投放/被监看权限分离)、配对设备列表持久化(`PairedDeviceStore`)。设备指纹(`DeviceIdentity`)与协议格式(`DiscoveryProtocol`)现在都在 `src/Shared/EveryStage.Discovery/`，因为 `src/Caster/EveryStage.Caster/` 也要用同一套。`DiscoveryService` 现在还处理 `CastStartMessage`/`CastStopMessage`（只信任 `AllowCast` 的已配对设备），驱动下面的 `Receiving/`；新增 `SendCastStatusAsync`，配合 `Program.cs` 里每秒一次的 `SendCastStatus()` 把接收状态报回给正在投屏的Caster（`DiscoveryProtocol.CastStatusMessage`，见该README"已知风险"新增小节）；新增 `HandlePing`，无条件echo任何收到的 `PingMessage`（不检查配对状态，见"已知风险"第65条），供Caster端测量真实RTT |
-| `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收到的payload按`AudioIsAac`分两条路径——PCM直接喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，AAC先经过`EveryStage.Rendering.Decode.AacAudioDecoder`解码回PCM再喂给它（见"已知风险"第64条），构造失败会独立降级成纯视频（不影响视频侧）；新增`LastPacketReceivedAt`，配合`Program.cs`的`CheckCastLiveness()`在Caster连续10秒无数据包时自动断开；构造函数现在还会把`CastStartMessage`携带的PayloadType传给`RtpReceiver`/`RawRtpReceiver`做真正的校验（见"已知风险"第75条） |
+| `Receiving/` | 阶段2"传输接收端" | `H264HardwareDecoder` 直接驱动一个（假设是同步的）H.264解码器MFT，把推入的Annex-B访问单元解码成D3D11 NV12纹理；`CastReceiver` 把 `RtpReceiver`(EveryStage.Transport)接收到的NAL单元用RTP marker位重新拼回Annex-B访问单元喂给解码器，再通过共享的 `Display/VideoSurface` 呈现到 `OverlayWindow.VideoHost`（不再自建独立的D3D11设备/交换链，见该类README条目）——这是这个仓库第一次让 Caster 和 Terminal 真的通过网络传视频（而不是各自的自检）。`CastReceiver`现在还有音频侧：`RawRtpReceiver`收到的payload按`AudioIsAac`分两条路径——PCM直接喂给`EveryStage.Rendering.Audio.AudioPlaybackClock`播放，AAC先经过`EveryStage.Rendering.Decode.AacAudioDecoder`解码回PCM再喂给它（见"已知风险"第64条），构造失败会独立降级成纯视频（不影响视频侧）；新增`LastPacketReceivedAt`，配合`Program.cs`的`CheckCastLiveness()`在Caster连续10秒无数据包时自动断开；构造函数现在还会把`CastStartMessage`携带的PayloadType传给`RtpReceiver`/`RawRtpReceiver`做真正的校验（见"已知风险"第75条）；呈现调用改成经过`VideoSurface.PresentFrame`而不是直接碰`VideoSurface.Presenter`，修复了一个`Resize`跟`PresentFrame`之间原本完全没有互斥保护的并发bug（见"已知风险"第76条） |
 | `UI/FloatingPreviewWindow.cs` | §8.3 | 悬浮预览窗：LIVE标识、缩略图(仅图片/PDF，视频暂无)、文件名、上一项/暂停/下一项/断 四个按钮、置顶开关；拖动位置靠"常驻同一个Form实例、只隐藏不销毁"天然记住 |
 | `UI/PairingConfirmationDialog.cs` | §7 | 配对请求的弹窗确认（接受/拒绝 + 被投放/被监看/信任三个独立勾选项，"被监看"旁边现在有一行提示：这个功能本身还没实现，见"已知风险"第70条）；不含PIN码交换，`DiscoveryProtocol`目前没有PIN字段 |
 | `UI/EditPairedDevicePermissionsDialog.cs` | §7 | 配对之后修改已配对设备的信任/被投放/被监看这三个字段（见"已知风险"第70条）——之前只有首次配对时的 `PairingConfirmationDialog` 能设置它们 |
@@ -671,6 +671,27 @@ Caster知道终端机确实收到了东西。
     端口上的陌生/无关RTP包或未来的协议版本不一致，不是当前会真的触发的场景。**这次没有做的部分**：
     `PayloadTypeMismatches`目前只是计数器，没有接入`EstimatedPacketLossPercent`或任何UI/日志展示；
     这个改动本身也没有在沙箱里跑过（没有dotnet），完全依赖代码审阅。
+76. **【发现并修复】`VideoSurface.Resize`跟`SwapChainPresenter.PresentFrame`之间原来完全没有互斥
+    保护——一个真实的并发bug，不是假设性的**：这次在给`VideoContentController.Resize`（一直没有
+    调用方，见下文）找调用方之前，先去追踪它为什么会存在，结果发现`VideoContentController`自己
+    有一把`_presenterLock`，但只在自己内部的`PresentFrame`调用和自己的`Resize`方法之间生效——而
+    真正调用`Resize`的地方（`Program.cs`的`HandleDisplaySettingsChanged`）根本没有经过
+    `VideoContentController`，是直接调用`_videoSurface.Resize(...)`，所以这把锁从来没有真正保护过
+    任何东西；`Receiving.CastReceiver`自己的呈现调用（`_surface.Presenter.PresentFrame`）更是完全
+    不经过这把锁——它甚至看不到`VideoContentController`的私有字段。也就是说，`VideoContentController`
+    的解码/呈现线程、`CastReceiver`的解码/呈现线程、以及UI线程上因为显示器配置变化触发的`Resize`
+    调用，三者之间对同一个`SwapChainPresenter`实例完全没有互斥——而`SwapChainPresenter.Resize`
+    会`Dispose()`并重建`PresentFrame`同时在读的`_backBuffer`/`_outputView`/`_processor`/
+    `_enumerator`这些字段，两者真的并发执行是典型的D3D11"呈现的同时重建交换链"竞态。**修复**：把
+    锁从`VideoContentController`移到真正被共享的`VideoSurface`本身——新增`VideoSurface.PresentFrame`
+    包装方法和内部的`_lock`，`Resize`和`PresentFrame`现在互斥；`VideoContentController`/
+    `CastReceiver`都改成调用`_surface.PresentFrame(...)`而不是直接碰`_surface.Presenter`。
+    `VideoContentController.Resize`本身**没有被保留、也没有被给一个调用方**——它存在的唯一理由
+    （包一层锁）现在完全由`VideoSurface`自己做到了，继续保留这个转发方法只是没有意义的多一层
+    间接，删掉比"接线"更符合这次发现的教训。**这次没有解决/无法验证的部分**：修复本身完全没有
+    在真实Windows/GPU环境跑过（没有dotnet），锁是否真的按预期覆盖所有三个访问路径完全依赖代码
+    审阅；`Resize`发生频率低、`PresentFrame`发生频率高，两者互斥意味着`Resize`偶尔要等一次
+    `PresentFrame`完成（反过来也一样），这个延迟量级在真机上是否可接受没有测过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

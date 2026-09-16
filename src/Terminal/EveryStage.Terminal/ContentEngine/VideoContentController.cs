@@ -35,7 +35,6 @@ public sealed class VideoContentController : IDisposable
     private static readonly long FrameBudgetTicks = TimeSpan.TicksPerSecond / 30;
 
     private readonly VideoSurface _surface;
-    private readonly object _presenterLock = new();
 
     private CancellationTokenSource? _playbackCts;
     private Thread? _playbackThread;
@@ -55,14 +54,6 @@ public sealed class VideoContentController : IDisposable
     public VideoContentController(VideoSurface surface)
     {
         _surface = surface;
-    }
-
-    /// <summary>Call when the host window's size changes (e.g. after an <c>OverlayWindow.Rebind</c>
-    /// to a different-resolution monitor). Resizes the shared <see cref="VideoSurface"/> — if a
-    /// device cast is also using it, this affects that too, which is correct: they share one HWND.</summary>
-    public void Resize(int width, int height)
-    {
-        lock (_presenterLock) _surface.Resize(width, height);
     }
 
     /// <summary>Stops whatever is currently playing (if anything) and starts <paramref
@@ -161,10 +152,7 @@ public sealed class VideoContentController : IDisposable
                 if (behindByTicks > FrameBudgetTicks)
                     continue; // fell behind — drop this frame rather than present stale video.
 
-                lock (_presenterLock)
-                {
-                    _surface.Presenter.PresentFrame(frame.Value.Texture, frame.Value.ArraySlice, frame.Value.Width, frame.Value.Height, vsync: false);
-                }
+                _surface.PresentFrame(frame.Value.Texture, frame.Value.ArraySlice, frame.Value.Width, frame.Value.Height, vsync: false);
             }
             finally
             {
