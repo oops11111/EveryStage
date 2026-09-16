@@ -1043,6 +1043,25 @@ Caster知道终端机确实收到了东西。
     comment。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过；
     这个类本身没有logger，所以每个订阅者失败时具体是谁失败、失败原因是什么，这次没有记录下来，
     只是保证了"不连累别人"这一点。
+95. **【新发现的真实bug，已修复】`FilesPanel.Refresh_()`每次重建缩略图列表都会泄漏GDI+ Bitmap
+    句柄**：`BuildThumbnail(file)`每次调用都会`new`一个`Bitmap`（图片文件解码出的缩略图，或者
+    `SystemIcons.Warning`/`SystemIcons.Application`转出来的占位图——`Icon.ToBitmap()`每次调用
+    都返回一个新实例，不是共享的缓存对象），原来直接传给`_thumbnails.Images.Add(key,
+    BuildThumbnail(file))`，从未`Dispose`过。`ImageList.Images.Add`只是把传入`Image`的像素数据
+    拷贝进它自己内部的原生image list句柄里，不会持有、也不会帮调用方释放传入的这个`Image`对象——
+    调用方自己需要负责释放，这是.NET WinForms一个相当常见的坑。这次泄漏不是一次性的：
+    `Refresh_()`在每次点击分类筛选按钮（全部/图片/视频/文档/音频）、每次导入文件、每次移除文件
+    时都会重新执行一遍，`MainWindow`里每次用户切换到"文件"这个标签页也会调一次——在PLANNING.md
+    §14.4本身就框定为"无人值守、长期不重启"的设备上，这种反复触发的小额泄漏正是最终会把进程的
+    GDI对象配额耗尽（Windows对每个进程的GDI句柄数有上限，用尽后会出现界面绘制失败/崩溃）这类
+    问题的典型成因，不是理论上的边界情况。**修复方式**：`BuildThumbnail(file)`的返回值改用
+    `using`接住，在`_thumbnails.Images.Add(key, thumbnail)`调用完之后立刻释放——`ImageList`
+    自己内部的原生句柄由`ImageList`自己管理、`Clear()`/`Dispose()`会正确处理，这次泄漏的是
+    `BuildThumbnail`返回的那个临时`Image`对象本身，不涉及`ImageList`内部状态。全仓库搜索确认
+    这是唯一一处使用`ImageList`的地方，不是需要在多处重复修的模式。**没有做的部分**：这次改动
+    本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过——包括这个泄漏在真实长期运行下到底
+    需要多久才会真的把GDI配额耗尽到出现可观察问题，本身也只是基于.NET/Win32文档描述的
+    `ImageList`/`Image`所有权语义推断出来的，没有实测验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

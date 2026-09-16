@@ -193,7 +193,19 @@ public sealed class FilesPanel : UserControl
         foreach (var file in _library.Files.Where(f => _activeFilter == null || f.Kind == _activeFilter))
         {
             string key = file.Id.ToString();
-            _thumbnails.Images.Add(key, BuildThumbnail(file));
+            // ImageList.Images.Add copies the bitmap's pixel data into its own native image list
+            // handle — it does not take ownership of (or ever dispose) the Image instance passed in,
+            // so without this `using`, every BuildThumbnail() result here would leak its GDI+ handle
+            // until the next GC finalizer pass happens to run. This matters more than a one-off leak
+            // would: Refresh_() re-runs on every filter tab click, import, and removal (MainWindow
+            // also calls it every time the user switches to the 文件 tab), on what PLANNING.md §14.4
+            // frames as an always-on, unattended device — repeated small leaks like this are exactly
+            // the shape of thing that eventually exhausts the process's GDI object quota on a machine
+            // that's never restarted.
+            using (var thumbnail = BuildThumbnail(file))
+            {
+                _thumbnails.Images.Add(key, thumbnail);
+            }
 
             var item = new ListViewItem(Path.GetFileName(file.SourcePath), key) { Tag = file };
             _listView.Items.Add(item);
