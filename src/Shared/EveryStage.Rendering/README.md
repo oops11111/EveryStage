@@ -101,6 +101,25 @@ Demo专属的——两边需要完全一样的解码/渲染行为，所以放进
    调用的`_output.Stop()`，因为在一个`Init()`从未成功过的`WasapiOut`实例上调用`Stop()`是
    这次修复没有理由去冒险验证的未知行为。**没有做的部分**：这次改动本身没有在这个沙箱里
    跑过（没有dotnet），没有真机验证过。
+10. **【同一次审计发现但这次故意没有修的一个近亲问题】`SwapChainPresenter.Resize()`不是
+    事务性的——中途失败会让`_backBuffer`处于"已经`Dispose()`掉但没有被重新赋值"的破损状态**：
+    跟第8条修的构造函数不一样，`Resize()`是这个类活着之后才会被调用的方法（`Terminal.Program.
+    HandleDisplaySettingsChanged`在显示器分辨率/位置变化时调用），它自己的顺序是先
+    `_backBuffer.Dispose()`，再`_swapChain.ResizeBuffers(...)`，再`_backBuffer =
+    _swapChain.GetBuffer<ID3D11Texture2D>(0)`——如果`ResizeBuffers`或`GetBuffer`任何一步
+    抛出异常，`_backBuffer`字段这时候已经被`Dispose()`过、但还没有被重新赋值成新的有效值，
+    这个`SwapChainPresenter`实例就会永久卡在这个破损状态：调用方（`Terminal.Program`的
+    `HandleDisplaySettingsChanged`跑在`Application.ThreadException`已经覆盖的
+    `Application.Run()`消息循环里，异常本身会被接住、不会崩溃整个进程）不会崩溃，但下一次
+    `PresentFrame`调用会在这个已经`Dispose()`过的`_backBuffer`上失败，直到整个Terminal进程
+    重启为止。**这次为什么没有跟着一起修**：让`Resize()`真正事务性（比如先在局部变量里构建
+    好新的`_backBuffer`、全部成功之后才`Dispose()`旧的、失败时保留旧的continue工作）比第8条
+    构造函数那种"局部变量+catch清理"模式复杂得多——构造函数失败时"调用方永远拿不到实例"这个
+    前提，在`Resize()`这里不成立：实例早就存在、还在被其它方法持续使用，一次`Resize()`失败后
+    "回滚到旧状态、假装这次调用没发生"需要对`ResizeBuffers`调用之后交换链本身处于什么状态
+    做出没有真机就无法验证的假设，贸然修改风险比现状更高。触发条件本身也相当罕见——显示器
+    热插拔时分辨率变化触发`ResizeBuffers`，这个调用本身失败是Direct3D里不常见的失败模式。
+    这次选择只记录、不修，等真机验证阶段这条风险要么被排除、要么再决定怎么改。
 
 在 Windows 上第一次编译成功、把 `src/Poc/ZeroCopyRenderDemo` 跑通验收标准之后，这份清单里已确认
 没问题的条目可以直接删掉，只留下真正还需要注意的坑。
