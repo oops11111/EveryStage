@@ -387,7 +387,7 @@ public sealed class PlaybackEngine : IDisposable
                 // called above — so clearing it has no visible effect either way).
                 try
                 {
-                    VideoController.Play(file.SourcePath);
+                    VideoController.Play(file.SourcePath, FadeInDurationFor(file));
                 }
                 catch (Exception ex)
                 {
@@ -521,6 +521,16 @@ public sealed class PlaybackEngine : IDisposable
         RaisePlaybackAbnormallyInterrupted(file, ex.Message);
     }
 
+    /// <summary>PLANNING.md §6's per-file "淡入/淡出时长 + 音量是否随渐变" — <see cref="MediaFile.VolumeFollowsFade"/>
+    /// gates the whole feature (matching its name: volume only "follows" the fade when this file
+    /// asks for that), and <see cref="MediaFile.FadeDuration"/> supplies how long. Returns null
+    /// (meaning "no fade-in") whenever either half is missing, so <see cref="AudioContentController.Play"/>/
+    /// <see cref="VideoContentController.Play"/> don't each need to re-derive this same two-field
+    /// check. Only fade-IN is wired through here — see <see cref="AudioContentController"/>'s class
+    /// doc comment for why fade-OUT isn't attempted this round.</summary>
+    private static TimeSpan? FadeInDurationFor(MediaFile file) =>
+        file.VolumeFollowsFade ? file.FadeDuration : null;
+
     /// <summary>Standalone (non-background) audio playback — see this class's doc comment and
     /// <see cref="MediaFile.IsBackgroundAudio"/>'s caller in <see cref="PlayFile"/> for what this
     /// deliberately does not cover. Presents through <see cref="OverlayWindow.ContentSurface"/>
@@ -557,7 +567,7 @@ public sealed class PlaybackEngine : IDisposable
         try
         {
             ApplyAudioVisual(file);
-            AudioController.Play(file.SourcePath);
+            AudioController.Play(file.SourcePath, FadeInDurationFor(file));
         }
         catch (Exception ex)
         {

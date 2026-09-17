@@ -26,6 +26,16 @@ namespace EveryStage.Terminal.ContentEngine;
 /// since the Terminal's UI thread is busy running the tray icon / (eventually) the Phase 4 UI
 /// message loop and can't be blocked in a tight pacing loop the way the Phase 0 demo's Program.cs
 /// does on its dedicated process.
+///
+/// <see cref="Play"/>'s optional <c>fadeInDuration</c> implements the fade-IN half of PLANNING.md
+/// §6's "淡入/淡出时长 + 音量是否随渐变" (<c>MediaFile.FadeDuration</c>/<c>VolumeFollowsFade</c>) for a
+/// video's own soundtrack — see <see cref="AudioContentController"/>'s class doc comment for why
+/// fade-OUT isn't attempted here either (same missing-duration reason, applies equally to this
+/// class's <see cref="VideoDecodeSource"/>). Unlike <see cref="AudioContentController"/>, this class
+/// has no persistent <c>Volume</c> property to preserve across <see cref="Play"/> calls — nothing
+/// in the Terminal UI currently exposes per-file video volume control, so the fade-in's target
+/// ("full volume") is simply <see cref="AudioPlaybackClock"/>'s own default of 1.0, not some
+/// remembered user setting.
 /// </summary>
 public sealed class VideoContentController : IDisposable
 {
@@ -40,6 +50,10 @@ public sealed class VideoContentController : IDisposable
     private Thread? _playbackThread;
     private VideoDecodeSource? _source;
     private AudioPlaybackClock? _audioClock;
+
+    // See RunPlaybackLoopCore and the class doc comment — null means "no fade-in for the current
+    // file", set fresh by each Play() call.
+    private TimeSpan? _fadeInDuration;
 
     /// <summary>Raised (from the background playback thread — marshal to the UI thread if the
     /// handler touches UI) when both the video and audio streams reach end-of-stream.</summary>
@@ -57,13 +71,20 @@ public sealed class VideoContentController : IDisposable
     }
 
     /// <summary>Stops whatever is currently playing (if anything) and starts <paramref
-    /// name="path"/> from the beginning.</summary>
-    public void Play(string path)
+    /// name="path"/> from the beginning. <paramref name="fadeInDuration"/>, when given, ramps
+    /// <see cref="_audioClock"/>'s volume from 0 up to full linearly over that span — see
+    /// <see cref="RunPlaybackLoopCore"/> for where that ramp is actually applied, and the class doc
+    /// comment for why there's no equivalent fade-OUT parameter yet.</summary>
+    public void Play(string path, TimeSpan? fadeInDuration = null)
     {
         Stop();
 
         var source = new VideoDecodeSource(path, _surface.Gpu);
         var audioClock = new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
+        _fadeInDuration = fadeInDuration is { Ticks: > 0 } ? fadeInDuration : null;
+        // A zero-or-negative fade-in has nothing to ramp over, so it's treated as "no fade-in"
+        // rather than risking a divide-by-zero in RunPlaybackLoopCore's progress calculation.
+        audioClock.Volume = _fadeInDuration.HasValue ? 0f : 1f;
         _source = source;
         _audioClock = audioClock;
 
@@ -133,6 +154,13 @@ public sealed class VideoContentController : IDisposable
         }
     }
 
+    /// <summary>See the class doc comment for the fade-in/fade-out scoping decision. The ramp is
+    /// applied here, right before each audio chunk is enqueued, using
+    /// <see cref="AudioPlaybackClock.PositionTicks"/> as its time base rather than
+    /// <paramref name="audioClock"/>-independent wall-clock time — same reasoning as
+    /// <see cref="AudioContentController.RunPlaybackLoopCore"/>'s own doc comment: this keeps the
+    /// ramp correct across a <see cref="Pause"/>/<see cref="Resume"/> instead of continuing to
+    /// advance while audio isn't actually playing.</summary>
     private void RunPlaybackLoopCore(VideoDecodeSource source, AudioPlaybackClock audioClock, CancellationToken token)
     {
         var frameStopwatch = Stopwatch.StartNew();
@@ -149,8 +177,20 @@ public sealed class VideoContentController : IDisposable
             if (!audioDone)
             {
                 var chunk = source.ReadNextAudioChunk();
-                if (chunk == null) audioDone = true;
-                else audioClock.Enqueue(chunk.Value.Pcm);
+                if (chunk == null)
+                {
+                    audioDone = true;
+                }
+                else
+                {
+                    if (_fadeInDuration.HasValue)
+                    {
+                        double progress = audioClock.PositionTicks / (double)_fadeInDuration.Value.Ticks;
+                        audioClock.Volume = (float)Math.Clamp(progress, 0.0, 1.0);
+                    }
+
+                    audioClock.Enqueue(chunk.Value.Pcm);
+                }
             }
 
             if (videoDone) continue;

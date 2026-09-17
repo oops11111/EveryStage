@@ -11,7 +11,19 @@ namespace EveryStage.Terminal.ContentEngine;
 /// <c>PlaybackEngine</c>'s doc comment for exactly what remains out of scope — background-audio
 /// overlay (playing concurrently with other visual content, PLANNING.md's "叠加在其他视觉内容之上
 /// 播放，不占用主队列顺序位") needs a genuinely concurrent playback-track model this class doesn't
-/// attempt, and fades/volume-follows-fade aren't implemented here either.
+/// attempt.
+///
+/// <see cref="Play"/>'s optional <c>fadeInDuration</c> implements the fade-IN half of PLANNING.md
+/// §6's "淡入/淡出时长 + 音量是否随渐变" (<c>MediaFile.FadeDuration</c>/<c>VolumeFollowsFade</c>) —
+/// see <see cref="RunPlaybackLoopCore"/>'s own doc comment for why fade-OUT is deliberately NOT
+/// attempted this round: it needs to know the file's total duration in advance to know when the
+/// final fade window begins, and neither <see cref="AudioDecodeSource"/> nor
+/// <c>VideoDecodeSource</c> currently expose one — this sandbox has no way to verify a new
+/// <c>IMFSourceReader::GetPresentationAttribute(MF_PD_DURATION, ...)</c> call against a real Media
+/// Foundation build, so adding it blind here risked compounding this already-unverified file's risk
+/// for the less commonly needed half of the feature. Fade-in needs no such lookup — it only needs
+/// "how long has this file been playing", which <see cref="AudioPlaybackClock.PositionTicks"/>
+/// already tracks precisely.
 ///
 /// Reuses <see cref="AudioPlaybackClock"/> (WASAPI output) exactly as
 /// <see cref="VideoContentController"/> does for a video's own audio track, but with nothing to pace
@@ -35,6 +47,10 @@ public sealed class AudioContentController : IDisposable
     private Thread? _playbackThread;
     private AudioDecodeSource? _source;
     private AudioPlaybackClock? _audioClock;
+
+    // Set fresh by each Play() call (unlike _volume below) — null means "no fade-in for the
+    // current file", not "fade-in finished", so RunPlaybackLoopCore can tell the two apart.
+    private TimeSpan? _fadeInDuration;
 
     // Survives across Play() calls (unlike _audioClock, which gets torn down and rebuilt every
     // time) precisely so adjusting volume once stays in effect for whatever file plays next within
@@ -71,14 +87,20 @@ public sealed class AudioContentController : IDisposable
     public event Action<float>? LevelChanged;
 
     /// <summary>Stops whatever is currently playing (if anything) and starts <paramref
-    /// name="path"/> from the beginning.</summary>
-    public void Play(string path)
+    /// name="path"/> from the beginning. <paramref name="fadeInDuration"/>, when given, ramps
+    /// <see cref="_audioClock"/>'s volume from 0 up to <see cref="_volume"/> linearly over that
+    /// span — see <see cref="RunPlaybackLoopCore"/> for where that ramp is actually applied, and
+    /// the class doc comment for why there's no equivalent fade-OUT parameter yet.</summary>
+    public void Play(string path, TimeSpan? fadeInDuration = null)
     {
         Stop();
 
         var source = new AudioDecodeSource(path);
         var audioClock = new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
-        audioClock.Volume = _volume; // see _volume's own doc comment — a fresh clock otherwise starts at full volume regardless of what was set for the previous file.
+        _fadeInDuration = fadeInDuration is { Ticks: > 0 } ? fadeInDuration : null;
+        // A zero-or-negative fade-in has nothing to ramp over, so it's treated as "no fade-in"
+        // rather than risking a divide-by-zero in RunPlaybackLoopCore's progress calculation.
+        audioClock.Volume = _fadeInDuration.HasValue ? 0f : _volume; // see _volume's own doc comment — a fresh clock otherwise starts at full volume regardless of what was set for the previous file.
         _source = source;
         _audioClock = audioClock;
 
@@ -137,6 +159,16 @@ public sealed class AudioContentController : IDisposable
         }
     }
 
+    /// <summary>See the class doc comment for the overall fade-in/fade-out scoping decision. The
+    /// fade-in ramp itself is applied here, once per chunk, rather than on a timer: this loop
+    /// already runs roughly once per chunk duration (tens of milliseconds), which is frequent
+    /// enough for a linear volume ramp to sound smooth, and piggybacking on an already-running
+    /// loop avoids adding a second timer/thread just for this. <see cref="AudioPlaybackClock.PositionTicks"/>
+    /// (not wall-clock elapsed time since <see cref="Play"/> was called) is deliberately used as
+    /// the ramp's time base, since it's the same clock <see cref="Volume"/> actually plays back
+    /// against — using it keeps the ramp correct even across a <see cref="Pause"/>/<see cref="Resume"/>
+    /// (position simply stops advancing while paused, so the ramp pauses with it) instead of
+    /// continuing to advance a wall-clock timer while audio isn't actually playing.</summary>
     private void RunPlaybackLoopCore(AudioDecodeSource source, AudioPlaybackClock audioClock, CancellationToken token)
     {
         while (!token.IsCancellationRequested)
@@ -152,6 +184,12 @@ public sealed class AudioContentController : IDisposable
                 Thread.Sleep(5);
 
             if (token.IsCancellationRequested) return;
+
+            if (_fadeInDuration.HasValue)
+            {
+                double progress = audioClock.PositionTicks / (double)_fadeInDuration.Value.Ticks;
+                audioClock.Volume = _volume * (float)Math.Clamp(progress, 0.0, 1.0);
+            }
 
             audioClock.Enqueue(chunk.Value.Pcm);
             LevelChanged?.Invoke(ComputePeakLevel(chunk.Value.Pcm));

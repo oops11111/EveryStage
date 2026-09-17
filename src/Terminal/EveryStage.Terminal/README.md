@@ -457,8 +457,9 @@ Caster知道终端机确实收到了东西。
     的背景音轨叠加——PLANNING.md §6要求"叠加在其他视觉内容之上播放，不占用主队列顺序位"，这需要
     一个真正支持多轨同时播放的模型，`PlaybackEngine`目前是单一"当前文件"的顺序播放模型，完全没有
     并发轨道的概念，这次刻意没有尝试；这个分支目前维持原样直接`return`。(b) `FadeDuration`/
-    `VolumeFollowsFade`——音频播放本身没有任何音量渐变逻辑，`AudioPlaybackClock.Enqueue`原样
-    把解码出来的PCM送进WASAPI缓冲区。(c) `MediaFile.BackgroundAudioVisual`的三个选项里只有
+    `VolumeFollowsFade`——写这一条时音频播放本身还没有任何音量渐变逻辑，`AudioPlaybackClock.
+    Enqueue`原样把解码出来的PCM送进WASAPI缓冲区；**这一半后来在第109条里实现了**（只有
+    淡入，淡出仍然缺失，见第109条的完整说明）。(c) `MediaFile.BackgroundAudioVisual`的三个选项里只有
     `Black`是"真的什么都不用做"（`ContentSurface`本来就在没有帧时画黑屏）；`DefaultBackgroundImage`
     和`Waveform`都是新增的`ContentEngine.AudioVisualRenderer`生成的占位画面，不是真正的产品视觉
     ——`DefaultBackgroundImage`只是纯色背景+文件名文字（这个仓库完全没有任何图片资源文件，见该类
@@ -1371,6 +1372,33 @@ Caster知道终端机确实收到了东西。
     时不存在实际差异——是否要顺手统一改写成同一个模式只是风格一致性问题，不是这次审计
     发现的真实bug，留给之后如果这些事件也长出第二个订阅者时再处理。**没有做的部分**：
     这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+109. **【已实现一半，原为已知缺口】`MediaFile.FadeDuration`/`VolumeFollowsFade`现在有真正的
+    行为了，但只有淡入（fade-IN）这一半**：`PlaybackEngine`新增私有静态方法`FadeInDurationFor`
+    （`file.VolumeFollowsFade ? file.FadeDuration : null`——`VolumeFollowsFade`是总开关，字段名
+    本身就是"音量是否随渐变"，`false`时`FadeDuration`不管是什么值都不生效），在`PlayFile`的
+    `Video`分支和`PlayStandaloneAudio`里分别传给`VideoContentController.Play`/
+    `AudioContentController.Play`新增的可选参数`fadeInDuration`。两个`Play`方法都在
+    `fadeInDuration`非空时把`AudioPlaybackClock.Volume`先设成0（而不是`AudioContentController`
+    原来的`_volume`/`VideoContentController`原来隐含的1.0满音量），再由各自
+    `RunPlaybackLoopCore`每次循环用`AudioPlaybackClock.PositionTicks / fadeInDuration.Ticks`
+    算出0~1的线性进度、`Math.Clamp`夹住，重新设置`Volume`——用`PositionTicks`（而不是
+    `Stopwatch`之类的独立墙钟）做时间基准是刻意的：这样淡入进度跟`Pause`/`Resume`天然保持一致
+    （暂停时`PositionTicks`本身就停止前进，淡入进度也跟着冻结，不会在暂停期间继续跑）。
+    **明确没有做的部分**：(a) 淡出（fade-OUT）——需要提前知道文件总时长才能算出"还剩多少时间
+    进入淡出窗口"，但`AudioDecodeSource`/`VideoDecodeSource`都完全没有暴露时长（`IMFSourceReader::
+    GetPresentationAttribute(MF_PD_DURATION, ...)`这个API这个仓库从来没用过），在这个连
+    dotnet都没有的沙箱里盲目新增一个从未验证过的Media Foundation调用风险太高，这次刻意只做
+    了不需要总时长、只需要`PositionTicks`就能算的淡入那一半。(b)
+    `VideoContentController`本身没有任何持久化的`Volume`属性（不像`AudioContentController`的
+    `_volume`字段跨`Play`调用保留用户设置）——目前没有任何UI暴露"单个视频文件音量"这个概念，
+    所以`VideoContentController`的淡入目标音量就是`AudioPlaybackClock`本身的默认满音量1.0，
+    不是某个记住的用户设置；这不是这次改动引入的缺口，只是顺手说明为什么两个类的淡入实现
+    形状略有不同。(c) 没有编辑UI——`ActivitiesPanel`/`FilesPanel`目前都没有任何地方能设置
+    `FadeDuration`/`VolumeFollowsFade`，跟这个仓库一贯"先做行为、再做UI"的顺序一致（见第
+    61-62、71条），下一步如果要做的话应该跟第62条的`AudioPropertiesDialog`一样新增一个对话框。
+    **没有验证过的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），淡入的音量渐变听感
+    是否平滑、`AudioPlaybackClock.Volume`是否支持这么高频率（每个PCM块一次，通常几十毫秒一次）
+    的设置调用都没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -1386,12 +1414,13 @@ Caster知道终端机确实收到了东西。
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
 - 背景音轨叠加播放（`IsBackgroundAudio == true`，见"已知风险"第61条）——需要`PlaybackEngine`支持
   真正的多轨并发播放，目前完全没有实现；非背景音频（第61条已实现的那一半）不受影响
-- `FadeDuration`/`VolumeFollowsFade`这两个字段仍然完全没有任何代码读取过（见`PlaybackEngine`类doc
-  comment"deliberately out of scope"那一段；`IsBackgroundAudio`/`BackgroundAudioVisual`这两个
-  字段已经在第61条里有真正的行为了，从这条移出）——在`FadeDuration`/`VolumeFollowsFade`本身有真正
-  的播放行为之前，这个仓库不打算为它们加编辑UI，同样的"先做行为、再做UI"的顺序，见风险#55-57、
-  61-62、71（`PlayMode`/`AllowManualSkip`/`FileOperationLogger.LogPlaybackPropertyChanged`/音频
-  播放行为+编辑UI、`StayDuration`编辑UI都已经按这个顺序做完了）
+- `FadeDuration`/`VolumeFollowsFade`——淡入这一半已经在第109条实现了，**淡出仍然完全没有做**
+  （需要`AudioDecodeSource`/`VideoDecodeSource`暴露文件总时长，这个仓库目前没有任何代码路径
+  查询过`IMFSourceReader`的`MF_PD_DURATION`，见第109条(a)的完整理由）。也仍然没有编辑UI——
+  在淡出也有真正的播放行为之前，这个仓库不打算为这两个字段加编辑UI，同样的"先做行为、再做UI"
+  的顺序，见风险#55-57、61-62、71、109（`PlayMode`/`AllowManualSkip`/
+  `FileOperationLogger.LogPlaybackPropertyChanged`/音频播放行为+编辑UI、`StayDuration`编辑UI
+  都已经按这个顺序做完了）
 - PLANNING.md §8.2"音频以横向播放条展示（含播放/进度/音量/循环/独立投屏按钮）"——`FilesPanel`
   目前把音频文件跟图片/视频/文档放进同一个`ListView`缩略图网格，完全没有单独的横向行样式；这次
   排查PLANNING.md跟README的差异时发现这句话之前只在`FilesPanel`类doc comment里提过一次（且原话
