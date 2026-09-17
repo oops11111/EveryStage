@@ -191,6 +191,37 @@ public sealed class PlaybackEngine : IDisposable
         }
     }
 
+    /// <summary>Standalone-audio playback position — PLANNING.md §8.2's audio play-bar "进度"
+    /// readout. <see cref="TimeSpan.Zero"/> if nothing has ever played, mirroring
+    /// <see cref="AudioContentController.CurrentPosition"/>'s own no-op default — unlike
+    /// <see cref="AudioVolume"/>, there's no separate "pending" value to track here: a position only
+    /// ever means anything once something has actually started playing.</summary>
+    public TimeSpan AudioPosition => _audioController?.CurrentPosition ?? TimeSpan.Zero;
+
+    /// <summary>Best-effort standalone-audio total duration — null if nothing has ever played, or if
+    /// <see cref="AudioDecodeSource.TryGetDuration"/> failed for the current file (see that method's
+    /// own doc comment for how thoroughly unverified it is).</summary>
+    public TimeSpan? AudioDuration => _audioController?.TotalDuration;
+
+    /// <summary>Standalone-audio-only "跳转N秒" (PLANNING.md §8.2's "进度") — no-op for anything else
+    /// (background audio, image/document/video), mirroring <see cref="AudioVolume"/>'s own
+    /// only-meaningful-for-standalone-audio scope; <c>FloatingPreviewWindow</c>'s seek buttons gate
+    /// on the same <c>isStandaloneAudio</c> check its volume/pause buttons already use. Best-effort:
+    /// see <see cref="AudioContentController.TrySeekTo"/>'s own doc comment for why this can
+    /// silently do nothing (no exception, no visible effect) when the underlying
+    /// <see cref="AudioDecodeSource.TrySeek"/> call doesn't work on a given file. Re-pauses
+    /// afterward if playback was already paused before seeking — <see cref="AudioContentController"/>
+    /// itself has no memory of pause state across rebuilding its internal clock for a seek (see that
+    /// class's own doc comment), only this class's own <see cref="IsPaused"/> does.</summary>
+    public void SeekAudioRelative(TimeSpan delta)
+    {
+        if (_currentFile == null || _currentFile.Kind != MediaKind.Audio || _currentFile.IsBackgroundAudio) return;
+        if (_audioController == null) return; // nothing has ever played — no position to seek from.
+
+        var target = _audioController.CurrentPosition + delta;
+        if (_audioController.TrySeekTo(target) && IsPaused) _audioController.Pause();
+    }
+
     /// <summary>"点文件" from within an activity's file list — establishes the auto-advance/manual-
     /// skip context that <see cref="NextManual"/>/<see cref="PreviousManual"/> and
     /// <see cref="CompletionAction.NextItem"/> use.</summary>

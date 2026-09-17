@@ -1513,6 +1513,47 @@ Caster知道终端机确实收到了东西。
     知道这次尝试到底成不成功；即使一切都编译通过，`checked`强制转换在数值确实溢出`long`范围时
     （几乎不可能出现在真实媒体文件的时长上，但理论上如果读到了一个完全不相关的字段就有可能）
     会抛异常，同样会被外层`catch`吞掉、退化成"这个文件没有淡出"，不会让播放本身失败。
+115. **【已尝试实现，风险已知且刻意接受，应用户要求继续做】PLANNING.md §8.2音频横向播放条"进度"
+    （seek）——只做了独立音频（`AudioContentController`），没有做视频**：新增
+    `AudioDecodeSource.TrySeek(TimeSpan)`，通过
+    `IMFSourceReader::SetCurrentPosition(Guid.Empty, position.Ticks)`跳转到指定位置
+    （`Guid.Empty`即`GUID_NULL`，选择默认的100纳秒时间格式，跟`TimeSpan.Ticks`单位一致）。
+    **这是比第114条淡出更进一步的风险**：淡出的`GetPresentationAttribute`只需要"读出"一个
+    未知形状的返回值，这次的`SetCurrentPosition`还需要"传入"一个参数——猜的不只是方法名/参数
+    顺序，还有"直接传一个`long`能不能被目标参数类型接受"这第二层未知。同样整个调用通过
+    `dynamic`发起，猜错了在运行时抛`RuntimeBinderException`被`catch`接住，退化成"这个文件
+    seek不生效"，不会编译不过、也不会让播放本身失败。**"倒回去重放"这件事本身也是这次新发现
+    的一个真实设计约束，不只是API猜测风险**：`AudioPlaybackClock.PositionTicks`是WASAPI硬件
+    实际渲染字节数的计数器，只会单调往前走，没有"跳回去"这回事——如果seek之后继续用同一个
+    `AudioPlaybackClock`实例，`RunPlaybackLoopCore`原有的"等`PositionTicks`追上下一个chunk
+    时间戳"逻辑要么会静默卡住等到地老天荒（往前跳很远），要么瞬间灌入一大批chunk（往回跳）。
+    **解决方式**：`AudioContentController`新增`TrySeekTo`，只重新定位已经打开的`_source`
+    （不重新打开文件），但会整个重建`_audioClock`（新的`AudioPlaybackClock`/WASAPI输出）和
+    后台播放线程——新增`_seekBaseTicks`字段记录"这一次重建时文件里的实际位置"，
+    `CurrentPosition`属性和原来内联在`RunPlaybackLoopCore`里的淡入淡出计算（这次顺手拆成
+    共享的`ComputeFadeMultiplier`方法，`TrySeekTo`自己也调用一次，避免seek落在淡入淡出窗口
+    内时先短暂闪一下满音量再被下一个chunk纠正）都改成读"`_seekBaseTicks + audioClock.
+    PositionTicks`"而不是单纯的`audioClock.PositionTicks`，否则seek之后淡出的"还剩多少时间"
+    判断会算错。**顺手补上的能力**：`AudioContentController`新增`CurrentPosition`/
+    `TotalDuration`只读属性（`TotalDuration`现在无条件查询，不再像第114条那样只在请求了淡入
+    淡出时才查——播放位置显示不该依赖这个文件是否配置了淡入淡出），`PlaybackEngine`新增
+    `AudioPosition`/`AudioDuration`/`SeekAudioRelative(TimeSpan delta)`，只对独立播放的音频
+    文件有效（跟`AudioVolume`同样的`isStandaloneAudio`限定范围）。**UI没有做成"真正的横向
+    播放条"（拖动进度条），而是复用了`FloatingPreviewWindow`音量行已有的"固定步进按钮"写法**：
+    新增第三行"◀10秒 / 位置文本 / 10秒▶"——`_volumeDownButton`自己的doc comment早就说明过
+    为什么不用`TrackBar`：这个仓库从来没用过这种控件，布局/渲染行为没法在没有真机的情况下
+    验证，用已经被反复验证过的`Button`交互语言更安全；这次seek完全照抄同一个理由，没有重新
+    评估。**这条本身是应用户在上一轮风险清单里明确选择的方向**：上一轮列出了几个都需要用户
+    接受风险/做产品决策的大方向，用户选了"音频进度条/seek"作为下一项继续。**完全没有验证过
+    的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet）；`SetCurrentPosition`这个方法名
+    在Vortice.MediaFoundation里是否真的存在、参数顺序、`long`能不能直接作为第二个参数传入——
+    没有一项被证实过；就算能编译、能运行，Seek之后WASAPI层面是否会有可听见的爆音/静音间隙
+    （重建`AudioPlaybackClock`意味着重新走一次`WasapiOut.Init()`，这本身也是个真实的硬件
+    初始化调用）也完全没有真机验证过。**明确没有做的部分**：视频（`VideoContentController`）
+    的seek——视频需要同时重新定位音频和视频两路流并保持同步，比独立音频这一个流复杂得多，
+    这次没有尝试；`FilesPanel`里PLANNING.md描述的那条真正的"横向播放条"UI（拖动进度条，混合
+    行高的`ListView`或别的控件）也仍然没有开始，这次只在`FloatingPreviewWindow`已有的临时UI
+    上加了步进按钮。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -1541,14 +1582,15 @@ Caster知道终端机确实收到了东西。
   第73条完成后动作编辑UI），只是从来没有单独针对"音频循环"这个说法在README里点出来过，这里补上。
   **【更新】"播放"和"暂停/音量"这三项现在也更完整了**：`ContentEngine.AudioContentController`
   不仅能播放，现在也有真正的暂停/恢复（见"已知风险"第81条）和音量调节（见第82条）能力了。
-  **仍然没有做的部分**："进度"（拖动跳转到任意位置）需要`AudioDecodeSource`支持seek，这个仓库的
-  Media Foundation封装从来没有做过这件事；"独立投屏按钮"具体含义PLANNING.md本身没有展开（跟双击
-  播放已有的行为是否是同一件事也不确定）。这两项加起来仍然是真正需要新增播放引擎能力/产品决策的
-  工作，风险等级和规模跟WPS COM互操作、背景音轨叠加播放是同一档，不是这次能顺手补上的UI接线，
-  故意没有尝试；真正的"横向播放条"UI本身（含进度条等控件布局）也完全没有开始，`FilesPanel`仍然
-  把音频文件放进跟图片/视频/文档相同的缩略图网格里，见该类doc comment——第81、82条给
-  `FloatingPreviewWindow`加的暂停/音量按钮是这个悬浮小窗自己的临时UI，不是`FilesPanel`里描述的
-  那条真正的横向播放条。
+  **【更新】"进度"也尝试做了（第115条）**：`AudioContentController.TrySeekTo`+
+  `FloatingPreviewWindow`新增的步进按钮，但只覆盖独立音频，不覆盖视频，而且依赖第115条自己
+  说明的、这个仓库风险最高的一次Media Foundation调用尝试（`IMFSourceReader::SetCurrentPosition`），
+  是否真的在真机上生效完全没有验证过。**仍然没有做的部分**："独立投屏按钮"具体含义PLANNING.md
+  本身没有展开（跟双击播放已有的行为是否是同一件事也不确定），这不是代码风险而是产品决策空白，
+  没有尝试；真正的"横向播放条"UI本身（拖动进度条、混合行高的`ListView`或别的控件布局）也完全
+  没有开始，`FilesPanel`仍然把音频文件放进跟图片/视频/文档相同的缩略图网格里，见该类doc
+  comment——第81、82、115条给`FloatingPreviewWindow`加的暂停/音量/进度按钮都是这个悬浮小窗
+  自己的临时UI，不是`FilesPanel`里描述的那条真正的横向播放条。
 - PLANNING.md §11"批量选择"里的"统一设置属性"（见"已知风险"第79、112条——"删除"、"加入活动"
   两半都已经实现了）——需要先决定好清空/合并冲突值这类多选编辑的常见交互细节，PLANNING.md原文
   "跨类型选中时屏蔽不适用的属性项"也只针对这一项，这个仓库连单文件属性编辑（第71、73条）都是

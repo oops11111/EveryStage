@@ -129,6 +129,40 @@ public sealed class AudioDecodeSource : IDisposable
         throw new InvalidOperationException("Unable to extract a UInt64 value from the Variant returned by GetPresentationAttribute.");
     }
 
+    /// <summary>Best-effort seek, for <c>ContentEngine.AudioContentController.TrySeekTo</c> (PLANNING.md
+    /// §8.2's audio play-bar "进度"). The SECOND-least-verified Media Foundation call in this
+    /// codebase, right after <see cref="TryGetDuration"/> and for the identical reason — this
+    /// sandbox has never had <c>IMFSourceReader::SetCurrentPosition</c>, or its C# binding's exact
+    /// shape, to check against anything. Worse than <see cref="TryGetDuration"/> in one respect: that
+    /// call only needed to READ an out-parameter value of unknown shape, but this one needs to WRITE
+    /// one — construct some value that a completely unverified parameter type will accept as a valid
+    /// VT_I8 PROPVARIANT — so there's a second independent guess here (does passing a raw
+    /// <see cref="long"/> tick count work at all, or does the real parameter type demand an actual
+    /// Variant/PropVariant wrapper this class has no confirmed way to construct?). Same mitigation as
+    /// <see cref="TryGetDuration"/>: the entire call goes through <c>dynamic</c>, so a wrong guess —
+    /// wrong method name, wrong parameter count/order, or an argument type <c>dynamic</c> can't
+    /// convert to whatever the real parameter type is — throws
+    /// <see cref="Microsoft.CSharp.RuntimeBinder.RuntimeBinderException"/> at runtime instead of
+    /// failing to compile, caught below and turned into a plain <c>false</c> return. Callers already
+    /// treat that as "seek did nothing for this file", the same graceful degradation
+    /// <see cref="TryGetDuration"/> already established for duration.</summary>
+    public bool TrySeek(TimeSpan position)
+    {
+        try
+        {
+            dynamic reader = _reader;
+            // Guid.Empty (GUID_NULL) selects IMFSourceReader's default time format — 100ns units,
+            // the same unit TimeSpan.Ticks uses, so position.Ticks needs no conversion if this
+            // guess about the parameter shape happens to be right.
+            reader.SetCurrentPosition(Guid.Empty, position.Ticks);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     /// <summary>Returns null once the audio stream reports end-of-stream. Same PCM-off-as-CPU-memory
     /// reasoning as <see cref="VideoDecodeSource.ReadNextAudioChunk"/> — audio was never part of the
     /// zero-copy path either decode source exists to validate.</summary>

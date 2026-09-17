@@ -7,9 +7,10 @@ namespace EveryStage.Terminal.UI;
 /// <summary>
 /// The floating preview window (PLANNING.md §8.3): "仅在扩展屏有输出时出现，无输出时不存在" — shown
 /// while <see cref="OutputStateMachine"/> is Active, hidden the rest of the time. Content: LIVE
-/// badge, thumbnail preview, filename/kind, four buttons (上一项/暂停/下一项/切断), and now a small
-/// volume row (－/音量文本/＋) for standalone audio — see <see cref="_volumeDownButton"/>'s own doc
-/// comment for why it lives here rather than waiting for §8.2's full "横向播放条" to exist.
+/// badge, thumbnail preview, filename/kind, four buttons (上一项/暂停/下一项/切断), a volume row
+/// (－/音量文本/＋), and now a seek row (◀10秒/位置文本/10秒▶) for standalone audio — see
+/// <see cref="_volumeDownButton"/>'s and <see cref="_seekBackButton"/>'s own doc comments for why
+/// both live here rather than waiting for §8.2's full "横向播放条" to exist.
 ///
 /// Kept as one persistent <see cref="Form"/> instance rather than recreated per show — that's what
 /// gives "支持拖动记忆位置" (dragged position remembered) for free: <see cref="Control.Location"/>
@@ -57,6 +58,17 @@ public sealed class FloatingPreviewWindow : Form
     private readonly Button _volumeDownButton;
     private readonly Label _volumeLabel;
     private readonly Button _volumeUpButton;
+
+    /// <summary>Fixed ±10-second step, PLANNING.md §8.2's audio play-bar "进度" — same "reuse plain
+    /// Buttons, not an unverified control type" reasoning as <see cref="_volumeDownButton"/>'s own
+    /// doc comment (a draggable slider/<c>TrackBar</c> would be exactly the kind of never-used-
+    /// anywhere-in-this-codebase control that class explicitly avoided introducing for volume, and
+    /// the same avoidance applies here). Backed by <see cref="PlaybackEngine.SeekAudioRelative"/>,
+    /// which is itself best-effort — see <c>ContentEngine.AudioContentController.TrySeekTo</c>'s own
+    /// doc comment for why a seek can silently do nothing on some files.</summary>
+    private readonly Button _seekBackButton;
+    private readonly Label _positionLabel;
+    private readonly Button _seekForwardButton;
 
     public FloatingPreviewWindow(PlaybackEngine playback, OutputStateMachine stateMachine)
     {
@@ -120,13 +132,25 @@ public sealed class FloatingPreviewWindow : Form
         };
         _volumeUpButton = new Button { Text = "＋", Bounds = new Rectangle(180, 228, 32, 24) };
 
-        ClientSize = new Size(220, 260);
+        // Third row added below the volume row — same "grow ClientSize by row height (24) + gap
+        // (4) = 28px, reflow nothing above" approach this file's own history already used twice
+        // (see _pageLabel's and _volumeDownButton's own comments above).
+        _seekBackButton = new Button { Text = "◀ 10秒", Bounds = new Rectangle(8, 256, 56, 24) };
+        _positionLabel = new Label
+        {
+            TextAlign = ContentAlignment.MiddleCenter,
+            Bounds = new Rectangle(68, 256, 84, 24),
+        };
+        _seekForwardButton = new Button { Text = "10秒 ▶", Bounds = new Rectangle(156, 256, 56, 24) };
+
+        ClientSize = new Size(220, 288);
 
         Controls.AddRange(new Control[]
         {
             _liveBadge, _thumbnail, _fileLabel, _pageLabel,
             _previousButton, _pauseButton, _nextButton, _disconnectButton, _pinButton,
             _volumeDownButton, _volumeLabel, _volumeUpButton,
+            _seekBackButton, _positionLabel, _seekForwardButton,
         });
 
         _previousButton.Click += (_, _) => _playback.PreviousManual();
@@ -146,6 +170,12 @@ public sealed class FloatingPreviewWindow : Form
         // (see _volumeDownButton's own doc comment) over a continuously-adjustable one.
         _volumeDownButton.Click += (_, _) => { _playback.AudioVolume -= 0.1f; RefreshFromEngine(); };
         _volumeUpButton.Click += (_, _) => { _playback.AudioVolume += 0.1f; RefreshFromEngine(); };
+        // Fixed 10-second step — same reasoning as the volume buttons' own fixed step (see
+        // _seekBackButton's own doc comment). RefreshFromEngine's own poll would eventually pick up
+        // the new position anyway, but refreshing immediately here avoids a visible up-to-500ms lag
+        // between clicking and the position label updating.
+        _seekBackButton.Click += (_, _) => { _playback.SeekAudioRelative(TimeSpan.FromSeconds(-10)); RefreshFromEngine(); };
+        _seekForwardButton.Click += (_, _) => { _playback.SeekAudioRelative(TimeSpan.FromSeconds(10)); RefreshFromEngine(); };
 
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _refreshTimer.Tick += (_, _) => RefreshFromEngine();
@@ -209,6 +239,9 @@ public sealed class FloatingPreviewWindow : Form
             _volumeDownButton.Enabled = false;
             _volumeUpButton.Enabled = false;
             _volumeLabel.Text = "";
+            _seekBackButton.Enabled = false;
+            _seekForwardButton.Enabled = false;
+            _positionLabel.Text = "";
             return;
         }
 
@@ -232,10 +265,30 @@ public sealed class FloatingPreviewWindow : Form
         _volumeUpButton.Enabled = isStandaloneAudio;
         _volumeLabel.Text = isStandaloneAudio ? $"音量: {(int)Math.Round(_playback.AudioVolume * 100)}%" : "";
 
+        // Same isStandaloneAudio-only scope as the volume row just above — see PlaybackEngine.
+        // AudioPosition/AudioDuration/SeekAudioRelative's own doc comments. FormatPosition's
+        // "/ total" suffix only appears when AudioDuration is non-null (see that property's own
+        // doc comment on why it can be null — AudioDecodeSource.TryGetDuration is best-effort).
+        _seekBackButton.Enabled = isStandaloneAudio;
+        _seekForwardButton.Enabled = isStandaloneAudio;
+        _positionLabel.Text = isStandaloneAudio ? FormatPosition(_playback.AudioPosition, _playback.AudioDuration) : "";
+
         // Null (empty text) for anything that isn't a multi-page Document — see this class's and
         // PlaybackEngine.DocumentPageInfo's own doc comments on why this only shows up when
         // 上一项/下一项 actually mean "turn a page" right now.
         _pageLabel.Text = _playback.DocumentPageInfo is { } page ? $"第{page.CurrentPage}页/共{page.PageCount}页" : "";
+    }
+
+    /// <summary>"0:15" or, when <paramref name="duration"/> is known, "0:15 / 3:42" — m:ss rather
+    /// than h:mm:ss, matching the scale PLANNING.md §8.2's audio play-bar is meant for (standalone
+    /// audio clips, not hours-long files); a position past 59:59 would print an m:ss value with more
+    /// than two digits before the colon rather than rolling into an hours field, which is an
+    /// acceptable display quirk for content this short-form rather than something worth a second
+    /// code path for.</summary>
+    private static string FormatPosition(TimeSpan position, TimeSpan? duration)
+    {
+        string Format(TimeSpan t) => $"{(int)t.TotalMinutes}:{t.Seconds:D2}";
+        return duration.HasValue ? $"{Format(position)} / {Format(duration.Value)}" : Format(position);
     }
 
     protected override void Dispose(bool disposing)
