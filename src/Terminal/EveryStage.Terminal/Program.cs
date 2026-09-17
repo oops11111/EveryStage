@@ -112,6 +112,14 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private readonly DeviceConnectionLogger _connectionLog = new();
     private readonly CrashLogger _crashLogger;
 
+    // Set once, the first time HandleDisplaySettingsChanged notices a display became available
+    // after this Terminal started with none bound — see that method's own doc comment on why this
+    // only shows a one-time restart notice instead of attempting to bind it live. Never reset back
+    // to false: repeating the same "restart to use it" balloon on every subsequent
+    // DisplaySettingsChanged firing (a resolution tweak on some OTHER monitor, for instance) would
+    // be pure noise once the operator has already been told once.
+    private bool _notifiedDisplayAvailableAfterStartup;
+
     // How many _castStatusTimer ticks (1s each) between LogConnectionQuality runs — a diagnostic
     // *log* entry every second would spam the on-disk log with what's meant to be a periodic
     // summary, not a per-tick stream; this tick counter piggybacks on the timer that already exists
@@ -162,17 +170,6 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                 _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore);
                 _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
                 _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
-
-                // Runtime display-configuration changes (PLANNING.md §5, this project's README "已知
-                // 风险" on OverlayWindow.Rebind/VideoSurface.Resize previously existing but never having
-                // a caller) — covers "the extended display this Terminal already bound at startup moved
-                // or changed resolution" (Rebind/Resize) and "that same display got unplugged entirely"
-                // (a clean Disconnect(), see HandleDisplaySettingsChanged's own doc comment for exactly
-                // what each branch does and what is still NOT handled — a display being plugged in for
-                // the first time when none was bound at startup). Only subscribed when an overlay
-                // actually exists — with no bound display at startup there is nothing here for a later
-                // display change to rebind anyway (see the "no display bound" case below).
-                SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
             }
             catch (Exception ex)
             {
@@ -188,14 +185,28 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                 _overlay = null;
             }
         }
-        // extendedDisplay == null: no second monitor attached yet. §5/§7 don't specify a "no
-        // display bound" UX beyond implying it's a real, visible configuration state — the tray
-        // tooltip below reflects it, but there is nothing further to build here until Phase 4 UI
-        // exists to surface a proper "未检测到扩展屏" notice. No overlay also means no
-        // VideoSurface/PlaybackEngine/preview window yet, and OnCastStartRequested below already
-        // no-ops when _overlay is null; MainWindow's file panel tolerates _playback being null
-        // (RequestPlay just never gets called) until a display shows up. A GPU-init failure just
-        // above degrades into this exact same state.
+        // extendedDisplay == null: no second monitor attached yet (or a GPU-init failure just above
+        // degraded into this same state). No overlay also means no VideoSurface/PlaybackEngine/
+        // preview window yet, and OnCastStartRequested below already no-ops when _overlay is null;
+        // MainWindow's file panel tolerates _playback being null (RequestPlay just never gets
+        // called) until a display shows up. Bug fixed here (this project's README "已知风险"): this
+        // comment used to claim "the tray tooltip below reflects it", but TrayIconController.
+        // UpdateTooltip only ever reads OutputStateMachine.State/CastSwitchOn — neither of which
+        // knows anything about whether _overlay exists at all, so that claim was never actually
+        // true. HandleDisplaySettingsChanged's own new "no overlay yet" branch (see its doc comment)
+        // now gives the operator a real, if one-shot, signal instead of literally nothing.
+
+        // Runtime display-configuration changes (PLANNING.md §5, this project's README "已知风险" on
+        // OverlayWindow.Rebind/VideoSurface.Resize previously existing but never having a caller) —
+        // covers "the extended display this Terminal already bound at startup moved or changed
+        // resolution" (Rebind/Resize), "that same display got unplugged entirely" (a clean
+        // Disconnect()), and now also "no display was bound at startup, but one showed up since" (a
+        // one-time tray notice — see HandleDisplaySettingsChanged's own doc comment for why not a
+        // live rebuild). Subscribed unconditionally (not just when _overlay already exists, unlike
+        // before this round) precisely so that third case has an event to fire on in the first
+        // place — with _overlay staying null forever otherwise, nothing would ever call
+        // HandleDisplaySettingsChanged for it to check.
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
         _stateMachine.StateChanged += OnOutputStateChanged;
 
@@ -523,8 +534,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _uiContext.Post(_ => HandleDisplaySettingsChanged(), null);
     }
 
-    /// <summary>Two cases for the extended display this Terminal already bound at startup
-    /// (<see cref="_overlay"/> non-null): it moved position or changed resolution/orientation
+    /// <summary>Three cases now. Two are for the extended display this Terminal already bound at
+    /// startup (<see cref="_overlay"/> non-null): it moved position or changed resolution/orientation
     /// (<see cref="OverlayWindow.Rebind"/>/<see cref="VideoSurface.Resize"/> — this project's README
     /// used to flag both as written but never called by anything), or it got unplugged entirely
     /// (<see cref="OutputStateMachine.Disconnect"/> — the same clean "断" a user clicking it manually
@@ -534,16 +545,29 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     /// deliberate — that graph stays alive so a later replug is just another
     /// <see cref="OnDisplaySettingsChanged"/> firing, handled by whichever of these two branches
     /// applies then (same monitor identity back -> no-op via the structural-equality check below;
-    /// different bounds/position -> Rebind/Resize, already covered). Deliberately does NOT handle: a
-    /// display being plugged in for the first time after this Terminal already started with none
-    /// bound (<see cref="_overlay"/> stays null forever once decided at startup — building the whole
-    /// <see cref="_overlay"/>/<see cref="_videoSurface"/>/<see cref="_playback"/>/
-    /// <see cref="_previewWindow"/> graph at runtime is a substantially bigger change this round
-    /// doesn't attempt). See this project's README "已知风险" for that remaining scope limit being
-    /// recorded as intentional, not an oversight.</summary>
+    /// different bounds/position -> Rebind/Resize, already covered).
+    ///
+    /// The third case is new this round: a display being plugged in for the first time after this
+    /// Terminal already started with none bound (<see cref="_overlay"/> null). This does NOT build
+    /// the whole <see cref="_overlay"/>/<see cref="_videoSurface"/>/<see cref="_playback"/>/
+    /// <see cref="_previewWindow"/> graph at runtime — that remains a substantially bigger change
+    /// this round doesn't attempt, see this project's README "已知风险" for that scope limit being
+    /// recorded as intentional, not an oversight. What IS new: instead of the previous complete
+    /// silence, the operator now gets a one-time tray balloon telling them a display was detected
+    /// and a restart is needed to use it — see <see cref="_notifiedDisplayAvailableAfterStartup"/>'s
+    /// own doc comment for why this fires at most once per process lifetime rather than on every
+    /// subsequent <see cref="OnDisplaySettingsChanged"/>.</summary>
     private void HandleDisplaySettingsChanged()
     {
-        if (_overlay == null || _videoSurface == null) return;
+        if (_overlay == null || _videoSurface == null)
+        {
+            if (_notifiedDisplayAvailableAfterStartup) return;
+            if (MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName) == null) return;
+
+            _notifiedDisplayAvailableAfterStartup = true;
+            _tray.ShowNotification("检测到扩展屏", "EveryStage 终端机启动时没有检测到扩展屏。请重启终端机以启用扩展屏输出。");
+            return;
+        }
 
         var updated = MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName);
         if (updated == null)
@@ -562,7 +586,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _repository.Save(_store);
         _stateMachine.Disconnect(); // ensure audio is restored / overlay hidden before teardown.
 
-        if (_overlay != null) SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+        // Unconditional now, matching the unconditional subscribe above (this event is subscribed
+        // regardless of whether _overlay ever ended up non-null).
+        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
 
         _tray.Dispose();
         _discovery.Dispose();

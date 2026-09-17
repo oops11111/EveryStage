@@ -66,6 +66,23 @@ public sealed class TrayIconController : IDisposable
         _notifyIcon.Text = $"EveryStage 终端机 - {stateText} / {switchText}";
     }
 
+    /// <summary>One-off transient tray balloon — <see cref="NotifyIcon.ShowBalloonTip(int, string, string, ToolTipIcon)"/>,
+    /// a plain, long-stable WinForms API (unlike this project's Media Foundation/D3D11 interop, this
+    /// one needs no verification against a specific SDK version). Added for
+    /// <c>TerminalApplicationContext</c>'s "an extended display was just connected, but none was
+    /// bound at startup" case (this project's README "已知风险") — that case deliberately does NOT
+    /// rebuild the live <c>_overlay</c>/<c>_videoSurface</c>/<c>_playback</c> object graph at
+    /// runtime, so a balloon telling the operator to restart is the honest alternative to silently
+    /// doing nothing. Kept generic (not named after that one caller) since any other "something
+    /// happened, no persistent UI state to show it in" case can reuse this instead of duplicating
+    /// the same three-line wrapper.</summary>
+    public void ShowNotification(string title, string text)
+    {
+        _notifyIcon.BalloonTipTitle = title;
+        _notifyIcon.BalloonTipText = text;
+        _notifyIcon.ShowBalloonTip(10000);
+    }
+
     public void Dispose()
     {
         _stateMachine.StateChanged -= OnOutputStateChanged;
