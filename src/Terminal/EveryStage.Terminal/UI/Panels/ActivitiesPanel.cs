@@ -38,6 +38,7 @@ public sealed class ActivitiesPanel : UserControl
     private readonly Button _addFileButton;
     private readonly Button _playModeButton;
     private readonly Button _audioPropertiesButton;
+    private readonly Button _fadeButton;
     private readonly Button _stayDurationButton;
     private readonly Button _completionActionButton;
     private readonly Button _removeButton;
@@ -94,6 +95,15 @@ public sealed class ActivitiesPanel : UserControl
         // PlayMode's editor above already established.
         _audioPropertiesButton = new Button { Text = "音频属性...", AutoSize = true, Enabled = false };
         _audioPropertiesButton.Click += (_, _) => OnEditAudioProperties();
+        // Only ever enabled for a selected file whose Kind is Video or Audio — see
+        // UpdateButtonStates. New the same round PlaybackEngine.FadeInDurationFor first gave
+        // MediaFile.FadeDuration/VolumeFollowsFade any runtime effect at all (see this project's
+        // README risk #109), same "先做行为、再做UI" order as PlayMode/IsBackgroundAudio/
+        // StayDuration before it — except unlike those, the behavior itself is still only half done
+        // (fade-in only), which FadeDialog's own caveat label discloses rather than hiding the
+        // control until fade-out also exists.
+        _fadeButton = new Button { Text = "淡入淡出...", AutoSize = true, Enabled = false };
+        _fadeButton.Click += (_, _) => OnEditFade();
         // Only ever enabled for a selected file whose Kind is Image or Document (PLANNING.md §6
         // "停留时长（图片/文档）") — same "先做行为、再做UI" gap as PlayMode/AllowManualSkip/
         // IsBackgroundAudio before it, except MediaFile.StayDuration's own reading behavior
@@ -123,7 +133,7 @@ public sealed class ActivitiesPanel : UserControl
         activityBar.Controls.AddRange(new Control[]
         {
             newActivityButton, renameActivityButton, deleteActivityButton, _playModeButton,
-            _audioPropertiesButton, _stayDurationButton, _completionActionButton,
+            _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton,
             _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
         });
 
@@ -402,6 +412,39 @@ public sealed class ActivitiesPanel : UserControl
         RefreshTree();
     }
 
+    /// <summary>Only reachable when a selected file's <c>Kind</c> is Video or Audio — see
+    /// <see cref="UpdateButtonStates"/>. Same no-activity-level-counterpart reasoning as
+    /// <see cref="OnEditAudioProperties"/>: <c>MediaFile.FadeDuration</c>/<c>VolumeFollowsFade</c>
+    /// are only ever per-file, there is no per-activity default to fall back to editing when nothing
+    /// is selected.</summary>
+    private void OnEditFade()
+    {
+        var (_, activity, file) = GetSelection();
+        if (activity == null || file == null || file.Kind is not (MediaKind.Video or MediaKind.Audio)) return;
+
+        using var dialog = new FadeDialog(
+            $"淡入淡出 — {Path.GetFileName(file.SourcePath)}", file.VolumeFollowsFade, file.FadeDuration);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (dialog.VolumeFollowsFade == file.VolumeFollowsFade && dialog.FadeDuration == file.FadeDuration)
+            return; // no actual change — nothing to log/save.
+
+        // Two separate LogPlaybackPropertyChanged calls, same per-property granularity
+        // OnEditAudioProperties already uses for its own two-field dialog.
+        if (dialog.VolumeFollowsFade != file.VolumeFollowsFade)
+        {
+            _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.VolumeFollowsFade),
+                file.VolumeFollowsFade.ToString(), dialog.VolumeFollowsFade.ToString());
+            file.VolumeFollowsFade = dialog.VolumeFollowsFade;
+        }
+        if (dialog.FadeDuration != file.FadeDuration)
+        {
+            _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.FadeDuration),
+                file.FadeDuration?.ToString(), dialog.FadeDuration?.ToString());
+            file.FadeDuration = dialog.FadeDuration;
+        }
+        _repository.Save(_store);
+    }
+
     /// <summary>Only reachable when a selected file's <c>Kind</c> is Image or Document — see
     /// <see cref="UpdateButtonStates"/>. Same no-activity-level-counterpart reasoning as
     /// <see cref="OnEditAudioProperties"/>: <c>MediaFile.StayDuration</c> is only ever a per-file
@@ -508,6 +551,7 @@ public sealed class ActivitiesPanel : UserControl
         _addFileButton.Enabled = activity != null;
         _playModeButton.Enabled = activity != null;
         _audioPropertiesButton.Enabled = file != null && file.Kind == MediaKind.Audio;
+        _fadeButton.Enabled = file != null && file.Kind is MediaKind.Video or MediaKind.Audio;
         _stayDurationButton.Enabled = file != null && file.Kind is MediaKind.Image or MediaKind.Document;
         _completionActionButton.Enabled = file != null;
         _removeButton.Enabled = file != null;

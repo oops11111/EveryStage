@@ -1420,6 +1420,22 @@ Caster知道终端机确实收到了东西。
     `TerminalDiscoveryClient`也有完全一样的问题，同一次一起修了**（见Caster README对应条目）。
     **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过
     `Bind`失败时的具体`SocketException`信息。
+111. **【已实现，原为已知缺口】`MediaFile.FadeDuration`/`VolumeFollowsFade`现在有编辑UI了**：
+    新增`UI/FadeDialog.cs`，跟`StayDurationDialog`同一个"复选框控制`NumericUpDown`是否可用"的
+    写法——`VolumeFollowsFade`复选框（"为此文件启用淡入"）是总开关，勾选后下面的秒数
+    `NumericUpDown`（1~60秒，默认3秒）才可编辑。`ActivitiesPanel`新增"淡入淡出..."按钮，
+    只在选中一个`Kind`是`Video`或`Audio`的文件时启用（`UpdateButtonStates`），点击后打开
+    `OnEditFade`——跟`OnEditAudioProperties`同一个"两个字段分别各自调用一次
+    `LogPlaybackPropertyChanged`"写法。**这条本身是对第109条(c)"这个仓库不打算为它们加编辑UI"
+    这个决定的自我纠正**：第109条写完之后回头看，`AudioPropertiesDialog`（第62条）早就已经
+    证明了这个仓库的实际做法不是"必须100%功能做完才能加UI"——`IsBackgroundAudio`当时对应的
+    背景音轨叠加功能完全是no-op，`AudioPropertiesDialog`依然给它做了编辑入口，只是带一条
+    红色警示文字说明"勾选后这个文件将不会播放"；`FadeDialog`这次照抄同一个思路——淡入本身
+    已经是真正能用的功能（不是no-op），只有淡出这一半还缺，所以对应的警示文字也不是"这个开关
+    完全不起作用"，而是如实说明"目前只有淡入生效，淡出还没做"。**没有做的部分**：这次改动
+    本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过；淡出的编辑UI本身还是没有——等
+    第109条(a)提到的淡出行为真正实现之后，这个对话框大概率需要再加一个字段，不是这次能一起
+    做的。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -1435,13 +1451,12 @@ Caster知道终端机确实收到了东西。
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
 - 背景音轨叠加播放（`IsBackgroundAudio == true`，见"已知风险"第61条）——需要`PlaybackEngine`支持
   真正的多轨并发播放，目前完全没有实现；非背景音频（第61条已实现的那一半）不受影响
-- `FadeDuration`/`VolumeFollowsFade`——淡入这一半已经在第109条实现了，**淡出仍然完全没有做**
+- `FadeDuration`/`VolumeFollowsFade`——淡入这一半已经在第109条实现了，编辑UI也已经在第111条
+  补上了（`FadeDialog`，`ActivitiesPanel`的"淡入淡出..."按钮）。**淡出仍然完全没有做**
   （需要`AudioDecodeSource`/`VideoDecodeSource`暴露文件总时长，这个仓库目前没有任何代码路径
-  查询过`IMFSourceReader`的`MF_PD_DURATION`，见第109条(a)的完整理由）。也仍然没有编辑UI——
-  在淡出也有真正的播放行为之前，这个仓库不打算为这两个字段加编辑UI，同样的"先做行为、再做UI"
-  的顺序，见风险#55-57、61-62、71、109（`PlayMode`/`AllowManualSkip`/
-  `FileOperationLogger.LogPlaybackPropertyChanged`/音频播放行为+编辑UI、`StayDuration`编辑UI
-  都已经按这个顺序做完了）
+  查询过`IMFSourceReader`的`MF_PD_DURATION`，见第109条(a)的完整理由），对应的编辑UI自然
+  也还没有——真正实现淡出行为之后，`FadeDialog`大概率需要再加一个字段，这不是这次能顺手
+  做的
 - PLANNING.md §8.2"音频以横向播放条展示（含播放/进度/音量/循环/独立投屏按钮）"——`FilesPanel`
   目前把音频文件跟图片/视频/文档放进同一个`ListView`缩略图网格，完全没有单独的横向行样式；这次
   排查PLANNING.md跟README的差异时发现这句话之前只在`FilesPanel`类doc comment里提过一次（且原话
