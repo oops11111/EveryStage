@@ -1272,6 +1272,34 @@ Caster知道终端机确实收到了东西。
     **修复方式**：跟第102条完全一致——在`CreateWaveformFrame`调用之前先把`_audioVisualFrame`
     清成`null`。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机
     验证过。
+104. **【新发现的真实bug，已修复，包含对第102/103条自己遗留缺口的补修】`ContentSurface`独立持有
+    一份它被`SetFrame`过的`Bitmap`引用，第102/103条修复"渲染器自己的`CurrentFrame`不再悬空"
+    并不能让`ContentSurface`同步知道这件事——这次连着修了三处**：`ContentSurface.SetFrame`
+    只是把传入的引用原样存进`_frame`字段（见该类自己的doc comment"Owns none of the renderers
+    or their bitmaps"），跟`PdfContentRenderer`/`ImageContentRenderer`/`_audioVisualFrame`各自
+    是否已经清空/置空完全独立——第102、103条修的是"渲染器自己的字段不要悬空"，但从来没有告诉
+    `ContentSurface`"你手上那份引用指向的对象已经被释放了"，而`ContentSurface.OnPaint`每次
+    重绘（窗口移动、最小化恢复、任何触发`Invalidate`的事件——不是罕见场景）都会用`_frame`
+    调用`Graphics.DrawImage`，在一个已释放对象上必然抛异常。具体修了三处：（一）
+    `PlaybackEngine.OnImageOrDocumentFailed`（`PlayImageAsync`/`PlayDocumentAsync`整个文档/
+    图片加载失败时的统一入口）新增`_overlay.ContentSurface.SetFrame(null)`——`LoadAsync`
+    自己`CurrentFrame?.Dispose()`那一步释放的正是`ContentSurface`上一次成功`SetFrame`时
+    拿到的那个`Bitmap`，之前完全没有人告诉`ContentSurface`清空它。（二）新增私有方法
+    `PlaybackEngine.TryTurnDocumentPage`，让`NextManual`/`PreviousManual`不再直接裸调用
+    `_pdfRenderer.NextPage()`/`PreviousPage()`——这两个方法内部会调用
+    `PdfContentRenderer.RenderCurrentPage`，同样可能因为"文档内某一页本身损坏"而抛出异常
+    （见第102条`RenderCurrentPage`那次修复的场景描述），之前这条路径完全没有任何`try/catch`，
+    异常会直接从悬浮预览窗的"上一页/下一页"按钮点击处理器里裸抛出去——现在统一走
+    `OnImageOrDocumentFailed`上报并清空`ContentSurface`，不再静默吞掉或者裸抛。（三）
+    `RedrawWaveformFrame()`自己也补上了同样的`try/catch` + `SetFrame(null)`——第103条那次
+    修复的commit说明里其实已经写清楚"`ContentSurface`会一直停留在...已经被释放掉的帧"这个
+    残留问题，但当时只修了`_audioVisualFrame`字段本身、没有连着修`ContentSurface`，这次一并
+    补上，属于对自己此前那次修复遗漏的追加修正。**为什么第102条最初没有一次性发现这一层**：
+    第102条的自检推理集中在`PlaybackEngine.CurrentThumbnail`/`NextPage`/`PreviousPage`的
+    `_document == null`判空逻辑这一条具体路径上，`ContentSurface`是另一个独立类、通过完全不同
+    的方式（`SetFrame`传引用）持有同一个`Bitmap`，属于同一个根因（"disposed但被下游继续持有"）
+    的第二种表现形式，第一轮审计时没有顺着这条线索往下追。**没有做的部分**：这次改动本身没有
+    在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

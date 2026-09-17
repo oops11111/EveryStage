@@ -225,11 +225,7 @@ public sealed class PlaybackEngine : IDisposable
     /// context (and no further page to turn to).</summary>
     public bool NextManual()
     {
-        if (_currentFile?.Kind == MediaKind.Document && _pdfRenderer.NextPage())
-        {
-            _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
-            return true;
-        }
+        if (TryTurnDocumentPage(_pdfRenderer.NextPage)) return true;
         return TryAdvance(1, PlaybackTrigger.ManualSkip);
     }
 
@@ -238,12 +234,49 @@ public sealed class PlaybackEngine : IDisposable
     /// page to turn back to).</summary>
     public bool PreviousManual()
     {
-        if (_currentFile?.Kind == MediaKind.Document && _pdfRenderer.PreviousPage())
+        if (TryTurnDocumentPage(_pdfRenderer.PreviousPage)) return true;
+        return TryAdvance(-1, PlaybackTrigger.ManualSkip);
+    }
+
+    /// <summary>Shared by <see cref="NextManual"/>/<see cref="PreviousManual"/> — attempts one page
+    /// turn via <paramref name="turnPage"/> (<see cref="PdfContentRenderer.NextPage"/> or
+    /// <see cref="PdfContentRenderer.PreviousPage"/>) when the current file is a Document, and
+    /// updates <see cref="OverlayWindow.ContentSurface"/> to match. Returns false (meaning "nothing
+    /// handled here, fall through to TryAdvance") both when the current file isn't a Document and
+    /// when there's no further page to turn to in the requested direction — <see cref="NextManual"/>/
+    /// <see cref="PreviousManual"/>'s own page-before-item precedence relies on both of those cases
+    /// looking identical to the caller.
+    ///
+    /// Bug fixed here: <paramref name="turnPage"/> calls <c>PdfContentRenderer.RenderCurrentPage</c>
+    /// internally, which can throw for a corrupt page within an otherwise-valid PDF (see that
+    /// method's own doc comment on its own dispose-before-render fix) — previously nothing here
+    /// caught that at all, so it propagated as a completely unreported exception out to whatever UI
+    /// button triggered <see cref="NextManual"/>/<see cref="PreviousManual"/>. Routing it through
+    /// <see cref="OnImageOrDocumentFailed"/> matches how a whole-document load failure is already
+    /// reported, and — just as importantly — clears <see cref="OverlayWindow.ContentSurface"/>'s now-
+    /// dangling reference to whatever <see cref="System.Drawing.Bitmap"/> that dispose-before-render
+    /// step already freed (see <see cref="OnImageOrDocumentFailed"/>'s own doc comment on that). On a
+    /// failure this returns true (handled, don't fall through to TryAdvance) — auto-advancing past a
+    /// document that just failed to render its next page would silently abandon it instead of
+    /// reporting the problem, which is not how any other content failure in this class behaves.</summary>
+    private bool TryTurnDocumentPage(Func<bool> turnPage)
+    {
+        if (_currentFile?.Kind != MediaKind.Document) return false;
+
+        bool turned;
+        try
         {
-            _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
+            turned = turnPage();
+        }
+        catch (Exception ex)
+        {
+            OnImageOrDocumentFailed(_currentFile!, ex);
             return true;
         }
-        return TryAdvance(-1, PlaybackTrigger.ManualSkip);
+
+        if (!turned) return false;
+        _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
+        return true;
     }
 
     /// <summary>Null unless the current file is a Document with more than one page — the floating
@@ -446,6 +479,21 @@ public sealed class PlaybackEngine : IDisposable
     private void OnImageOrDocumentFailed(MediaFile file, Exception ex)
     {
         if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
+
+        // Bug fixed here: PdfContentRenderer/ImageContentRenderer's own LoadAsync (see their doc
+        // comments) already correctly leaves CurrentFrame as null after a failed load, rather than
+        // a dangling reference to the Bitmap it just disposed — but ContentSurface never learns
+        // about that on its own. ContentSurface.SetFrame stores whatever reference it was last
+        // given directly, independent of whoever created it, and the failing renderer's own
+        // CurrentFrame?.Dispose() call at the top of LoadAsync disposes exactly the Bitmap
+        // ContentSurface is still holding onto from the last successful SetFrame call — without
+        // this, ContentSurface.OnPaint would try to draw that now-disposed Bitmap on its very next
+        // repaint (a window move, minimize/restore, anything that invalidates it — not a rare
+        // event), throwing repeatedly until some later file loads successfully and calls SetFrame
+        // again. Clearing to null here is safe: ContentSurface.OnPaint already treats null as
+        // "nothing to draw, just show black".
+        _overlay.ContentSurface.SetFrame(null);
+
         _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
         PlaybackAbnormallyInterrupted?.Invoke(file, ex.Message);
     }
@@ -517,12 +565,28 @@ public sealed class PlaybackEngine : IDisposable
         // null. Unlike a one-shot LoadAsync, this method reruns on every _waveformTimer tick
         // (~15fps) for as long as a Waveform-visual audio file keeps playing, so a failure here
         // wouldn't be a one-time event — the very next tick would call Dispose() again on the same
-        // stale reference (harmless — Bitmap.Dispose() is idempotent) and keep retrying, but
-        // ContentSurface would be left displaying/repainting whatever it last successfully received
-        // via SetFrame, which is exactly the Bitmap this method just disposed.
+        // stale reference (harmless — Bitmap.Dispose() is idempotent) and keep retrying.
         _audioVisualFrame?.Dispose();
         _audioVisualFrame = null;
-        _audioVisualFrame = AudioVisualRenderer.CreateWaveformFrame(_overlay.ContentSurface.ClientSize, _latestAudioLevel);
+
+        // Second bug fixed here, found on a later pass over this exact method: the fix above only
+        // protected _audioVisualFrame's OWN field — it left ContentSurface itself still holding a
+        // direct reference to the Bitmap just disposed above, from the last successful SetFrame
+        // call. If CreateWaveformFrame throws, execution never reaches SetFrame below, so
+        // ContentSurface.OnPaint would keep trying to draw that now-disposed Bitmap on every
+        // subsequent repaint — same root cause, same fix (see OnImageOrDocumentFailed's own doc
+        // comment on this exact "renderer's own state is fixed but a downstream consumer's stale
+        // reference isn't" shape), just not applied here the first time around.
+        try
+        {
+            _audioVisualFrame = AudioVisualRenderer.CreateWaveformFrame(_overlay.ContentSurface.ClientSize, _latestAudioLevel);
+        }
+        catch (Exception)
+        {
+            _overlay.ContentSurface.SetFrame(null);
+            return;
+        }
+
         _overlay.ContentSurface.SetFrame(_audioVisualFrame);
     }
 
