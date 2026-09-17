@@ -1350,6 +1350,27 @@ Caster知道终端机确实收到了东西。
     视频分支根本不用`ContentSurface`做呈现（呈现走的是`VideoSurface`/`SwapChainPresenter`，
     `ShowVideoSurface()`已经在这一行之前调用过），清空一个当前没有显示的控件没有任何可见
     影响。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+108. **【新发现的真实bug，已修复，是这次连续修复本身间接制造出来的一个新风险】
+    `PlaybackAbnormallyInterrupted?.Invoke(file, ex.Message)`直接调用现在不安全了，
+    因为第105条给这个事件新增了第二个订阅者**：这个事件原来只有`MainWindow.
+    OnPlaybackAbnormallyInterrupted`一个订阅者（弹Toast），第105条给`FloatingPreviewWindow`
+    也订阅了同一个事件（失败时立即刷新缩略图，见第105条）——这意味着如果`MainWindow`的
+    Toast处理器本身抛出异常（比如Toast UI自己的构造逻辑有bug），`FloatingPreviewWindow`
+    的订阅永远不会跑到，而且这个异常会直接从`PlaybackAbnormallyInterrupted?.Invoke(...)`
+    传回调用方——这次连续几条修复（第102、106、107条）新增的所有`try/catch`最终都会走到
+    这一次`Invoke`调用，如果这里不做隔离，这些`try/catch`辛辛苦苦接住的异常又会在这里
+    重新抛出去，把之前几条修复的保护效果整个抵消掉。**修复方式**：跟`StateMachine.
+    OutputStateMachine.RaiseStateChanged`/`RaiseCastSwitchChanged`完全同一个已经在这个
+    仓库里用过的写法——新增私有方法`RaisePlaybackAbnormallyInterrupted`，用
+    `GetInvocationList()`遍历每一个订阅者单独调用、单独`try/catch`、单独吞掉异常，
+    保证一个订阅者的bug不会连累另一个订阅者拿不到通知，也不会把异常传回给这次刚刚新增
+    的那几处`try/catch`。三处直接`Invoke`调用（`OnImageOrDocumentFailed`/`OnAudioFailed`/
+    `OnVideoFailed`）全部改成调用这个新方法。**这条本身没有修其它三个事件
+    （`FileStarted`/`PlaybackDeclinedByCastSwitch`/`LocalPlaybackStarting`）**：这三个
+    目前都只有一个订阅者，"单个订阅者抛异常会不会影响其它订阅者"这个问题在只有一个订阅者
+    时不存在实际差异——是否要顺手统一改写成同一个模式只是风格一致性问题，不是这次审计
+    发现的真实bug，留给之后如果这些事件也长出第二个订阅者时再处理。**没有做的部分**：
+    这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

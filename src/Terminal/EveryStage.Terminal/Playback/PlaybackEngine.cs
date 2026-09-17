@@ -518,7 +518,7 @@ public sealed class PlaybackEngine : IDisposable
         _overlay.ContentSurface.SetFrame(null);
 
         _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
-        PlaybackAbnormallyInterrupted?.Invoke(file, ex.Message);
+        RaisePlaybackAbnormallyInterrupted(file, ex.Message);
     }
 
     /// <summary>Standalone (non-background) audio playback — see this class's doc comment and
@@ -662,7 +662,7 @@ public sealed class PlaybackEngine : IDisposable
             if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
             _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
             // Same PlaybackAbnormallyInterrupted reasoning as OnVideoFailed.
-            PlaybackAbnormallyInterrupted?.Invoke(file, ex.Message);
+            RaisePlaybackAbnormallyInterrupted(file, ex.Message);
         }));
     }
 
@@ -809,8 +809,39 @@ public sealed class PlaybackEngine : IDisposable
             _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
             // PLANNING.md §11's Toast "涉及播放的异常需带可执行按钮（重试/移除）" — see
             // PlaybackAbnormallyInterrupted's own doc comment for what built that UI on top of this.
-            PlaybackAbnormallyInterrupted?.Invoke(file, ex.Message);
+            RaisePlaybackAbnormallyInterrupted(file, ex.Message);
         }));
+    }
+
+    /// <summary>Bug fixed here: <see cref="PlaybackAbnormallyInterrupted"/> now genuinely has two
+    /// subscribers (<c>MainWindow</c>'s Toast handler and <c>FloatingPreviewWindow</c>'s own
+    /// refresh — see that window's doc comment on why it needed to subscribe), so a plain
+    /// <c>PlaybackAbnormallyInterrupted?.Invoke(...)</c> call is no longer safe: if the first
+    /// subscriber invoked throws (e.g. a bug in the Toast UI's own construction), the second one
+    /// never runs, AND the exception propagates back out of whichever of this class's own
+    /// try/catch blocks called this method (<see cref="OnImageOrDocumentFailed"/>/
+    /// <see cref="PlayStandaloneAudio"/>'s and the Video case in <see cref="PlayFile"/>'s own
+    /// try/catch, plus <see cref="OnAudioFailed"/>/<see cref="OnVideoFailed"/>'s <c>BeginInvoke</c>
+    /// callbacks) — defeating the exact protection those try/catch blocks exist to provide. Same
+    /// per-subscriber isolation <see cref="StateMachine.OutputStateMachine.RaiseStateChanged"/>/
+    /// <c>RaiseCastSwitchChanged</c> already established in this codebase for the identical
+    /// shape.</summary>
+    private void RaisePlaybackAbnormallyInterrupted(MediaFile file, string message)
+    {
+        foreach (var handler in PlaybackAbnormallyInterrupted?.GetInvocationList() ?? Array.Empty<Delegate>())
+        {
+            try
+            {
+                ((Action<MediaFile, string>)handler)(file, message);
+            }
+            catch (Exception)
+            {
+                // Deliberately swallowed, same reasoning as OutputStateMachine's own identical
+                // catch: this class has no way to attribute the failure to a specific subscriber to
+                // log it usefully, and the one guarantee this method exists to provide is that one
+                // subscriber's bug can't cost every other subscriber their notification too.
+            }
+        }
     }
 
     private void HandleCompletion(MediaFile file)
