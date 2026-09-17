@@ -1300,6 +1300,23 @@ Caster知道终端机确实收到了东西。
     的方式（`SetFrame`传引用）持有同一个`Bitmap`，属于同一个根因（"disposed但被下游继续持有"）
     的第二种表现形式，第一轮审计时没有顺着这条线索往下追。**没有做的部分**：这次改动本身没有
     在这个沙箱里跑过（没有dotnet），没有真机验证过。
+105. **【新发现的真实bug，已修复，第104条同一根因的第三个受害者】`FloatingPreviewWindow`的
+    `_thumbnail.Image`也独立持有一份`PlaybackEngine.CurrentThumbnail`读到的`Bitmap`引用，
+    加载失败后同样有一段时间窗口会指向已释放对象**：`RefreshFromEngine()`目前只在按钮点击和
+    `_refreshTimer`（每500毫秒一次）触发时才会重新赋值`_thumbnail.Image`；跟`ContentSurface`
+    "只在显式`SetFrame`调用时才更新、之前从来没有失败时的`SetFrame(null)`调用"不同，这里的
+    暴露窗口本来就会靠这个轮询定时器在500毫秒内自愈（`CurrentThumbnail`本身经第102条修复后
+    已经能在失败后正确返回`null`），但500毫秒之内如果这个窗口发生任何重绘（窗口拖动、从最小化
+    恢复——不是罕见触发条件），仍然会在一个已经被释放的`Bitmap`上抛异常，属于第104条同一个
+    根因（"渲染器自己的状态修好了，但持有同一个引用的下游消费者不知道"）的第三处，只是暴露
+    窗口比`ContentSurface`那处（一直持续到下一次成功加载为止）短得多。**修复方式**：这个类
+    此前完全没有订阅过`PlaybackEngine`的任何事件（只靠按钮点击和轮询读取状态），这次新增订阅
+    `_playback.PlaybackAbnormallyInterrupted`，失败时立即调用`RefreshFromEngine()`重新读取
+    （此时已经是正确的`null`），把暴露窗口从"最多500毫秒"直接收紧到"立即"，不再依赖轮询定时器
+    凑巧赶上。这个订阅没有对应的取消订阅——这个窗口和它持有的`PlaybackEngine`引用共享整个
+    进程生命周期（跟这个应用里其它长期配对的单例订阅是同一个约定，例如`Program.cs`自己的
+    `_stateMachine.StateChanged`订阅也从未取消过）。**没有做的部分**：这次改动本身没有在这个
+    沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

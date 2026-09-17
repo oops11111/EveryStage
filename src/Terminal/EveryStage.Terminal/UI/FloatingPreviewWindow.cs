@@ -150,6 +150,21 @@ public sealed class FloatingPreviewWindow : Form
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _refreshTimer.Tick += (_, _) => RefreshFromEngine();
 
+        // Bug fixed here: without this, a failed image/document (re)load left _thumbnail.Image
+        // holding whatever Bitmap it last captured from PlaybackEngine.CurrentThumbnail — which the
+        // failing renderer's own LoadAsync had, by that point, already disposed (see
+        // PlaybackEngine.OnImageOrDocumentFailed's own doc comment on this exact "a downstream
+        // consumer holds a stale reference to a Bitmap the renderer just disposed" shape, found and
+        // fixed for ContentSurface the same round). _refreshTimer's own 500ms poll would eventually
+        // re-read CurrentThumbnail (now correctly null after that fix) and self-heal, but that still
+        // leaves up to 500ms where any repaint of this window (a move, a restore from minimized —
+        // not a rare trigger) would try to draw an already-disposed Bitmap. Subscribing here closes
+        // that window immediately instead of waiting on the next poll; never unsubscribed since this
+        // window and the PlaybackEngine it was constructed with share the same process-lifetime
+        // (same convention as this app's other long-lived paired singletons, e.g. Program.cs's own
+        // _stateMachine.StateChanged subscription).
+        _playback.PlaybackAbnormallyInterrupted += (_, _) => RefreshFromEngine();
+
         // "意外关闭后从主面板召回" (PLANNING.md §8.3) — this comment used to justify not building a
         // recall affordance by saying the Phase 4 main panel didn't exist yet; MainWindow has existed
         // since an earlier round and that reasoning is now stale (see this project's README "已知
