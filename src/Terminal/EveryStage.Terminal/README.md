@@ -1317,6 +1317,23 @@ Caster知道终端机确实收到了东西。
     进程生命周期（跟这个应用里其它长期配对的单例订阅是同一个约定，例如`Program.cs`自己的
     `_stateMachine.StateChanged`订阅也从未取消过）。**没有做的部分**：这次改动本身没有在这个
     沙箱里跑过（没有dotnet），没有真机验证过。
+106. **【新发现的真实bug，已修复】`PlaybackEngine.PlayStandaloneAudio`是`PlayFile`switch语句里
+    唯一一个同步调用、完全没有`try/catch`保护的分支**：`PlayImageAsync`/`PlayDocumentAsync`
+    各自都有专门的`try/catch`（见第102条`OnImageOrDocumentFailed`那条doc comment的完整推理：
+    "文件在被加入活动之后又被删除/移动/损坏"是真实场景，不是假设），但`PlayStandaloneAudio`
+    调用的`AudioContentController.Play`内部同样会`new AudioDecodeSource(path)`——完全同一类
+    "打开任意用户提供的文件"风险——却从来没有任何东西接住它。`AudioController.PlaybackFailed`
+    （`OnAudioFailed`，这个方法自己已经在订阅）只覆盖`Play()`已经成功启动*之后*、后台播放线程
+    上发生的失败，从来没有覆盖过`Play()`自己同步构造阶段的失败——这个同步失败一旦发生，会
+    直接从`PlayFile`本身裸抛出去，不会命中`OnAudioFailed`，也完全不会经过`OnImageOrDocumentFailed`
+    /`PlaybackAbnormallyInterrupted`这一整套已经给图片/文档/视频/异步音频失败建立好的统一
+    上报机制。**修复方式**：给`ApplyAudioVisual(file); AudioController.Play(file.SourcePath);`
+    这两行包一层`try/catch`，失败时复用`OnImageOrDocumentFailed`——虽然名字里写的是"图片或
+    文档"，但它实际做的三件事（清空`ContentSurface`、记录日志、触发`PlaybackAbnormallyInterrupted`）
+    对独立音频加载失败同样完全适用，这次没有为了这一个新增调用方去重命名——跟
+    `EveryStage.Transport.RtpVideoClock`自己的doc comment"Not worth a rename or a new file
+    for one extra parameter on an existing method"是同一个判断。**没有做的部分**：这次改动
+    本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

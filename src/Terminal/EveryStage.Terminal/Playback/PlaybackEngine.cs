@@ -475,7 +475,12 @@ public sealed class PlaybackEngine : IDisposable
     /// the initial <c>await</c> captured, which in this WinForms app's message loop is the UI thread
     /// itself (same reason the non-exceptional path above already calls
     /// <see cref="OverlayWindow.ContentSurface"/>/<see cref="ArmStayDurationTimer(MediaFile)"/>
-    /// directly with no marshaling of its own) — so no <c>BeginInvoke</c> is needed here either.</summary>
+    /// directly with no marshaling of its own) — so no <c>BeginInvoke</c> is needed here either.
+    ///
+    /// Also called (despite the name) from <see cref="PlayStandaloneAudio"/>'s own try/catch for a
+    /// synchronous <c>AudioContentController.Play</c> construction failure — see that method's doc
+    /// comment for why this wasn't worth a rename for one more caller whose actual needs (clear
+    /// <c>ContentSurface</c>, log, raise <see cref="PlaybackAbnormallyInterrupted"/>) are identical.</summary>
     private void OnImageOrDocumentFailed(MediaFile file, Exception ex)
     {
         if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
@@ -515,8 +520,31 @@ public sealed class PlaybackEngine : IDisposable
         AudioController.LevelChanged -= OnAudioLevelChanged;
         AudioController.LevelChanged += OnAudioLevelChanged;
 
-        ApplyAudioVisual(file);
-        AudioController.Play(file.SourcePath);
+        // Bug fixed here: unlike PlayImageAsync/PlayDocumentAsync (each wrapped in their own
+        // try/catch specifically for this reason — see OnImageOrDocumentFailed's own doc comment),
+        // nothing ever caught a failure from this method's own two calls. AudioController.Play's
+        // own `new AudioDecodeSource(path)` is exactly the same "the file was deleted/moved/
+        // corrupted since being added to an activity" real, reachable failure mode as
+        // ImageContentRenderer/PdfContentRenderer's LoadAsync — the only difference is this method
+        // is synchronous, so an uncaught exception here propagated all the way out of PlayFile
+        // itself instead of vanishing into an unobserved Task. AudioController.PlaybackFailed
+        // (OnAudioFailed, wired above) only covers a failure AFTER Play() already started
+        // successfully, on the background playback thread — it was never reachable for a
+        // synchronous construction failure like this one. Reusing OnImageOrDocumentFailed here
+        // rather than inventing a parallel "audio load failed" path: its actual behavior (clear
+        // ContentSurface, log, raise PlaybackAbnormallyInterrupted) is exactly what a standalone-
+        // audio load failure needs too, despite the name — same "not worth a rename for one more
+        // caller" reasoning EveryStage.Transport.RtpVideoClock's own doc comment already gives for
+        // an analogous situation.
+        try
+        {
+            ApplyAudioVisual(file);
+            AudioController.Play(file.SourcePath);
+        }
+        catch (Exception ex)
+        {
+            OnImageOrDocumentFailed(file, ex);
+        }
     }
 
     /// <summary>Sets up whichever of the three <see cref="AudioVisual"/> options this file asks for.
