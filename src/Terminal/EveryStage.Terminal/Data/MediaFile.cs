@@ -18,13 +18,15 @@ public sealed class MediaFile
     /// <summary>Stay duration for image/document content, e.g. "how long before auto-advance".</summary>
     public TimeSpan? StayDuration { get; set; }
 
-    /// <summary>Fade in/out duration for video/audio content. Only fade-IN is currently wired up
-    /// (see <c>PlaybackEngine.FadeInDurationFor</c>, and <c>AudioContentController</c>'s class doc
-    /// comment for why fade-OUT is deliberately deferred) — this field is read but its second half,
-    /// the fade-out window at end of playback, has no effect yet.</summary>
+    /// <summary>Fade in/out duration for video/audio content (see <c>PlaybackEngine.FadeDurationFor</c>).
+    /// Fade-in is fully reliable — it only needs playback position, always available. Fade-out is
+    /// best-effort: it needs the file's total duration in advance, queried through this codebase's
+    /// single least-verified Media Foundation call (see <c>AudioContentController</c>'s class doc
+    /// comment for why) — it may silently not happen for some files (no error, just no fade-out),
+    /// while fade-in keeps working regardless.</summary>
     public TimeSpan? FadeDuration { get; set; }
 
-    /// <summary>Gates <see cref="FadeDuration"/> entirely — see <c>PlaybackEngine.FadeInDurationFor</c>.
+    /// <summary>Gates <see cref="FadeDuration"/> entirely — see <c>PlaybackEngine.FadeDurationFor</c>.
     /// False (the default) means no fade regardless of what <see cref="FadeDuration"/> holds.</summary>
     public bool VolumeFollowsFade { get; set; }
 

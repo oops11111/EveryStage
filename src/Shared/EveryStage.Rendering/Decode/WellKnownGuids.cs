@@ -55,6 +55,21 @@ internal static class WellKnownGuids
     public const uint MF_SOURCE_READER_FIRST_VIDEO_STREAM = unchecked((uint)-4);
     public const uint MF_SOURCE_READER_FIRST_AUDIO_STREAM = unchecked((uint)-3);
     public const uint MF_SOURCE_READER_ANY_STREAM = unchecked((uint)-2);
+    // Continues the same enumeration the three sentinels above belong to (mfreadwrite.h defines
+    // all four together) — "ask about the underlying IMFMediaSource itself" rather than any one
+    // stream, which is what a presentation-level attribute like MF_PD_DURATION below needs.
+    public const uint MF_SOURCE_READER_MEDIASOURCE = unchecked((uint)-1);
+
+    // --- MF_PD_* presentation descriptor attribute keys (mfidl.h) — used by
+    // AudioDecodeSource.TryGetDuration/VideoDecodeSource.TryGetDuration. Recalled from memory, NOT
+    // independently re-verified against a real Windows SDK header in this sandbox — see this
+    // class's own doc comment on that general caveat, and TryGetDuration's own doc comment on why
+    // this specific call goes through `dynamic` rather than a direct typed call the way every other
+    // GUID in this file is used: unlike those, this one has never had anything in this codebase
+    // exercise it even once, so there's nothing here to fall back on if the raw value itself turns
+    // out wrong beyond "GetPresentationAttribute returns some other, equally wrong duration" —
+    // exactly the same failure mode as any other bit-for-bit-wrong GUID, not a new risk category.
+    public static readonly Guid MF_PD_DURATION = new("6c990d33-bb8e-477a-8598-0d5d96fcd8d2");
 
     // --- MFT category (mfobjects.h) — used by AacAudioDecoder to find the built-in AAC decoder MFT,
     // mirroring EveryStage.Caster.Encode.EncoderGuids.MFT_CATEGORY_AUDIO_ENCODER's identical role

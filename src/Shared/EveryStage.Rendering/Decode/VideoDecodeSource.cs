@@ -112,6 +112,36 @@ public sealed class VideoDecodeSource : IDisposable
         }
     }
 
+    /// <summary>Same "unverified, goes through <c>dynamic</c> so a wrong guess fails at runtime
+    /// instead of at build time" reasoning as <see cref="AudioDecodeSource.TryGetDuration"/>'s own
+    /// (much longer) doc comment — deliberately independent code, not shared, matching this file's
+    /// existing "each decode source keeps its own copy" convention (see e.g.
+    /// <see cref="ReadFrameSize"/> vs. <c>AudioDecodeSource</c>'s analogous channel/rate reads).</summary>
+    public TimeSpan? TryGetDuration()
+    {
+        try
+        {
+            dynamic reader = _reader;
+            dynamic variant = reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION);
+            long ticks = ExtractDurationTicks(variant);
+            return ticks > 0 ? TimeSpan.FromTicks(ticks) : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>See <see cref="AudioDecodeSource"/>'s identical private helper's own doc comment —
+    /// deliberately duplicated, not shared, same reasoning as <see cref="TryGetDuration"/> above.</summary>
+    private static long ExtractDurationTicks(dynamic variant)
+    {
+        try { return checked((long)variant.Value); } catch { }
+        try { return checked((long)variant.UInt64); } catch { }
+        try { return checked((long)(ulong)variant); } catch { }
+        throw new InvalidOperationException("Unable to extract a UInt64 value from the Variant returned by GetPresentationAttribute.");
+    }
+
     /// <summary>Returns null once the audio stream reports end-of-stream.</summary>
     public DecodedAudioChunk? ReadNextAudioChunk()
     {

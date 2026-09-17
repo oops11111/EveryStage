@@ -22,6 +22,10 @@
     <PackageReference Include="Vortice.DXGI" Version="3.6.2" />
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- Needed for the `dynamic` late-bound Media Foundation call in AudioDecodeSource.TryGetDuration/
+         VideoDecodeSource.TryGetDuration — same reasoning and same package version as
+         src/Poc/WpsComInteropSpike's identical reference for its own `dynamic` COM calls. -->
+    <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
   </ItemGroup>
 
 </Project>

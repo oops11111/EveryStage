@@ -27,15 +27,15 @@ namespace EveryStage.Terminal.ContentEngine;
 /// message loop and can't be blocked in a tight pacing loop the way the Phase 0 demo's Program.cs
 /// does on its dedicated process.
 ///
-/// <see cref="Play"/>'s optional <c>fadeInDuration</c> implements the fade-IN half of PLANNING.md
-/// §6's "淡入/淡出时长 + 音量是否随渐变" (<c>MediaFile.FadeDuration</c>/<c>VolumeFollowsFade</c>) for a
-/// video's own soundtrack — see <see cref="AudioContentController"/>'s class doc comment for why
-/// fade-OUT isn't attempted here either (same missing-duration reason, applies equally to this
-/// class's <see cref="VideoDecodeSource"/>). Unlike <see cref="AudioContentController"/>, this class
-/// has no persistent <c>Volume</c> property to preserve across <see cref="Play"/> calls — nothing
-/// in the Terminal UI currently exposes per-file video volume control, so the fade-in's target
-/// ("full volume") is simply <see cref="AudioPlaybackClock"/>'s own default of 1.0, not some
-/// remembered user setting.
+/// <see cref="Play"/>'s optional <c>fadeDuration</c> implements BOTH halves of PLANNING.md §6's
+/// "淡入/淡出时长 + 音量是否随渐变" (<c>MediaFile.FadeDuration</c>/<c>VolumeFollowsFade</c>) for a
+/// video's own soundtrack — see <see cref="AudioContentController"/>'s class doc comment for the
+/// fade-out half's considerable, explicitly flagged risk (it depends on
+/// <see cref="VideoDecodeSource.TryGetDuration"/>, the least-verified Media Foundation call in this
+/// codebase). Unlike <see cref="AudioContentController"/>, this class has no persistent
+/// <c>Volume</c> property to preserve across <see cref="Play"/> calls — nothing in the Terminal UI
+/// currently exposes per-file video volume control, so both ramps' target ("full volume") is simply
+/// <see cref="AudioPlaybackClock"/>'s own default of 1.0, not some remembered user setting.
 /// </summary>
 public sealed class VideoContentController : IDisposable
 {
@@ -51,9 +51,15 @@ public sealed class VideoContentController : IDisposable
     private VideoDecodeSource? _source;
     private AudioPlaybackClock? _audioClock;
 
-    // See RunPlaybackLoopCore and the class doc comment — null means "no fade-in for the current
-    // file", set fresh by each Play() call.
-    private TimeSpan? _fadeInDuration;
+    // See RunPlaybackLoopCore and the class doc comment — null means "no fade in/out for the
+    // current file", set fresh by each Play() call. Same single-field-covers-both-directions
+    // reasoning as AudioContentController's own _fadeDuration.
+    private TimeSpan? _fadeDuration;
+
+    // Set fresh by each Play() call, from VideoDecodeSource.TryGetDuration() — null whenever that
+    // call fails (see its own doc comment) or fade-out wasn't requested. Same
+    // silently-degrades-to-fade-in-only behavior as AudioContentController's own _totalDuration.
+    private TimeSpan? _totalDuration;
 
     /// <summary>Raised (from the background playback thread — marshal to the UI thread if the
     /// handler touches UI) when both the video and audio streams reach end-of-stream.</summary>
@@ -71,20 +77,24 @@ public sealed class VideoContentController : IDisposable
     }
 
     /// <summary>Stops whatever is currently playing (if anything) and starts <paramref
-    /// name="path"/> from the beginning. <paramref name="fadeInDuration"/>, when given, ramps
-    /// <see cref="_audioClock"/>'s volume from 0 up to full linearly over that span — see
-    /// <see cref="RunPlaybackLoopCore"/> for where that ramp is actually applied, and the class doc
-    /// comment for why there's no equivalent fade-OUT parameter yet.</summary>
-    public void Play(string path, TimeSpan? fadeInDuration = null)
+    /// name="path"/> from the beginning. <paramref name="fadeDuration"/>, when given, ramps
+    /// <see cref="_audioClock"/>'s volume from 0 up to full linearly over that span at the start,
+    /// AND — best-effort, see <see cref="VideoDecodeSource.TryGetDuration"/>'s own doc comment —
+    /// ramps back down to 0 over the same span at the end. See <see cref="RunPlaybackLoopCore"/>
+    /// for where both ramps are actually applied.</summary>
+    public void Play(string path, TimeSpan? fadeDuration = null)
     {
         Stop();
 
         var source = new VideoDecodeSource(path, _surface.Gpu);
         var audioClock = new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
-        _fadeInDuration = fadeInDuration is { Ticks: > 0 } ? fadeInDuration : null;
-        // A zero-or-negative fade-in has nothing to ramp over, so it's treated as "no fade-in"
-        // rather than risking a divide-by-zero in RunPlaybackLoopCore's progress calculation.
-        audioClock.Volume = _fadeInDuration.HasValue ? 0f : 1f;
+        _fadeDuration = fadeDuration is { Ticks: > 0 } ? fadeDuration : null;
+        // A zero-or-negative fade has nothing to ramp over, so it's treated as "no fade in/out"
+        // rather than risking a divide-by-zero in RunPlaybackLoopCore's progress calculations.
+        // TryGetDuration is only worth calling when a fade was actually requested — no point
+        // risking its unverified `dynamic` call for a file that isn't going to fade either way.
+        _totalDuration = _fadeDuration.HasValue ? source.TryGetDuration() : null;
+        audioClock.Volume = _fadeDuration.HasValue ? 0f : 1f;
         _source = source;
         _audioClock = audioClock;
 
@@ -154,13 +164,14 @@ public sealed class VideoContentController : IDisposable
         }
     }
 
-    /// <summary>See the class doc comment for the fade-in/fade-out scoping decision. The ramp is
+    /// <summary>See the class doc comment for the fade-in/fade-out scoping decision, and
+    /// <see cref="AudioContentController.RunPlaybackLoopCore"/>'s own doc comment for the
+    /// <c>min(fadeInMultiplier, fadeOutMultiplier)</c> combination this uses too. Both ramps are
     /// applied here, right before each audio chunk is enqueued, using
-    /// <see cref="AudioPlaybackClock.PositionTicks"/> as its time base rather than
-    /// <paramref name="audioClock"/>-independent wall-clock time — same reasoning as
-    /// <see cref="AudioContentController.RunPlaybackLoopCore"/>'s own doc comment: this keeps the
-    /// ramp correct across a <see cref="Pause"/>/<see cref="Resume"/> instead of continuing to
-    /// advance while audio isn't actually playing.</summary>
+    /// <see cref="AudioPlaybackClock.PositionTicks"/> as their time base rather than
+    /// <paramref name="audioClock"/>-independent wall-clock time — this keeps both ramps correct
+    /// across a <see cref="Pause"/>/<see cref="Resume"/> instead of continuing to advance while
+    /// audio isn't actually playing.</summary>
     private void RunPlaybackLoopCore(VideoDecodeSource source, AudioPlaybackClock audioClock, CancellationToken token)
     {
         var frameStopwatch = Stopwatch.StartNew();
@@ -183,10 +194,19 @@ public sealed class VideoContentController : IDisposable
                 }
                 else
                 {
-                    if (_fadeInDuration.HasValue)
+                    if (_fadeDuration.HasValue)
                     {
-                        double progress = audioClock.PositionTicks / (double)_fadeInDuration.Value.Ticks;
-                        audioClock.Volume = (float)Math.Clamp(progress, 0.0, 1.0);
+                        double fadeInProgress = audioClock.PositionTicks / (double)_fadeDuration.Value.Ticks;
+                        double fadeInMultiplier = Math.Clamp(fadeInProgress, 0.0, 1.0);
+
+                        double fadeOutMultiplier = 1.0;
+                        if (_totalDuration.HasValue)
+                        {
+                            long remainingTicks = _totalDuration.Value.Ticks - audioClock.PositionTicks;
+                            fadeOutMultiplier = Math.Clamp(remainingTicks / (double)_fadeDuration.Value.Ticks, 0.0, 1.0);
+                        }
+
+                        audioClock.Volume = (float)Math.Min(fadeInMultiplier, fadeOutMultiplier);
                     }
 
                     audioClock.Enqueue(chunk.Value.Pcm);

@@ -5,19 +5,17 @@ namespace EveryStage.Terminal.UI;
 /// per-file "淡入/淡出时长 + 音量是否随渐变（视频/音频）". Same checkbox-enables-a-control convention
 /// <see cref="StayDurationDialog"/> already established for its own nullable <c>TimeSpan</c> field,
 /// reused here: <see cref="VolumeFollowsFade"/> is the on/off switch (matches its own name and
-/// <c>PlaybackEngine.FadeInDurationFor</c>'s reading of it — see that method's doc comment), and the
+/// <c>PlaybackEngine.FadeDurationFor</c>'s reading of it — see that method's doc comment), and the
 /// duration field is only meaningful/enabled while it's on.
 ///
-/// Added once <c>PlaybackEngine.FadeInDurationFor</c>/<see cref="ContentEngine.AudioContentController"/>/
+/// Added once <c>PlaybackEngine.FadeDurationFor</c>/<see cref="ContentEngine.AudioContentController"/>/
 /// <see cref="ContentEngine.VideoContentController"/> gave these two fields real behavior (this
 /// project's README risk #109), following the same "先做行为、再做UI" order
-/// <see cref="AudioPropertiesDialog"/>/<see cref="StayDurationDialog"/> already established — except,
-/// unlike those two, the behavior here is only half-finished (fade-IN only, no fade-OUT yet), so this
-/// dialog carries the same kind of honest in-progress caveat <see cref="AudioPropertiesDialog"/>'s red
-/// warning label does for background-audio overlay, rather than waiting for 100% completion before
-/// exposing anything editable — see this project's README risk #109(c) for why exposing the working
-/// half now, with a caveat about the missing half, was judged better than leaving both fields
-/// unreachable from any UI a second round in a row.
+/// <see cref="AudioPropertiesDialog"/>/<see cref="StayDurationDialog"/> already established. Fade-out
+/// was added a round after fade-in (see this project's README) and carries the single biggest
+/// unverified-code risk in this whole codebase — <c>AudioContentController</c>'s class doc comment
+/// explains why — so this dialog's warning label reflects "fade-out is attempted but may silently
+/// not happen for some files" rather than claiming it as a fully reliable feature.
 /// </summary>
 public sealed class FadeDialog : Form
 {
@@ -25,7 +23,7 @@ public sealed class FadeDialog : Form
     private readonly NumericUpDown _secondsUpDown;
 
     /// <summary>Maps directly onto <c>MediaFile.VolumeFollowsFade</c> — see that field's own doc
-    /// comment and <c>PlaybackEngine.FadeInDurationFor</c> for why this is the master on/off switch,
+    /// comment and <c>PlaybackEngine.FadeDurationFor</c> for why this is the master on/off switch,
     /// not just a label on the checkbox.</summary>
     public bool VolumeFollowsFade => _enabledCheckbox.Checked;
 
@@ -46,7 +44,7 @@ public sealed class FadeDialog : Form
 
         _enabledCheckbox = new CheckBox
         {
-            Text = "为此文件启用淡入（音量随渐变）",
+            Text = "为此文件启用淡入淡出（音量随渐变）",
             AutoSize = true,
             Location = new Point(12, 12),
             Checked = currentVolumeFollowsFade,
@@ -66,14 +64,16 @@ public sealed class FadeDialog : Form
         _enabledCheckbox.CheckedChanged += (_, _) => _secondsUpDown.Enabled = _enabledCheckbox.Checked;
 
         // Honest about a real, current limitation instead of letting the checkbox imply a fully
-        // finished feature — same "don't claim more than what's actually true" reasoning as
-        // AudioPropertiesDialog's own red caveat label. Unlike that label, this one isn't a "does
-        // nothing at all" warning: fade-in genuinely works (see this project's README risk #109);
-        // only the fade-OUT half at end of playback is still missing.
+        // reliable feature — same "don't claim more than what's actually true" reasoning as
+        // AudioPropertiesDialog's own red caveat label. Fade-in is fully reliable (needs only
+        // playback position, always available); fade-out needs the file's total duration in
+        // advance, queried through this codebase's single least-verified Media Foundation call (see
+        // AudioContentController's class doc comment) — it may silently not happen for some files
+        // rather than throwing anything visible, so this says so rather than promising it works.
         var noteLabel = new Label
         {
-            Text = "⚠ 目前只有淡入生效（从静音渐变到正常音量）——播放结束前的淡出还没有实现，\n" +
-                   "需要先知道文件总时长才能算出淡出的起点，这个仓库的解码封装目前不提供这个信息。",
+            Text = "⚠ 淡出依赖一个尚未在真机验证过的时长查询——对某些文件可能不生效（只有淡入\n" +
+                   "生效），不会报错，只是播放结束前不会渐弱。淡入本身不受此影响，总是可靠的。",
             ForeColor = Color.DarkRed,
             AutoSize = false,
             Bounds = new Rectangle(12, 72, 336, 44),

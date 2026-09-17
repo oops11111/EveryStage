@@ -387,7 +387,7 @@ public sealed class PlaybackEngine : IDisposable
                 // called above — so clearing it has no visible effect either way).
                 try
                 {
-                    VideoController.Play(file.SourcePath, FadeInDurationFor(file));
+                    VideoController.Play(file.SourcePath, FadeDurationFor(file));
                 }
                 catch (Exception ex)
                 {
@@ -524,11 +524,13 @@ public sealed class PlaybackEngine : IDisposable
     /// <summary>PLANNING.md §6's per-file "淡入/淡出时长 + 音量是否随渐变" — <see cref="MediaFile.VolumeFollowsFade"/>
     /// gates the whole feature (matching its name: volume only "follows" the fade when this file
     /// asks for that), and <see cref="MediaFile.FadeDuration"/> supplies how long. Returns null
-    /// (meaning "no fade-in") whenever either half is missing, so <see cref="AudioContentController.Play"/>/
-    /// <see cref="VideoContentController.Play"/> don't each need to re-derive this same two-field
-    /// check. Only fade-IN is wired through here — see <see cref="AudioContentController"/>'s class
-    /// doc comment for why fade-OUT isn't attempted this round.</summary>
-    private static TimeSpan? FadeInDurationFor(MediaFile file) =>
+    /// (meaning "no fade in/out") whenever either half is missing, so
+    /// <see cref="AudioContentController.Play"/>/<see cref="VideoContentController.Play"/> don't
+    /// each need to re-derive this same two-field check. Renamed from the original
+    /// <c>FadeInDurationFor</c> (dropped "In") once fade-out started being attempted too, from the
+    /// exact same duration value — see <see cref="AudioContentController"/>'s class doc comment for
+    /// how the two combine, and for fade-out's own considerable, explicitly flagged risk.</summary>
+    private static TimeSpan? FadeDurationFor(MediaFile file) =>
         file.VolumeFollowsFade ? file.FadeDuration : null;
 
     /// <summary>Standalone (non-background) audio playback — see this class's doc comment and
@@ -567,7 +569,7 @@ public sealed class PlaybackEngine : IDisposable
         try
         {
             ApplyAudioVisual(file);
-            AudioController.Play(file.SourcePath, FadeInDurationFor(file));
+            AudioController.Play(file.SourcePath, FadeDurationFor(file));
         }
         catch (Exception ex)
         {

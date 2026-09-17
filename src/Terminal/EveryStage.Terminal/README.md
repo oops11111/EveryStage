@@ -1478,6 +1478,41 @@ Caster知道终端机确实收到了东西。
     这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过——包括`ShowBalloonTip`在
     真实Windows通知设置（比如系统级"专注助手"/勿扰模式）开启时是否真的会显示气泡，这属于操作
     系统行为，不是这个仓库能控制或验证的部分。
+114. **【已尝试实现，风险已知且刻意接受】淡出（fade-out）——第109条(a)当时判断"风险太高，这次
+    不做"，这一轮在明确知情、经用户确认接受风险的前提下尝试实现了**：新增
+    `AudioDecodeSource.TryGetDuration()`/`VideoDecodeSource.TryGetDuration()`，通过
+    `IMFSourceReader::GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION)`
+    查询文件总时长（`MF_PD_DURATION`的GUID`6c990d33-bb8e-477a-8598-0d5d96fcd8d2`凭记忆写下，
+    没有在这个沙箱里对照真实Windows SDK头文件核实过）。**这是这个仓库迄今风险最高的一次Media
+    Foundation调用尝试**：不像`WellKnownGuids.cs`里其它GUID常量那样"就算猜错了、至少还能拿
+    Windows SDK头文件逐字核对"，这次连C#这一层的方法签名本身（`GetPresentationAttribute`到底
+    叫这个名字、参数顺序是什么、返回值是不是直接就是某个`Variant`类型）都完全没有核实过——
+    错的不只是"数值"，可能是"根本编译不过"。**降低这个风险的具体做法**：整个调用（方法名本身，
+    不只是取值那一步）都通过`dynamic`发起，跟`Poc/WpsComInteropSpike`处理"从来没有真实WPS
+    环境验证过"的COM互操作时用的完全同一个手法——`dynamic`成员访问在编译期永远不检查成员是否
+    真的存在，猜错了在运行时会抛`Microsoft.CSharp.RuntimeBinder.RuntimeBinderException`（能被
+    `catch`接住），而不是让整个项目编译不过。为此`EveryStage.Rendering.csproj`新增了
+    `Microsoft.CSharp`包引用（版本号照抄`WpsComInteropSpike.csproj`的同一个引用）。取值这一步
+    （从返回的`Variant`里取出`ulong`）也是`dynamic`，而且依次尝试三种不同.NET COM/PROPVARIANT
+    封装常见的取值写法（`.Value`/`.UInt64`/直接强转），每种都单独`catch`，全部失败才抛出并被
+    外层`catch`吞掉——尽量提高"哪怕猜错了具体取值方式，也不至于哪种都不试就放弃"的成功率。
+    **一旦拿到时长**：`AudioContentController`/`VideoContentController`的`_fadeInDuration`
+    字段改名成`_fadeDuration`（不再只管淡入），`RunPlaybackLoopCore`同时计算淡入/淡出两个
+    进度乘数，取`min(fadeIn, fadeOut)`而不是简单相加或二选一——这样文件长度短于
+    `2 * FadeDuration`时，淡入淡出窗口会重叠，音量中途也不会真正达到满值，是真实场景下正确的
+    处理方式，不是这次为了省事而漏掉的边界情况。`PlaybackEngine.FadeInDurationFor`改名成
+    `FadeDurationFor`（同一个`VolumeFollowsFade`+`FadeDuration`两字段读取逻辑现在同时驱动
+    两个方向，"In"这个名字不再准确）。`FadeDialog`的红色警示文字也改了措辞：不再说"淡出完全
+    没做"，而是如实说明"淡出依赖一个未经真机验证的时长查询，可能对某些文件不生效，但不会报错、
+    也不影响淡入"。**这条本身是应用户明确要求做的**：前一轮的评估把这个方向标记为"过高风险，
+    需要用户决定是否接受"，用户在看到这个评估后选择了"先做这一项"，不是这次单方面重新降低了
+    风险判断的门槛。**完全没有验证过的部分（比任何其它这个仓库的Media Foundation调用都更彻底）**：
+    这次改动本身没有在这个沙箱里跑过（没有dotnet），`GetPresentationAttribute`这个方法名在
+    Vortice.MediaFoundation里是否真的存在、参数顺序、返回类型的具体形状，`Variant`（假设确实
+    叫这个名字）取值的具体写法——没有一项在这个沙箱里被证实过，只在真实Windows机器上跑一次才能
+    知道这次尝试到底成不成功；即使一切都编译通过，`checked`强制转换在数值确实溢出`long`范围时
+    （几乎不可能出现在真实媒体文件的时长上，但理论上如果读到了一个完全不相关的字段就有可能）
+    会抛异常，同样会被外层`catch`吞掉、退化成"这个文件没有淡出"，不会让播放本身失败。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -1494,12 +1529,9 @@ Caster知道终端机确实收到了东西。
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
 - 背景音轨叠加播放（`IsBackgroundAudio == true`，见"已知风险"第61条）——需要`PlaybackEngine`支持
   真正的多轨并发播放，目前完全没有实现；非背景音频（第61条已实现的那一半）不受影响
-- `FadeDuration`/`VolumeFollowsFade`——淡入这一半已经在第109条实现了，编辑UI也已经在第111条
-  补上了（`FadeDialog`，`ActivitiesPanel`的"淡入淡出..."按钮）。**淡出仍然完全没有做**
-  （需要`AudioDecodeSource`/`VideoDecodeSource`暴露文件总时长，这个仓库目前没有任何代码路径
-  查询过`IMFSourceReader`的`MF_PD_DURATION`，见第109条(a)的完整理由），对应的编辑UI自然
-  也还没有——真正实现淡出行为之后，`FadeDialog`大概率需要再加一个字段，这不是这次能顺手
-  做的
+- ~~`FadeDuration`/`VolumeFollowsFade`的淡出~~——淡入（第109条）、编辑UI（第111条）、淡出
+  尝试实现（第114条）都已经做了，从这个列表里移除；淡出本身是否真的在真机上生效仍然完全没有
+  验证过（见第114条"完全没有验证过的部分"），但这属于"已实现、待验证"而不是"尚未开始"
 - PLANNING.md §8.2"音频以横向播放条展示（含播放/进度/音量/循环/独立投屏按钮）"——`FilesPanel`
   目前把音频文件跟图片/视频/文档放进同一个`ListView`缩略图网格，完全没有单独的横向行样式；这次
   排查PLANNING.md跟README的差异时发现这句话之前只在`FilesPanel`类doc comment里提过一次（且原话

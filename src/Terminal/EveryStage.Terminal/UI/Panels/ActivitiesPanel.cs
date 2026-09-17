@@ -96,7 +96,7 @@ public sealed class ActivitiesPanel : UserControl
         _audioPropertiesButton = new Button { Text = "音频属性...", AutoSize = true, Enabled = false };
         _audioPropertiesButton.Click += (_, _) => OnEditAudioProperties();
         // Only ever enabled for a selected file whose Kind is Video or Audio — see
-        // UpdateButtonStates. New the same round PlaybackEngine.FadeInDurationFor first gave
+        // UpdateButtonStates. New the same round PlaybackEngine.FadeDurationFor first gave
         // MediaFile.FadeDuration/VolumeFollowsFade any runtime effect at all (see this project's
         // README risk #109), same "先做行为、再做UI" order as PlayMode/IsBackgroundAudio/
         // StayDuration before it — except unlike those, the behavior itself is still only half done
