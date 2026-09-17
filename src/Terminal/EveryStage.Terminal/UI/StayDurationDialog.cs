@@ -3,7 +3,7 @@ namespace EveryStage.Terminal.UI;
 /// <summary>
 /// Edits a single <c>MediaFile.StayDuration</c> — PLANNING.md §6's "停留时长（图片/文档）" per-file
 /// override. Until this dialog existed, <c>MediaFile.StayDuration</c> was read by
-/// <c>PlaybackEngine.ArmStayDurationTimer</c> and cloned by <c>ActivitiesPanel.CloneFile</c>, but had
+/// <c>PlaybackEngine.ArmStayDurationTimer</c> and cloned by <c>MediaFile.Clone</c>, but had
 /// no editing entry point anywhere — worse than simply missing, <c>SettingsPanel</c>'s own "默认停留
 /// 时长" help text already claimed "单个文件自己设置的停留时长（活动面板里配置）始终优先于这里的
 /// 默认值", describing a feature that didn't actually exist yet. Same checkbox-enables-a-control

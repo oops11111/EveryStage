@@ -6,7 +6,7 @@ namespace EveryStage.Terminal.UI;
 /// Edits <c>MediaFile.OnCompletion</c> — PLANNING.md §6's "播放完成后动作：自动下一项/循环/停留
 /// 等待". <c>PlaybackEngine.HandleCompletion</c> has read and correctly acted on this field since the
 /// round that first gave <see cref="PlaybackEngine"/> any real playback behavior at all, and
-/// <c>ActivitiesPanel.CloneFile</c> has always deep-copied it — but, like <c>MediaFile.StayDuration</c>
+/// <see cref="MediaFile.Clone"/> has always deep-copied it — but, like <c>MediaFile.StayDuration</c>
 /// before this dialog existed (see this project's README "已知风险"), nothing ever let anyone actually
 /// change it away from its default (<see cref="CompletionAction.NextItem"/>) for a specific file.
 /// Non-nullable, unlike <see cref="PlayModeDialog"/>'s per-file case — <c>OnCompletion</c> has no

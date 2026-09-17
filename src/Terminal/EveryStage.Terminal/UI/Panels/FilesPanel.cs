@@ -13,22 +13,23 @@ namespace EveryStage.Terminal.UI.Panels;
 /// remove a library file at all, not just a missing log call).
 ///
 /// Removing a library entry never touches any <see cref="Activity"/> that already contains a copy of
-/// it: <c>ActivitiesPanel</c>'s "添加文件到活动" deep-copies a <see cref="MediaFile"/>
-/// (<c>ActivitiesPanel.CloneFile</c>) rather than referencing the library entry by
-/// <see cref="MediaFile.Id"/>, so an activity's files have no dependency on the library entry they
-/// originated from still existing — see this project's README ("已知风险" #22) on this copy-not-
-/// reference behavior being a deliberate, previously-documented choice, not something decided here.
+/// it: both <c>ActivitiesPanel</c>'s "添加文件到活动" and this panel's own <see cref="OnAddToActivityClick"/>
+/// deep-copy a <see cref="MediaFile"/> (<see cref="MediaFile.Clone"/>) rather than referencing the
+/// library entry by <see cref="MediaFile.Id"/>, so an activity's files have no dependency on the
+/// library entry they originated from still existing — see this project's README ("已知风险" #22) on
+/// this copy-not-reference behavior being a deliberate, previously-documented choice, not something
+/// decided here.
 ///
-/// PLANNING.md §11's "批量选择" now half-works: <see cref="_listView"/> allows <c>MultiSelect</c> and
-/// "移除" (<see cref="OnRemoveClick"/>) handles any number of selected files at once — reusing the
-/// existing always-visible toolbar button rather than a separate floating one, since it already only
-/// enables once something is selected, the same enable-on-selection spirit §11's "选中后悬浮工具栏
-/// 出现" describes. The other two actions §11 lists for the same selection, "加入活动" and "统一
-/// 设置属性", are NOT implemented — see this project's README "尚未开始" for why each needs either
-/// new cross-panel plumbing (an activity picker reachable from here, which panel/scenario context to
-/// add into) or product decisions PLANNING.md doesn't specify (how a multi-file property editor
-/// should show/resolve conflicting existing values across the selection) that this round didn't
-/// attempt.
+/// PLANNING.md §11's "批量选择" now covers two of its three actions: <see cref="_listView"/> allows
+/// <c>MultiSelect</c>, "移除" (<see cref="OnRemoveClick"/>) handles any number of selected files at
+/// once, and "加入活动" (<see cref="OnAddToActivityClick"/>, added once <see cref="ActivityPickerDialog"/>
+/// gave this panel a way to pick a destination scenario/activity — see this project's README) does
+/// too — both reuse the existing always-visible toolbar rather than a separate floating one, since it
+/// already only enables once something is selected, the same enable-on-selection spirit §11's "选中后
+/// 悬浮工具栏出现" describes. The remaining action, "统一设置属性", is NOT implemented — it needs a
+/// product decision PLANNING.md doesn't specify (how a multi-file property editor should show/resolve
+/// conflicting existing values across the selection) that this round didn't attempt; see this
+/// project's README "尚未开始".
 ///
 /// Not implemented (see this project's README "已知风险"/"尚未开始" for the full writeup of why):
 /// real video/PDF/audio thumbnails (video and document items show a generic placeholder icon —
@@ -45,9 +46,12 @@ public sealed class FilesPanel : UserControl
 {
     private readonly FileLibraryStore _library;
     private readonly FileOperationLogger _fileOpLog;
+    private readonly ScenarioStore _scenarioStore;
+    private readonly ScenarioRepository _scenarioRepository;
     private readonly ListView _listView;
     private readonly ImageList _thumbnails;
     private readonly Button _removeButton;
+    private readonly Button _addToActivityButton;
     private MediaKind? _activeFilter;
 
     /// <summary>Raised when the user double-clicks a file to play it standalone (no activity
@@ -55,10 +59,12 @@ public sealed class FilesPanel : UserControl
     /// means for completion actions).</summary>
     public event Action<MediaFile>? FilePlayRequested;
 
-    public FilesPanel(FileLibraryStore library, FileOperationLogger fileOpLog)
+    public FilesPanel(FileLibraryStore library, FileOperationLogger fileOpLog, ScenarioStore scenarioStore, ScenarioRepository scenarioRepository)
     {
         _library = library;
         _fileOpLog = fileOpLog;
+        _scenarioStore = scenarioStore;
+        _scenarioRepository = scenarioRepository;
         Dock = DockStyle.Fill;
         AllowDrop = true;
 
@@ -77,21 +83,35 @@ public sealed class FilesPanel : UserControl
         _removeButton.Click += OnRemoveClick;
         toolbar.Controls.Add(_removeButton);
 
+        // PLANNING.md §11 "批量选择"'s "加入活动" — previously left unimplemented (see this
+        // project's README "尚未开始") specifically because this panel had no activity-list UI of
+        // its own to add into; ActivityPickerDialog now supplies exactly that. Same
+        // enable-on-selection reuse of the always-visible toolbar as _removeButton above, handles
+        // any number of selected files at once.
+        _addToActivityButton = new Button { Text = "加入活动...", AutoSize = true, Enabled = false };
+        _addToActivityButton.Click += OnAddToActivityClick;
+        toolbar.Controls.Add(_addToActivityButton);
+
         _thumbnails = new ImageList { ImageSize = new Size(96, 96), ColorDepth = ColorDepth.Depth32Bit };
         _listView = new ListView
         {
             Dock = DockStyle.Fill,
             View = View.LargeIcon,
             LargeImageList = _thumbnails,
-            // PLANNING.md §11 "批量选择": Ctrl/Shift+点击 multi-select now works and "删除" (below)
-            // handles any number of selected items — see class doc comment for why "加入活动"/
-            // "统一设置属性" (the other two actions §11 describes for the same selection) aren't
-            // attempted here, and why this reuses the existing always-visible toolbar's "移除" button
-            // rather than building a separate floating one for the same enable/disable-on-selection
-            // behavior "选中后悬浮工具栏出现" already describes in spirit.
+            // PLANNING.md §11 "批量选择": Ctrl/Shift+点击 multi-select now works, and both "删除"
+            // (below) and "加入活动" (OnAddToActivityClick) handle any number of selected items —
+            // see class doc comment for why the remaining action, "统一设置属性", still isn't
+            // attempted, and why this reuses the existing always-visible toolbar buttons rather than
+            // building a separate floating one for the same enable/disable-on-selection behavior
+            // "选中后悬浮工具栏出现" already describes in spirit.
             MultiSelect = true,
         };
-        _listView.SelectedIndexChanged += (_, _) => _removeButton.Enabled = _listView.SelectedItems.Count > 0;
+        _listView.SelectedIndexChanged += (_, _) =>
+        {
+            bool hasSelection = _listView.SelectedItems.Count > 0;
+            _removeButton.Enabled = hasSelection;
+            _addToActivityButton.Enabled = hasSelection;
+        };
         _listView.DoubleClick += (_, _) =>
         {
             if (_listView.SelectedItems.Count > 0 && _listView.SelectedItems[0].Tag is MediaFile file)
@@ -135,9 +155,9 @@ public sealed class FilesPanel : UserControl
             ImportPaths(paths);
     }
 
-    /// <summary>PLANNING.md §11 "批量选择" — the "删除" half of it (see class doc comment for why
-    /// "加入活动"/"统一设置属性" aren't attempted here). Handles any number of selected items, not
-    /// just one, now that <see cref="_listView"/> allows <c>MultiSelect</c>.</summary>
+    /// <summary>PLANNING.md §11 "批量选择" — the "删除" half of it (see class doc comment for the
+    /// other two actions §11 describes for the same selection). Handles any number of selected
+    /// items, not just one, now that <see cref="_listView"/> allows <c>MultiSelect</c>.</summary>
     private void OnRemoveClick(object? sender, EventArgs e)
     {
         var files = _listView.SelectedItems.Cast<ListViewItem>()
@@ -161,6 +181,43 @@ public sealed class FilesPanel : UserControl
             _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
         }
         Refresh_();
+    }
+
+    /// <summary>PLANNING.md §11 "批量选择"'s "加入活动" half — see class doc comment for why this
+    /// was previously left unimplemented, and <see cref="ActivityPickerDialog"/> for the picker this
+    /// needed that didn't exist until now. Handles any number of selected files at once, same as
+    /// <see cref="OnRemoveClick"/>. Deep-copies each selected file (<see cref="MediaFile.Clone"/>)
+    /// into the chosen activity — same "always an independent copy, never a shared reference"
+    /// behavior <c>ActivitiesPanel</c>'s own "添加文件..." already established (see this project's
+    /// README "已知风险" #22). Doesn't refresh <c>ActivitiesPanel</c>'s own tree directly: this
+    /// panel has no reference to it, and <c>MainWindow.ShowPanel</c> already calls
+    /// <c>ActivitiesPanel.RefreshTree()</c> every time the operator navigates there, which is the
+    /// same lazy-refresh-on-show convention every panel in this app already relies on (see e.g.
+    /// <c>SettingsPanel.Refresh_</c>'s own doc comment on why only the 显示 tab needs it) rather than
+    /// pushing a live update across panels that aren't currently visible anyway.</summary>
+    private void OnAddToActivityClick(object? sender, EventArgs e)
+    {
+        var files = _listView.SelectedItems.Cast<ListViewItem>()
+            .Select(item => item.Tag as MediaFile)
+            .Where(file => file != null)
+            .Cast<MediaFile>()
+            .ToList();
+        if (files.Count == 0 || _scenarioStore.Scenarios.Count == 0) return;
+
+        using var dialog = new ActivityPickerDialog(_scenarioStore.Scenarios, _scenarioStore.CurrentScenarioId);
+        if (dialog.ShowDialog(this) != DialogResult.OK
+            || dialog.SelectedScenario == null || dialog.SelectedActivity == null)
+            return;
+
+        foreach (var file in files) dialog.SelectedActivity.Files.Add(file.Clone());
+        _fileOpLog.LogActivityModified(dialog.SelectedScenario.Id, dialog.SelectedActivity.Id, dialog.SelectedActivity.Name);
+        _scenarioRepository.Save(_scenarioStore);
+
+        MessageBox.Show(this,
+            files.Count == 1
+                ? $"已将 \"{Path.GetFileName(files[0].SourcePath)}\" 加入活动 \"{dialog.SelectedActivity.Name}\"。"
+                : $"已将选中的 {files.Count} 个文件加入活动 \"{dialog.SelectedActivity.Name}\"。",
+            "加入活动", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void ImportPaths(IEnumerable<string> paths)

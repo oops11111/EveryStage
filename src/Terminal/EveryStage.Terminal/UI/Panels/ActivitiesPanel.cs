@@ -243,23 +243,12 @@ public sealed class ActivitiesPanel : UserControl
             IsCollapsed = source.IsCollapsed,
             DefaultPlayMode = source.DefaultPlayMode,
         };
-        clone.Files.AddRange(source.Files.Select(CloneFile));
+        // MediaFile.Clone() — see that method's own doc comment; this used to be a private
+        // CloneFile method living only here, pulled out onto MediaFile itself now that FilesPanel's
+        // "加入活动..." needs the exact same field-by-field copy.
+        clone.Files.AddRange(source.Files.Select(file => file.Clone()));
         return clone;
     }
-
-    private static MediaFile CloneFile(MediaFile source) => new()
-    {
-        SourcePath = source.SourcePath,
-        Kind = source.Kind,
-        PlayModeOverride = source.PlayModeOverride,
-        StayDuration = source.StayDuration,
-        FadeDuration = source.FadeDuration,
-        VolumeFollowsFade = source.VolumeFollowsFade,
-        OnCompletion = source.OnCompletion,
-        AllowManualSkip = source.AllowManualSkip,
-        IsBackgroundAudio = source.IsBackgroundAudio,
-        BackgroundAudioVisual = source.BackgroundAudioVisual,
-    };
 
     private void OnDeleteScenario()
     {
@@ -330,7 +319,7 @@ public sealed class ActivitiesPanel : UserControl
         using var picker = new LibraryFilePickerDialog(_library.Files);
         if (picker.ShowDialog(this) != DialogResult.OK || picker.Selected == null) return;
 
-        activity.Files.Add(CloneFile(picker.Selected));
+        activity.Files.Add(picker.Selected.Clone());
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
         _repository.Save(_store);
         RefreshTree();

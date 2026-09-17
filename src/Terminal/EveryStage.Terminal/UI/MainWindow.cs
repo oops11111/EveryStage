@@ -100,7 +100,7 @@ public sealed class MainWindow : Form
         // instance (and therefore one lock) removes that risk entirely rather than just accepting it.
         _fileOpLog = new FileOperationLogger();
 
-        _filesPanel = new FilesPanel(library, _fileOpLog);
+        _filesPanel = new FilesPanel(library, _fileOpLog, scenarioStore, scenarioRepository);
         _filesPanel.FilePlayRequested += file => _playback?.RequestPlay(file);
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);

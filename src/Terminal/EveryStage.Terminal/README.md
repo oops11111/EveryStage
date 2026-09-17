@@ -1436,6 +1436,26 @@ Caster知道终端机确实收到了东西。
     本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过；淡出的编辑UI本身还是没有——等
     第109条(a)提到的淡出行为真正实现之后，这个对话框大概率需要再加一个字段，不是这次能一起
     做的。
+112. **【已实现，原为已知缺口】PLANNING.md §11"批量选择"的"加入活动"半——`FilesPanel`现在能把
+    选中的一个或多个文件加入某个方案的某个活动了**：新增`UI/ActivityPickerDialog.cs`（方案
+    下拉框+活动下拉框，选方案时联动刷新活动下拉框；活动下拉框为空时"确定"按钮禁用，避免选中
+    一个还没有任何活动的空方案），`FilesPanel`新增"加入活动..."按钮，跟"移除"同样的
+    enable-on-selection写法。**顺手做的重构**：把原来只存在于`ActivitiesPanel`里的私有
+    `CloneFile`方法（`MediaFile`字段逐个复制、`Id`不复制/自动生成新值）提升成`MediaFile.Clone()`
+    实例方法——`FilesPanel`这条新路径需要跟`ActivitiesPanel`自己的"添加文件..."完全同一份深拷贝
+    逻辑，与其各自维护一份字段列表（将来`MediaFile`每加一个新字段就要同时改两处，忘改一处就是
+    一个新bug的来源），不如提到数据类自己身上只维护一份。`ActivitiesPanel.CloneActivity`/
+    `OnAddFile`都已经改成调用`source.Clone()`，行为完全不变，只是代码搬了位置——`StayDurationDialog`/
+    `CompletionActionDialog`两处doc comment里提到`ActivitiesPanel.CloneFile`的地方也同步改成
+    `MediaFile.Clone`。**没有做`ActivitiesPanel`那边的联动刷新**：`FilesPanel`加入活动后不会
+    主动刷新`ActivitiesPanel`的树——这个面板原本就不持有`ActivitiesPanel`的引用，而
+    `MainWindow.ShowPanel`已经保证每次切换到"活动"标签页都会重新`RefreshTree()`，跟这个应用
+    里每个面板"显示时才刷新"的既有约定一致（例如`SettingsPanel.Refresh_`只有显示器列表那部分
+    需要这样，见该方法自己的doc comment），不是遗漏。**仍然没有做的部分**：PLANNING.md §11同一句
+    点名的"统一设置属性"——这个仓库连单文件属性编辑都是各自独立的对话框，还没有能同时编辑多个
+    文件共同属性、处理冲突值的统一入口，PLANNING.md原文"跨类型选中时屏蔽不适用的属性项"具体
+    交互细节也没有展开，这次没有尝试。这次改动本身没有在这个沙箱里跑过（没有dotnet），没有
+    真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -1474,12 +1494,10 @@ Caster知道终端机确实收到了东西。
   把音频文件放进跟图片/视频/文档相同的缩略图网格里，见该类doc comment——第81、82条给
   `FloatingPreviewWindow`加的暂停/音量按钮是这个悬浮小窗自己的临时UI，不是`FilesPanel`里描述的
   那条真正的横向播放条。
-- PLANNING.md §11"批量选择"里的"加入活动"/"统一设置属性"（见"已知风险"第79条，"删除"那一半已经
-  实现）——"加入活动"需要新的跨面板管线（在`FilesPanel`这里选文件、去哪个活动/方案添加，这个面板
-  目前完全不认识`ScenarioStore`/`ScenarioRepository`），"统一设置属性"需要先决定好清空/合并冲突值
-  这类多选编辑的常见交互细节，PLANNING.md原文"跨类型选中时屏蔽不适用的属性项"也只针对这一半，
-  这个仓库连单文件属性编辑（第71、73条）都是各自独立的对话框，还没有能同时编辑多个文件共同属性的
-  统一入口，这两项这次都没有尝试
+- PLANNING.md §11"批量选择"里的"统一设置属性"（见"已知风险"第79、112条——"删除"、"加入活动"
+  两半都已经实现了）——需要先决定好清空/合并冲突值这类多选编辑的常见交互细节，PLANNING.md原文
+  "跨类型选中时屏蔽不适用的属性项"也只针对这一项，这个仓库连单文件属性编辑（第71、73条）都是
+  各自独立的对话框，还没有能同时编辑多个文件共同属性的统一入口，这次没有尝试
 - **【文档修正，不是代码改动】`Activity`类自己的doc comment曾经声称"`Scenario.Activities`里的
   顺序是`PlayMode.SequentialAuto`的权威播放顺序"，这句话夸大了实际行为**：追踪
   `PlaybackEngine.TryAdvance`发现它的移动范围严格限定在`_currentActivity.Files`内部——一个活动
