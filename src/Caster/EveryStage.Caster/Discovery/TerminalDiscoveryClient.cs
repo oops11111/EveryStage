@@ -47,12 +47,32 @@ public sealed class TerminalDiscoveryClient : IDisposable
     /// touching UI.</summary>
     public event Action<DiscoveryProtocol.CastStatusMessage>? CastStatusReceived;
 
+    // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
+    // step one" shape as this project's Terminal-side counterpart, Terminal.Devices.DiscoveryService's
+    // own constructor fix (see that project's README) — new UdpClient() above succeeds and
+    // allocates a live native socket handle before Bind() ever runs. DiscoveryProtocol.Port is a
+    // fixed, well-known port, so Bind() can genuinely throw SocketException (address already in
+    // use — a second Caster instance on this machine, a leftover process from a previous crash
+    // still holding the port, ReuseAddress does not guarantee a successful bind) — a real,
+    // reachable failure mode, not hypothetical. Without this try/catch, that failure would leave
+    // the constructor throwing before it ever finishes, so the caller never receives an instance
+    // and can never call Dispose() — the UdpClient just constructed above leaks for the rest of the
+    // process's lifetime.
     public TerminalDiscoveryClient()
     {
-        _socket = new UdpClient();
-        _socket.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        _socket.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryProtocol.Port));
-        _socket.EnableBroadcast = true;
+        var socket = new UdpClient();
+        try
+        {
+            socket.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            socket.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryProtocol.Port));
+            socket.EnableBroadcast = true;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+        _socket = socket;
     }
 
     public void Start() => _receiveLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token));

@@ -1399,6 +1399,27 @@ Caster知道终端机确实收到了东西。
     **没有验证过的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），淡入的音量渐变听感
     是否平滑、`AudioPlaybackClock.Volume`是否支持这么高频率（每个PCM块一次，通常几十毫秒一次）
     的设置调用都没有真机验证过。
+110. **【新发现的真实bug，已修复】`DiscoveryService`构造函数：`new UdpClient()`成功后，
+    紧跟着的`Bind()`如果抛异常，刚创建的socket就泄漏了**：跟`CastReceiver`构造函数里
+    `RtpReceiver`那个已经修过的bug（见该类doc comment）完全同一个形状——`_socket = new
+    UdpClient()`这一步先成功，分配了一个真实的原生socket句柄，紧接着`SetSocketOption`/
+    `Bind(new IPEndPoint(IPAddress.Any, DiscoveryProtocol.Port))`这两步中`Bind`是真正可能
+    抛出`SocketException`的一步——`DiscoveryProtocol.Port`是一个固定端口，"端口已被占用"是
+    真实可达的失败场景（同一台机器上跑了第二个Terminal实例、上一次崩溃遗留的进程还占着这个
+    端口、`ReuseAddress`本身并不保证一定能绑定成功），不是假设性的。这个异常一抛出，构造函数
+    永远不会正常返回，调用方（`Program.cs`里的`new DiscoveryService(...)`）根本拿不到实例，
+    也就永远没有机会调用`Dispose()`——刚创建的那个`UdpClient`会一直泄漏到进程结束。**这跟
+    本README之前已经记录的另一个问题不是同一件事**：之前的记录说的是"`TerminalApplicationContext`
+    没有给`new DiscoveryService(...)`这个调用包`try/catch`，失败时会让整个进程崩溃"（见该处
+    记录，"这次刻意没有修，超出这轮重构范围"）——即使外层调用被包上了`try/catch`，调用方依然
+    拿不到`DiscoveryService`实例本身，依然没有办法调用它的`Dispose()`；泄漏必须在这里、在
+    局部变量还能被够到的时候关掉，光修外层调用点没用。**修复方式**：跟`CastReceiver`同一个
+    写法——先把`new UdpClient()`的结果存进一个局部变量，`SetSocketOption`/`Bind`/
+    `EnableBroadcast`都包进`try/catch`，失败时`Dispose()`这个局部变量再重新抛出，只有全部
+    成功之后才赋给`_socket`字段。**顺手在同一次审计里发现Caster这边的镜像类
+    `TerminalDiscoveryClient`也有完全一样的问题，同一次一起修了**（见Caster README对应条目）。
+    **没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过
+    `Bind`失败时的具体`SocketException`信息。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

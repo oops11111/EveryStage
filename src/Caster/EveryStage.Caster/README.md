@@ -919,6 +919,16 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     `_videoDevice`再重新抛出——跟`AacAudioDecoder`构造函数那次修复（单个字段场景）完全
     同一个写法，不释放传入的`gpu`参数本身，因为这个类不拥有它。**没有做的部分**：这次改动
     本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+83. **【新发现的真实bug，已修复】`TerminalDiscoveryClient`构造函数：`new UdpClient()`
+    成功后，紧跟着的`Bind()`如果抛异常，刚创建的socket就泄漏了**：跟Terminal那边
+    `Devices.DiscoveryService`构造函数同一次审计发现的完全同一个bug（两个类是彼此的镜像——
+    一个是Terminal监听/广播，一个是Caster监听/广播，构造函数写法几乎逐字相同），见Terminal
+    项目README对应条目的完整理由（`new UdpClient()`分配真实原生socket句柄在先，`Bind`到固定的
+    `DiscoveryProtocol.Port`在后，端口已被占用是真实可达的失败场景，异常一抛构造函数就
+    永远不会返回，调用方永远拿不到实例去`Dispose()`，socket永久泄漏）。**修复方式**：完全
+    同一个写法——局部变量+`try/catch`+失败时`Dispose()`再重新抛出，只有全部成功才赋值给
+    `_socket`字段。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），
+    没有真机验证过。
 
 ## 尚未开始
 

@@ -67,16 +67,40 @@ public sealed class DiscoveryService : IDisposable
         bool HasAudio, int AudioSampleRate, int AudioChannels, byte AudioPayloadType, bool AudioIsAac,
         IPEndPoint CasterEndPoint);
 
+    // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
+    // step one" shape as CastReceiver's own RtpReceiver construction fix (see this project's
+    // README) — new UdpClient() above succeeds and allocates a live native socket handle before
+    // Bind() ever runs. DiscoveryProtocol.Port is a fixed, well-known port, so Bind() can genuinely
+    // throw SocketException (address already in use — a second Terminal instance on this machine,
+    // a leftover process from a previous crash still holding the port, ReuseAddress does not
+    // guarantee a successful bind) — a real, reachable failure mode, not hypothetical. Without this
+    // try/catch, that failure would leave the constructor throwing before it ever finishes, so the
+    // caller (Program.cs's `new DiscoveryService(...)`) never receives an instance and can never
+    // call Dispose() — the UdpClient just constructed above leaks for the rest of the process's
+    // lifetime. This is a distinct issue from the "TerminalApplicationContext doesn't catch a
+    // DiscoveryService construction failure" gap already documented in this project's README: even
+    // once that outer call is wrapped in try/catch, the caller still never gets this object back to
+    // dispose it — the leak has to be closed here, at the point where the partially-constructed
+    // resource is still reachable.
     public DiscoveryService(DeviceIdentity identity, PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog)
     {
         _identity = identity;
         _pairedDevices = pairedDevices;
         _connectionLog = connectionLog;
 
-        _socket = new UdpClient();
-        _socket.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        _socket.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryProtocol.Port));
-        _socket.EnableBroadcast = true;
+        var socket = new UdpClient();
+        try
+        {
+            socket.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            socket.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryProtocol.Port));
+            socket.EnableBroadcast = true;
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+        _socket = socket;
     }
 
     public void Start()
