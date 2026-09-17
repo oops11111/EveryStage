@@ -374,7 +374,25 @@ public sealed class PlaybackEngine : IDisposable
                 VideoController.PlaybackCompleted += OnVideoCompleted;
                 VideoController.PlaybackFailed -= OnVideoFailed;
                 VideoController.PlaybackFailed += OnVideoFailed;
-                VideoController.Play(file.SourcePath);
+                // Bug fixed here: same shape as PlayStandaloneAudio's own fix (see
+                // OnImageOrDocumentFailed's doc comment) — VideoController.Play's own
+                // `new VideoDecodeSource(path, ...)` is exactly the same "file deleted/moved/
+                // corrupted since being added to an activity" real, reachable failure mode, called
+                // synchronously right here with nothing catching it. OnVideoFailed (wired just
+                // above) only covers a failure AFTER Play() already started successfully, on the
+                // background playback thread — it was never reachable for this synchronous
+                // construction failure. Reusing OnImageOrDocumentFailed rather than duplicating its
+                // two reporting lines: its ContentSurface.SetFrame(null) call is harmless here
+                // (ContentSurface isn't the active surface for video — ShowVideoSurface() was just
+                // called above — so clearing it has no visible effect either way).
+                try
+                {
+                    VideoController.Play(file.SourcePath);
+                }
+                catch (Exception ex)
+                {
+                    OnImageOrDocumentFailed(file, ex);
+                }
                 break;
 
             case MediaKind.Audio:

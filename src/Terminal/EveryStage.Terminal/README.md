@@ -1317,8 +1317,9 @@ Caster知道终端机确实收到了东西。
     进程生命周期（跟这个应用里其它长期配对的单例订阅是同一个约定，例如`Program.cs`自己的
     `_stateMachine.StateChanged`订阅也从未取消过）。**没有做的部分**：这次改动本身没有在这个
     沙箱里跑过（没有dotnet），没有真机验证过。
-106. **【新发现的真实bug，已修复】`PlaybackEngine.PlayStandaloneAudio`是`PlayFile`switch语句里
-    唯一一个同步调用、完全没有`try/catch`保护的分支**：`PlayImageAsync`/`PlayDocumentAsync`
+106. **【新发现的真实bug，已修复；"唯一"这个说法后来被第107条纠正】`PlaybackEngine.
+    PlayStandaloneAudio`是`PlayFile`switch语句里同步调用、完全没有`try/catch`保护的一个
+    分支**：`PlayImageAsync`/`PlayDocumentAsync`
     各自都有专门的`try/catch`（见第102条`OnImageOrDocumentFailed`那条doc comment的完整推理：
     "文件在被加入活动之后又被删除/移动/损坏"是真实场景，不是假设），但`PlayStandaloneAudio`
     调用的`AudioContentController.Play`内部同样会`new AudioDecodeSource(path)`——完全同一类
@@ -1334,6 +1335,21 @@ Caster知道终端机确实收到了东西。
     `EveryStage.Transport.RtpVideoClock`自己的doc comment"Not worth a rename or a new file
     for one extra parameter on an existing method"是同一个判断。**没有做的部分**：这次改动
     本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
+107. **【新发现的真实bug，已修复，纠正第106条"唯一"的说法】`PlayFile`switch语句里
+    `MediaKind.Video`分支同样有完全一样的问题——`VideoController.Play(file.SourcePath)`
+    这一行也是同步调用、也完全没有`try/catch`保护**：`VideoController.Play`内部会
+    `new VideoDecodeSource(path, ...)`，跟第106条`AudioContentController.Play`内部
+    `new AudioDecodeSource(path)`是完全同一类风险，同一个原因——`OnVideoFailed`（这个分支
+    自己已经在订阅`VideoController.PlaybackFailed`）只覆盖`Play()`已经成功启动之后、后台
+    播放线程上发生的失败，从未覆盖过`Play()`自己同步构造阶段的失败。第106条当时的审计只
+    检查了独立音频这一个分支就断言它是"唯一"，没有把`switch`里其它分支也过一遍——这次
+    补上video分支之后，图片/文档（`async`方法+各自`try/catch`）、独立音频（第106条）、
+    视频（本条）这三类会加载用户文件的内容类型才算真正全部覆盖到。**修复方式**：给
+    `VideoController.Play(file.SourcePath)`包一层`try/catch`，失败时同样复用
+    `OnImageOrDocumentFailed`——它的`ContentSurface.SetFrame(null)`调用在这里是无害的：
+    视频分支根本不用`ContentSurface`做呈现（呈现走的是`VideoSurface`/`SwapChainPresenter`，
+    `ShowVideoSurface()`已经在这一行之前调用过），清空一个当前没有显示的控件没有任何可见
+    影响。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
