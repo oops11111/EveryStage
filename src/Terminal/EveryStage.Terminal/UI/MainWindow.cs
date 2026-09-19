@@ -31,7 +31,11 @@ namespace EveryStage.Terminal.UI;
 public sealed class MainWindow : Form
 {
     private readonly OutputStateMachine _stateMachine;
-    private readonly PlaybackEngine? _playback;
+    // Not readonly, unlike every other field this constructor sets once and never touches again — see
+    // AttachPlaybackEngine's own doc comment for why: PLANNING.md §5's runtime monitor-hot-plug
+    // binding (this project's README risk on it) needs to replace this from null to a real
+    // PlaybackEngine well after this window is already constructed and showing.
+    private PlaybackEngine? _playback;
     private readonly FileLibraryStore _library;
     private readonly ScenarioStore _scenarioStore;
     private readonly ScenarioRepository _scenarioRepository;
@@ -153,6 +157,31 @@ public sealed class MainWindow : Form
                 Hide();
             }
         };
+    }
+
+    /// <summary>PLANNING.md §5's runtime monitor-hot-plug binding — called (at most once, from
+    /// <c>TerminalApplicationContext.HandleDisplaySettingsChanged</c>) when a display shows up after
+    /// this Terminal already started with none bound, well after this window and everything inside it
+    /// was already constructed with <see cref="_playback"/> null. Sets the now-mutable
+    /// <see cref="_playback"/> field and performs the exact same conditional event subscriptions this
+    /// constructor already does for it (<see cref="PlaybackEngine.PlaybackAbnormallyInterrupted"/>/
+    /// <see cref="PlaybackEngine.PlaybackDeclinedByCastSwitch"/>), now unconditionally since
+    /// <paramref name="playback"/> is guaranteed non-null here — then propagates the same instance into
+    /// <see cref="_activitiesPanel"/>/<see cref="_filesPanel"/>, the two child panels that independently
+    /// captured their own <c>PlaybackEngine?</c> reference from this window's constructor and therefore
+    /// need the exact same live update, not just this window's own field.
+    ///
+    /// <c>_filesPanel.FilePlayRequested += file => _playback?.RequestPlay(file);</c> above needs no
+    /// equivalent fix-up: that lambda closes over the <see cref="_playback"/> FIELD (via the implicit
+    /// <c>this</c> capture), so it already reads whatever the field currently holds on each invocation
+    /// — this method updating the field is all that closure needs.</summary>
+    public void AttachPlaybackEngine(PlaybackEngine playback)
+    {
+        _playback = playback;
+        _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
+        _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
+        _activitiesPanel.AttachPlaybackEngine(playback);
+        _filesPanel.AttachPlaybackEngine(playback);
     }
 
     private Button MakeNavButton(string text, int y) => new() { Text = text, Location = new Point(8, y), Width = 80 };

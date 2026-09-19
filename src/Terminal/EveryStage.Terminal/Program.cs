@@ -113,11 +113,13 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private readonly CrashLogger _crashLogger;
 
     // Set once, the first time HandleDisplaySettingsChanged notices a display became available
-    // after this Terminal started with none bound — see that method's own doc comment on why this
-    // only shows a one-time restart notice instead of attempting to bind it live. Never reset back
-    // to false: repeating the same "restart to use it" balloon on every subsequent
-    // DisplaySettingsChanged firing (a resolution tweak on some OTHER monitor, for instance) would
-    // be pure noise once the operator has already been told once.
+    // after this Terminal started with none bound — guards the one and only TryBindExtendedDisplay
+    // attempt that branch ever makes (see that method's own doc comment for why a failed attempt
+    // isn't retried on every subsequent firing) as well as the fallback "please restart" notice for
+    // when that attempt fails. Never reset back to false: repeating either notice on every subsequent
+    // DisplaySettingsChanged firing (a resolution tweak on some OTHER monitor, for instance) would be
+    // pure noise once the operator has already been told once, and once binding SUCCEEDS this whole
+    // branch is never reached again anyway (_overlay is non-null from then on).
     private bool _notifiedDisplayAvailableAfterStartup;
 
     // How many _castStatusTimer ticks (1s each) between LogConnectionQuality runs — a diagnostic
@@ -142,68 +144,29 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _stateMachine.SetCastSwitch(_settingsStore.Current.CastSwitchDefaultOn);
 
         var extendedDisplay = MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName);
-        if (extendedDisplay != null)
-        {
-            // Bug fixed here: this whole block used to run with no try/catch at all, directly inside
-            // this constructor — Program.Main's own construction of this class
-            // (`new TerminalApplicationContext(...)`) is likewise unguarded, and happens BEFORE
-            // Application.Run even starts the message loop, so an exception here doesn't go through
-            // Application.ThreadException at all; it propagates straight out of Main(). AppDomain.
-            // UnhandledException still catches it (registered earlier in Main()) and logs it via
-            // crashLogger, but that handler can't stop the process terminating (isTerminating is
-            // always true for it) — the entire unattended Terminal would fail to start, before ever
-            // showing a tray icon, purely because of a GPU/D3D11 problem in VideoSurface's
-            // construction (no compatible hardware/driver on this machine — a real, not
-            // hypothetical, condition this repo has flagged repeatedly elsewhere). That is a far
-            // worse outcome than PLANNING.md's own "no extended display bound yet" state (the
-            // extendedDisplay == null branch below), which this Terminal is already written to
-            // tolerate gracefully — the tray/main window/discovery/pairing all still work with
-            // _overlay null. Degrading to that same state on a GPU failure, instead of refusing to
-            // start at all, is strictly better for an unattended device: log it, then keep going.
-            try
-            {
-                _overlay = new OverlayWindow(extendedDisplay);
-                // One D3D11 device/swap chain for the overlay's video HWND, shared between local video
-                // playback and a live device cast — see VideoSurface's doc comment for why this can't
-                // be two independent ones anymore.
-                _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
-                _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore, _store);
-                _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
-                _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
-            }
-            catch (Exception ex)
-            {
-                _crashLogger.LogUnhandledException("TerminalApplicationContext.ExtendedDisplayInit", ex);
-                _previewWindow?.Dispose();
-                _previewWindow = null;
-                if (_playback != null) _playback.LocalPlaybackStarting -= OnLocalPlaybackStarting;
-                _playback?.Dispose();
-                _playback = null;
-                _videoSurface?.Dispose();
-                _videoSurface = null;
-                _overlay?.Dispose();
-                _overlay = null;
-            }
-        }
-        // extendedDisplay == null: no second monitor attached yet (or a GPU-init failure just above
-        // degraded into this same state). No overlay also means no VideoSurface/PlaybackEngine/
-        // preview window yet, and OnCastStartRequested below already no-ops when _overlay is null;
-        // MainWindow's file panel tolerates _playback being null (RequestPlay just never gets
-        // called) until a display shows up. Bug fixed here (this project's README "已知风险"): this
-        // comment used to claim "the tray tooltip below reflects it", but TrayIconController.
-        // UpdateTooltip only ever reads OutputStateMachine.State/CastSwitchOn — neither of which
-        // knows anything about whether _overlay exists at all, so that claim was never actually
-        // true. HandleDisplaySettingsChanged's own new "no overlay yet" branch (see its doc comment)
-        // now gives the operator a real, if one-shot, signal instead of literally nothing.
+        if (extendedDisplay != null) TryBindExtendedDisplay(extendedDisplay);
+        // extendedDisplay == null: no second monitor attached yet (or a GPU-init failure inside
+        // TryBindExtendedDisplay just above degraded into this same state). No overlay also means no
+        // VideoSurface/PlaybackEngine/preview window yet, and OnCastStartRequested below already
+        // no-ops when _overlay is null; MainWindow's file panel tolerates _playback being null
+        // (RequestPlay just never gets called) until a display shows up. Bug fixed here (this
+        // project's README "已知风险"): this comment used to claim "the tray tooltip below reflects
+        // it", but TrayIconController.UpdateTooltip only ever reads
+        // OutputStateMachine.State/CastSwitchOn — neither of which knows anything about whether
+        // _overlay exists at all, so that claim was never actually true.
+        // HandleDisplaySettingsChanged's own "no overlay yet" branch (see its doc comment) now
+        // actually tries to build this whole graph live once a display shows up, rather than only
+        // ever telling the operator to restart.
 
         // Runtime display-configuration changes (PLANNING.md §5, this project's README "已知风险" on
         // OverlayWindow.Rebind/VideoSurface.Resize previously existing but never having a caller) —
         // covers "the extended display this Terminal already bound at startup moved or changed
         // resolution" (Rebind/Resize), "that same display got unplugged entirely" (a clean
-        // Disconnect()), and now also "no display was bound at startup, but one showed up since" (a
-        // one-time tray notice — see HandleDisplaySettingsChanged's own doc comment for why not a
-        // live rebuild). Subscribed unconditionally (not just when _overlay already exists, unlike
-        // before this round) precisely so that third case has an event to fire on in the first
+        // Disconnect()), and "no display was bound at startup, but one showed up since" (a live
+        // TryBindExtendedDisplay attempt, falling back to a one-time restart notice only if that
+        // fails — see HandleDisplaySettingsChanged's own doc comment for the full story, including why
+        // this used to only ever show that notice). Subscribed unconditionally (not just when
+        // _overlay already exists) precisely so that third case has an event to fire on in the first
         // place — with _overlay staying null forever otherwise, nothing would ever call
         // HandleDisplaySettingsChanged for it to check.
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
@@ -242,6 +205,61 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _tray = new TrayIconController(_stateMachine);
         _tray.ExitRequested += OnExitRequested;
         _tray.MainWindowRequested += () => { _mainWindow.Show(); _mainWindow.Activate(); };
+    }
+
+    /// <summary>Builds the whole local-playback object graph — <see cref="_overlay"/>/
+    /// <see cref="_videoSurface"/>/<see cref="_playback"/>/<see cref="_previewWindow"/> — for
+    /// <paramref name="monitor"/>. Extracted from this constructor's own original inline try/catch
+    /// (this project's README used to record that whole block as never having a second call site) so
+    /// <see cref="HandleDisplaySettingsChanged"/> can run the exact same path at runtime when a
+    /// display shows up after startup with none bound — see that method's own doc comment for why this
+    /// used to be a deliberately-deferred, restart-required scope limit and what changed.
+    ///
+    /// Bug this whole extraction preserves rather than fixes (documented here since it's the reason
+    /// this needs to be a try/catch at all): this constructor's own original comment already explains
+    /// why a raw, unguarded call here would be worse than degrading gracefully — a GPU/D3D11
+    /// construction failure (no compatible hardware/driver — a real, not hypothetical, condition this
+    /// repo has flagged repeatedly elsewhere) must never be allowed to crash the whole unattended
+    /// Terminal, whether it happens during startup (before <see cref="Application.Run"/> even starts
+    /// the message loop, where <see cref="Application.ThreadException"/> can't help at all) or, now,
+    /// during a live rebind attempt triggered from a <see cref="SystemEvents.DisplaySettingsChanged"/>
+    /// callback well after the Terminal is already running.
+    ///
+    /// Returns false (and leaves every field null, exactly as if this had never run) on any
+    /// construction failure. Does NOT touch <see cref="_mainWindow"/> or anything downstream of it —
+    /// at construction time <see cref="_mainWindow"/> doesn't exist yet (it's built afterward, already
+    /// reading whatever this method left in <see cref="_playback"/>); at runtime, the caller
+    /// (<see cref="HandleDisplaySettingsChanged"/>) is responsible for calling
+    /// <see cref="MainWindow.AttachPlaybackEngine"/> on success — this method only ever needs to know
+    /// how to build the graph, not who else needs to be told about it.</summary>
+    private bool TryBindExtendedDisplay(MonitorInfo monitor)
+    {
+        try
+        {
+            _overlay = new OverlayWindow(monitor);
+            // One D3D11 device/swap chain for the overlay's video HWND, shared between local video
+            // playback and a live device cast — see VideoSurface's doc comment for why this can't be
+            // two independent ones anymore.
+            _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
+            _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore, _store);
+            _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
+            _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _crashLogger.LogUnhandledException("TerminalApplicationContext.ExtendedDisplayInit", ex);
+            _previewWindow?.Dispose();
+            _previewWindow = null;
+            if (_playback != null) _playback.LocalPlaybackStarting -= OnLocalPlaybackStarting;
+            _playback?.Dispose();
+            _playback = null;
+            _videoSurface?.Dispose();
+            _videoSurface = null;
+            _overlay?.Dispose();
+            _overlay = null;
+            return false;
+        }
     }
 
     private void OnOutputStateChanged(OutputState state)
@@ -547,25 +565,49 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     /// applies then (same monitor identity back -> no-op via the structural-equality check below;
     /// different bounds/position -> Rebind/Resize, already covered).
     ///
-    /// The third case is new this round: a display being plugged in for the first time after this
-    /// Terminal already started with none bound (<see cref="_overlay"/> null). This does NOT build
-    /// the whole <see cref="_overlay"/>/<see cref="_videoSurface"/>/<see cref="_playback"/>/
-    /// <see cref="_previewWindow"/> graph at runtime — that remains a substantially bigger change
-    /// this round doesn't attempt, see this project's README "已知风险" for that scope limit being
-    /// recorded as intentional, not an oversight. What IS new: instead of the previous complete
-    /// silence, the operator now gets a one-time tray balloon telling them a display was detected
-    /// and a restart is needed to use it — see <see cref="_notifiedDisplayAvailableAfterStartup"/>'s
-    /// own doc comment for why this fires at most once per process lifetime rather than on every
-    /// subsequent <see cref="OnDisplaySettingsChanged"/>.</summary>
+    /// The third case — a display being plugged in for the first time after this Terminal already
+    /// started with none bound (<see cref="_overlay"/> null) — USED to only show a one-time "please
+    /// restart" tray balloon, with this project's README explicitly recording "actually build the
+    /// whole graph live" as a deliberately-deferred, substantially-bigger scope limit. Confirmed with
+    /// the user this round that it was worth attempting despite the risk (this codebase's own biggest
+    /// remaining architecture change, and one this sandbox has no way to verify against real hardware
+    /// or the concurrent scenarios PLANNING.md never specifies — see this project's README for the
+    /// full disclosure). It now calls <see cref="TryBindExtendedDisplay"/> — the SAME construction
+    /// path this constructor itself uses at startup, extracted rather than duplicated — and, on
+    /// success, <see cref="MainWindow.AttachPlaybackEngine"/> to propagate the freshly-built
+    /// <see cref="PlaybackEngine"/> into the already-showing <see cref="_mainWindow"/> (and,
+    /// transitively, <see cref="ActivitiesPanel"/>/<see cref="FilesPanel"/> — see that method's own
+    /// doc comment). Concurrency risk this specific case turns out NOT to have, on inspection: nothing
+    /// could have been actively playing/casting locally while <see cref="_overlay"/> was still null
+    /// (every local-content path requires <see cref="_playback"/> non-null first), so there is no
+    /// "torn down mid-playback" race to worry about here — that concern only applies to the OPPOSITE
+    /// direction (an ALREADY-bound display being unplugged while something is happening), which the
+    /// <see cref="OutputStateMachine.Disconnect"/> branch below already handles and always has.
+    /// Attempted at most once per process lifetime, same one-shot guard
+    /// (<see cref="_notifiedDisplayAvailableAfterStartup"/>) as before — a construction failure here
+    /// is presumably the same persistent GPU/driver problem <see cref="TryBindExtendedDisplay"/>'s own
+    /// doc comment describes, not something retrying on every subsequent unrelated
+    /// <see cref="OnDisplaySettingsChanged"/> firing would fix, so a failed attempt falls back to the
+    /// original "please restart" notice exactly as before, rather than retrying indefinitely.</summary>
     private void HandleDisplaySettingsChanged()
     {
         if (_overlay == null || _videoSurface == null)
         {
             if (_notifiedDisplayAvailableAfterStartup) return;
-            if (MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName) == null) return;
+
+            var detected = MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName);
+            if (detected == null) return;
 
             _notifiedDisplayAvailableAfterStartup = true;
-            _tray.ShowNotification("检测到扩展屏", "EveryStage 终端机启动时没有检测到扩展屏。请重启终端机以启用扩展屏输出。");
+            if (TryBindExtendedDisplay(detected))
+            {
+                _mainWindow.AttachPlaybackEngine(_playback!); // non-null — TryBindExtendedDisplay only returns true after setting it.
+                _tray.ShowNotification("检测到扩展屏", "EveryStage 终端机现在可以向扩展屏输出了，无需重启。");
+            }
+            else
+            {
+                _tray.ShowNotification("检测到扩展屏", "EveryStage 终端机检测到扩展屏，但初始化失败。请重启终端机以重试。");
+            }
             return;
         }
 

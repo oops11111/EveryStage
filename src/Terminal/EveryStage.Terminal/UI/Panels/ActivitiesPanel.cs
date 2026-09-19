@@ -30,7 +30,10 @@ public sealed class ActivitiesPanel : UserControl
     private readonly ScenarioStore _store;
     private readonly ScenarioRepository _repository;
     private readonly FileLibraryStore _library;
-    private readonly PlaybackEngine? _playback;
+    // Not readonly — see AttachPlaybackEngine's own doc comment: PLANNING.md §5's runtime
+    // monitor-hot-plug binding needs to replace this from null to a real PlaybackEngine well after
+    // this panel is already constructed.
+    private PlaybackEngine? _playback;
     private readonly FileOperationLogger _fileOpLog;
     private readonly OutputStateMachine _stateMachine;
 
@@ -187,6 +190,22 @@ public sealed class ActivitiesPanel : UserControl
 
         RefreshScenarioCombo();
         RefreshTree();
+    }
+
+    /// <summary>PLANNING.md §5's runtime monitor-hot-plug binding — called (at most once) from
+    /// <c>MainWindow.AttachPlaybackEngine</c>, itself called from
+    /// <c>TerminalApplicationContext.HandleDisplaySettingsChanged</c> when a display shows up after
+    /// this Terminal already started with none bound. Sets the now-mutable <see cref="_playback"/>
+    /// field and subscribes <see cref="PlaybackEngine.FileStarted"/> — the same conditional
+    /// subscription this constructor already performs, now unconditional since
+    /// <paramref name="playback"/> is guaranteed non-null here. Every other <see cref="_playback"/>
+    /// usage in this class (<see cref="OnNodeDoubleClick"/>, this class's own <see cref="Dispose"/>)
+    /// already reads the field itself rather than a value captured once at construction, so nothing
+    /// else needs updating for the field to start actually working.</summary>
+    public void AttachPlaybackEngine(PlaybackEngine playback)
+    {
+        _playback = playback;
+        _playback.FileStarted += OnFileStarted;
     }
 
     private void EnsureAtLeastOneScenario()

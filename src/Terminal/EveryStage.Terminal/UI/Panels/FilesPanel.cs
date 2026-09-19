@@ -54,7 +54,10 @@ public sealed class FilesPanel : UserControl
     private readonly FileOperationLogger _fileOpLog;
     private readonly ScenarioStore _scenarioStore;
     private readonly ScenarioRepository _scenarioRepository;
-    private readonly PlaybackEngine? _playback;
+    // Not readonly — see AttachPlaybackEngine's own doc comment: PLANNING.md §5's runtime
+    // monitor-hot-plug binding needs to replace this from null to a real PlaybackEngine well after
+    // this panel is already constructed.
+    private PlaybackEngine? _playback;
     private readonly ListView _listView;
     private readonly ImageList _thumbnails;
     private readonly Button _removeButton;
@@ -191,6 +194,19 @@ public sealed class FilesPanel : UserControl
         if (disposing) _audioBarRefreshTimer.Dispose();
         base.Dispose(disposing);
     }
+
+    /// <summary>PLANNING.md §5's runtime monitor-hot-plug binding — called (at most once) from
+    /// <c>MainWindow.AttachPlaybackEngine</c> when a display shows up after this Terminal already
+    /// started with none bound. Every <see cref="_playback"/> read in this class (the audio bar's
+    /// pause/volume buttons and <see cref="_audioBarRefreshTimer"/>'s own tick — see
+    /// <see cref="RefreshAudioRowLiveState"/>) already reads the field fresh each time rather than a
+    /// value captured once at construction, so just updating the field is enough — unlike
+    /// <c>ActivitiesPanel</c>'s own version of this method, there is no event subscription to (re)wire
+    /// here. <see cref="_listView"/>'s own double-click doesn't read <see cref="_playback"/> at all —
+    /// it only raises <see cref="FilePlayRequested"/>, which <c>MainWindow</c>'s own subscriber
+    /// resolves against ITS <see cref="_playback"/> field, already covered by
+    /// <c>MainWindow.AttachPlaybackEngine</c> separately.</summary>
+    public void AttachPlaybackEngine(PlaybackEngine playback) => _playback = playback;
 
     private Button MakeFilterButton(string label, MediaKind? filter)
     {

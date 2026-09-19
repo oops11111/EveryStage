@@ -1751,6 +1751,54 @@ Caster知道终端机确实收到了东西。
     交互）——纯粹是外观上不够饱满，不影响任何一个按钮的可用性。**没有验证过的部分**：这次改动
     本身没有在这个沙箱里跑过（没有dotnet），`FlowLayoutPanel`的`TopDown`+`AutoScroll`组合、
     固定宽度行在真实WinForms窗口里的实际渲染效果，都完全没有验证过。
+121. **【已尝试实现，风险已知且刻意接受，应用户要求继续做】PLANNING.md §5 运行时显示器热插拔
+    绑定——"启动时没绑定扩展屏、运行中途插入新显示器"现在会真的尝试在运行时搭建整套
+    `_overlay`/`_videoSurface`/`_playback`/`_previewWindow`对象图，成功了就不需要重启**：
+    原始开发清单里范围最大、风险最高的一项——第59条(a)/第113条自己都点名"改动规模比前两条大
+    得多"，这次直接把风险摊开告诉用户，用户在明确知情的前提下选择继续做，而不是这次自己
+    降低了判断门槛。**实现方式**：把构造函数里原来那段内联的try/catch（`new OverlayWindow`→
+    `new VideoSurface`→`new PlaybackEngine`→`new FloatingPreviewWindow`，失败就把四个字段
+    全部清回`null`）原样抽成`TryBindExtendedDisplay(MonitorInfo)`方法，构造函数和
+    `HandleDisplaySettingsChanged`共用同一份代码，不是重新写一份可能悄悄跟原版不一致的副本。
+    `HandleDisplaySettingsChanged`原来"`_overlay == null`"分支下只弹一次"检测到扩展屏，请
+    重启"的提醒，现在改成先调用`TryBindExtendedDisplay`，成功就弹"现在可以向扩展屏输出了，
+    无需重启"，失败才退回原来那句"请重启终端机以重试"——同样只尝试一次（复用原有的
+    `_notifiedDisplayAvailableAfterStartup`一次性开关），不会在之后每次不相关的显示器设置
+    变化事件上重复重试，因为如果真的失败了，大概率是`TryBindExtendedDisplay`自己doc comment
+    里说的那种持续性GPU/驱动问题，不是重试就能自愈的。**这次会话过程中发现并解决的真正的架构
+    问题**：`TerminalApplicationContext`自己的`_overlay`/`_videoSurface`/`_playback`/
+    `_previewWindow`字段本来就不是`readonly`，运行时重新赋值本身没有障碍——真正的障碍在于
+    `MainWindow`（以及它内部的`ActivitiesPanel`、这一轮`FilesPanel`新增的那份）各自把
+    `PlaybackEngine?`存成了自己的`readonly`字段，构造时确实拿到过一次`_playback`（当时还是
+    `null`），但从那以后就再也没有机会知道这个引用后来变成了别的值——单纯让
+    `TerminalApplicationContext`重新指向一个新的`PlaybackEngine`，`MainWindow`自己的UI完全
+    不会知道，会一直表现得像扩展屏从来没有出现过一样。**解决办法**：把这三个类的`_playback`
+    字段改成可变的，各自新增一个`AttachPlaybackEngine(PlaybackEngine)`公开方法——
+    `MainWindow.AttachPlaybackEngine`不仅设置自己的字段、补上构造函数里原来对
+    `PlaybackAbnormallyInterrupted`/`PlaybackDeclinedByCastSwitch`的条件订阅（现在无条件订阅，
+    因为参数保证非空），还会连带调用`_activitiesPanel`/`_filesPanel`各自的
+    `AttachPlaybackEngine`，把同一个引用一路传下去；`ActivitiesPanel`那份同样补上
+    `FileStarted`的订阅；`FilesPanel`那份最简单，因为这一轮`FilesPanel`的音频播放条本来就是
+    每次都重新读字段（`RefreshAudioRowLiveState`每500ms轮询一次），没有需要重新订阅的事件。
+    `FilesPanel._listView`的双击本身不读`_playback`——它只是重新触发`FilePlayRequested`事件，
+    真正解析`_playback`的是`MainWindow`自己那个闭包，闭包捕获的是字段本身而不是构造时的快照，
+    所以`MainWindow.AttachPlaybackEngine`更新字段之后这个闭包自动就对了，不需要额外处理。
+    **这次分析之后发现原来担心的并发风险其实不存在**：README原来的条目点名"本地视频或设备投屏
+    进行中显示器被拔掉"这类并发场景完全没办法在这个沙箱里验证——但这次真正动手写代码之前重新
+    读了一遍`PlaybackEngine`/`OnCastStartRequested`的现有代码才发现，这个并发顾虑其实只适用于
+    "拔显示器"这个方向（已经由`HandleDisplaySettingsChanged`原有的`updated == null`分支处理，
+    调用`OutputStateMachine.Disconnect()`，这次完全没有改动），不适用于"插显示器"这个新做的
+    方向——因为在`_overlay`还是`null`的这段时间里，`_playback`根本就不存在，任何本地播放/
+    设备投屏路径都需要先有`_playback`才能触发，所以"插上新显示器的这一刻"不可能有任何东西正在
+    本地播放或者正在接收投屏，也就没有"运行中途被拆除"这个场景可言。**没有做的部分**：没有给
+    这条新路径加任何新的用户可见设置项（比如"是否允许运行时绑定"的开关）——两个已有的一次性
+    开关（`_notifiedDisplayAvailableAfterStartup`）已经足够表达"只尝试一次"这个语义。**没有
+    验证过的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet、没有Windows），构造
+    `OverlayWindow`/`VideoSurface`（D3D11设备/交换链）这条路径虽然是复用构造函数里已经存在
+    的同一段代码，但这次是第一次从`SystemEvents.DisplaySettingsChanged`回调里、在应用已经
+    运行了一段时间之后触发它，而不是从进程刚启动、消息循环还没开始跑的时候触发——这两种触发
+    时机在真实Windows机器上是否存在这个仓库没有预见到的差异（比如某些D3D11初始化对"进程刚
+    启动"这个时间点有隐含假设），完全没有办法在这个沙箱里确认。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -1760,12 +1808,12 @@ Caster知道终端机确实收到了东西。
   `ContentEngine/WpsDocumentController`把"打开/编辑/保存"接进了`PlaybackEngine`；验证脚本
   `src/Poc/WpsComInteropSpike/`当初只验证的"能否静默打开+翻页"这半，在真正集成里反过来被
   刻意放弃了（"编辑"要求WPS窗口真实可见，不能静默）——见第119条对这个取舍的完整说明
-- 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35、59、67、113条）——"已绑定的扩展屏运行
-  中途改分辨率/位置"在第59条实现，"已绑定的显示器运行中途被整个拔掉"在第67条实现（干净地"断"，
-  而不是静默什么都不做）；"启动时没绑定、运行中途插入新显示器"这一种场景第113条补上了一次性
-  提醒（弹窗告诉操作者需要重启），但**真正在运行时凭空搭建整套`_overlay`/`_videoSurface`/
-  `_playback`/`_previewWindow`对象图、不需要重启就能用上新插入的显示器，仍然完全没有实现**，
-  见第59条(a)/第113条列出的具体理由（改动规模比前两条大得多）
+- ~~显示器热插拔/运行时重新绑定扩展屏……真正在运行时凭空搭建整套`_overlay`/`_videoSurface`/
+  `_playback`/`_previewWindow`对象图、不需要重启就能用上新插入的显示器，仍然完全没有实现~~
+  **【已尝试实现，见第121条】**：这是原始开发清单里范围最大的一项，用户在明确知道风险后选择
+  继续做——"已绑定的扩展屏运行中途改分辨率/位置"（第59条）、"已绑定的显示器运行中途被整个拔掉"
+  （第67条）这两半继续保持原样不变，第121条补上的是"启动时没绑定、运行中途插入新显示器"这一种
+  场景，从"只弹一次提醒、要求重启"变成"真的尝试在运行时搭建整套对象图，成功了就不需要重启"。
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
 - ~~背景音轨叠加播放~~（`IsBackgroundAudio == true`）——第116条已经实现了，从这个列表里移除；
   真机上两路WASAPI共享模式音频流是否真的能干净地混音仍然完全没有验证过（见第116条"没有验证过
