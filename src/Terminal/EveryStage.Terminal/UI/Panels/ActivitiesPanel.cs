@@ -41,10 +41,26 @@ public sealed class ActivitiesPanel : UserControl
     private readonly Button _fadeButton;
     private readonly Button _stayDurationButton;
     private readonly Button _completionActionButton;
+    private readonly Button _batchPropertiesButton;
     private readonly Button _removeButton;
     private readonly Button _moveUpButton;
     private readonly Button _moveDownButton;
     private readonly Label _statusBar;
+
+    /// <summary>File nodes Ctrl+Clicked into a multi-selection for "统一设置属性..." — see
+    /// <see cref="OnTreeNodeMouseClick"/>. Deliberately separate from <see cref="TreeView.SelectedNode"/>
+    /// (which every single-select-driven button above still reads via <see cref="GetSelection"/>,
+    /// completely unaffected by this set): WinForms' <see cref="TreeView"/> has no built-in
+    /// multi-select, and full owner-draw was rejected as more new/unverified surface than this
+    /// project needs — same "reuse an established, simple control pattern over an unverified one"
+    /// reasoning <see cref="FloatingPreviewWindow"/>'s own doc comment on its step buttons (instead of
+    /// a <see cref="TrackBar"/>) already used. Highlighted manually via each node's own
+    /// <see cref="TreeNode.BackColor"/>/<see cref="TreeNode.ForeColor"/> rather than owner-draw.
+    /// Only ever holds file nodes (<c>Tag is MediaFile</c>) — activity nodes can't be batch-edited.
+    /// Cleared by <see cref="RefreshTree"/> (old <see cref="TreeNode"/> references go stale once the
+    /// tree is rebuilt) and by any plain, non-Ctrl click anywhere in the tree — Shift-range-select is
+    /// deliberately not supported, same scope-minimization reasoning.</summary>
+    private readonly HashSet<TreeNode> _multiSelectedFileNodes = new();
 
     public ActivitiesPanel(
         ScenarioStore store, ScenarioRepository repository, FileLibraryStore library,
@@ -124,6 +140,11 @@ public sealed class ActivitiesPanel : UserControl
         // it away from its NextItem default for a specific file — see this project's README.
         _completionActionButton = new Button { Text = "完成后动作...", AutoSize = true, Enabled = false };
         _completionActionButton.Click += (_, _) => OnEditCompletionAction();
+        // Enabled once 2+ file nodes are Ctrl+Click multi-selected — see _multiSelectedFileNodes'
+        // own doc comment. Unlike every other button in this bar, this one is NOT driven by
+        // GetSelection()/_tree.SelectedNode at all.
+        _batchPropertiesButton = new Button { Text = "统一设置属性...", AutoSize = true, Enabled = false };
+        _batchPropertiesButton.Click += (_, _) => OnEditBatchProperties();
         _removeButton = new Button { Text = "移除文件", AutoSize = true, Enabled = false };
         _removeButton.Click += (_, _) => OnRemoveFile();
         _moveUpButton = new Button { Text = "上移", AutoSize = true, Enabled = false };
@@ -134,12 +155,13 @@ public sealed class ActivitiesPanel : UserControl
         {
             newActivityButton, renameActivityButton, deleteActivityButton, _playModeButton,
             _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton,
-            _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
+            _batchPropertiesButton, _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
         });
 
         _tree = new TreeView { Dock = DockStyle.Fill };
         _tree.AfterSelect += (_, _) => UpdateButtonStates();
         _tree.NodeMouseDoubleClick += OnNodeDoubleClick;
+        _tree.NodeMouseClick += OnTreeNodeMouseClick;
         // Activity.IsCollapsed (PLANNING.md §6/§11's "可折叠") until now was collected (cloned by
         // OnSaveAsScenario) but never actually driven the tree either way: RefreshTree unconditionally
         // expanded every activity node regardless of this field, and nothing ever wrote a user's
@@ -523,6 +545,150 @@ public sealed class ActivitiesPanel : UserControl
         }
     }
 
+    /// <summary>Ctrl+Click toggles a FILE node in/out of <see cref="_multiSelectedFileNodes"/>; any
+    /// other click (no Ctrl, or on an activity node) clears the whole set — same "plain click starts a
+    /// fresh selection" behavior most multi-select UIs use. Runs independently of the TreeView's own
+    /// built-in single-selection handling (which still changes <see cref="TreeView.SelectedNode"/> on
+    /// every click, Ctrl or not — <see cref="GetSelection"/> and every single-select-driven button
+    /// keep reading that as before, unaffected by this method).</summary>
+    private void OnTreeNodeMouseClick(object? sender, TreeNodeMouseClickEventArgs e)
+    {
+        if (e.Node.Tag is MediaFile && Control.ModifierKeys.HasFlag(Keys.Control))
+        {
+            if (!_multiSelectedFileNodes.Remove(e.Node))
+            {
+                _multiSelectedFileNodes.Add(e.Node);
+                e.Node.BackColor = SystemColors.Highlight;
+                e.Node.ForeColor = SystemColors.HighlightText;
+            }
+            else
+            {
+                e.Node.BackColor = _tree.BackColor;
+                e.Node.ForeColor = _tree.ForeColor;
+            }
+        }
+        else
+        {
+            ClearMultiSelection();
+        }
+        UpdateButtonStates();
+    }
+
+    private void ClearMultiSelection()
+    {
+        foreach (var node in _multiSelectedFileNodes)
+        {
+            node.BackColor = _tree.BackColor;
+            node.ForeColor = _tree.ForeColor;
+        }
+        _multiSelectedFileNodes.Clear();
+    }
+
+    /// <summary>Opens <see cref="BatchPropertiesDialog"/> for the current
+    /// <see cref="_multiSelectedFileNodes"/> and, for each property row the operator checked, applies
+    /// the single chosen value to every selected file — same per-property
+    /// <see cref="FileOperationLogger.LogPlaybackPropertyChanged"/> granularity every single-file
+    /// OnEdit* method above already uses, just looped over more than one file per property. A property
+    /// row left unchecked in the dialog is skipped entirely here — no file's existing value for it is
+    /// read, compared, or touched, exactly the "opt-in, default don't-change" design confirmed with the
+    /// user before this method was written.</summary>
+    private void OnEditBatchProperties()
+    {
+        var scenario = CurrentScenario;
+        if (scenario == null) return;
+
+        var files = _multiSelectedFileNodes.Select(n => n.Tag).OfType<MediaFile>().ToList();
+        if (files.Count < 2) return;
+
+        using var dialog = new BatchPropertiesDialog(files);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+        bool anyChange = false;
+
+        if (dialog.ChangePlayMode)
+        {
+            anyChange = true;
+            foreach (var file in files)
+            {
+                string? oldValue = file.PlayModeOverride?.ToString();
+                string? newValue = dialog.PlayModeValue?.ToString();
+                file.PlayModeOverride = dialog.PlayModeValue;
+                _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.PlayModeOverride), oldValue, newValue);
+            }
+        }
+        if (dialog.ChangeOnCompletion)
+        {
+            anyChange = true;
+            foreach (var file in files)
+            {
+                string oldValue = file.OnCompletion.ToString();
+                string newValue = dialog.OnCompletionValue.ToString();
+                file.OnCompletion = dialog.OnCompletionValue;
+                _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.OnCompletion), oldValue, newValue);
+            }
+        }
+        if (dialog.ChangeAllowManualSkip)
+        {
+            anyChange = true;
+            foreach (var file in files)
+            {
+                string oldValue = file.AllowManualSkip.ToString();
+                string newValue = dialog.AllowManualSkipValue.ToString();
+                file.AllowManualSkip = dialog.AllowManualSkipValue;
+                _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.AllowManualSkip), oldValue, newValue);
+            }
+        }
+        if (dialog.ChangeStayDuration)
+        {
+            anyChange = true;
+            foreach (var file in files)
+            {
+                string? oldValue = file.StayDuration?.ToString();
+                string? newValue = dialog.StayDurationValue?.ToString();
+                file.StayDuration = dialog.StayDurationValue;
+                _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.StayDuration), oldValue, newValue);
+            }
+        }
+        if (dialog.ChangeFade)
+        {
+            anyChange = true;
+            foreach (var file in files)
+            {
+                string oldVolumeFollowsFade = file.VolumeFollowsFade.ToString();
+                string? oldFadeDuration = file.FadeDuration?.ToString();
+                file.VolumeFollowsFade = dialog.VolumeFollowsFadeValue;
+                file.FadeDuration = dialog.FadeDurationValue;
+                _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.VolumeFollowsFade),
+                    oldVolumeFollowsFade, dialog.VolumeFollowsFadeValue.ToString());
+                _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.FadeDuration),
+                    oldFadeDuration, dialog.FadeDurationValue?.ToString());
+            }
+        }
+        if (dialog.ChangeBackgroundAudio)
+        {
+            anyChange = true;
+            foreach (var file in files)
+            {
+                string oldIsBackgroundAudio = file.IsBackgroundAudio.ToString();
+                string oldVisual = file.BackgroundAudioVisual.ToString();
+                file.IsBackgroundAudio = dialog.IsBackgroundAudioValue;
+                file.BackgroundAudioVisual = dialog.BackgroundAudioVisualValue;
+                _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.IsBackgroundAudio),
+                    oldIsBackgroundAudio, dialog.IsBackgroundAudioValue.ToString());
+                _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.BackgroundAudioVisual),
+                    oldVisual, dialog.BackgroundAudioVisualValue.ToString());
+            }
+        }
+
+        if (!anyChange) return; // every row left unchecked — nothing to save/refresh.
+
+        _repository.Save(_store);
+        // BuildFileNodeText depends on IsBackgroundAudio, and RefreshTree also clears
+        // _multiSelectedFileNodes (see that method's own comment) — both reasons OnEditAudioProperties
+        // already refreshes after its own IsBackgroundAudio change apply here too.
+        RefreshTree();
+    }
+
     private (Scenario? scenario, Activity? activity, MediaFile? file) GetSelection()
     {
         var scenario = CurrentScenario;
@@ -543,6 +709,7 @@ public sealed class ActivitiesPanel : UserControl
         _fadeButton.Enabled = file != null && file.Kind is MediaKind.Video or MediaKind.Audio;
         _stayDurationButton.Enabled = file != null && file.Kind is MediaKind.Image or MediaKind.Document;
         _completionActionButton.Enabled = file != null;
+        _batchPropertiesButton.Enabled = _multiSelectedFileNodes.Count >= 2;
         _removeButton.Enabled = file != null;
         _moveUpButton.Enabled = file != null;
         _moveDownButton.Enabled = file != null;
@@ -563,6 +730,10 @@ public sealed class ActivitiesPanel : UserControl
     /// <summary>Call after the scenario store changes from outside this control.</summary>
     public void RefreshTree()
     {
+        // Old TreeNode references go stale the moment the tree they belonged to is torn down below —
+        // see _multiSelectedFileNodes' own doc comment. No need to reset their BackColor/ForeColor
+        // first (they're being discarded, not reused).
+        _multiSelectedFileNodes.Clear();
         _tree.Nodes.Clear();
         var scenario = CurrentScenario;
         if (scenario == null) return;

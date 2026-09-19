@@ -759,7 +759,8 @@ Caster知道终端机确实收到了东西。
     就已经是"只在选中时启用"，跟"选中后出现"是同一种精神、只是视觉呈现不同，为了这点差异去单独建
     一套悬浮UI不值得。**没有做的部分**：批量选择支持的三个动作里"加入活动"/"统一设置属性"两个
     仍然完全没有实现，见"尚未开始"——它们各自需要新的跨面板管线或者PLANNING.md没有展开的多选编辑
-    交互细节，不是这次这种纯"打开一个已有开关"级别的小改动。
+    交互细节，不是这次这种纯"打开一个已有开关"级别的小改动。**【第117条后续更新】**"统一设置
+    属性"这一半后来也实现了，见该条。
 80. **【已实现，原为已知缺口】`CastReceiver.PayloadTypeMismatches`终于有了消费方，一路报回给
     Caster**：`EveryStage.Transport`的`RtpReceiver`/`RawRtpReceiver`早就在追踪这个计数器（见
     `EveryStage.Transport`README风险第4条），但它只是个纯本地计数器，Terminal自己都没在任何地方
@@ -1463,7 +1464,8 @@ Caster知道终端机确实收到了东西。
     点名的"统一设置属性"——这个仓库连单文件属性编辑都是各自独立的对话框，还没有能同时编辑多个
     文件共同属性、处理冲突值的统一入口，PLANNING.md原文"跨类型选中时屏蔽不适用的属性项"具体
     交互细节也没有展开，这次没有尝试。这次改动本身没有在这个沙箱里跑过（没有dotnet），没有
-    真机验证过。
+    真机验证过。**【第117条后续更新】**"统一设置属性"后来也实现了，见该条——PLANNING.md §11
+    "批量选择"三个动作到此全部落地。
 113. **【已实现一部分，原为已知缺口】"启动时没绑定扩展屏、运行中途插入新显示器"——原来完全
     静默什么都不做，现在至少会提醒操作者**：`SystemEvents.DisplaySettingsChanged`原来只在
     `_overlay != null`时才订阅（构造函数里`extendedDisplay != null`那个分支内部），意味着
@@ -1608,6 +1610,34 @@ Caster知道终端机确实收到了东西。
     两路WASAPI共享模式音频流同时播放时真机上是否真的能干净地混音、有没有可听见的相互干扰，
     这是这次判断"背景音轨叠加播放"风险主要在于状态机设计而不是未验证API之后，唯一还剩下的
     真机相关不确定性。
+117. **【已实现，应用户要求继续做，原为已知缺口】PLANNING.md §11"批量选择"的最后一半——"统一
+    设置属性"——现在也有了，`ActivitiesPanel`可以一次给多个文件应用同一组播放属性**：第79条
+    做完"删除"、第112条做完"加入活动"之后，这三个动作里唯一剩下的就是这一个，也是这次风险
+    最高、最需要产品决策的一个——具体设计动手写代码之前先用`AskUserQuestion`向用户确认过。
+    **确认下来的设计**：每一行属性默认"不修改"，操作者必须主动勾选"修改此项"才会把这一项应用到
+    全部选中文件，未勾选的属性保持每个文件各自原有值完全不动——彻底绕开了"这些文件当前值不一致
+    时UI要怎么显示"这个PLANNING.md没有回答的问题（备选方案是"只允许同`MediaKind`一起批量选择"，
+    用户没有选这个）。**多选机制**：`ActivitiesPanel._tree`（`TreeView`）本身不支持多选，这次没有
+    上完整的owner-draw，而是用`NodeMouseClick`+`Control.ModifierKeys`手动维护一个
+    `_multiSelectedFileNodes`集合，只有Ctrl+Click才切换某个文件节点的选中状态（手动设置
+    `TreeNode.BackColor`/`ForeColor`高亮），普通点击、双击、或点在活动节点上都会清空这个集合——
+    没有做Shift连续范围选择。跟`FloatingPreviewWindow`当初放弃`TrackBar`、改用普通步进按钮
+    是同一种"优先复用简单、已验证过的控件用法，而不是引入一种从没在这个仓库里用过、渲染表现
+    完全没法在这个沙箱里确认的新交互"的理由。这个多选集合完全独立于`TreeView.SelectedNode`
+    本身——`GetSelection()`和它驱动的每一个单选按钮（播放方式/音频属性/淡入淡出/停留时长/
+    完成后动作/移除/上移/下移）都不受影响，继续读原来的单选状态。`RefreshTree()`会清空这个
+    集合（重建后旧的`TreeNode`引用全部失效）。**跨类型屏蔽**：新增`UI/BatchPropertiesDialog.cs`，
+    `PlayModeOverride`/`OnCompletion`/`AllowManualSkip`三项对任何`MediaKind`都适用、总是显示；
+    `StayDuration`只在选中文件全部是Image/Document时显示；`FadeDuration`/`VolumeFollowsFade`只在
+    全部是Video/Audio时显示；`IsBackgroundAudio`/`BackgroundAudioVisual`只在全部是Audio时显示——
+    对应`UpdateButtonStates`里"音频属性.../淡入淡出.../停留时长..."三个按钮各自的启用条件，只是
+    从"单个文件满足"改成"选中的文件全部满足"。工具栏新增"统一设置属性..."按钮，选中2个以上文件
+    节点才启用。**日志粒度**：跟`OnEditPlayMode`/`OnEditAudioProperties`等单文件方法一样，改了
+    哪个属性就单独调用一次`FileOperationLogger.LogPlaybackPropertyChanged`，只是这次每个属性
+    要循环写入所有选中文件各自的旧值/新值，而不是一次性的"批量修改"合并日志条目。**没有验证
+    过的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），`TreeNode.BackColor`/
+    `ForeColor`手动高亮在真机WinForms上的实际渲染效果（是否跟系统默认选中色冲突、是否在深色
+    主题下可读）完全没有验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -1646,10 +1676,8 @@ Caster知道终端机确实收到了东西。
   没有开始，`FilesPanel`仍然把音频文件放进跟图片/视频/文档相同的缩略图网格里，见该类doc
   comment——第81、82、115条给`FloatingPreviewWindow`加的暂停/音量/进度按钮都是这个悬浮小窗
   自己的临时UI，不是`FilesPanel`里描述的那条真正的横向播放条。
-- PLANNING.md §11"批量选择"里的"统一设置属性"（见"已知风险"第79、112条——"删除"、"加入活动"
-  两半都已经实现了）——需要先决定好清空/合并冲突值这类多选编辑的常见交互细节，PLANNING.md原文
-  "跨类型选中时屏蔽不适用的属性项"也只针对这一项，这个仓库连单文件属性编辑（第71、73条）都是
-  各自独立的对话框，还没有能同时编辑多个文件共同属性的统一入口，这次没有尝试
+- ~~PLANNING.md §11"批量选择"里的"统一设置属性"~~ **【已实现，见第117条】**：PLANNING.md §11
+  "批量选择"三个动作（加入活动/统一设置属性/删除，第79、112条覆盖前两个）现在全部落地。
 - **【文档修正，不是代码改动】`Activity`类自己的doc comment曾经声称"`Scenario.Activities`里的
   顺序是`PlayMode.SequentialAuto`的权威播放顺序"，这句话夸大了实际行为**：追踪
   `PlaybackEngine.TryAdvance`发现它的移动范围严格限定在`_currentActivity.Files`内部——一个活动
