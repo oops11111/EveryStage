@@ -1799,6 +1799,17 @@ Caster知道终端机确实收到了东西。
     运行了一段时间之后触发它，而不是从进程刚启动、消息循环还没开始跑的时候触发——这两种触发
     时机在真实Windows机器上是否存在这个仓库没有预见到的差异（比如某些D3D11初始化对"进程刚
     启动"这个时间点有隐含假设），完全没有办法在这个沙箱里确认。
+122. **【新发现的真实bug，已修复，跟`EveryStage.Transport`/`EveryStage.Caster`同一次审计一起
+    找到】`DiscoveryService.ReceiveLoopAsync`没有捕获`ObjectDisposedException`，理论上能让
+    接收循环变成没人观察的未处理Task异常**：这个类自己的`Dispose()`是`_cts.Cancel()`之后
+    `Task.WaitAll(..., TimeSpan.FromSeconds(2))`等接收/信标两个循环退出，同样没有检查这次
+    等待到底成功还是超时，超时了也照样执行`_socket.Dispose()`——跟`EveryStage.Transport`的
+    `RtpReceiver`/`RawRtpReceiver`（见该项目README对应条目的完整理由）是完全同一种结构、
+    同一种竞争条件，只是这次审计范围扩大到了这个仓库全部四个"取消令牌+后台接收循环"类之后
+    才发现这个类也中招。**修复方式**：给`ReceiveLoopAsync`补上跟另外三个类完全一样的
+    `catch (ObjectDisposedException) { return; }`。**没有做的部分**：这次改动本身没有在
+    这个沙箱里跑过（没有dotnet），这条竞争条件本身的窗口极窄，没有办法在没有真实网络/真实
+    卡顿场景的情况下构造出一次真正触发它的复现。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 

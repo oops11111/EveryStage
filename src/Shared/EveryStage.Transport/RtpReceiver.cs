@@ -105,6 +105,24 @@ public sealed class RtpReceiver : IDisposable
             {
                 continue; // transient network error on one datagram — keep listening.
             }
+            catch (ObjectDisposedException)
+            {
+                // Bug found (self-review, same audit that found LiveCastSession's own
+                // ObjectDisposedException race on the Caster side) and fixed here: Dispose() below
+                // calls _cts.Cancel() then _receiveLoop?.Wait(TimeSpan.FromSeconds(2)) WITHOUT
+                // checking whether that wait actually succeeded or merely timed out, then disposes
+                // _socket regardless. Under normal conditions ReceiveAsync(token) reacts to
+                // cancellation almost immediately (caught as OperationCanceledException above), but
+                // if it's ever slower than Dispose()'s 2-second patience — this loop is still
+                // between iterations, an unusually slow network stack, whatever — _socket.Dispose()
+                // can run while this exact await is still pending, and a UdpClient whose socket gets
+                // disposed out from under an in-flight ReceiveAsync throws ObjectDisposedException,
+                // not OperationCanceledException. Left uncaught, that would propagate out of this
+                // loop's Task.Run as an unobserved exception. Treated the same as cancellation
+                // (return, not continue) since by the time the socket is disposed there is nothing
+                // left to keep receiving on.
+                return;
+            }
 
             if (!RtpPacket.TryDecode(result.Buffer, out var packet)) continue; // not one of ours — ignore.
 

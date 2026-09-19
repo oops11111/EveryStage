@@ -196,6 +196,30 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
     编译执行过C#代码本身；这个具体的"两个NAL单元之间有多余填充字节"场景在真实Media Foundation
     编码器输出里是否真的会出现，也还没有真机数据可以确认，只能确定Annex B规范本身允许这种情况
     存在。
+14. **【新发现的真实bug，已修复】`RtpReceiver`/`RawRtpReceiver`的`ReceiveLoopAsync`没有捕获
+    `ObjectDisposedException`，理论上能让接收循环变成没人观察的未处理Task异常**：这次是在
+    Caster那边`LiveCastSession.RunLoop`发现并修复过同一形状的`ObjectDisposedException`竞争
+    之后（见`EveryStage.Caster`README对应条目），回头检查这个仓库里所有"取消令牌+后台循环"
+    结构是否有同款问题的一次系统性复查，不是响应某个具体报告。**具体场景**：这两个类各自的
+    `Dispose()`都是同一个写法——`_cts.Cancel()`之后`_receiveLoop?.Wait(TimeSpan.FromSeconds(2))`
+    等待后台循环退出，但完全没有检查这次等待到底是等到了循环真正退出、还是单纯超时；不管等到
+    没等到，紧接着都会照样执行`_socket.Dispose()`。正常情况下`_socket.ReceiveAsync(token)`
+    会在取消令牌被触发后几乎立刻抛出`OperationCanceledException`（已经被捕获），但如果这次
+    等待恰好超时（网络栈异常缓慢、循环恰好卡在两次迭代之间等等），`_socket.Dispose()`就可能在
+    这次`ReceiveAsync`还没返回的时候执行——对一个正在等待接收数据的`UdpClient`调用`Dispose()`
+    会让那次`ReceiveAsync`抛出`ObjectDisposedException`，而不是`OperationCanceledException`。
+    这个异常此前完全没有被捕获，会从`ReceiveLoopAsync`一路抛出`Task.Run`那个后台任务，变成一个
+    没人`await`/观察的未处理异常。**修复方式**：给这两个类的`ReceiveLoopAsync`各自补上一个
+    `catch (ObjectDisposedException) { return; }`，跟已有的`OperationCanceledException`分支
+    同样处理——都是"没什么可再接收的了，正常退出"，不是需要报告的错误。**范围核实**：搜索了
+    这个仓库里所有共享同一种"`Task.Run`跑接收循环+`Dispose()`里`Cancel`后`Wait`超时再
+    `Dispose`socket"结构的类，一共只有四个——这两个之外，`EveryStage.Terminal.Devices.DiscoveryService`
+    和`EveryStage.Caster.Discovery.TerminalDiscoveryClient`是另外两个（各自项目自己的README
+    有对应的简短条目指回这里），已经用完全同样的修复方式一并处理，不是这次特意去两个不同项目
+    分别发现的两次独立巧合。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），
+    这条竞争条件本身的窗口极窄（需要2秒等待真的超时），没有办法在没有真实网络/真实卡顿场景的
+    情况下构造出一次真正触发它的复现，跟`LiveCastSession`那条的"没有做的部分"是同一种没法验证
+    的理由。
 
 ## 尚未开始
 

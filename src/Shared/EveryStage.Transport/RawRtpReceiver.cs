@@ -84,6 +84,15 @@ public sealed class RawRtpReceiver : IDisposable
             {
                 continue; // transient network error on one datagram — keep listening.
             }
+            catch (ObjectDisposedException)
+            {
+                // Same fix, same reasoning as RtpReceiver.ReceiveLoopAsync's identical catch clause
+                // — Dispose() below has the exact same unchecked-timeout Wait()-then-dispose-the-
+                // socket-regardless shape, so this loop can observe the socket being torn down out
+                // from under an in-flight ReceiveAsync as ObjectDisposedException instead of
+                // OperationCanceledException in that narrow window. Treated the same as cancellation.
+                return;
+            }
 
             if (!RtpPacket.TryDecode(result.Buffer, out var packet)) continue; // not one of ours — ignore.
 

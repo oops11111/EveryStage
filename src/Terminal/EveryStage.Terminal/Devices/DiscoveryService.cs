@@ -183,6 +183,18 @@ public sealed class DiscoveryService : IDisposable
             {
                 continue; // transient network error on one datagram — keep listening.
             }
+            catch (ObjectDisposedException)
+            {
+                // Bug found (self-review audit) and fixed here: this class's own Dispose() calls
+                // _cts.Cancel() then waits on _receiveLoop with an unchecked timeout before disposing
+                // _socket regardless of whether that wait actually succeeded — see
+                // EveryStage.Transport.RtpReceiver.ReceiveLoopAsync's identical catch clause (found in
+                // the same audit) for the full reasoning. If ReceiveAsync(token) is ever slower to
+                // react to cancellation than Dispose()'s timeout, the socket can be torn down while
+                // this exact await is still pending, surfacing as ObjectDisposedException rather than
+                // OperationCanceledException. Treated the same as cancellation.
+                return;
+            }
 
             HandleDatagram(result.Buffer, result.RemoteEndPoint);
         }
