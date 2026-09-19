@@ -190,7 +190,7 @@ public sealed class PlaybackEngine : IDisposable
     public System.Drawing.Bitmap? CurrentThumbnail => _currentFile?.Kind switch
     {
         MediaKind.Image => _imageRenderer.CurrentFrame,
-        MediaKind.Document when !IsOfficeDocument(_currentFile) => _pdfRenderer.CurrentFrame,
+        MediaKind.Document when !IsOfficeDocument(_currentFile!) => _pdfRenderer.CurrentFrame,
         _ => null,
     };
 
