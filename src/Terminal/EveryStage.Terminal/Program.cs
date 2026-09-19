@@ -167,7 +167,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                 // playback and a live device cast — see VideoSurface's doc comment for why this can't
                 // be two independent ones anymore.
                 _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
-                _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore);
+                _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore, _store);
                 _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
                 _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
             }

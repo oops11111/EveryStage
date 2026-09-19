@@ -19,9 +19,14 @@ namespace EveryStage.Terminal.Playback;
 /// need UI-thread access, so treat it as one anyway.
 ///
 /// Deliberately out of scope for this first cut (see this project's README "已知风险/待验证事项"):
-/// what happens after the last file in an activity under NextItem (cross-activity auto-advance isn't
-/// specified anywhere in PLANNING.md), and rendering a local-only preview when the cast switch is off
-/// (that preview surface belongs to the Phase 4 UI's file/activity panels, which don't exist yet).
+/// rendering a local-only preview when the cast switch is off (that preview surface belongs to the
+/// Phase 4 UI's file/activity panels, which don't exist yet).
+///
+/// What happens after the last file in an activity under NextItem — PLANNING.md never specifies
+/// cross-activity auto-advance — used to be listed here as out of scope too, until the user asked for
+/// it directly and confirmed a concrete design before any code was written: see
+/// <see cref="TryAdvanceToNextActivity"/>'s own doc comment for exactly what was decided (auto-advance
+/// only, never manual skip; no wraparound past the scenario's last activity).
 ///
 /// The *background*-audio half of §6 "音频特殊性" — <see cref="MediaFile.IsBackgroundAudio"/>,
 /// PLANNING.md's "叠加在其他视觉内容之上播放，不占用主队列顺序位" — now has real behavior via a
@@ -55,6 +60,10 @@ public sealed class PlaybackEngine : IDisposable
     private readonly OverlayWindow _overlay;
     private readonly VideoSurface _videoSurface;
     private readonly SettingsStore _settingsStore;
+    // Only ever read by TryAdvanceToNextActivity — see that method's own doc comment for why this
+    // class otherwise has no reason to know about Scenarios at all (everything else it does is
+    // scoped to a single Activity's file list, handed in via RequestPlay).
+    private readonly ScenarioStore _scenarioStore;
     private readonly ImageContentRenderer _imageRenderer = new();
     private readonly PdfContentRenderer _pdfRenderer = new();
     private readonly PlaybackLogger _playbackLogger = new();
@@ -164,12 +173,13 @@ public sealed class PlaybackEngine : IDisposable
         _ => null,
     };
 
-    public PlaybackEngine(OutputStateMachine stateMachine, OverlayWindow overlay, VideoSurface videoSurface, SettingsStore settingsStore)
+    public PlaybackEngine(OutputStateMachine stateMachine, OverlayWindow overlay, VideoSurface videoSurface, SettingsStore settingsStore, ScenarioStore scenarioStore)
     {
         _stateMachine = stateMachine;
         _overlay = overlay;
         _videoSurface = videoSurface;
         _settingsStore = settingsStore;
+        _scenarioStore = scenarioStore;
         _stateMachine.StateChanged += OnOutputStateChanged;
     }
 
@@ -413,6 +423,61 @@ public sealed class PlaybackEngine : IDisposable
             PlayFile(candidate, trigger);
             return true;
         }
+    }
+
+    /// <summary>What happens after <see cref="TryAdvance"/> reaches the end of the current activity's
+    /// file list under <see cref="PlayMode.SequentialAuto"/> — this class's own doc comment used to
+    /// list this as "deliberately out of scope" (PLANNING.md never says). Confirmed with the user
+    /// before writing this: reaching the end of one activity now auto-advances into the NEXT activity
+    /// in the same <see cref="Scenario"/> (found via <see cref="_scenarioStore"/> by reference-
+    /// equality search — the same "look up the containing collection by identity, not by a
+    /// non-unique field like name" approach <c>ActivitiesPanel.TryHighlightPlayingFile</c> already
+    /// uses for <see cref="MediaFile"/>), landing on its first playable (non-background-audio) file.
+    ///
+    /// Only called from <see cref="HandleCompletion"/>'s <see cref="PlaybackTrigger.ActivityAuto"/>
+    /// path — <see cref="NextManual"/>/<see cref="PreviousManual"/> (the floating preview window's
+    /// 上一项/下一项 buttons, <see cref="PlaybackTrigger.ManualSkip"/>) deliberately do NOT call this:
+    /// confirmed with the user that manual skip should stay scoped to the current activity exactly as
+    /// before, so it can't ever land the operator somewhere PLANNING.md never described a UI
+    /// affordance for jumping straight to (the activity list itself, not just the file within it).
+    ///
+    /// Reaching the end of the LAST activity in the scenario simply returns false and leaves
+    /// <see cref="_currentActivity"/>/<see cref="_currentFileIndex"/> untouched — also confirmed with
+    /// the user: no wraparound back to the scenario's first activity, so this never turns into a
+    /// silent infinite loop across an entire scenario the way <see cref="CompletionAction.Loop"/>
+    /// deliberately does for a single file. An activity with nothing playable in it (empty, or every
+    /// file in it is background-audio) is transparent to this search exactly like
+    /// <see cref="TryAdvance"/> already treats a lone background-audio slot within one activity — any
+    /// background-audio file passed over still gets started via
+    /// <see cref="StartOrUpdateBackgroundAudio"/>, then the search keeps walking into the activity
+    /// after it, never mutating <see cref="_currentActivity"/>/<see cref="_currentFileIndex"/> unless
+    /// it actually finds somewhere real to land.</summary>
+    private bool TryAdvanceToNextActivity()
+    {
+        if (_currentActivity == null) return false;
+
+        var scenario = _scenarioStore.Scenarios.FirstOrDefault(s => s.Activities.Contains(_currentActivity));
+        if (scenario == null) return false; // the current activity was removed/replaced out from under playback.
+
+        int activityIndex = scenario.Activities.IndexOf(_currentActivity);
+        for (int a = activityIndex + 1; a < scenario.Activities.Count; a++)
+        {
+            var activity = scenario.Activities[a];
+            foreach (var candidate in activity.Files)
+            {
+                if (candidate.IsBackgroundAudio)
+                {
+                    StartOrUpdateBackgroundAudio(candidate);
+                    continue;
+                }
+
+                _currentActivity = activity;
+                _currentFileIndex = activity.Files.IndexOf(candidate);
+                PlayFile(candidate, PlaybackTrigger.ActivityAuto);
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>A per-file override wins; otherwise falls back to the owning activity's default —
@@ -1041,8 +1106,11 @@ public sealed class PlaybackEngine : IDisposable
                 // PreviousManual() (from the floating preview window) or a fresh RequestPlay moves
                 // on. This is the first real behavior PlayMode/PlayModeOverride/DefaultPlayMode
                 // have ever had — previously nothing in this class read them at all.
-                if (EffectivePlayMode(file) == PlayMode.SequentialAuto)
-                    TryAdvance(1, PlaybackTrigger.ActivityAuto); // no-op (holds) if nothing further — see class doc comment.
+                // TryAdvanceToNextActivity only when TryAdvance itself found nothing further left in
+                // THIS activity — see that method's own doc comment for why it's only ever reached
+                // from here (never from NextManual/PreviousManual's ManualSkip trigger).
+                if (EffectivePlayMode(file) == PlayMode.SequentialAuto && !TryAdvance(1, PlaybackTrigger.ActivityAuto))
+                    TryAdvanceToNextActivity(); // no-op (holds) if nothing further anywhere — see that method's own doc comment.
                 break;
             case CompletionAction.Loop:
                 PlayFile(file, PlaybackTrigger.ActivityAuto);
