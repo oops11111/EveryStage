@@ -104,7 +104,16 @@ public sealed class FileLibraryStore
         }
     }
 
-    private void Save()
+    /// <summary><see cref="Files"/> hands back the live, mutable <see cref="MediaFile"/> instances
+    /// themselves (not copies) — a caller can already mutate one directly (e.g.
+    /// <c>FilesPanel</c>'s "循环" checkbox flipping a library entry's own
+    /// <see cref="MediaFile.OnCompletion"/>, the first thing to ever need this); this just exposes the
+    /// already-existing persistence step (previously only reachable from inside <see cref="Import"/>/
+    /// <see cref="Remove"/>) for after doing so. Same shape as <see cref="ScenarioRepository.Save"/>,
+    /// just an instance method rather than taking an external store parameter — this class owns its
+    /// own list internally, unlike <see cref="ScenarioRepository"/>, which is a stateless repository
+    /// operating on an externally-owned <see cref="ScenarioStore"/>.</summary>
+    public void Save()
     {
         string directory = Path.GetDirectoryName(_storePath)!;
         Directory.CreateDirectory(directory);

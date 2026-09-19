@@ -1714,6 +1714,43 @@ Caster知道终端机确实收到了东西。
     抑制也只是锦上添花而非静默要求。**没有验证过的部分**：这次改动本身没有在这个沙箱里跑过
     （没有dotnet、没有Windows、没有WPS），是这个仓库迄今为止风险最高、最需要有人在真实WPS安装
     上逐条重新验证的一次改动——PLANNING.md §16第9项点名的"需要尽早分配专人验证"，说的正是这个。
+120. **【已实现，应用户要求继续做】PLANNING.md §8.2"音频以横向播放条展示（播放/进度/音量/循环/
+    独立投屏按钮）"——`FilesPanel`第一次有了这五项能力**：WPS集成做完之后，原始开发清单里剩下
+    两项需要新决策的工作，用户选了这一项（另一项——运行时显示器热插拔不重启就能用——范围更大，
+    暂时没做，见"尚未开始"）。动手写代码前先用`AskUserQuestion`确认了两个具体设计问题，而不是
+    自己假设：(1) 这条播放条要不要在"音频"标签页把现有的缩略图网格整个换掉——用户选了"不换，
+    在网格上方额外常驻一条"，所以`_listView`（缩略图网格）完全没有改动，音频文件仍然照旧以
+    占位图标出现在"全部"/"音频"标签页里；(2) 每行的"独立投屏"按钮具体做什么——用户确认"等价于
+    今天的双击播放"，所以`OnCastFromAudioBar`就是重新触发一次已有的`FilePlayRequested`事件，
+    没有引入任何新的播放路径。**实现方式**：新增`_audioBarPanel`（`FlowLayoutPanel`，
+    `TopDown`+`AutoScroll`），`RefreshAudioBar`从`_library.Files`里筛出所有`MediaKind.Audio`
+    文件，每个文件一行（`AudioRow`：文件名/暂停按钮/进度文字/音量－＋/循环复选框/投屏播放按钮），
+    全部是这个项目已经用滥的"纯Button/Label/CheckBox，不用没验证过的新控件类型"风格，没有引入
+    `TrackBar`或者owner-draw。**只有一个"当前正在播放"的概念**：`PlaybackEngine`只有一个
+    独立音频播放槽（`_audioController`），不是每个文件各自一份状态，所以"暂停/音量"这两组控件
+    只在这一行的文件就是`PlaybackEngine.CurrentFile`本尊时才启用（引用相等比较，而不是按
+    `MediaFile.Id`——`FilePlayRequested`从来不克隆传入的`MediaFile`，这里能拿这个当前提
+    直接判断），其余行这两组控件保持禁用/空白，由新增的`RefreshAudioRowLiveState`（复用
+    `FilesPanel`自己新增的一个500ms `Timer`，跟`FloatingPreviewWindow`自己那个轮询同一个
+    量级）每次都重新判断哪一行是"当前"。**"循环"复选框是这个仓库第一次能编辑文件库条目自己的
+    `MediaFile.OnCompletion`**（此前只有`ActivitiesPanel.OnEditCompletionAction`能编辑活动
+    里的文件副本，文件库本身的条目完全没有入口）——为此把`FileLibraryStore`原来私有的`Save()`
+    改成了`public`（`Files`本来就直接返回可变的活的`MediaFile`实例，缺的只是改完之后怎么持久化
+    这一步）。复选框只能表示`CompletionAction`三个值里的两个，取消勾选统一回落到默认值
+    `NextItem`，不尝试恢复`HoldOnLastFrame`——反正这个复选框出现之前，文件库条目的
+    `OnCompletion`就从来没有被设置成默认值以外的任何东西过，不是这次造成的新损失。
+    **顺手修的一个真实的、这次自己发现的资源泄漏**：`_audioBarPanel.Controls.Clear()`只会把
+    旧的行控件从父容器摘下来，并不会`Dispose`它们——每次点筛选标签/导入/删除都会重建这条播放条，
+    不这么处理的话，每个按钮/label/checkbox对应的原生窗口句柄都会一直泄漏到下一次GC终结器碰巧
+    跑到为止，跟这个类自己`Refresh_()`早就为`ImageList`缩略图写过的同一种"重复的小泄漏在无人
+    值守设备上会累积"顾虑完全一样，只是这次是HWND不是GDI+位图——这次在`RefreshAudioBar`重建
+    之前先显式`Dispose`了每一行的容器`Panel`（连带它所有子控件）。**刻意接受的纯视觉缺口**：
+    每一行是固定宽度而不是跟随窗口拉伸——`MainWindow`是可调整大小的窗口，宽窗口下这条播放条右侧
+    会留出空白；没有为此引入基于`Resize`事件的重新布局，也没有用WinForms的`Anchor`（这个仓库
+    的`ToastStack`自己的doc comment已经说明为什么这里一直避免依赖`Anchor`处理编译期没法验证的
+    交互）——纯粹是外观上不够饱满，不影响任何一个按钮的可用性。**没有验证过的部分**：这次改动
+    本身没有在这个沙箱里跑过（没有dotnet），`FlowLayoutPanel`的`TopDown`+`AutoScroll`组合、
+    固定宽度行在真实WinForms窗口里的实际渲染效果，都完全没有验证过。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -1736,24 +1773,11 @@ Caster知道终端机确实收到了东西。
 - ~~`FadeDuration`/`VolumeFollowsFade`的淡出~~——淡入（第109条）、编辑UI（第111条）、淡出
   尝试实现（第114条）都已经做了，从这个列表里移除；淡出本身是否真的在真机上生效仍然完全没有
   验证过（见第114条"完全没有验证过的部分"），但这属于"已实现、待验证"而不是"尚未开始"
-- PLANNING.md §8.2"音频以横向播放条展示（含播放/进度/音量/循环/独立投屏按钮）"——`FilesPanel`
-  目前把音频文件跟图片/视频/文档放进同一个`ListView`缩略图网格，完全没有单独的横向行样式；这次
-  排查PLANNING.md跟README的差异时发现这句话之前只在`FilesPanel`类doc comment里提过一次（且原话
-  "audio playback itself isn't implemented anywhere in this repo yet"已经过时并顺手改正），从来
-  没有作为已知缺口出现在README里。这句话点名的五项里，"循环"其实已经覆盖——`CompletionAction.Loop`
-  是`MediaFile`级别的通用完成后动作，不分媒体类型，音频文件跟图片/视频一样可以设成"循环"（见风险
-  第73条完成后动作编辑UI），只是从来没有单独针对"音频循环"这个说法在README里点出来过，这里补上。
-  **【更新】"播放"和"暂停/音量"这三项现在也更完整了**：`ContentEngine.AudioContentController`
-  不仅能播放，现在也有真正的暂停/恢复（见"已知风险"第81条）和音量调节（见第82条）能力了。
-  **【更新】"进度"也尝试做了（第115条）**：`AudioContentController.TrySeekTo`+
-  `FloatingPreviewWindow`新增的步进按钮，但只覆盖独立音频，不覆盖视频，而且依赖第115条自己
-  说明的、这个仓库风险最高的一次Media Foundation调用尝试（`IMFSourceReader::SetCurrentPosition`），
-  是否真的在真机上生效完全没有验证过。**仍然没有做的部分**："独立投屏按钮"具体含义PLANNING.md
-  本身没有展开（跟双击播放已有的行为是否是同一件事也不确定），这不是代码风险而是产品决策空白，
-  没有尝试；真正的"横向播放条"UI本身（拖动进度条、混合行高的`ListView`或别的控件布局）也完全
-  没有开始，`FilesPanel`仍然把音频文件放进跟图片/视频/文档相同的缩略图网格里，见该类doc
-  comment——第81、82、115条给`FloatingPreviewWindow`加的暂停/音量/进度按钮都是这个悬浮小窗
-  自己的临时UI，不是`FilesPanel`里描述的那条真正的横向播放条。
+- ~~PLANNING.md §8.2"音频以横向播放条展示（含播放/进度/音量/循环/独立投屏按钮）"~~
+  **【已实现，见第120条】**：`FilesPanel`新增一条常驻的音频行列表（`_audioBarPanel`），五项能力
+  全部落地；网格本身保持不变，音频文件仍然照旧以占位图标出现在"全部"/"音频"标签页里，这条行列表
+  是叠加的、不是替换——具体设计（要不要替换网格、"独立投屏"按钮具体含义）都是先用`AskUserQuestion`
+  跟用户确认过再动手写的，不是这次自己猜的。
 - ~~PLANNING.md §11"批量选择"里的"统一设置属性"~~ **【已实现，见第117条】**：PLANNING.md §11
   "批量选择"三个动作（加入活动/统一设置属性/删除，第79、112条覆盖前两个）现在全部落地。
 - ~~`Activity`类自己的doc comment曾经声称"`Scenario.Activities`里的顺序是`PlayMode.SequentialAuto`
