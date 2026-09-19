@@ -1,3 +1,4 @@
+using EveryStage.Terminal.ContentEngine;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.Playback;
@@ -456,7 +457,8 @@ public sealed class ActivitiesPanel : UserControl
         _repository.Save(_store);
     }
 
-    /// <summary>Only reachable when a selected file's <c>Kind</c> is Image or Document — see
+    /// <summary>Only reachable when a selected file's <c>Kind</c> is Image, or Document that isn't an
+    /// Office document (see <see cref="IsStayDurationApplicable"/>) — see
     /// <see cref="UpdateButtonStates"/>. Same no-activity-level-counterpart reasoning as
     /// <see cref="OnEditAudioProperties"/>: <c>MediaFile.StayDuration</c> is only ever a per-file
     /// override of the 设置 面板's single global default, there is no per-activity default to fall
@@ -464,7 +466,7 @@ public sealed class ActivitiesPanel : UserControl
     private void OnEditStayDuration()
     {
         var (_, activity, file) = GetSelection();
-        if (activity == null || file == null || file.Kind is not (MediaKind.Image or MediaKind.Document)) return;
+        if (activity == null || file == null || !IsStayDurationApplicable(file)) return;
 
         using var dialog = new StayDurationDialog($"停留时长 — {Path.GetFileName(file.SourcePath)}", file.StayDuration);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
@@ -707,13 +709,26 @@ public sealed class ActivitiesPanel : UserControl
         _playModeButton.Enabled = activity != null;
         _audioPropertiesButton.Enabled = file != null && file.Kind == MediaKind.Audio;
         _fadeButton.Enabled = file != null && file.Kind is MediaKind.Video or MediaKind.Audio;
-        _stayDurationButton.Enabled = file != null && file.Kind is MediaKind.Image or MediaKind.Document;
+        _stayDurationButton.Enabled = file != null && IsStayDurationApplicable(file);
         _completionActionButton.Enabled = file != null;
         _batchPropertiesButton.Enabled = _multiSelectedFileNodes.Count >= 2;
         _removeButton.Enabled = file != null;
         _moveUpButton.Enabled = file != null;
         _moveDownButton.Enabled = file != null;
     }
+
+    /// <summary>Narrower than a bare <c>Kind is MediaKind.Image or MediaKind.Document</c> check —
+    /// once <c>FileLibraryStore.InferKind</c> started mapping PPT/Word/Excel extensions onto the same
+    /// <see cref="MediaKind.Document"/> value a PDF gets (PLANNING.md §14.1's WPS integration),
+    /// <c>StayDuration</c> stopped being applicable to every Document: <c>PlaybackEngine.PlayOfficeDocument</c>
+    /// deliberately never arms the stay-duration timer this setting controls (see that method's own
+    /// doc comment — an auto-advance timer silently switching away mid-edit would be actively harmful),
+    /// so setting one on an Office document would be accepted here and then silently do nothing at
+    /// playback time. Shared by <see cref="OnEditStayDuration"/>/<see cref="UpdateButtonStates"/> and
+    /// <see cref="BatchPropertiesDialog"/>'s own applicability check, so this one definition is the
+    /// only place that needs to know about the Office-document exception.</summary>
+    private static bool IsStayDurationApplicable(MediaFile file) =>
+        file.Kind == MediaKind.Image || (file.Kind == MediaKind.Document && !WpsDocumentController.IsOfficeDocument(file.SourcePath));
 
     private void SelectFileNode(Activity activity, MediaFile file)
     {

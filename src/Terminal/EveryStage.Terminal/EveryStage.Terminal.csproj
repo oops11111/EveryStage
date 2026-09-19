@@ -25,6 +25,13 @@
     -->
     <PackageReference Include="PdfiumViewer" Version="2.13.0" />
     <PackageReference Include="PdfiumViewer.Native.x86_64.v8-xfa" Version="2018.4.8.256" />
+    <!-- ContentEngine/WpsDocumentController.cs's entire-call `dynamic` COM automation (PLANNING.md
+         §14.1's WPS COM互操作) — same reason EveryStage.Rendering.csproj needed this for
+         AudioDecodeSource's own dynamic Media Foundation calls: `dynamic` needs this package
+         explicitly on .NET (unlike classic .NET Framework, where it shipped in mscorlib). Version
+         matches the one already used elsewhere in this repo (Poc/WpsComInteropSpike.csproj,
+         EveryStage.Rendering.csproj). -->
+    <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
   </ItemGroup>
 
   <ItemGroup>

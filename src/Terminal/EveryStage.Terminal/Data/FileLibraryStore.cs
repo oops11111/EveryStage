@@ -35,12 +35,21 @@ public sealed class FileLibraryStore
 
     /// <summary>Infers <see cref="MediaKind"/> from the file extension. Returns null for anything
     /// unrecognized rather than guessing — an unsupported file silently imported as the wrong kind
-    /// would fail confusingly later (wrong renderer picked) instead of failing clearly now.</summary>
+    /// would fail confusingly later (wrong renderer picked) instead of failing clearly now.
+    ///
+    /// PPT/Word/Excel extensions map to the same <see cref="MediaKind.Document"/> value a PDF does —
+    /// PLANNING.md §6 treats them as one "文档" kind at the data-model level even though
+    /// <c>PlaybackEngine</c> picks an entirely different renderer for them
+    /// (<c>ContentEngine.WpsDocumentController</c>'s real, editable WPS window vs.
+    /// <c>PdfContentRenderer</c>'s rasterized bitmap) — see
+    /// <c>ContentEngine.WpsDocumentController.IsOfficeDocument</c>'s own doc comment for why that
+    /// split happens by re-checking the extension at play time instead of a second enum value
+    /// here.</summary>
     public static MediaKind? InferKind(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".jpg" or ".jpeg" or ".png" or ".bmp" or ".gif" or ".tif" or ".tiff" or ".webp" => MediaKind.Image,
         ".mp4" or ".mkv" or ".mov" or ".avi" or ".wmv" or ".m4v" => MediaKind.Video,
-        ".pdf" => MediaKind.Document,
+        ".pdf" or ".doc" or ".docx" or ".xls" or ".xlsx" or ".ppt" or ".pptx" => MediaKind.Document,
         ".mp3" or ".wav" or ".flac" or ".aac" or ".m4a" or ".wma" => MediaKind.Audio,
         _ => null,
     };

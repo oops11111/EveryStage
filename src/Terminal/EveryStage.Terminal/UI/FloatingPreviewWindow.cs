@@ -1,3 +1,4 @@
+using EveryStage.Terminal.ContentEngine;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
@@ -8,9 +9,10 @@ namespace EveryStage.Terminal.UI;
 /// The floating preview window (PLANNING.md §8.3): "仅在扩展屏有输出时出现，无输出时不存在" — shown
 /// while <see cref="OutputStateMachine"/> is Active, hidden the rest of the time. Content: LIVE
 /// badge, thumbnail preview, filename/kind, four buttons (上一项/暂停/下一项/切断), a volume row
-/// (－/音量文本/＋), and now a seek row (◀10秒/位置文本/10秒▶) for standalone audio — see
-/// <see cref="_volumeDownButton"/>'s and <see cref="_seekBackButton"/>'s own doc comments for why
-/// both live here rather than waiting for §8.2's full "横向播放条" to exist.
+/// (－/音量文本/＋), a seek row (◀10秒/位置文本/10秒▶) for standalone audio, and now a "保存" button
+/// for an open Office document — see <see cref="_volumeDownButton"/>'s, <see cref="_seekBackButton"/>'s,
+/// and <see cref="_saveButton"/>'s own doc comments for why each lives here rather than waiting for
+/// §8.2's full "横向播放条" to exist.
 ///
 /// Kept as one persistent <see cref="Form"/> instance rather than recreated per show — that's what
 /// gives "支持拖动记忆位置" (dragged position remembered) for free: <see cref="Control.Location"/>
@@ -69,6 +71,19 @@ public sealed class FloatingPreviewWindow : Form
     private readonly Button _seekBackButton;
     private readonly Label _positionLabel;
     private readonly Button _seekForwardButton;
+
+    /// <summary>PLANNING.md §14.1's "编辑/保存" — only enabled while an Office document
+    /// (<see cref="WpsDocumentController.IsOfficeDocument"/>) is the current file, i.e. while its own
+    /// real WPS window is what's actually showing on the extended display. Calls
+    /// <see cref="PlaybackEngine.TrySaveCurrentOfficeDocument"/> — a convenience, not the only way to
+    /// save: the operator can always use WPS's own Ctrl+S directly in that same window (see
+    /// <see cref="WpsDocumentController"/>'s own doc comment on why 翻页/编辑 are left entirely to
+    /// WPS's real UI; 保存 is the one piece of PLANNING.md's "打开/翻页/编辑/保存" still worth wiring
+    /// here). No dedicated feedback UI beyond a brief flash of <see cref="_pageLabel"/>'s text — this
+    /// window's existing style is lightweight labels/buttons, not modal confirmation dialogs (see
+    /// <see cref="_volumeDownButton"/>'s own doc comment on preferring the simplest control that
+    /// already exists here over a new one).</summary>
+    private readonly Button _saveButton;
 
     public FloatingPreviewWindow(PlaybackEngine playback, OutputStateMachine stateMachine)
     {
@@ -143,7 +158,12 @@ public sealed class FloatingPreviewWindow : Form
         };
         _seekForwardButton = new Button { Text = "10秒 ▶", Bounds = new Rectangle(156, 256, 56, 24) };
 
-        ClientSize = new Size(220, 288);
+        // Fourth row added below the seek row — same "grow ClientSize by row height (24) + gap (4) =
+        // 28px, reflow nothing above" approach this file's own history already used three times (see
+        // _pageLabel's/_volumeDownButton's/_seekBackButton's own comments above).
+        _saveButton = new Button { Text = "保存", Bounds = new Rectangle(8, 284, 204, 24) };
+
+        ClientSize = new Size(220, 316);
 
         Controls.AddRange(new Control[]
         {
@@ -151,6 +171,7 @@ public sealed class FloatingPreviewWindow : Form
             _previousButton, _pauseButton, _nextButton, _disconnectButton, _pinButton,
             _volumeDownButton, _volumeLabel, _volumeUpButton,
             _seekBackButton, _positionLabel, _seekForwardButton,
+            _saveButton,
         });
 
         _previousButton.Click += (_, _) => _playback.PreviousManual();
@@ -176,6 +197,11 @@ public sealed class FloatingPreviewWindow : Form
         // between clicking and the position label updating.
         _seekBackButton.Click += (_, _) => { _playback.SeekAudioRelative(TimeSpan.FromSeconds(-10)); RefreshFromEngine(); };
         _seekForwardButton.Click += (_, _) => { _playback.SeekAudioRelative(TimeSpan.FromSeconds(10)); RefreshFromEngine(); };
+        // Flashes a brief result into _pageLabel — see _saveButton's own doc comment on why there's
+        // no dedicated confirmation UI. RefreshFromEngine's own 500ms poll overwrites this with the
+        // normal "内容显示在独立的WPS窗口中" text on its very next tick either way, so this is
+        // necessarily transient regardless of what it says.
+        _saveButton.Click += (_, _) => _pageLabel.Text = _playback.TrySaveCurrentOfficeDocument() ? "已保存" : "保存失败（见README已知风险）";
 
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _refreshTimer.Tick += (_, _) => RefreshFromEngine();
@@ -242,21 +268,30 @@ public sealed class FloatingPreviewWindow : Form
             _seekBackButton.Enabled = false;
             _seekForwardButton.Enabled = false;
             _positionLabel.Text = "";
+            _saveButton.Enabled = false;
             return;
         }
 
         _fileLabel.Text = $"{Path.GetFileName(file.SourcePath)}\n[{file.Kind}]";
-        _thumbnail.Image = _playback.CurrentThumbnail; // null for video — see PlaybackEngine.CurrentThumbnail.
+        _thumbnail.Image = _playback.CurrentThumbnail; // null for video/Office document — see PlaybackEngine.CurrentThumbnail.
 
         bool isStandaloneAudio = file.Kind == MediaKind.Audio && !file.IsBackgroundAudio;
+        bool isOfficeDocument = file.Kind == MediaKind.Document && WpsDocumentController.IsOfficeDocument(file.SourcePath);
 
         // Pause is meaningful for image/PDF (freezes the stay-duration clock), standalone audio, and
         // now video too (all three now have real pause-in-place — see PlaybackEngine.Pause's doc
         // comment) — still not background audio (which never reaches PlayStandaloneAudio in the
         // first place, see that method's doc comment), so this mirrors PlaybackEngine.Pause's own
-        // guard exactly rather than re-deriving a slightly different condition here.
-        _pauseButton.Enabled = file.Kind is MediaKind.Image or MediaKind.Document or MediaKind.Video || isStandaloneAudio;
+        // guard exactly rather than re-deriving a slightly different condition here. Also not an
+        // Office document — PlaybackEngine.PlayOfficeDocument deliberately never arms the
+        // stay-duration timer Pause would otherwise freeze (see that method's own doc comment), so
+        // this button would just be a dead click for one; leaving it enabled would look like a bug
+        // rather than the deliberate scope choice it is.
+        _pauseButton.Enabled = (file.Kind is MediaKind.Image or MediaKind.Video
+            || (file.Kind == MediaKind.Document && !isOfficeDocument)) || isStandaloneAudio;
         _pauseButton.Text = _playback.IsPaused ? "继续" : "暂停";
+
+        _saveButton.Enabled = isOfficeDocument;
 
         // Volume only means anything for standalone audio — image/PDF/video have no audio track of
         // their own that PlaybackEngine.AudioVolume touches (a video's own audio plays through
@@ -273,10 +308,15 @@ public sealed class FloatingPreviewWindow : Form
         _seekForwardButton.Enabled = isStandaloneAudio;
         _positionLabel.Text = isStandaloneAudio ? FormatPosition(_playback.AudioPosition, _playback.AudioDuration) : "";
 
-        // Null (empty text) for anything that isn't a multi-page Document — see this class's and
-        // PlaybackEngine.DocumentPageInfo's own doc comments on why this only shows up when
-        // 上一项/下一项 actually mean "turn a page" right now.
-        _pageLabel.Text = _playback.DocumentPageInfo is { } page ? $"第{page.CurrentPage}页/共{page.PageCount}页" : "";
+        // Repurposed for an Office document — see WpsDocumentController's class doc comment on why
+        // there's nothing here to page-turn or preview at all (the real content is in WPS's own
+        // separate window); this at least explains the otherwise-blank thumbnail rather than looking
+        // like a bug. Otherwise null (empty text) for anything that isn't a multi-page PDF — see this
+        // class's and PlaybackEngine.DocumentPageInfo's own doc comments on why that only shows up
+        // when 上一项/下一项 actually mean "turn a page" right now.
+        _pageLabel.Text = isOfficeDocument
+            ? "内容显示在独立的WPS窗口中"
+            : _playback.DocumentPageInfo is { } page ? $"第{page.CurrentPage}页/共{page.PageCount}页" : "";
     }
 
     /// <summary>"0:15" or, when <paramref name="duration"/> is known, "0:15 / 3:42" — m:ss rather

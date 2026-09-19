@@ -1664,13 +1664,65 @@ Caster知道终端机确实收到了东西。
     没有引入任何新设置项（比如"是否启用跨活动自动播放"的开关）——两个确认下来的决策本身就足以
     让这次改动是纯粹的行为扩展，不需要新的UI开关。**没有验证过的部分**：这次改动本身没有在这个
     沙箱里跑过（没有dotnet），没有真机验证过。
+119. **【已尝试实现，风险已知且刻意接受，应用户要求继续做】PLANNING.md §14.1 WPS COM互操作——这个
+    仓库排名第二高（仅次于阶段0）的技术风险，第一次真正接入`PlaybackEngine`**：新增
+    `ContentEngine/WpsDocumentController`，把PPT/Word/Excel文件（新增到`FileLibraryStore.InferKind`，
+    跟PDF共用同一个`MediaKind.Document`）路由到这个类，而不是`PdfContentRenderer`的位图渲染管线。
+    动手写代码之前先用`AskUserQuestion`向用户确认了两个具体设计问题，而不是自己假设。
+    **确认下来的设计**：(1) 让WPS窗口占据扩展屏的方式是直接移动+最大化WPS自己的真实窗口（用
+    `SetWindowPos`把窗口大小/位置设为扩展屏`Rectangle`），不做`SetParent`把WPS的HWND嵌入
+    `OverlayWindow`——后者是另一套同样没人验证过、而且是跨进程顶级窗口重新挂靠这种历史上出了名
+    容易出问题的技术，风险不比COM调用本身低；(2) "翻页"完全不接入悬浮预览窗现有的上一项/下一项
+    按钮，操作者直接在WPS自己的真实窗口里翻页/编辑——这也是为什么这次跟
+    `Poc/WpsComInteropSpike`当初"验证能否静默打开"完全反着来：`Visible`这次是`true`，因为
+    "文档可编辑"这个需求本身就要求一个真实、可交互的WPS窗口，一张位图快照不可能被编辑。
+    **实现方式**：`PlaybackEngine.PlayOfficeDocument`（故意不是`async Task`，见该方法自己的doc
+    comment——`WpsDocumentController.Open`是真正同步阻塞的COM调用，不像`PlayImageAsync`/
+    `PlayDocumentAsync`那样只是签名上的`async`）打开文档前先`_overlay.HideOverlay()`把扩展屏让
+    给WPS，切换到任何新文件（`PlayFile`顶部）、设备投屏抢占（`StopForDeviceCast`）都会关闭已打开
+    的WPS文档并恢复`_overlay`；"断"（`OnOutputStateChanged`的Idle分支）和`Dispose()`只做纯清理、
+    不恢复`_overlay`，因为那两个场景本身就是要把一切都藏起来。`CurrentThumbnail`/`DocumentPageInfo`/
+    `TryTurnDocumentPage`都补上了"是Office文档就跳过"的判断，否则会读到`_pdfRenderer`上一个不相关
+    PDF留下的陈旧状态。`ActivitiesPanel`/`BatchPropertiesDialog`的"停留时长"按钮/批量属性同步收窄
+    （新增`ActivitiesPanel.IsStayDurationApplicable`）——`PlaybackEngine.PlayOfficeDocument`故意
+    从不启动停留时长计时器，给Office文档设置停留时长会被静默接受、然后完全不生效，之前那样让按钮
+    保持启用会看起来像bug。悬浮预览窗新增"保存"按钮（`PlaybackEngine.TrySaveCurrentOfficeDocument`
+    → `WpsDocumentController.TrySave`），是PLANNING.md"打开/翻页/编辑/保存"四件事里唯一还值得从
+    EveryStage自己UI接线的一个——操作者也随时可以直接在WPS窗口里按Ctrl+S。
+    **这次会话过程中主动发现、并在同一轮里修正的一个设计冲突**：最初的直觉是复用
+    `Poc/WpsComInteropSpike`"验证静默模式"那套`Visible = false`/`ReadOnly: true`/`WithWindow: false`
+    参数——但"文档可编辑"这个需求本身就排除了这条路：一张这个进程渲染出来的位图不可能被编辑，
+    只有WPS自己真实、可见、可交互的窗口才行，所以`Open`/`OpenDocument`的对应参数全部反过来
+    （`Visible = true`、Writer不再`ReadOnly`、Presentation不再`WithWindow: false`）。
+    **这个类自己文档里点名的最大未披露风险**：`Close()`故意不传`SaveChanges`参数给
+    `document.Close()`，让WPS自己真实可见的窗口在文档有未保存改动时弹出原生"保存更改？"提示、
+    由操作者直接回答——而不是这个类替他们静默选择"丢弃"（数据丢失）或"保存"（未经确认的覆盖）。
+    但`PlaybackEngine`的方法都跑在UI线程上，一次会触发模态对话框的COM自动化调用会阻塞到那个
+    对话框被关闭为止——切走一个"编辑过但没保存"的Office文档（无论是点了别的文件、点了"断"、还是
+    设备投屏抢占）都可能冻结整个EveryStage界面，直到操作者在一台可能根本没人盯着的无人值守终端
+    上响应那个对话框。这不是这次改动引入的新风险，是`Poc/WpsComInteropSpike`自己早就点名过的
+    "可能会挂起"那个失败模式的直接后果，只是这次是第一次真的把它接进了主程序的正常操作路径里，
+    而不是一个独立验证脚本。
+    **跟`AudioDecodeSource`/`VideoDecodeSource`同样的`dynamic`风险缓释**：每一次WPS COM调用
+    （包括方法名本身，不只是取值那一步）都通过`dynamic`发起，跟`Poc/WpsComInteropSpike`处理
+    "从来没有真实WPS安装可以验证"这个问题的方式完全一样；`EveryStage.Terminal.csproj`新增
+    `Microsoft.CSharp`包引用（版本跟仓库里其他两处一致）。获取WPS主窗口句柄（`Application.Hwnd`,
+    照搬Word/Excel/PowerPoint自己的自动化模型猜的属性名）是这整个类里验证程度最低的一步——如果
+    这个属性名在真实WPS上不对，代码会捕获异常、退化成"WPS正常打开，只是没有被移动到扩展屏"，
+    而不是让整个打开操作失败，因为位置摆错远比打不开文件的后果小。**没有做的部分**：没有实现
+    任何"静默模式"——这个功能存在的理由本身要求真实可见的窗口，第16条参数`DisplayAlerts`的
+    抑制也只是锦上添花而非静默要求。**没有验证过的部分**：这次改动本身没有在这个沙箱里跑过
+    （没有dotnet、没有Windows、没有WPS），是这个仓库迄今为止风险最高、最需要有人在真实WPS安装
+    上逐条重新验证的一次改动——PLANNING.md §16第9项点名的"需要尽早分配专人验证"，说的正是这个。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
 - 音视频同步的残余误差补偿（见"已知风险"第39-40条）——基础的"音频为主时钟+呈现线程等待"已经实现，
   但采集延迟差、RTP时间戳回绕、解码器FIFO假设这几项仍然是接受的已知限制，没有计划中的进一步方案
-- WPS COM互操作：验证脚本见 `src/Poc/WpsComInteropSpike/`（PLANNING.md 标记为"风险仅次于阶段0"，
-  这里只验证了"能否静默打开+翻页"，真正的编辑/保存集成到 Content Engine 仍未开始）
+- ~~WPS COM互操作……真正的编辑/保存集成到 Content Engine 仍未开始~~ **【已尝试实现，见第119条】**：
+  `ContentEngine/WpsDocumentController`把"打开/编辑/保存"接进了`PlaybackEngine`；验证脚本
+  `src/Poc/WpsComInteropSpike/`当初只验证的"能否静默打开+翻页"这半，在真正集成里反过来被
+  刻意放弃了（"编辑"要求WPS窗口真实可见，不能静默）——见第119条对这个取舍的完整说明
 - 显示器热插拔/运行时重新绑定扩展屏（见"已知风险"第35、59、67、113条）——"已绑定的扩展屏运行
   中途改分辨率/位置"在第59条实现，"已绑定的显示器运行中途被整个拔掉"在第67条实现（干净地"断"，
   而不是静默什么都不做）；"启动时没绑定、运行中途插入新显示器"这一种场景第113条补上了一次性
