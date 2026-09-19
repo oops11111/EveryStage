@@ -491,7 +491,26 @@ public sealed class LiveCastSession : IDisposable
             // itself already cancelled _cts is a harmless no-op — CancellationTokenSource.Cancel() is
             // idempotent, and see IsRunning's own doc comment for why a concurrent new Start() call
             // reassigning _cts to a different instance out from under this can't actually happen.
-            _cts?.Cancel();
+            //
+            // Bug found (self-review) and fixed here: StopInternal()'s own cleanup calls
+            // _loopTask?.Wait(TimeSpan.FromSeconds(2)) WITHOUT checking whether that wait actually
+            // succeeded or merely timed out — if this exact finally block is unusually slow (e.g.
+            // StatsUpdated's subscriber blocks), StopInternal can proceed past its 2-second wait,
+            // Dispose() _cts, and null the field out from under this method while it's still running
+            // concurrently. The null-conditional `_cts?.` above already handles "the field was set to
+            // null before this read" safely (no call at all), but it does NOT protect against "the
+            // field was still non-null when read here, but the CancellationTokenSource it pointed to
+            // had already been disposed by the other thread between that read and this call" —
+            // Cancel() on an already-disposed CancellationTokenSource throws ObjectDisposedException
+            // rather than no-op like the ordinary idempotent-Cancel() case above. An extremely narrow
+            // window (needs StopInternal's whole 2-second wait to actually elapse), but a real one,
+            // and unlike a thrown exception literally everywhere else in this loop, nothing here was
+            // catching it — it would propagate out of this finally block as an unobserved exception on
+            // a fire-and-forget Task.Run, the exact failure shape this project's Terminal side has its
+            // own TaskScheduler.UnobservedTaskException handler for for exactly this reason. Caught the
+            // same way OperationCanceledException already is elsewhere in this class: a harmless
+            // artifact of concurrent shutdown, not a real failure worth surfacing via LastError.
+            try { _cts?.Cancel(); } catch (ObjectDisposedException) { }
             StatsUpdated?.Invoke();
         }
     }

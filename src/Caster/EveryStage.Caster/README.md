@@ -929,6 +929,39 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     同一个写法——局部变量+`try/catch`+失败时`Dispose()`再重新抛出，只有全部成功才赋值给
     `_socket`字段。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），
     没有真机验证过。
+84. **【新发现的真实bug，已修复】`LiveCastSession.RunLoop`的`finally`块调用`_cts?.Cancel()`时，
+    如果恰好撞上`StopInternal()`自己2秒等待超时之后仍然继续执行的清理路径，会抛出未被捕获的
+    `ObjectDisposedException`**：这次是在`EveryStage.Terminal`那边完成WPS集成/音频播放条/
+    显示器热插拔绑定三轮改动之后，回头对这个仓库另一半（Caster）做的一次自主复查，专门找
+    这类"并发+清理时序"形状的bug（这个仓库这一类bug已经修过很多个，比如第75、77、79、83条），
+    不是响应某个具体需求。**具体场景**：`RunLoop`（本地屏幕采集/编码循环）因为
+    `ScreenCaptureLostException`或别的异常提前退出时，它自己的`finally`块会主动调用
+    `_cts?.Cancel()`——这是故意的设计（见`IsRunning`自己的doc comment）：目的是让
+    `RunSendLoop`/`RunAudioSendLoop`/`RunPingLoop`这三个兄弟循环也能借着同一个`_cts`
+    及时退出，而不是傻等到操作者手动点"停止投屏"。但`StopInternal()`自己那段清理代码
+    （`_loopTask?.Wait(TimeSpan.FromSeconds(2))`）完全没有检查这次等待到底是等到了
+    `RunLoop`真正退出、还是单纯2秒超时——超时之后照样往下执行`_cts?.Dispose(); _cts = null;`，
+    如果这时候`RunLoop`的`finally`块因为某种原因还没跑完（比如`StatsUpdated`的某个订阅者
+    卡住了），`_cts?.Cancel()`读到的字段虽然还不是`null`，但它指向的`CancellationTokenSource`
+    这一刻已经被另一个线程`Dispose()`过了——对一个已经释放的`CancellationTokenSource`调用
+    `Cancel()`会抛`ObjectDisposedException`，而不是像"已经被取消过一次"那样安全地空操作。
+    这个异常会从`finally`块里一路抛出`Task.Run`那个后台任务，变成一个没人`await`/观察的
+    未处理异常——跟这个仓库Terminal那边专门为了防这种情况才加的
+    `TaskScheduler.UnobservedTaskException`兜底处理器要防的完全是同一类问题。**修复方式**：
+    给这一行`_cts?.Cancel()`包一层`try { } catch (ObjectDisposedException) { }`，跟这个方法
+    自己已经对`OperationCanceledException`的处理方式一致——都是"并发关闭过程中的正常副作用，
+    不是真正的失败，不值得通过`LastError`往外报"。**为什么范围很窄但仍然值得修**：触发条件
+    需要`StopInternal()`的整整2秒等待真的超时，这本身已经意味着系统处于不太健康的状态（正常
+    情况下`RunLoop`的`finally`块只做`Cancel()`+一次事件调用，远用不了2秒）——但"系统已经
+    不健康"恰恰不是可以放心忽略未处理异常的理由，反而是最需要这类兜底代码生效的时候。
+    **检查过的相邻类**：`H264HardwareEncoder`/`CaptureSelfTestRunner`/`EncodeSelfTestRunner`/
+    `TerminalDiscoveryClient`都有结构相似的"`CancellationTokenSource`+后台循环+`Wait`后
+    `Dispose`"模式，但逐一确认过它们的循环体只接收`CancellationToken`（值类型的只读快照），
+    从不在自己的`finally`里反过来触碰`_cts`字段本身——这个bug是`LiveCastSession.RunLoop`
+    "主动帮忙取消兄弟循环"这个设计独有的，不是这个仓库里反复出现的通用模式，不需要在别处
+    重复修。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机
+    验证过，这条竞争条件本身的窗口极窄，也没有办法在没有真实网络/真实卡顿场景的情况下
+    构造出一次真正触发它的复现。
 
 ## 尚未开始
 
