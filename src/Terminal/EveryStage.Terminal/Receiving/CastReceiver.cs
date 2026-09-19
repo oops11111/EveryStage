@@ -75,6 +75,30 @@ public sealed class CastReceiver : IDisposable
     private readonly RtpReceiver _rtpReceiver;
     private readonly List<byte[]> _pendingNals = new();
 
+    // Bug found and fixed here (self-review, same audit round that found the ObjectDisposedException
+    // family — see this project's README): RtpReceiver.Dispose() cancels its token then waits up to
+    // 2 seconds for its receive loop to actually stop, but does NOT guarantee the loop has stopped by
+    // the time it returns — if the loop is, at that exact moment, synchronously inside dispatching
+    // NalUnitReceived (i.e. inside OnNalUnitReceived below, which calls into _decoder.SubmitAccessUnit,
+    // itself calling DrainOutput -> FrameDecoded -> OnFrameDecoded -> VideoSurface.PresentFrame),
+    // RtpReceiver.Dispose() can return having merely timed out, not having actually waited for that
+    // call to finish. Dispose() below used to proceed straight to _decoder.Dispose() immediately after
+    // _rtpReceiver.Dispose() returns, regardless of which of those two outcomes actually happened —
+    // H264HardwareDecoder has no internal synchronization of its own (SubmitAccessUnit/DrainOutput and
+    // Dispose freely race), so that could mean disposing the decoder's native MFT while this exact
+    // receive-loop thread is still inside a live SubmitAccessUnit call against it: a native-level
+    // hazard (potential crash/corruption), not a catchable .NET exception — the same category of risk
+    // as H264HardwareEncoder's documented (but unfixed, there, for lack of a verified non-blocking
+    // GetEvent) GetEvent risk, except this one IS fixable, because unlike GetEvent, SubmitAccessUnit is
+    // driven entirely by this codebase's own thread, not blocked inside an unverifiable native wait.
+    // Fixed by having OnNalUnitReceived's call into _decoder and Dispose()'s call into _decoder share
+    // this one lock: whichever gets there first now genuinely finishes before the other proceeds,
+    // regardless of whether RtpReceiver.Dispose()'s 2-second wait actually completed or merely timed
+    // out. This can make Dispose() block slightly longer than before if a decode call happens to still
+    // be in flight, which is an acceptable, realistically-bounded cost (single-frame hardware decode
+    // latency) in exchange for closing a real, if narrow, use-after-free-shaped race.
+    private readonly object _decoderLock = new();
+
     private readonly RawRtpReceiver? _audioRtpReceiver;
     private readonly AudioPlaybackClock? _audioClock;
 
@@ -399,7 +423,10 @@ public sealed class CastReceiver : IDisposable
             // above) — this is the value H264HardwareDecoder's FIFO carries through to OnFrameDecoded
             // as presentationTicks, and what RunPresentLoop paces against the audio clock.
             long presentationTicks = RtpVideoClock.ToElapsedTicks(timestamp, RtpVideoClock.ClockRate);
-            _decoder.SubmitAccessUnit(accessUnit, presentationTicks);
+            lock (_decoderLock)
+            {
+                _decoder.SubmitAccessUnit(accessUnit, presentationTicks);
+            }
             LastError = null;
             ConsecutiveVideoDecodeErrors = 0;
         }
@@ -549,8 +576,11 @@ public sealed class CastReceiver : IDisposable
         // Does NOT dispose _surface — shared with VideoContentController, owned by
         // TerminalApplicationContext (see VideoSurface's doc comment).
         _rtpReceiver.Dispose();
-        _decoder.FrameDecoded -= OnFrameDecoded;
-        _decoder.Dispose();
+        lock (_decoderLock)
+        {
+            _decoder.FrameDecoded -= OnFrameDecoded;
+            _decoder.Dispose();
+        }
 
         _presentCts?.Cancel();
         _presentThread?.Join();

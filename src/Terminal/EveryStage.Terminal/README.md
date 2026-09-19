@@ -1811,6 +1811,35 @@ Caster知道终端机确实收到了东西。
     这个沙箱里跑过（没有dotnet），这条竞争条件本身的窗口极窄，没有办法在没有真实网络/真实
     卡顿场景的情况下构造出一次真正触发它的复现。
 
+123. **【新发现的真实bug，已修复，比第122条那类竞争更深一层】`CastReceiver.Dispose()`可能在
+    `H264HardwareDecoder`还在被接收循环线程使用的时候就把它`Dispose()`掉**：根源在于
+    `RtpReceiver.Dispose()`自己那个已知、已接受的2秒`Wait`——第122条那一批修复解决的是
+    "等待超时之后，接收循环线程自己在`_socket.ReceiveAsync`里撞到`ObjectDisposedException`
+    要不要处理"，但没有解决更早一步的问题：`RtpReceiver.Dispose()`那个2秒等待本身不保证
+    接收循环真的已经停下——如果这次等待超时发生的那一刻，接收循环线程恰好正同步地卡在
+    `OnNalUnitReceived`内部（也就是正在调用`H264HardwareDecoder.SubmitAccessUnit`，进而
+    `DrainOutput`->`FrameDecoded`->`OnFrameDecoded`->`VideoSurface.PresentFrame`这条完整
+    调用链的某一步），`RtpReceiver.Dispose()`会因为超时直接返回，而不是等这次调用真正结束。
+    `CastReceiver.Dispose()`原来紧接着就去`_decoder.Dispose()`，完全没有考虑到这种超时
+    返回的情况——而`H264HardwareDecoder`自己没有任何内部同步（`SubmitAccessUnit`/
+    `DrainOutput`和`Dispose()`之间完全没有互斥），这意味着有可能一边在另一个线程上真的
+    执行到一半的解码native调用，一边在这个线程上把同一个MFT对象`Dispose()`掉——这跟
+    `EveryStage.Caster`README里`H264HardwareEncoder`那条"`GetEvent`可能根本不能取消"的
+    风险是同一类问题（清理代码在另一个线程可能还在用某个native对象的时候把它释放掉，属于
+    native层面的风险，不是能简单`catch`住的托管异常），但这一条**是可以修的**——跟
+    `GetEvent`不同，`SubmitAccessUnit`从头到尾都是这个仓库自己的线程在驱动，不是卡在一个
+    无法验证是否可取消的native阻塞调用里，所以不需要依赖任何未经验证的额外API假设。
+    **修复方式**：给`OnNalUnitReceived`里调用`_decoder.SubmitAccessUnit`和`Dispose()`里
+    调用`_decoder.Dispose()`包上同一把`_decoderLock`——不管`RtpReceiver.Dispose()`那个
+    2秒等待到底是真正等到了还是超时了，谁先到就让谁先完整执行完，另一边等着，而不是两边
+    在两个线程上同时动`_decoder`。代价是`Dispose()`理论上可能因为等一次还在进行中的解码
+    调用而多花一点时间，但这个等待时间的上限就是"单帧硬件解码所需时间"这种现实中很短的
+    量级，不是无界等待，换来的是关掉一个真实存在（虽然触发窗口很窄）的"释放时刻仍在用"
+    竞争条件，这笔交易划算。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有
+    dotnet），没有真机验证过；这条竞争条件的触发窗口本身极窄（需要一次解码/呈现调用恰好
+    慢到跟`Dispose()`被调用的时刻重叠），没有办法在没有真实GPU/真实解码器的情况下构造出
+    一次真正触发它的复现。
+
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
 - 音视频同步的残余误差补偿（见"已知风险"第39-40条）——基础的"音频为主时钟+呈现线程等待"已经实现，
