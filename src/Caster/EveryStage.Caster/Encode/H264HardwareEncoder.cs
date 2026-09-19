@@ -150,6 +150,26 @@ public sealed class H264HardwareEncoder : IDisposable
                 // NOTE: verify this blocks with no timeout parameter in Vortice's binding, and
                 // that "None" is the right no-flags value — native signature is
                 // IMFMediaEventGenerator::GetEvent(DWORD dwFlags, IMFMediaEvent**).
+                //
+                // Deeper, more severe risk connected to this note (found this audit, documented
+                // but NOT fixed — see README "已知风险" for the numbered entry): if this call
+                // truly has no cancellation support, then once the MFT stops raising events at
+                // all (e.g. capture upstream already died, so no more SubmitFrame calls ever
+                // arrive and the MFT has nothing left to react to), this thread can be blocked
+                // inside this single native call indefinitely — it never reaches the
+                // token.IsCancellationRequested check above again. In that scenario, Dispose()'s
+                // `_cts.Cancel(); _eventLoopTask.Wait(TimeSpan.FromSeconds(2));` is guaranteed to
+                // time out (the thread has no way to observe the cancellation), and Dispose()
+                // proceeds to dispose _events/_encoder/_frameAvailable regardless of that timeout
+                // — unlike the ObjectDisposedException instances fixed elsewhere in this file/
+                // session, disposing a COM object that a native call on another thread may still
+                // be blocked inside of is not a catchable .NET exception; it is a native-level
+                // risk (potential crash or memory corruption), not just an unhandled exception.
+                // Not fixed here: a real fix needs a non-blocking/pollable GetEvent variant
+                // (mirroring native MF_EVENT_FLAG_NO_WAIT) whose exact Vortice shape is
+                // unverified without a Windows/dotnet environment — guessing at it risks adding a
+                // second wrong assumption on top of this already-unverified one, so this is
+                // disclosed rather than "fixed" with unverified code.
                 using var mediaEvent = _events.GetEvent(EventGenerateFlags.None);
 
                 // NOTE: IMFMediaEvent::GetType() almost certainly isn't exposed as literally
@@ -205,6 +225,21 @@ public sealed class H264HardwareEncoder : IDisposable
         catch (OperationCanceledException)
         {
             return; // shutting down — the outer loop's token check ends RunEventLoop next iteration.
+        }
+        catch (ObjectDisposedException)
+        {
+            // Bug found (self-review, same audit that found the identical shape in
+            // LiveCastSession/RtpReceiver/RawRtpReceiver/DiscoveryService/TerminalDiscoveryClient —
+            // see this project's README) and fixed here: Dispose() below has the same unchecked-
+            // timeout shape (_cts.Cancel() then _eventLoopTask.Wait(TimeSpan.FromSeconds(2)) without
+            // checking whether that wait actually succeeded, before disposing _frameAvailable
+            // regardless). If this event-loop thread is ever still here when that 2-second wait
+            // expires — plausible given RunEventLoop's own GetEvent() call has no cancellation
+            // support at all, see that method's own doc comment — _frameAvailable can be disposed
+            // while this exact Wait() call is still pending, surfacing as ObjectDisposedException.
+            // Treated the same as cancellation: there is nothing left to do once the thing being
+            // waited on has been torn down.
+            return;
         }
 
         if (!_pendingFrames.TryDequeue(out var frame))

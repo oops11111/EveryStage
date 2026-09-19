@@ -983,6 +983,33 @@ MFT的消费者）。这里列出具体需要重点核实的点，按怀疑程�
     本身没有在这个沙箱里跑过（没有dotnet），这条竞争条件本身的窗口极窄，没有办法在没有
     真实网络/真实卡顿场景的情况下构造出一次真正触发它的复现。
 
+86. **【新发现的真实bug，已修复；另外记录了一个更深、这次没有修的相关风险】
+    `H264HardwareEncoder.HandleNeedInput`里的`_frameAvailable.Wait(NeedInputWaitTimeout, token)`
+    只捕获了`OperationCanceledException`，是这次审计（第84/85条、以及
+    `EveryStage.Transport`README第14条）发现的同一种"`Dispose()`里`Wait`超时不检查、照样往下
+    执行释放"竞争条件的第五个实例：`Dispose()`是`_cts.Cancel()`之后
+    `_eventLoopTask.Wait(TimeSpan.FromSeconds(2))`，不检查这次等待是否真的成功，超时了也照样
+    执行`_frameAvailable.Dispose()`/`_events.Dispose()`/`_encoder.Dispose()`。**修复方式**：给
+    这处`Wait`补上跟另外四个实例完全一样的`catch (ObjectDisposedException) { return; }`。
+    **顺带发现、但没有修的更深一层风险**：`RunEventLoop`里`_events.GetEvent(EventGenerateFlags.None)`
+    这一行本来就有一条更早写下的"NOTE: verify this blocks with no timeout parameter"注释——
+    如果这个native调用真的完全没有取消机制，那么一旦MFT不再产生任何事件（比如上游屏幕捕获
+    已经先挂了，`SubmitFrame`不会再被调用，MFT没有新输入可处理也就没有新事件可发），这个
+    事件循环线程就可能永久卡在这一次native调用里面，永远不会再执行到循环顶部的
+    `token.IsCancellationRequested`检查——这样一来，`Dispose()`那个2秒`Wait`就会必然超时，
+    而`Dispose()`超时之后仍然会去`Dispose()`掉`_events`/`_encoder`/`_frameAvailable`，这时候
+    这个线程可能还真的卡在一次针对这些对象的、活的native调用里面。这跟这次审计其它四个
+    实例不一样：那四个是"能被.NET捕获的`ObjectDisposedException`"，这一个是"清理代码在另一
+    个线程还在用某个COM对象做native调用的时候把它释放掉"，属于更严重的native层面风险
+    （可能是真的崩溃或内存损坏），不是一个能简单`catch`住的托管异常。**没有修的原因**：
+    真正的修法需要`GetEvent`有一个不阻塞/可轮询的版本（对应native的`MF_EVENT_FLAG_NO_WAIT`
+    语义），但这个方法本身在Vortice里到底怎么暴露、有没有这样的重载，在没有dotnet/没有
+    真机的这个沙箱里完全无法验证——在一个本来就未经验证的native API猜测之上再叠加第二个
+    未经验证的猜测，风险大于收益，所以这次只在`RunEventLoop`的注释里把这条发现写清楚
+    （具体是"如果`GetEvent`真的不能取消，会导致什么、为什么`Dispose()`的2秒等待救不了"），
+    没有尝试写代码修复。**没有做的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），
+    也没有真机验证过；更深一层的那个风险完全没有修，只是记录下来。
+
 ## 尚未开始
 
 - 状态回报的真正可靠传输（ACK/重试协议）——第34条这次只加了"同一份报告发两次"这种最简单的冗余
