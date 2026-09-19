@@ -456,7 +456,9 @@ Caster知道终端机确实收到了东西。
     音频和视频现在是同一套代码路径）。**明确没有实现的部分**：(a) `IsBackgroundAudio == true`
     的背景音轨叠加——PLANNING.md §6要求"叠加在其他视觉内容之上播放，不占用主队列顺序位"，这需要
     一个真正支持多轨同时播放的模型，`PlaybackEngine`目前是单一"当前文件"的顺序播放模型，完全没有
-    并发轨道的概念，这次刻意没有尝试；这个分支目前维持原样直接`return`。(b) `FadeDuration`/
+    并发轨道的概念，这次刻意没有尝试；这个分支目前维持原样直接`return`。**这一半后来在第116条
+    里实现了**（第二个独立的`AudioContentController`实例+`TryAdvance`/`RequestPlay`层面的
+    导航透明化，见第116条的完整说明）。(b) `FadeDuration`/
     `VolumeFollowsFade`——写这一条时音频播放本身还没有任何音量渐变逻辑，`AudioPlaybackClock.
     Enqueue`原样把解码出来的PCM送进WASAPI缓冲区；**这一半后来在第109条里实现了**（只有
     淡入，淡出仍然缺失，见第109条的完整说明）。(c) `MediaFile.BackgroundAudioVisual`的三个选项里只有
@@ -852,12 +854,18 @@ Caster知道终端机确实收到了东西。
     `SequentialAuto`+`NextItem`这一种组合下"卡住不动"才是真正的bug（活动本该自动往下走，而不是
     等操作员发现playback已经停了）。**没有解决的部分**：背景音频叠加播放本身依然完全没有实现，
     这次只是让"没实现"从"整个活动卡死"降级成"跳过它，继续放下一项"；这次改动本身没有在这个沙箱
-    里跑过（没有dotnet），没有真机验证过。
+    里跑过（没有dotnet），没有真机验证过。**【第116条后续更新】**：背景音频叠加播放本身后来在
+    第116条实现了，拦截点也从`PlayFile`内部搬到了更早的`TryAdvance`/`RequestPlay`——这条修的
+    `BeginInvoke`延后调用`TryAdvance`那段代码，连同它要修的那个`return;`分支，都在第116条里
+    整段删掉了：新的拦截点让`PlayFile`根本不会再看到背景音频文件，这个bug所在的代码路径不是被
+    绕过，是不复存在了。
 85. **【新增】活动面板的树状列表现在会直接标出背景音频文件，不用再逐个打开"音频属性..."才知道**：
     紧接着第84条那个bug——修完之后"背景音频文件会被自动跳过"这件事本身没有任何可见提示，操作员
     在树里看到的还是跟普通音频文件一模一样的文件名，容易观察到"这个活动播着播着就跳过了一项"却
     不知道为什么。`RefreshTree`新增`BuildFileNodeText`辅助方法，`IsBackgroundAudio == true`的
-    文件节点文字后面加上"`[背景音频-尚未实现，会被跳过]`"。**顺带修的一个必然后果**：
+    文件节点文字后面加上"`[背景音频-尚未实现，会被跳过]`"（**【第116条后续更新】**：这句标签
+    文字后来在第116条改成了"`[背景音频叠加播放，不在此列表中显示为当前项]`"，因为背景音频不再
+    是"会被跳过"，而是真的在叠加播放）。**顺带修的一个必然后果**：
     `OnEditAudioProperties`（"音频属性..."对话框的确定按钮）之前只调用`_repository.Save`，不调用
     `RefreshTree`——因为在这次改动之前，`IsBackgroundAudio`/`BackgroundAudioVisual`这两个属性
     压根不影响树里显示的任何文字，跟`OnEditPlayMode`/`OnEditStayDuration`/`OnEditCompletionAction`
@@ -1554,6 +1562,52 @@ Caster知道终端机确实收到了东西。
     这次没有尝试；`FilesPanel`里PLANNING.md描述的那条真正的"横向播放条"UI（拖动进度条，混合
     行高的`ListView`或别的控件）也仍然没有开始，这次只在`FloatingPreviewWindow`已有的临时UI
     上加了步进按钮。
+116. **【已实现，应用户要求继续做，原为已知缺口】PLANNING.md §6"音频特殊性"的背景音轨叠加
+    播放——`IsBackgroundAudio == true`——现在有真正的并发播放行为了**：新增第二个、完全独立
+    的`AudioContentController`实例（`PlaybackEngine.BackgroundAudioController`），跟已有的
+    `AudioController`（独立播放的前台音频）分开，互不干扰——`AudioPlaybackClock`构造函数用的
+    是`AudioClientShareMode.Shared`（WASAPI共享模式），这本来就是设计成允许多路音频流同时
+    混音输出到同一个设备的，不是这次新增的能力，只是第一次真正有第二路并发的音频流去用上它。
+    **"不占用主队列顺序位"这句话具体怎么落地，是这次真正的设计工作，不只是接线**：
+    `TryAdvance`（`NextManual`/`PreviousManual`/`HandleCompletion`的`NextItem`都走这个方法）
+    改成一个循环——沿着前进方向逐个检查`Activity.Files`，遇到背景音频文件就调用新增的
+    `StartOrUpdateBackgroundAudio`（启动或保持这个背景音轨播放，作为副作用）然后`continue`
+    跳到下一个位置，直到找到一个不是背景音频的文件才真正`PlayFile`它——效果是背景音频这一格
+    对导航来说完全透明，就像列表里根本没有这一项一样。`RequestPlay(Activity, int, ...)`/
+    `RequestPlay(MediaFile, ...)`（"点文件"的两个入口）也做了同样的拦截：直接点选一个背景
+    音频文件只会启动/维持这个音轨，不会变成`_currentFile`、不会更新`_currentActivity`/
+    `_currentFileIndex`。**顺手做的简化**：既然背景音频文件现在在进入`PlayFile`之前就已经被
+    拦截了，`PlayFile`自己`MediaKind.Audio`分支里原来那一大段"背景音频完全是no-op、只能靠
+    `BeginInvoke`跳过去，否则`SequentialAuto`会卡死"的特殊处理（第9条最初发现的那个bug）
+    整段删掉了——现在这个分支只会看到非背景音频，之前的bug连同它的修复代码一起变得不可能
+    再发生，不是掩盖，是真正消失了。**"已经在播放就别重启"这个guard很重要**：
+    `StartOrUpdateBackgroundAudio`只在`_backgroundAudioFile`不是同一个文件引用时才真的调用
+    `PlayBackgroundAudio`重新开始播放——没有这个guard，`TryAdvance`每次导航路过同一个背景
+    音频格子（比如上一项/下一项在这个格子附近来回切换）都会把背景音乐从头重播一次，跟"叠加
+    播放、持续存在"这个设计初衷完全相反。**PLANNING.md原文没有说清楚、这个仓库自己决定的部分**
+    （见`PlayBackgroundAudio`/`OnBackgroundAudioCompleted`的doc comment）：(a)
+    `MediaFile.OnCompletion`对一个背景音轨意味着什么——`Loop`照字面意思重新播放同一个文件
+    （`OnBackgroundAudioCompleted`绕开上面提到的"已经在播放"guard，直接调用
+    `PlayBackgroundAudio`重启），`NextItem`/`HoldOnLastFrame`则让音轨自然播完、归于安静——
+    背景音轨在序列里根本没有位置，"下一项"没有对象可以指，不去凭空发明一个含义。(b)
+    `PlaybackEngine.Pause`/`Resume`（悬浮预览窗"暂停"按钮）刻意完全不碰背景音轨——它只作用于
+    前台`_currentFile`，暂停屏幕上的内容不会连带暂停背景音乐；`Pause()`/`Resume()`里原来
+    对`IsBackgroundAudio`的排除逻辑连同旧注释一起更新成解释这一点，而不是删掉判断本身（保留
+    这个不可能再触发的判断，是为了防御未来万一有别的改动破坏了"`_currentFile`永远不是背景
+    音频"这个不变量）。(c) 背景音轨没有独立的音量控制，始终按`AudioPlaybackClock`默认的满
+    音量播放。**新增的停止时机**：`StopForDeviceCast`（设备投屏抢占本地播放）和
+    `OnOutputStateChanged`的"断"分支现在也会停止背景音轨（新增`StopBackgroundAudio`辅助
+    方法）——投屏或"断"之后屏幕上什么都不显示了，"叠加在其他视觉内容之上"这个前提本身就不
+    成立了，没有理由让背景音乐继续播。`Dispose()`也补上了对`_backgroundAudioController`的
+    释放。**顺手更新的过时UI文案**：`ActivitiesPanel.BuildFileNodeText`给背景音频文件加的
+    树节点标签，原来写的是"[背景音频-尚未实现，会被跳过]"（对应第9条那次发现），现在改成
+    "[背景音频叠加播放，不在此列表中显示为当前项]"；`AudioPropertiesDialog`勾选背景音频后
+    显示的红色警示文字，原来说"勾选后这个文件将不会播放"，现在改成灰色的信息提示，如实说明
+    仍然存在的限制（没有独立音量、不受暂停按钮影响），不再是"这功能完全没做"的警告。**没有
+    验证过的部分**：这次改动本身没有在这个沙箱里跑过（没有dotnet），没有真机验证过——包括
+    两路WASAPI共享模式音频流同时播放时真机上是否真的能干净地混音、有没有可听见的相互干扰，
+    这是这次判断"背景音轨叠加播放"风险主要在于状态机设计而不是未验证API之后，唯一还剩下的
+    真机相关不确定性。
 
 ## 尚未开始（阶段1剩余 + 后续阶段）
 
@@ -1568,8 +1622,9 @@ Caster知道终端机确实收到了东西。
   `_playback`/`_previewWindow`对象图、不需要重启就能用上新插入的显示器，仍然完全没有实现**，
   见第59条(a)/第113条列出的具体理由（改动规模比前两条大得多）
 - 悬浮预览窗、文件面板之间仍然没有联动（见"已知风险"第54条）——活动面板那一半已经在这一轮实现了
-- 背景音轨叠加播放（`IsBackgroundAudio == true`，见"已知风险"第61条）——需要`PlaybackEngine`支持
-  真正的多轨并发播放，目前完全没有实现；非背景音频（第61条已实现的那一半）不受影响
+- ~~背景音轨叠加播放~~（`IsBackgroundAudio == true`）——第116条已经实现了，从这个列表里移除；
+  真机上两路WASAPI共享模式音频流是否真的能干净地混音仍然完全没有验证过（见第116条"没有验证过
+  的部分"），但这属于"已实现、待验证"而不是"尚未开始"
 - ~~`FadeDuration`/`VolumeFollowsFade`的淡出~~——淡入（第109条）、编辑UI（第111条）、淡出
   尝试实现（第114条）都已经做了，从这个列表里移除；淡出本身是否真的在真机上生效仍然完全没有
   验证过（见第114条"完全没有验证过的部分"），但这属于"已实现、待验证"而不是"尚未开始"

@@ -19,13 +19,28 @@ namespace EveryStage.Terminal.Playback;
 /// need UI-thread access, so treat it as one anyway.
 ///
 /// Deliberately out of scope for this first cut (see this project's README "已知风险/待验证事项"):
-/// fades, volume-follows-fade, the *background*-audio half of §6 "音频特殊性" (an audio file playing
-/// concurrently with other visual content, overlaid rather than occupying the main queue's
-/// sequential slot — that needs a genuinely concurrent playback-track model this class doesn't
-/// attempt), what happens after the last file in an activity under NextItem (cross-activity
-/// auto-advance isn't specified anywhere in PLANNING.md), and rendering a local-only preview when the
-/// cast switch is off (that preview surface belongs to the Phase 4 UI's file/activity panels, which
-/// don't exist yet).
+/// what happens after the last file in an activity under NextItem (cross-activity auto-advance isn't
+/// specified anywhere in PLANNING.md), and rendering a local-only preview when the cast switch is off
+/// (that preview surface belongs to the Phase 4 UI's file/activity panels, which don't exist yet).
+///
+/// The *background*-audio half of §6 "音频特殊性" — <see cref="MediaFile.IsBackgroundAudio"/>,
+/// PLANNING.md's "叠加在其他视觉内容之上播放，不占用主队列顺序位" — now has real behavior via a
+/// second, independent <see cref="AudioContentController"/> (<see cref="BackgroundAudioController"/>),
+/// distinct from <see cref="AudioController"/>'s own standalone-audio slot; WASAPI shared mode (see
+/// <see cref="AudioPlaybackClock"/>'s constructor) genuinely mixes the two rather than one silently
+/// stealing the device from the other. "不占用主队列顺序位" is implemented as literal transparency to
+/// navigation: <see cref="TryAdvance"/>/<see cref="RequestPlay(Activity, int, PlaybackTrigger)"/>/
+/// <see cref="RequestPlay(MediaFile, PlaybackTrigger)"/> all intercept a background-audio file before
+/// it would ever become <see cref="_currentFile"/> — starting (or leaving alone, if already playing)
+/// the overlay track as a side effect, then continuing to search in the same direction for a real
+/// slot to actually display, exactly as if the background-audio entry were not present in the list at
+/// all. PLANNING.md does not specify several things about this feature that this repository decided
+/// for itself (see <see cref="PlayBackgroundAudio"/>/<see cref="OnBackgroundAudioCompleted"/>'s own
+/// doc comments for the specific choices and reasoning): what <see cref="MediaFile.OnCompletion"/>
+/// other than <see cref="CompletionAction.Loop"/> means for a track with no position of its own in
+/// the sequence, and whether <see cref="Pause"/>/<see cref="Resume"/> (which this deliberately leaves
+/// untouched — they remain scoped to the foreground <see cref="_currentFile"/> only) should also
+/// affect it.
 ///
 /// <see cref="MediaFile.PlayModeOverride"/>/<see cref="Activity.DefaultPlayMode"/> (via
 /// <see cref="EffectivePlayMode"/>), <see cref="MediaFile.AllowManualSkip"/> (via
@@ -45,6 +60,15 @@ public sealed class PlaybackEngine : IDisposable
     private readonly PlaybackLogger _playbackLogger = new();
     private VideoContentController? _videoController;
     private AudioContentController? _audioController;
+    private AudioContentController? _backgroundAudioController;
+
+    // The MediaFile currently (or most recently) handed to _backgroundAudioController — distinct
+    // from _currentFile, which a background-audio file never becomes (see class doc comment).
+    // Reference-compared in PlayBackgroundAudio/OnBackgroundAudioCompleted/OnBackgroundAudioFailed
+    // to tell "still the same overlay track" from "replaced by a different one since" or "already
+    // stopped", the same staleness-guard pattern _currentFile itself already uses throughout this
+    // class (e.g. OnImageOrDocumentFailed's own ReferenceEquals check).
+    private MediaFile? _backgroundAudioFile;
 
     private Activity? _currentActivity;
     private int _currentFileIndex = -1;
@@ -172,6 +196,16 @@ public sealed class PlaybackEngine : IDisposable
         }
     }
 
+    // Same lazy-construction reasoning as AudioController, kept as a genuinely separate
+    // AudioContentController instance rather than reusing AudioController itself — see class doc
+    // comment on why a shared instance would let a foreground standalone-audio file and the
+    // background overlay track fight over the same playback slot (AudioContentController.Play()
+    // always stops whatever it was previously playing first) instead of mixing independently.
+    // Volume is left at AudioContentController's own default (1.0, full) — no per-background-track
+    // volume control is exposed anywhere yet; see this project's README for that being an accepted,
+    // documented scope limit rather than an oversight.
+    private AudioContentController BackgroundAudioController => _backgroundAudioController ??= new AudioContentController();
+
     private float _pendingAudioVolume = 1f;
 
     /// <summary>Standalone (non-background) audio playback volume, 0.0-1.0 — read/written by
@@ -224,20 +258,38 @@ public sealed class PlaybackEngine : IDisposable
 
     /// <summary>"点文件" from within an activity's file list — establishes the auto-advance/manual-
     /// skip context that <see cref="NextManual"/>/<see cref="PreviousManual"/> and
-    /// <see cref="CompletionAction.NextItem"/> use.</summary>
+    /// <see cref="CompletionAction.NextItem"/> use. A background-audio file (PLANNING.md's "不占用主
+    /// 队列顺序位") is intercepted here before it ever reaches <see cref="PlayFile"/> or updates
+    /// <see cref="_currentActivity"/>/<see cref="_currentFileIndex"/> — a direct click starts (or
+    /// leaves alone) the overlay track exactly like passing over one during <see cref="TryAdvance"/>
+    /// does, but doesn't search further for a "real" slot to display, since a direct click is a
+    /// one-off action, not a queue walk.</summary>
     public void RequestPlay(Activity activity, int fileIndex, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
     {
         if (fileIndex < 0 || fileIndex >= activity.Files.Count) return;
+        var file = activity.Files[fileIndex];
+        if (file.IsBackgroundAudio)
+        {
+            StartOrUpdateBackgroundAudio(file);
+            return;
+        }
         _currentActivity = activity;
         _currentFileIndex = fileIndex;
-        PlayFile(activity.Files[fileIndex], trigger);
+        PlayFile(file, trigger);
     }
 
     /// <summary>"点文件" with no activity context (e.g. directly from a future 文件 panel). With no
     /// activity list to advance through, <see cref="CompletionAction.NextItem"/> degrades to
-    /// holding on the last frame — nothing in PLANNING.md defines "next" without an activity.</summary>
+    /// holding on the last frame — nothing in PLANNING.md defines "next" without an activity. Same
+    /// background-audio interception as the other overload — a library entry can carry
+    /// <see cref="MediaFile.IsBackgroundAudio"/> just as well as an activity's copy of it.</summary>
     public void RequestPlay(MediaFile file, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
     {
+        if (file.IsBackgroundAudio)
+        {
+            StartOrUpdateBackgroundAudio(file);
+            return;
+        }
         _currentActivity = null;
         _currentFileIndex = -1;
         PlayFile(file, trigger);
@@ -322,6 +374,15 @@ public sealed class PlaybackEngine : IDisposable
             ? (_pdfRenderer.CurrentPageIndex + 1, _pdfRenderer.PageCount)
             : null;
 
+    /// <summary>Walks <see cref="_currentActivity"/>'s file list by <paramref name="delta"/> at a
+    /// time, transparently passing over any background-audio file it lands on — see class doc
+    /// comment for PLANNING.md's "不占用主队列顺序位": each one encountered starts (or leaves alone)
+    /// the overlay track via <see cref="StartOrUpdateBackgroundAudio"/> as a side effect, then the
+    /// walk continues in the same direction as if that slot were not in the list at all. Returns
+    /// false (no visible change) if the walk reaches either end of the list without finding a
+    /// non-background-audio file to land on — a list that is ALL background-audio files (or empty
+    /// past the current position) simply holds, the same "nothing further, stay put" behavior an
+    /// ordinary out-of-range index already had before this method needed to loop at all.</summary>
     private bool TryAdvance(int delta, PlaybackTrigger trigger)
     {
         if (_currentActivity == null) return false;
@@ -330,13 +391,28 @@ public sealed class PlaybackEngine : IDisposable
         // blocked by "don't let the operator skip past this one manually" (see AllowManualSkip's
         // own doc comment: it says nothing about auto-advance, and conflating the two would make a
         // "no manual skip" file also stall CompletionAction.NextItem, which isn't what either
-        // property is documented to mean).
+        // property is documented to mean). Checked once, against the file being left, not
+        // re-checked per background-audio slot passed over below — this gate is about leaving
+        // _currentFile, not about the transparent slots in between.
         if (trigger == PlaybackTrigger.ManualSkip && _currentFile?.AllowManualSkip == false) return false;
-        int next = _currentFileIndex + delta;
-        if (next < 0 || next >= _currentActivity.Files.Count) return false;
-        _currentFileIndex = next;
-        PlayFile(_currentActivity.Files[_currentFileIndex], trigger);
-        return true;
+
+        int next = _currentFileIndex;
+        while (true)
+        {
+            next += delta;
+            if (next < 0 || next >= _currentActivity.Files.Count) return false;
+
+            var candidate = _currentActivity.Files[next];
+            if (candidate.IsBackgroundAudio)
+            {
+                StartOrUpdateBackgroundAudio(candidate);
+                continue;
+            }
+
+            _currentFileIndex = next;
+            PlayFile(candidate, trigger);
+            return true;
+        }
     }
 
     /// <summary>A per-file override wins; otherwise falls back to the owning activity's default —
@@ -427,43 +503,10 @@ public sealed class PlaybackEngine : IDisposable
                 break;
 
             case MediaKind.Audio:
-                if (file.IsBackgroundAudio)
-                {
-                    // The concurrent-overlay half of §6 "音频特殊性" — playing on top of whatever
-                    // else is on screen, without occupying the main queue's sequential slot — needs
-                    // a genuinely concurrent playback-track model this class doesn't have (see this
-                    // class's doc comment). Left unhandled rather than silently mis-rendering it
-                    // through the image path. The non-background half (below) has real behavior now.
-                    //
-                    // Without the block below, an activity's PlayMode.SequentialAuto queue would
-                    // silently stall here forever the moment it reaches a background-audio file
-                    // (reachable today via AudioPropertiesDialog's checkbox): _currentFile is already
-                    // set above, but nothing in this branch ever arms a stay-duration timer or starts
-                    // a video/audio controller whose completion event could call HandleCompletion, so
-                    // nothing would ever advance past it. Deliberately does NOT route through
-                    // HandleCompletion's own OnCompletion switch to fix this — none of NextItem/
-                    // Loop/HoldOnLastFrame have a meaningful interpretation for a file that never
-                    // actually played anything, and Loop specifically would re-enter this exact
-                    // branch again immediately, forever, spinning the UI thread in a tight loop
-                    // rather than merely stalling. NextItem+SequentialAuto is the one combination
-                    // that actually needs fixing (everything else — ManualSelect, Loop,
-                    // HoldOnLastFrame — correctly just holds here, same as any other file kind would
-                    // under those same settings, until the operator manually moves on via
-                    // NextManual()/PreviousManual(); that's PlayMode.ManualSelect's normal contract,
-                    // not a bug). Deferred via BeginInvoke, same "call back in on a later UI-thread
-                    // iteration" pattern OnVideoCompleted/OnAudioCompleted already use, so this
-                    // PlayFile call finishes unwinding before anything advances past it.
-                    if (file.OnCompletion == CompletionAction.NextItem && EffectivePlayMode(file) == PlayMode.SequentialAuto)
-                    {
-                        var thisFile = file;
-                        _overlay.BeginInvoke(new Action(() =>
-                        {
-                            if (!ReferenceEquals(thisFile, _currentFile)) return; // stale — moved on already.
-                            TryAdvance(1, PlaybackTrigger.ActivityAuto);
-                        }));
-                    }
-                    return;
-                }
+                // file.IsBackgroundAudio is never true here — RequestPlay/TryAdvance both intercept
+                // a background-audio file before it can ever reach PlayFile (see class doc comment),
+                // so this branch only ever sees the standalone (non-background) half of §6 "音频
+                // 特殊性" now.
                 _videoController?.Stop();
                 _overlay.ShowImageSurface();
                 PlayStandaloneAudio(file);
@@ -564,9 +607,10 @@ public sealed class PlaybackEngine : IDisposable
     private static TimeSpan? FadeDurationFor(MediaFile file) =>
         file.VolumeFollowsFade ? file.FadeDuration : null;
 
-    /// <summary>Standalone (non-background) audio playback — see this class's doc comment and
-    /// <see cref="MediaFile.IsBackgroundAudio"/>'s caller in <see cref="PlayFile"/> for what this
-    /// deliberately does not cover. Presents through <see cref="OverlayWindow.ContentSurface"/>
+    /// <summary>Standalone (non-background) audio playback — <see cref="MediaFile.IsBackgroundAudio"/>
+    /// files never reach this method at all (intercepted upstream, see class doc comment and
+    /// <see cref="PlayBackgroundAudio"/> for what they get instead). Presents through
+    /// <see cref="OverlayWindow.ContentSurface"/>
     /// (the image path, not <see cref="VideoSurface"/>) since <see cref="AudioVisualRenderer"/>
     /// produces plain GDI+ <see cref="System.Drawing.Bitmap"/>s, not D3D11 textures — there's no
     /// zero-copy pipeline to route audio-only content through.</summary>
@@ -606,6 +650,101 @@ public sealed class PlaybackEngine : IDisposable
         {
             OnImageOrDocumentFailed(file, ex);
         }
+    }
+
+    /// <summary>Entry point for <see cref="RequestPlay(Activity, int, PlaybackTrigger)"/>/
+    /// <see cref="RequestPlay(MediaFile, PlaybackTrigger)"/>/<see cref="TryAdvance"/> reaching a
+    /// background-audio file — starts it via <see cref="PlayBackgroundAudio"/> unless it's already
+    /// the one playing, in which case this is a no-op. That guard matters more than it might look:
+    /// <see cref="TryAdvance"/> calls this every time navigation passes back and forth over the same
+    /// background-audio slot (e.g. 上一项/下一项 crossing it repeatedly) — without it, the overlay
+    /// track would restart from the beginning on every single pass instead of continuing
+    /// uninterrupted underneath whatever else changes, which is the entire point PLANNING.md's "叠加
+    /// 在其他视觉内容之上播放" is describing.</summary>
+    private void StartOrUpdateBackgroundAudio(MediaFile file)
+    {
+        if (ReferenceEquals(file, _backgroundAudioFile)) return;
+        PlayBackgroundAudio(file);
+    }
+
+    /// <summary>Actually (re)starts the background-audio overlay track — separated from
+    /// <see cref="StartOrUpdateBackgroundAudio"/>'s "only if not already playing" guard because
+    /// <see cref="OnBackgroundAudioCompleted"/>'s own <see cref="CompletionAction.Loop"/> handling
+    /// needs to restart the SAME file, which that guard would otherwise treat as a no-op.
+    ///
+    /// <see cref="BackgroundAudioController.Play"/>'s own <c>new AudioDecodeSource(path)</c> is the
+    /// same "file deleted/moved/corrupted since being added" real, reachable failure mode this
+    /// class's other <c>Play</c> call sites already guard against (see
+    /// <see cref="PlayStandaloneAudio"/>'s own doc comment) — caught here the same way, logged and
+    /// reported via <see cref="PlaybackAbnormallyInterrupted"/>, except this does NOT route through
+    /// <see cref="OnImageOrDocumentFailed"/>: that method also touches
+    /// <see cref="OverlayWindow.ContentSurface"/>, which has nothing to do with an overlay audio
+    /// track that was never shown on the visual surface at all.</summary>
+    private void PlayBackgroundAudio(MediaFile file)
+    {
+        _backgroundAudioFile = file;
+        // -= before += every time: same "avoid stacking subscriptions across plays" reasoning as
+        // every other controller this class subscribes to.
+        BackgroundAudioController.PlaybackCompleted -= OnBackgroundAudioCompleted;
+        BackgroundAudioController.PlaybackCompleted += OnBackgroundAudioCompleted;
+        BackgroundAudioController.PlaybackFailed -= OnBackgroundAudioFailed;
+        BackgroundAudioController.PlaybackFailed += OnBackgroundAudioFailed;
+
+        try
+        {
+            BackgroundAudioController.Play(file.SourcePath, FadeDurationFor(file));
+        }
+        catch (Exception ex)
+        {
+            _backgroundAudioFile = null;
+            _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
+            RaisePlaybackAbnormallyInterrupted(file, ex.Message);
+        }
+    }
+
+    /// <summary>PLANNING.md doesn't say what any <see cref="MediaFile.OnCompletion"/> value should
+    /// mean for a background-audio file — it was never part of the visible sequence
+    /// <see cref="CompletionAction.NextItem"/>/<see cref="CompletionAction.HoldOnLastFrame"/> are
+    /// framed around in the first place (see class doc comment). This repository's own choice, made
+    /// here rather than left unresolved a second time: <see cref="CompletionAction.Loop"/> restarts
+    /// the same file via <see cref="PlayBackgroundAudio"/> (bypassing
+    /// <see cref="StartOrUpdateBackgroundAudio"/>'s "already playing" guard on purpose — this is
+    /// exactly the one case that needs to restart the same file) — matching what "loop" plainly says
+    /// regardless of context, and the one interpretation every other <see cref="MediaFile"/> kind
+    /// already gives it. Anything else (<see cref="CompletionAction.NextItem"/>,
+    /// <see cref="CompletionAction.HoldOnLastFrame"/>) simply lets the track end and stay silent —
+    /// there is no "next" for a file with no position in the sequence, and re-purposing NextItem to
+    /// mean something else here would be inventing behavior PLANNING.md never described, not
+    /// implementing something it did.</summary>
+    private void OnBackgroundAudioCompleted()
+    {
+        var file = _backgroundAudioFile;
+        if (file == null) return;
+        // Raised from AudioContentController's background playback thread — marshal before touching
+        // this class's own state, same reasoning as OnAudioCompleted/OnVideoCompleted.
+        _overlay.BeginInvoke(new Action(() =>
+        {
+            if (!ReferenceEquals(file, _backgroundAudioFile)) return; // stale — replaced/stopped since.
+            _playbackLogger.LogPlaybackEnded(file.Id, file.OnCompletion.ToString());
+            if (file.OnCompletion == CompletionAction.Loop)
+                PlayBackgroundAudio(file);
+            else
+                _backgroundAudioFile = null;
+        }));
+    }
+
+    private void OnBackgroundAudioFailed(Exception ex)
+    {
+        var file = _backgroundAudioFile;
+        if (file == null) return;
+        // Also raised from the background playback thread.
+        _overlay.BeginInvoke(new Action(() =>
+        {
+            if (!ReferenceEquals(file, _backgroundAudioFile)) return; // stale — replaced/stopped since.
+            _backgroundAudioFile = null;
+            _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
+            RaisePlaybackAbnormallyInterrupted(file, ex.Message);
+        }));
     }
 
     /// <summary>Sets up whichever of the three <see cref="AudioVisual"/> options this file asks for.
@@ -768,11 +907,15 @@ public sealed class PlaybackEngine : IDisposable
     {
         if (IsPaused || _currentFile == null) return;
 
-        // IsBackgroundAudio is excluded here the same way PlayFile's own switch excludes it from ever
-        // reaching PlayStandaloneAudio in the first place (see that method's doc comment) — a
-        // background-audio MediaFile can be _currentFile without anything ever actually having been
-        // handed to _audioController for it, so pausing here would either no-op against whatever
-        // unrelated file _audioController last played, or against nothing at all.
+        // The !IsBackgroundAudio half of this condition can never actually be false any more —
+        // RequestPlay/TryAdvance now intercept a background-audio file before it ever reaches
+        // PlayFile at all (see class doc comment), so _currentFile can never legitimately BE one.
+        // Left in place anyway as an explicit, harmless invariant check rather than relying on
+        // "this can't happen" silently: this method deliberately does NOT touch
+        // BackgroundAudioController at all (see class doc comment on why Pause/Resume stay scoped
+        // to the foreground _currentFile only), so if that invariant were ever violated by some
+        // future change, the correct behavior here is still "do nothing to the overlay track", not
+        // an accidental pause of it.
         if (_currentFile.Kind == MediaKind.Audio && !_currentFile.IsBackgroundAudio)
         {
             _audioController?.Pause();
@@ -787,13 +930,9 @@ public sealed class PlaybackEngine : IDisposable
             return;
         }
 
-        // Reaches here for a background-audio _currentFile (PlayFile's own MediaKind.Audio case
-        // returns immediately for one, leaving _currentFile pointing at a file nothing ever actually
-        // started playing — see that method's doc comment; this is reachable today via
-        // AudioPropertiesDialog letting a user flip IsBackgroundAudio on a file an activity's
-        // sequence then reaches) — _stayDurationTimer is also null here since nothing was ever armed
-        // for it, so this correctly no-ops rather than touching _remainingOnPause/IsPaused for state
-        // that was never really "playing" in the first place.
+        // Reaches here for Image/Document _currentFile — _stayDurationTimer is null if none was
+        // ever armed (e.g. "停留时长" set to hold indefinitely), so this correctly no-ops rather
+        // than touching _remainingOnPause/IsPaused for state that was never really counting down.
         if (_stayDurationTimer == null) return;
 
         TimeSpan elapsed = DateTime.UtcNow - _stayDurationArmedAt;
@@ -920,7 +1059,10 @@ public sealed class PlaybackEngine : IDisposable
     /// <c>OutputStateMachine</c> at all: PLANNING.md treats an incoming device cast as continuing to
     /// output (§9.1 "设备投屏请求不受此开关影响"), not a transition back to Idle, so the state
     /// machine's state must stay Active — only the video surface's owner is changing. Safe to call
-    /// when nothing is currently playing.</summary>
+    /// when nothing is currently playing. Also stops the background-audio overlay track, if one is
+    /// playing — PLANNING.md's "叠加在其他视觉内容之上播放" only makes sense while local content is
+    /// what's actually on the extended display; once a device cast owns that display, there is
+    /// nothing left for it to overlay.</summary>
     public void StopForDeviceCast()
     {
         if (_currentFile != null)
@@ -934,6 +1076,7 @@ public sealed class PlaybackEngine : IDisposable
         IsPaused = false;
         _videoController?.Stop();
         _audioController?.Stop();
+        StopBackgroundAudio();
         StopWaveformTimer();
     }
 
@@ -944,7 +1087,9 @@ public sealed class PlaybackEngine : IDisposable
         // "断": stop actively decoding — nothing is on screen to show it to — but do not tear down
         // the video swap chain/device (PLANNING.md §9.2's "预先创建并常驻" applies to the whole
         // video pipeline, not just the overlay window). Resuming after "断" starts over via a new
-        // RequestPlay; there is no documented "resume from where it left off" behavior.
+        // RequestPlay; there is no documented "resume from where it left off" behavior. Same
+        // "nothing left to overlay" reasoning as StopForDeviceCast for stopping the background-audio
+        // track too — "断" means nothing is showing on the extended display at all.
         if (_currentFile != null)
         {
             _playbackLogger.LogPlaybackEnded(_currentFile.Id, "disconnected");
@@ -953,7 +1098,16 @@ public sealed class PlaybackEngine : IDisposable
         _stayDurationTimer?.Stop();
         _videoController?.Stop();
         _audioController?.Stop();
+        StopBackgroundAudio();
         StopWaveformTimer();
+    }
+
+    private void StopBackgroundAudio()
+    {
+        if (_backgroundAudioFile == null) return;
+        _playbackLogger.LogPlaybackEnded(_backgroundAudioFile.Id, "background_audio_stopped");
+        _backgroundAudioController?.Stop();
+        _backgroundAudioFile = null;
     }
 
     public void Dispose()
@@ -966,5 +1120,6 @@ public sealed class PlaybackEngine : IDisposable
         _pdfRenderer.Dispose();
         _videoController?.Dispose();
         _audioController?.Dispose();
+        _backgroundAudioController?.Dispose();
     }
 }

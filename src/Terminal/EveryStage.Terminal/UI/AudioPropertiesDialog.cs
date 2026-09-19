@@ -4,9 +4,14 @@ namespace EveryStage.Terminal.UI;
 
 /// <summary>
 /// Edits <c>MediaFile.IsBackgroundAudio</c> + <c>MediaFile.BackgroundAudioVisual</c> — the two
-/// audio-only properties <c>PlaybackEngine.PlayStandaloneAudio</c>/<c>ApplyAudioVisual</c> finally
-/// gave real behavior to (this project's README risk #61). Same minimal-dialog style as
-/// <see cref="PlayModeDialog"/>/<see cref="TextInputDialog"/>. Only ever opened for a
+/// audio-only properties <c>PlaybackEngine.PlayStandaloneAudio</c>/<c>ApplyAudioVisual</c> gave real
+/// behavior to first (this project's README risk #61, the non-background half), and
+/// <c>PlaybackEngine.PlayBackgroundAudio</c>/<c>StartOrUpdateBackgroundAudio</c> gave the
+/// <c>IsBackgroundAudio == true</c> half real overlay-playback behavior in a later round (README
+/// risk #116) — see that pair's own doc comments for the specific product decisions made where
+/// PLANNING.md doesn't specify (what <c>OnCompletion</c> means for an overlay track, and why
+/// <c>PlaybackEngine.Pause</c>/<c>Resume</c> deliberately don't affect it). Same minimal-dialog
+/// style as <see cref="PlayModeDialog"/>/<see cref="TextInputDialog"/>. Only ever opened for a
 /// <c>MediaFile</c> whose <c>Kind == MediaKind.Audio</c> — <c>ActivitiesPanel</c> gates the button
 /// that opens this on that, the same way it already gates "播放方式..." on a selection existing.
 /// </summary>
@@ -36,16 +41,16 @@ public sealed class AudioPropertiesDialog : Form
             Checked = initialIsBackgroundAudio,
         };
 
-        // Honest about a real, current limitation instead of letting the checkbox imply a feature
-        // that doesn't exist yet — same "don't claim more than what's actually true" reasoning as
-        // the Caster project's "确认≠健康" caveat (see that project's README). PlaybackEngine.PlayFile's
-        // IsBackgroundAudio branch is still a documented no-op (see its own doc comment and this
-        // project's README risk #61): checking this box currently means the file simply stops
-        // playing at all, not that it starts playing as a background overlay.
+        // Updated once PlaybackEngine.PlayBackgroundAudio gave this checkbox real behavior (README
+        // risk #116) — no longer a "this does nothing yet" warning like the label this replaced, but
+        // still an honest caveat about what's genuinely NOT covered: no independent volume control
+        // (always plays at full volume — see PlaybackEngine.BackgroundAudioController's own doc
+        // comment), and PlaybackEngine.Pause/Resume (悬浮预览窗的"暂停") deliberately don't affect
+        // it at all — pausing the foreground content does not pause this file.
         _backgroundCaveatLabel = new Label
         {
-            Text = "⚠ 背景音轨叠加播放尚未实现——勾选后这个文件将不会播放，直到该功能真正做完",
-            ForeColor = Color.DarkRed,
+            Text = "ⓘ 背景音轨会独立叠加播放，不受悬浮预览窗\"暂停\"影响，也没有单独的音量调节",
+            ForeColor = Color.DimGray,
             AutoSize = false,
             Bounds = new Rectangle(12, 34, 336, 34),
             Visible = initialIsBackgroundAudio,

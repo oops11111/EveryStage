@@ -582,13 +582,14 @@ public sealed class ActivitiesPanel : UserControl
     /// to open "音频属性..." on every audio file just to find out — previously the only place this
     /// state was visible at all (besides that dialog's own checkbox) was
     /// <c>AudioPropertiesDialog</c>'s red caveat label, shown only while that dialog is actually open.
-    /// Doubles as a reminder of PlaybackEngine's own fix for a real bug this state used to trigger
-    /// (see this project's README "已知风险" #84): a `PlayMode.SequentialAuto` activity reaching one
-    /// of these now skips straight past it instead of silently stalling forever, so an operator
-    /// scanning this tree and seeing this tag knows exactly why that file never visibly plays.</summary>
+    /// The label itself used to say "尚未实现，会被跳过" (see this project's README "已知风险" #84
+    /// for the real `PlayMode.SequentialAuto`-stalls-forever bug that phrasing was explaining at the
+    /// time) — `PlaybackEngine` now gives these files real overlay-playback behavior (README #61's
+    /// remaining gap, closed in a later round), so this label was updated to describe what actually
+    /// happens now: the file is skipped for DISPLAY purposes only, not left completely unplayed.</summary>
     private static string BuildFileNodeText(MediaFile file) =>
         file.IsBackgroundAudio
-            ? $"{Path.GetFileName(file.SourcePath)} [背景音频-尚未实现，会被跳过]"
+            ? $"{Path.GetFileName(file.SourcePath)} [背景音频叠加播放，不在此列表中显示为当前项]"
             : Path.GetFileName(file.SourcePath);
 
     /// <summary>Persists a real, user-initiated collapse/expand of an activity node back into
