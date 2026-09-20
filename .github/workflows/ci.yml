@@ -36,4 +36,7 @@ jobs:
           foreach ($project in $projects) {
             dotnet build $project.FullName --no-restore --configuration Release --nologo -warnaserror
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Run core self-tests
+        run: dotnet run --project src/Tests/EveryStage.CoreSelfTests/EveryStage.CoreSelfTests.csproj --no-build --configuration Release
           }
