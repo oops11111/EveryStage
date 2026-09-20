@@ -12,4 +12,14 @@
     <ProjectReference Include="..\..\Shared\EveryStage.Transport\EveryStage.Transport.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\AppSettings.cs" Link="Terminal\AppSettings.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\SettingsStore.cs" Link="Terminal\SettingsStore.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\Activity.cs" Link="Terminal\Activity.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\MediaFile.cs" Link="Terminal\MediaFile.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\Enums.cs" Link="Terminal\Enums.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\StateMachine\OutputStateMachine.cs" Link="Terminal\OutputStateMachine.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Playback\PlaybackQueueNavigator.cs" Link="Terminal\PlaybackQueueNavigator.cs" />
+  </ItemGroup>
+
 </Project>

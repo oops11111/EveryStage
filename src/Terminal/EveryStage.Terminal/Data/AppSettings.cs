@@ -9,6 +9,12 @@ namespace EveryStage.Terminal.Data;
 /// </summary>
 public sealed class AppSettings
 {
+    public const int CurrentSchemaVersion = 1;
+
+    /// <summary>Persisted configuration schema. A missing value denotes the original unversioned
+    /// format and is migrated by <see cref="SettingsStore"/> when loaded.</summary>
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+
     // --- 通用 ---
 
     /// <summary><c>OutputStateMachine.CastSwitchOn</c>'s value when the Terminal starts up.

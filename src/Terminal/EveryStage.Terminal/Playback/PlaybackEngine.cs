@@ -445,23 +445,13 @@ public sealed class PlaybackEngine : IDisposable
         // _currentFile, not about the transparent slots in between.
         if (trigger == PlaybackTrigger.ManualSkip && _currentFile?.AllowManualSkip == false) return false;
 
-        int next = _currentFileIndex;
-        while (true)
-        {
-            next += delta;
-            if (next < 0 || next >= _currentActivity.Files.Count) return false;
+        int next = PlaybackQueueNavigator.FindNextPlayable(
+            _currentActivity, _currentFileIndex, delta, StartOrUpdateBackgroundAudio);
+        if (next < 0) return false;
 
-            var candidate = _currentActivity.Files[next];
-            if (candidate.IsBackgroundAudio)
-            {
-                StartOrUpdateBackgroundAudio(candidate);
-                continue;
-            }
-
-            _currentFileIndex = next;
-            PlayFile(candidate, trigger);
-            return true;
-        }
+        _currentFileIndex = next;
+        PlayFile(_currentActivity.Files[next], trigger);
+        return true;
     }
 
     /// <summary>What happens after <see cref="TryAdvance"/> reaches the end of the current activity's

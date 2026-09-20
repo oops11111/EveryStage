@@ -59,7 +59,11 @@ public sealed class SettingsStore
         try
         {
             using var stream = File.OpenRead(_storePath);
-            return JsonSerializer.Deserialize<AppSettings>(stream, JsonOptions) ?? new AppSettings();
+            using var document = JsonDocument.Parse(stream);
+            var settings = document.RootElement.Deserialize<AppSettings>(JsonOptions) ?? new AppSettings();
+            if (!document.RootElement.TryGetProperty(nameof(AppSettings.SchemaVersion), out _))
+                settings.SchemaVersion = 0;
+            return Migrate(settings);
         }
         catch (JsonException)
         {
@@ -82,5 +86,20 @@ public sealed class SettingsStore
             // go) has a chance to read it normally.
             return new AppSettings();
         }
+    }
+
+    private static AppSettings Migrate(AppSettings settings)
+    {
+        // Version 0 is the original unversioned JSON shape. All its fields retain the same meaning
+        // in version 1, so migration only stamps the version while preserving user choices.
+        if (settings.SchemaVersion <= 0)
+            settings.SchemaVersion = AppSettings.CurrentSchemaVersion;
+
+        // A newer application may have written fields this build cannot understand. Preserve the
+        // file on disk and use safe defaults for this run instead of partially interpreting it.
+        if (settings.SchemaVersion > AppSettings.CurrentSchemaVersion)
+            return new AppSettings();
+
+        return settings;
     }
 }
