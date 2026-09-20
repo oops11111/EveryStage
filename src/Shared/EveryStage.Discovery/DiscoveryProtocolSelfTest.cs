@@ -69,6 +69,14 @@ public static class DiscoveryProtocolSelfTest
         if (malformedInputFailure != null)
             return new Result(false, verified, malformedInputFailure);
 
+        string? compatibilityFailure = CheckVersionAndSequenceCompatibility();
+        if (compatibilityFailure != null)
+            return new Result(false, verified, compatibilityFailure);
+
+        string? retryFailure = await CheckAcknowledgedRetryAsync();
+        if (retryFailure != null)
+            return new Result(false, verified, retryFailure);
+
         return new Result(true, verified, null);
     }
 
@@ -128,6 +136,8 @@ public static class DiscoveryProtocolSelfTest
     {
         if (original.GetType() != received.GetType())
             return $"decoded as {received.GetType().Name}, expected {original.GetType().Name}.";
+        if (original.ProtocolVersion != received.ProtocolVersion)
+            return $"ProtocolVersion {original.ProtocolVersion} != {received.ProtocolVersion}.";
 
         switch (original)
         {
@@ -166,6 +176,8 @@ public static class DiscoveryProtocolSelfTest
 
             case DiscoveryProtocol.CastStatusMessage o when received is DiscoveryProtocol.CastStatusMessage r:
                 if (o.DeviceId != r.DeviceId) return $"DeviceId {o.DeviceId} != {r.DeviceId}";
+                if (o.SessionId != r.SessionId) return $"SessionId {o.SessionId} != {r.SessionId}";
+                if (o.SequenceNumber != r.SequenceNumber) return $"SequenceNumber {o.SequenceNumber} != {r.SequenceNumber}";
                 if (o.SentAtUtc != r.SentAtUtc) return $"SentAtUtc {o.SentAtUtc:O} != {r.SentAtUtc:O}";
                 if (o.FramesDecoded != r.FramesDecoded) return $"FramesDecoded {o.FramesDecoded} != {r.FramesDecoded}";
                 if (o.VideoBytesReceived != r.VideoBytesReceived) return $"VideoBytesReceived {o.VideoBytesReceived} != {r.VideoBytesReceived}";
@@ -174,6 +186,12 @@ public static class DiscoveryProtocolSelfTest
                 if (o.AudioBytesReceived != r.AudioBytesReceived) return $"AudioBytesReceived {o.AudioBytesReceived} != {r.AudioBytesReceived}";
                 if (o.AudioError != r.AudioError) return $"AudioError '{o.AudioError}' != '{r.AudioError}'";
                 if (o.PayloadTypeMismatches != r.PayloadTypeMismatches) return $"PayloadTypeMismatches {o.PayloadTypeMismatches} != {r.PayloadTypeMismatches}";
+                return null;
+
+            case DiscoveryProtocol.CastStatusAckMessage o when received is DiscoveryProtocol.CastStatusAckMessage r:
+                if (o.DeviceId != r.DeviceId) return $"DeviceId {o.DeviceId} != {r.DeviceId}";
+                if (o.SessionId != r.SessionId) return $"SessionId {o.SessionId} != {r.SessionId}";
+                if (o.SequenceNumber != r.SequenceNumber) return $"SequenceNumber {o.SequenceNumber} != {r.SequenceNumber}";
                 return null;
 
             case DiscoveryProtocol.PingMessage o when received is DiscoveryProtocol.PingMessage r:
@@ -216,13 +234,57 @@ public static class DiscoveryProtocolSelfTest
             new DiscoveryProtocol.CastStopMessage { DeviceId = deviceId },
             new DiscoveryProtocol.CastStatusMessage
             {
-                DeviceId = deviceId, SentAtUtc = DateTimeOffset.UtcNow, FramesDecoded = 12345,
+                DeviceId = deviceId, SessionId = Guid.NewGuid(), SequenceNumber = 42, SentAtUtc = DateTimeOffset.UtcNow, FramesDecoded = 12345,
                 VideoBytesReceived = 987654321, VideoError = "解码失败：测试用错误信息",
                 HasAudio = true, AudioBytesReceived = 123456, AudioError = null,
                 PayloadTypeMismatches = 3,
             },
+            new DiscoveryProtocol.CastStatusAckMessage { DeviceId = deviceId, SessionId = Guid.NewGuid(), SequenceNumber = 42 },
             new DiscoveryProtocol.PingMessage { RequestId = "ping-1" },
             new DiscoveryProtocol.PongMessage { RequestId = "ping-1" },
         };
+    }
+
+    private static string? CheckVersionAndSequenceCompatibility()
+    {
+        byte[] missingVersion = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"beacon\",\"deviceId\":\"00000000-0000-0000-0000-000000000001\",\"deviceName\":\"old\"}");
+        if (DiscoveryProtocol.Decode(missingVersion) != null)
+            return "A message without protocolVersion should be rejected.";
+
+        byte[] futureVersion = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"beacon\",\"protocolVersion\":999,\"deviceId\":\"00000000-0000-0000-0000-000000000001\",\"deviceName\":\"future\"}");
+        if (DiscoveryProtocol.Decode(futureVersion) != null)
+            return "A message with an unsupported protocolVersion should be rejected.";
+
+        var tracker = new CastStatusSequenceTracker();
+        Guid first = Guid.NewGuid();
+        Guid second = Guid.NewGuid();
+        Guid firstSession = Guid.NewGuid();
+        if (!tracker.TryAccept(first, firstSession, 10)) return "Sequence tracker rejected the first status.";
+        if (tracker.TryAccept(first, firstSession, 10)) return "Sequence tracker accepted a duplicate status.";
+        if (tracker.TryAccept(first, firstSession, 9)) return "Sequence tracker accepted an out-of-order status.";
+        if (!tracker.TryAccept(first, firstSession, 11)) return "Sequence tracker rejected a newer status.";
+        if (!tracker.TryAccept(second, firstSession, 1)) return "Sequence tracker mixed independent devices.";
+        if (!tracker.TryAccept(first, Guid.NewGuid(), 1)) return "Sequence tracker rejected a restarted Terminal session.";
+        return null;
+    }
+
+    private static async Task<string?> CheckAcknowledgedRetryAsync()
+    {
+        int timedOutAttempts = 0;
+        bool timedOut = await AcknowledgedMessageRetry.SendUntilAcknowledgedAsync(
+            () => { timedOutAttempts++; return Task.CompletedTask; },
+            new TaskCompletionSource<bool>().Task,
+            maxAttempts: 3, attemptTimeout: TimeSpan.FromMilliseconds(1));
+        if (timedOut || timedOutAttempts != 3)
+            return $"ACK timeout should make exactly 3 attempts; result={timedOut}, attempts={timedOutAttempts}.";
+
+        int successfulAttempts = 0;
+        var ack = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool succeeded = await AcknowledgedMessageRetry.SendUntilAcknowledgedAsync(
+            () => { if (++successfulAttempts == 2) ack.TrySetResult(true); return Task.CompletedTask; },
+            ack.Task, maxAttempts: 3, attemptTimeout: TimeSpan.FromMilliseconds(1));
+        if (!succeeded || successfulAttempts != 2)
+            return $"ACK retry should stop on the second attempt; result={succeeded}, attempts={successfulAttempts}.";
+        return null;
     }
 }

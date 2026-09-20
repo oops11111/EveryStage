@@ -39,6 +39,9 @@ public sealed class DiscoveryService : IDisposable
     // receiving a cast from, for DeviceConnectionLogger.LogQualityMetric (PLANNING.md §14.4's
     // "连接质量指标（丢包率/延迟）", previously logged by nothing at all — see this project's README).
     private readonly Dictionary<string, (TaskCompletionSource<TimeSpan> Tcs, Stopwatch Stopwatch)> _pendingPings = new();
+    private readonly Dictionary<(Guid DeviceId, Guid SessionId, long SequenceNumber), TaskCompletionSource<bool>> _pendingStatusAcks = new();
+    private readonly Guid _statusSessionId = Guid.NewGuid();
+    private long _nextStatusSequence;
 
     private Task? _receiveLoop;
     private Task? _beaconLoop;
@@ -225,6 +228,9 @@ public sealed class DiscoveryService : IDisposable
                 case DiscoveryProtocol.PongMessage pong:
                     HandlePong(pong);
                     break;
+                case DiscoveryProtocol.CastStatusAckMessage ack:
+                    HandleCastStatusAck(ack);
+                    break;
                 // BeaconMessage: this is the Terminal side, which only ever sends beacons, never needs
                 // to react to one — that's Caster-side discovery UI's job.
             }
@@ -272,10 +278,36 @@ public sealed class DiscoveryService : IDisposable
 
     /// <summary>Sends a periodic "still alive, here's roughly what's gotten through" status report
     /// back to the Caster currently casting to this Terminal — see
-    /// <see cref="DiscoveryProtocol.CastStatusMessage"/> for why this exists. Best-effort,
-    /// fire-and-forget like every other send in this class.</summary>
-    public Task SendCastStatusAsync(IPEndPoint casterEndPoint, DiscoveryProtocol.CastStatusMessage status) =>
-        SendAsync(status, casterEndPoint);
+    /// <see cref="DiscoveryProtocol.CastStatusMessage"/> for why this exists. Each report is retried
+    /// a bounded number of times until its matching ACK arrives.</summary>
+    public async Task SendCastStatusAsync(IPEndPoint casterEndPoint, DiscoveryProtocol.CastStatusMessage status)
+    {
+        status.SequenceNumber = Interlocked.Increment(ref _nextStatusSequence);
+        status.SessionId = _statusSessionId;
+        var key = (status.DeviceId, status.SessionId, status.SequenceNumber);
+        var acknowledged = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        lock (_pendingGate) _pendingStatusAcks[key] = acknowledged;
+
+        try
+        {
+            await AcknowledgedMessageRetry.SendUntilAcknowledgedAsync(
+                () => SendAsync(status, casterEndPoint), acknowledged.Task,
+                cancellationToken: _cts.Token);
+        }
+        catch (OperationCanceledException) when (_cts.IsCancellationRequested) { }
+        finally
+        {
+            lock (_pendingGate) _pendingStatusAcks.Remove(key);
+        }
+    }
+
+    private void HandleCastStatusAck(DiscoveryProtocol.CastStatusAckMessage ack)
+    {
+        TaskCompletionSource<bool>? pending;
+        lock (_pendingGate)
+            _pendingStatusAcks.TryGetValue((ack.DeviceId, ack.SessionId, ack.SequenceNumber), out pending);
+        pending?.TrySetResult(true);
+    }
 
     /// <summary>Measures real round-trip time to <paramref name="casterEndPoint"/> — the Terminal-
     /// initiated mirror of <c>Caster.Discovery.TerminalDiscoveryClient.PingAsync</c> (see that

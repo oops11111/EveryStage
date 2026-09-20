@@ -16,6 +16,10 @@ namespace EveryStage.Discovery;
 /// </summary>
 public static class DiscoveryProtocol
 {
+    /// <summary>Wire compatibility boundary. Messages from a different version are ignored rather
+    /// than deserialized with dangerous default values for fields introduced later.</summary>
+    public const int CurrentVersion = 1;
+
     /// <summary>Arbitrary, currently unregistered port picked for this draft protocol.</summary>
     public const int Port = 47990;
 
@@ -39,6 +43,9 @@ public static class DiscoveryProtocol
 
     public abstract class Message
     {
+        [JsonPropertyName("protocolVersion")]
+        public int ProtocolVersion { get; set; } = CurrentVersion;
+
         // Ignored on serialize: Encode() writes "type" itself (lowercase, once) after serializing
         // the rest of the message — without this attribute, reflection would also emit the base
         // class's own "Type" property (capital T) as a redundant second field on the wire.
@@ -147,6 +154,14 @@ public static class DiscoveryProtocol
         /// terminal it isn't currently casting to.</summary>
         public Guid DeviceId { get; set; }
 
+        /// <summary>Changes whenever the Terminal discovery service is recreated, allowing sequence
+        /// numbers to restart after a process restart without being mistaken for stale packets.</summary>
+        public Guid SessionId { get; set; }
+
+        /// <summary>Monotonically increasing per Terminal process. The Caster ACKs every received
+        /// value but only publishes values newer than the last one seen for this device.</summary>
+        public long SequenceNumber { get; set; }
+
         /// <summary>The Terminal's own clock at the moment it built this message (not when the
         /// socket actually put it on the wire, and not adjusted for how long <c>SendCastStatusAsync</c>
         /// itself takes) — added so a receiving Caster can estimate one-way latency/staleness instead
@@ -175,6 +190,16 @@ public static class DiscoveryProtocol
         /// this one is meant to stay invisible in the UI until it actually happens (see
         /// <c>Caster.UI.MainForm.RefreshLiveCastStats</c>'s only-shown-if-nonzero treatment).</summary>
         public long PayloadTypeMismatches { get; set; }
+    }
+
+    /// <summary>Caster acknowledgment for one status report. A duplicate report receives another
+    /// ACK so a lost ACK can recover without delivering duplicate status to the application.</summary>
+    public sealed class CastStatusAckMessage : Message
+    {
+        public override string Type => "cast_status_ack";
+        public Guid DeviceId { get; set; }
+        public Guid SessionId { get; set; }
+        public long SequenceNumber { get; set; }
     }
 
     /// <summary>Sent unicast, Caster -> Terminal, purely to measure real network round-trip time —
@@ -250,6 +275,10 @@ public static class DiscoveryProtocol
         // ValueKind other than String or Null — a stray datagram shaped like {"type": 123} or
         // {"type": true} would otherwise hit this immediately below.
         if (typeProp.ValueKind != JsonValueKind.String) return null;
+        if (!doc.RootElement.TryGetProperty("protocolVersion", out var versionProp)) return null;
+        if (versionProp.ValueKind != JsonValueKind.Number
+            || !versionProp.TryGetInt32(out int version)
+            || version != CurrentVersion) return null;
 
         return typeProp.GetString() switch
         {
@@ -259,6 +288,7 @@ public static class DiscoveryProtocol
             "cast_start" => doc.RootElement.Deserialize<CastStartMessage>(),
             "cast_stop" => doc.RootElement.Deserialize<CastStopMessage>(),
             "cast_status" => doc.RootElement.Deserialize<CastStatusMessage>(),
+            "cast_status_ack" => doc.RootElement.Deserialize<CastStatusAckMessage>(),
             "ping" => doc.RootElement.Deserialize<PingMessage>(),
             "pong" => doc.RootElement.Deserialize<PongMessage>(),
             _ => null,

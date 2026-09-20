@@ -33,6 +33,7 @@ public sealed class TerminalDiscoveryClient : IDisposable
     // and read (Elapsed) the moment the matching pong arrives — entirely on this machine's own
     // clock, never compared against the Terminal's.
     private readonly Dictionary<string, (TaskCompletionSource<TimeSpan> Tcs, Stopwatch Stopwatch)> _pendingPings = new();
+    private readonly CastStatusSequenceTracker _statusSequences = new();
 
     private Task? _receiveLoop;
 
@@ -266,7 +267,7 @@ public sealed class TerminalDiscoveryClient : IDisposable
                     HandlePairResponse(response);
                     break;
                 case DiscoveryProtocol.CastStatusMessage status:
-                    CastStatusReceived?.Invoke(status);
+                    HandleCastStatus(status, remoteEndPoint);
                     break;
                 case DiscoveryProtocol.PongMessage pong:
                     HandlePong(pong);
@@ -305,6 +306,19 @@ public sealed class TerminalDiscoveryClient : IDisposable
     /// change this Caster's exposure.</summary>
     private void HandlePing(DiscoveryProtocol.PingMessage ping, IPEndPoint remoteEndPoint) =>
         _ = SendRawAsync(new DiscoveryProtocol.PongMessage { RequestId = ping.RequestId }, remoteEndPoint);
+
+    private void HandleCastStatus(DiscoveryProtocol.CastStatusMessage status, IPEndPoint remoteEndPoint)
+    {
+        _ = SendRawAsync(new DiscoveryProtocol.CastStatusAckMessage
+        {
+            DeviceId = status.DeviceId,
+            SessionId = status.SessionId,
+            SequenceNumber = status.SequenceNumber,
+        }, remoteEndPoint);
+
+        if (_statusSequences.TryAccept(status.DeviceId, status.SessionId, status.SequenceNumber))
+            CastStatusReceived?.Invoke(status);
+    }
 
     /// <summary>Sends directly to an already-known <see cref="IPEndPoint"/> (a ping's own sender
     /// address+port) rather than through <see cref="SendControlMessageAsync"/>, which only knows how
