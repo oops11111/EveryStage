@@ -40,3 +40,18 @@ jobs:
 
       - name: Run core self-tests
         run: dotnet run --project src/Tests/EveryStage.CoreSelfTests/EveryStage.CoreSelfTests.csproj --no-build --configuration Release
+
+      - name: Build release packages and verify native dependencies
+        shell: pwsh
+        run: ./scripts/Build-ReleasePackages.ps1
+
+      - name: Upload release packages
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-win-x64-${{ github.sha }}
+          path: |
+            artifacts/release/*.zip
+            artifacts/release/manifest.json
+            artifacts/release/DEPLOYMENT.md
+            artifacts/release/deployment/*.ps1
+          if-no-files-found: error
