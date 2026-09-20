@@ -63,6 +63,7 @@ public sealed class FilesPanel : UserControl
     private readonly Button _removeButton;
     private readonly Button _addToActivityButton;
     private MediaKind? _activeFilter;
+    private bool _outputActive;
 
     /// <summary>PLANNING.md §8.2's audio "横向播放条" — see class doc comment. A persistent
     /// <see cref="FlowLayoutPanel"/> (not the "全部/图片/视频/文档/音频" grid <see cref="_listView"/>
@@ -95,6 +96,7 @@ public sealed class FilesPanel : UserControl
         _scenarioStore = scenarioStore;
         _scenarioRepository = scenarioRepository;
         _playback = playback;
+        if (_playback != null) _playback.FileStarted += OnFileStarted;
         Dock = DockStyle.Fill;
         AllowDrop = true;
 
@@ -191,7 +193,11 @@ public sealed class FilesPanel : UserControl
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _audioBarRefreshTimer.Dispose();
+        if (disposing)
+        {
+            if (_playback != null) _playback.FileStarted -= OnFileStarted;
+            _audioBarRefreshTimer.Dispose();
+        }
         base.Dispose(disposing);
     }
 
@@ -200,13 +206,27 @@ public sealed class FilesPanel : UserControl
     /// started with none bound. Every <see cref="_playback"/> read in this class (the audio bar's
     /// pause/volume buttons and <see cref="_audioBarRefreshTimer"/>'s own tick — see
     /// <see cref="RefreshAudioRowLiveState"/>) already reads the field fresh each time rather than a
-    /// value captured once at construction, so just updating the field is enough — unlike
-    /// <c>ActivitiesPanel</c>'s own version of this method, there is no event subscription to (re)wire
-    /// here. <see cref="_listView"/>'s own double-click doesn't read <see cref="_playback"/> at all —
+    /// value captured once at construction. The current-file highlight does subscribe to
+    /// <see cref="PlaybackEngine.FileStarted"/>, so this method also moves that subscription from
+    /// any previous engine to the newly attached one. <see cref="_listView"/>'s own double-click doesn't read <see cref="_playback"/> at all —
     /// it only raises <see cref="FilePlayRequested"/>, which <c>MainWindow</c>'s own subscriber
     /// resolves against ITS <see cref="_playback"/> field, already covered by
     /// <c>MainWindow.AttachPlaybackEngine</c> separately.</summary>
-    public void AttachPlaybackEngine(PlaybackEngine playback) => _playback = playback;
+    public void AttachPlaybackEngine(PlaybackEngine playback)
+    {
+        if (ReferenceEquals(_playback, playback)) return;
+        if (_playback != null) _playback.FileStarted -= OnFileStarted;
+        _playback = playback;
+        _playback.FileStarted += OnFileStarted;
+        HighlightCurrentFile();
+    }
+
+    public void SetOutputActive(bool active)
+    {
+        if (_outputActive == active) return;
+        _outputActive = active;
+        HighlightCurrentFile();
+    }
 
     private Button MakeFilterButton(string label, MediaKind? filter)
     {
@@ -347,6 +367,36 @@ public sealed class FilesPanel : UserControl
         }
 
         RefreshAudioBar();
+        HighlightCurrentFile();
+    }
+
+    private void OnFileStarted(MediaFile file)
+    {
+        if (InvokeRequired)
+        {
+            BeginInvoke(HighlightCurrentFile);
+            return;
+        }
+        HighlightCurrentFile();
+    }
+
+    /// <summary>Links the floating preview's current output back to the library without changing
+    /// the operator's multi-selection. Activity files are clones, so source path is the stable link
+    /// when reference identity does not match a library entry.</summary>
+    private void HighlightCurrentFile()
+    {
+        MediaFile? current = _outputActive ? _playback?.CurrentFile : null;
+        foreach (ListViewItem item in _listView.Items)
+        {
+            bool playing = item.Tag is MediaFile file && current != null
+                && (ReferenceEquals(file, current)
+                    || string.Equals(file.SourcePath, current.SourcePath, StringComparison.OrdinalIgnoreCase));
+            string fileName = item.Tag is MediaFile tagged ? Path.GetFileName(tagged.SourcePath) : item.Text.TrimStart('▶', ' ');
+            item.Text = playing ? $"▶ {fileName}" : fileName;
+            item.BackColor = playing ? Color.LightGoldenrodYellow : SystemColors.Window;
+            item.ForeColor = playing ? Color.DarkGoldenrod : SystemColors.WindowText;
+            if (playing) item.EnsureVisible();
+        }
     }
 
     /// <summary>One row of <see cref="_audioBarPanel"/> — see that field's own doc comment for the

@@ -44,11 +44,14 @@ public sealed class MainWindow : Form
     private readonly ToastStack _toastStack;
     private readonly CheckBox _castSwitchCheckbox;
     private readonly Label _statusLabel;
+    private readonly Button _recallPreviewButton;
     private readonly System.Windows.Forms.Timer _declinedMessageTimer;
     private readonly FilesPanel _filesPanel;
     private readonly DevicesPanel _devicesPanel;
     private readonly ActivitiesPanel _activitiesPanel;
     private readonly SettingsPanel _settingsPanel;
+
+    public event Action? PreviewRecallRequested;
 
     public MainWindow(
         OutputStateMachine stateMachine, PlaybackEngine? playback, FileLibraryStore library,
@@ -86,11 +89,15 @@ public sealed class MainWindow : Form
         var devicesButton = MakeNavButton("设备", 170);
         var settingsButton = MakeNavButton("设置", 210);
 
+        _recallPreviewButton = new Button { Text = "显示预览窗", Location = new Point(8, 258), Width = 80, Height = 40 };
+        _recallPreviewButton.Click += (_, _) => PreviewRecallRequested?.Invoke();
+
         _statusLabel = new Label { ForeColor = Color.LightGray, AutoSize = true, Location = new Point(8, 520) };
 
         nav.Controls.AddRange(new Control[]
         {
-            _castSwitchCheckbox, disconnectButton, filesButton, activitiesButton, devicesButton, settingsButton, _statusLabel,
+            _castSwitchCheckbox, disconnectButton, filesButton, activitiesButton, devicesButton, settingsButton,
+            _recallPreviewButton, _statusLabel,
         });
 
         _contentHost = new Panel { Dock = DockStyle.Fill };
@@ -200,8 +207,13 @@ public sealed class MainWindow : Form
 
     private void OnStateChanged(OutputState state) => UpdateStatusLabel();
 
-    private void UpdateStatusLabel() =>
-        _statusLabel.Text = _stateMachine.State == OutputState.Active ? "● 输出中" : "○ 待机中";
+    private void UpdateStatusLabel()
+    {
+        bool active = _stateMachine.State == OutputState.Active;
+        _statusLabel.Text = active ? "● 输出中" : "○ 待机中";
+        _recallPreviewButton.Enabled = active;
+        _filesPanel.SetOutputActive(active);
+    }
 
     private void OnPlaybackDeclinedByCastSwitch(MediaFile file)
     {

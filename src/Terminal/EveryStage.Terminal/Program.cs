@@ -200,6 +200,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         var library = new FileLibraryStore();
         _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity, _connectionLog);
+        _mainWindow.PreviewRecallRequested += OnPreviewRecallRequested;
         _mainWindow.Show();
 
         _tray = new TrayIconController(_stateMachine);
@@ -283,6 +284,13 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             // "terminal went quiet" handling).
             StopCasting();
         }
+    }
+
+    private void OnPreviewRecallRequested()
+    {
+        if (_stateMachine.State != OutputState.Active || _previewWindow == null) return;
+        _previewWindow.ShowForActiveOutput();
+        _previewWindow.Activate();
     }
 
     private void OnPairingRequested(PairingRequest request)
