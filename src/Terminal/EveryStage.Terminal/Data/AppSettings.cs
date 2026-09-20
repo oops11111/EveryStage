@@ -9,11 +9,13 @@ namespace EveryStage.Terminal.Data;
 /// </summary>
 public sealed class AppSettings
 {
-    public const int CurrentSchemaVersion = 1;
+    public const int CurrentSchemaVersion = 2;
 
     /// <summary>Persisted configuration schema. A missing value denotes the original unversioned
     /// format and is migrated by <see cref="SettingsStore"/> when loaded.</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+
+    public AppTheme Theme { get; set; } = AppTheme.Light;
 
     // --- 通用 ---
 
@@ -49,3 +51,5 @@ public sealed class AppSettings
     /// Applied immediately: the next file played picks it up, no restart needed.</summary>
     public int? DefaultStayDurationSeconds { get; set; }
 }
+
+public enum AppTheme { Light, Dark, Tech }

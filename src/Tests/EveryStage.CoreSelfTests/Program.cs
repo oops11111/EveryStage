@@ -3,6 +3,8 @@ using EveryStage.Transport;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
+using EveryStage.Terminal.Logging;
+using System.IO.Compression;
 
 var failures = new List<string>();
 
@@ -33,11 +35,33 @@ await RunAsync("Device identity persistence", () =>
 await RunAsync("Output state machine", () => Task.FromResult(TestOutputStateMachine()));
 await RunAsync("Media queue navigation", () => Task.FromResult(TestMediaQueue()));
 await RunAsync("Settings migration", () => Task.FromResult(TestSettingsMigration()));
+await RunAsync("Log export", () => Task.FromResult(TestLogExport()));
 
 if (failures.Count == 0)
 {
     Console.WriteLine("All core self-tests passed.");
     return 0;
+}
+
+(bool, string?) TestLogExport()
+{
+    string directory = Path.Combine(Path.GetTempPath(), "EveryStage-LogExportTests", Guid.NewGuid().ToString("N"));
+    string logs = Path.Combine(directory, "logs");
+    string zip = Path.Combine(directory, "export.zip");
+    Directory.CreateDirectory(Path.Combine(logs, "playback"));
+    try
+    {
+        File.WriteAllText(Path.Combine(logs, "playback", "playback-20260920.log"), "{}\n");
+        if (LogExporter.Export(zip, logs) != 1) return (false, "Exported log count was incorrect.");
+        using var archive = ZipFile.OpenRead(zip);
+        if (archive.Entries.Count != 1 || archive.Entries[0].FullName != "playback/playback-20260920.log")
+            return (false, "ZIP did not preserve the relative log path.");
+        return (true, null);
+    }
+    finally
+    {
+        Directory.Delete(directory, recursive: true);
+    }
 }
 
 Console.Error.WriteLine($"{failures.Count} core self-test(s) failed:");

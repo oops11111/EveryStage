@@ -20,6 +20,8 @@
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\Enums.cs" Link="Terminal\Enums.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\StateMachine\OutputStateMachine.cs" Link="Terminal\OutputStateMachine.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Playback\PlaybackQueueNavigator.cs" Link="Terminal\PlaybackQueueNavigator.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Logging\LogPaths.cs" Link="Terminal\LogPaths.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Logging\LogExporter.cs" Link="Terminal\LogExporter.cs" />
   </ItemGroup>
 
 </Project>

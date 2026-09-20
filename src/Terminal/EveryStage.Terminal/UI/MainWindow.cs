@@ -31,6 +31,7 @@ namespace EveryStage.Terminal.UI;
 public sealed class MainWindow : Form
 {
     private readonly OutputStateMachine _stateMachine;
+    private readonly SettingsStore _settingsStore;
     // Not readonly, unlike every other field this constructor sets once and never touches again — see
     // AttachPlaybackEngine's own doc comment for why: PLANNING.md §5's runtime monitor-hot-plug
     // binding (this project's README risk on it) needs to replace this from null to a real
@@ -59,6 +60,7 @@ public sealed class MainWindow : Form
         SettingsStore settingsStore, DeviceIdentity identity, DeviceConnectionLogger connectionLog)
     {
         _stateMachine = stateMachine;
+        _settingsStore = settingsStore;
         _playback = playback;
         _library = library;
         _scenarioStore = scenarioStore;
@@ -118,6 +120,7 @@ public sealed class MainWindow : Form
         _activitiesPanel = new ActivitiesPanel(
             scenarioStore, scenarioRepository, library, _playback, _fileOpLog, stateMachine);
         _settingsPanel = new SettingsPanel(settingsStore, identity);
+        settingsStore.SettingsChanged += OnSettingsChanged;
 
         filesButton.Click += (_, _) => ShowPanel(_filesPanel);
         activitiesButton.Click += (_, _) => ShowPanel(_activitiesPanel);
@@ -152,6 +155,7 @@ public sealed class MainWindow : Form
         _stateMachine.StateChanged += OnStateChanged;
         UpdateStatusLabel();
         ShowPanel(_filesPanel);
+        ThemeManager.Apply(this, settingsStore.Current.Theme);
 
         // Terminal is meant to run unattended in the background (PLANNING.md's whole framing) —
         // closing this operator window shouldn't end the process, only hide it. Reopening it today
@@ -206,6 +210,8 @@ public sealed class MainWindow : Form
     }
 
     private void OnStateChanged(OutputState state) => UpdateStatusLabel();
+
+    private void OnSettingsChanged(AppSettings settings) => ThemeManager.Apply(this, settings.Theme);
 
     private void UpdateStatusLabel()
     {
@@ -281,6 +287,8 @@ public sealed class MainWindow : Form
         if (disposing)
         {
             _stateMachine.StateChanged -= OnStateChanged;
+            _settingsStore.SettingsChanged -= OnSettingsChanged;
+            _settingsPanel.Dispose();
             if (_playback != null)
             {
                 _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
@@ -296,7 +304,6 @@ public sealed class MainWindow : Form
             _filesPanel.Dispose();
             _devicesPanel.Dispose();
             _activitiesPanel.Dispose();
-            _settingsPanel.Dispose();
         }
         base.Dispose(disposing);
     }

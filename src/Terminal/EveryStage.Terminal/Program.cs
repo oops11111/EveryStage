@@ -244,7 +244,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
             _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore, _store);
             _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
-            _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine);
+            _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine, _settingsStore);
             return true;
         }
         catch (Exception ex)

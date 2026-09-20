@@ -21,6 +21,7 @@ public sealed class SettingsStore
     /// rather than mutating this instance in place, so a half-edited settings object is never what
     /// another reader sees mid-edit.</summary>
     public AppSettings Current { get; private set; }
+    public event Action<AppSettings>? SettingsChanged;
 
     public SettingsStore(string? storePathOverride = null)
     {
@@ -50,6 +51,7 @@ public sealed class SettingsStore
             File.Replace(tempPath, _storePath, destinationBackupFileName: null);
         else
             File.Move(tempPath, _storePath);
+        SettingsChanged?.Invoke(Current);
     }
 
     private AppSettings Load()
@@ -90,9 +92,9 @@ public sealed class SettingsStore
 
     private static AppSettings Migrate(AppSettings settings)
     {
-        // Version 0 is the original unversioned JSON shape. All its fields retain the same meaning
-        // in version 1, so migration only stamps the version while preserving user choices.
-        if (settings.SchemaVersion <= 0)
+        // Versions 0/1 predate explicit theme selection. AppSettings' Light default supplies the
+        // new value while every existing user choice remains intact.
+        if (settings.SchemaVersion < AppSettings.CurrentSchemaVersion)
             settings.SchemaVersion = AppSettings.CurrentSchemaVersion;
 
         // A newer application may have written fields this build cannot understand. Preserve the

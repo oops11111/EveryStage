@@ -35,6 +35,7 @@ public sealed class FloatingPreviewWindow : Form
 {
     private readonly PlaybackEngine _playback;
     private readonly OutputStateMachine _stateMachine;
+    private readonly SettingsStore _settingsStore;
     private readonly System.Windows.Forms.Timer _refreshTimer;
 
     private readonly Label _liveBadge;
@@ -85,10 +86,12 @@ public sealed class FloatingPreviewWindow : Form
     /// already exists here over a new one).</summary>
     private readonly Button _saveButton;
 
-    public FloatingPreviewWindow(PlaybackEngine playback, OutputStateMachine stateMachine)
+    public FloatingPreviewWindow(PlaybackEngine playback, OutputStateMachine stateMachine, SettingsStore settingsStore)
     {
         _playback = playback;
         _stateMachine = stateMachine;
+        _settingsStore = settingsStore;
+        _settingsStore.SettingsChanged += OnSettingsChanged;
 
         Text = "EveryStage";
         FormBorderStyle = FormBorderStyle.SizableToolWindow;
@@ -236,6 +239,19 @@ public sealed class FloatingPreviewWindow : Form
             e.Cancel = true;
             Hide();
         };
+        ThemeManager.Apply(this, settingsStore.Current.Theme);
+    }
+
+    private void OnSettingsChanged(AppSettings settings) => ThemeManager.Apply(this, settings.Theme);
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _settingsStore.SettingsChanged -= OnSettingsChanged;
+            _refreshTimer.Dispose();
+        }
+        base.Dispose(disposing);
     }
 
     /// <summary>"投" — PLANNING.md §8.3's "仅在扩展屏有输出时出现".</summary>
@@ -331,9 +347,4 @@ public sealed class FloatingPreviewWindow : Form
         return duration.HasValue ? $"{Format(position)} / {Format(duration.Value)}" : Format(position);
     }
 
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) _refreshTimer.Dispose();
-        base.Dispose(disposing);
-    }
 }

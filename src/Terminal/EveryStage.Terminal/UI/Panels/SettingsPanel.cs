@@ -1,6 +1,8 @@
 using EveryStage.Discovery;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Display;
+using EveryStage.Terminal.Logging;
+using System.Diagnostics;
 
 namespace EveryStage.Terminal.UI.Panels;
 
@@ -27,6 +29,8 @@ public sealed class SettingsPanel : UserControl
     private readonly NumericUpDown _defaultStayDurationSeconds;
     private readonly TextBox _deviceNameTextBox;
     private readonly Label _savedLabel;
+    private readonly ComboBox _themeComboBox;
+    private readonly Label _diagnosticsLabel;
 
     // Sentinel for the ComboBox's "自动选择" item — no real MonitorInfo.DeviceName is ever an empty
     // string, so this can't collide with an actual monitor.
@@ -50,6 +54,10 @@ public sealed class SettingsPanel : UserControl
             Location = new Point(16, 16),
             Checked = settings.CastSwitchDefaultOn,
         };
+        var themeLabel = new Label { Text = "界面主题：", AutoSize = true, Location = new Point(16, 78) };
+        _themeComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(16, 100), Width = 180 };
+        _themeComboBox.Items.AddRange(new object[] { "白色系", "黑色系", "高科技系" });
+        _themeComboBox.SelectedIndex = Math.Clamp((int)settings.Theme, 0, _themeComboBox.Items.Count - 1);
         var generalNote = new Label
         {
             Text = "更改后需要重启终端机才能生效 —— 这是启动时的默认值，不会改变当前正在运行的开关状态。",
@@ -58,7 +66,7 @@ public sealed class SettingsPanel : UserControl
             Location = new Point(16, 44),
         };
         var generalTab = new TabPage("通用");
-        generalTab.Controls.AddRange(new Control[] { _castSwitchDefaultCheckbox, generalNote });
+        generalTab.Controls.AddRange(new Control[] { _castSwitchDefaultCheckbox, generalNote, themeLabel, _themeComboBox });
 
         // --- 显示 ---
         var monitorLabel = new Label { Text = "扩展屏选择：", AutoSize = true, Location = new Point(16, 20) };
@@ -135,7 +143,17 @@ public sealed class SettingsPanel : UserControl
         var aboutTab = new TabPage("关于");
         aboutTab.Controls.Add(aboutLabel);
 
-        tabs.TabPages.AddRange(new[] { generalTab, displayTab, playbackTab, networkTab, aboutTab });
+        // --- 诊断 ---
+        _diagnosticsLabel = new Label { AutoSize = true, Location = new Point(16, 16) };
+        var refreshDiagnosticsButton = new Button { Text = "刷新诊断", Location = new Point(16, 180), Width = 100 };
+        refreshDiagnosticsButton.Click += (_, _) => RefreshDiagnostics();
+        var exportLogsButton = new Button { Text = "导出日志...", Location = new Point(124, 180), Width = 100 };
+        exportLogsButton.Click += OnExportLogsClick;
+        var diagnosticsTab = new TabPage("诊断");
+        diagnosticsTab.Controls.AddRange(new Control[] { _diagnosticsLabel, refreshDiagnosticsButton, exportLogsButton });
+        RefreshDiagnostics();
+
+        tabs.TabPages.AddRange(new[] { generalTab, displayTab, playbackTab, networkTab, diagnosticsTab, aboutTab });
 
         var saveSettingsButton = new Button { Text = "保存设置", Dock = DockStyle.Left, Width = 120, Height = 32 };
         saveSettingsButton.Click += OnSaveSettingsClick;
@@ -176,6 +194,7 @@ public sealed class SettingsPanel : UserControl
     {
         string? currentSelection = (_monitorComboBox.SelectedItem as MonitorComboItem)?.DeviceName;
         PopulateMonitorComboBox(currentSelection ?? _settingsStore.Current.PreferredMonitorDeviceName);
+        RefreshDiagnostics();
     }
 
     private void PopulateMonitorComboBox(string? preferredDeviceName)
@@ -206,6 +225,7 @@ public sealed class SettingsPanel : UserControl
         var selectedMonitor = (MonitorComboItem?)_monitorComboBox.SelectedItem;
         var updated = new AppSettings
         {
+            Theme = (AppTheme)Math.Max(0, _themeComboBox.SelectedIndex),
             CastSwitchDefaultOn = _castSwitchDefaultCheckbox.Checked,
             PreferredMonitorDeviceName = selectedMonitor is { DeviceName: AutoSelectMonitor } or null
                 ? null
@@ -217,6 +237,52 @@ public sealed class SettingsPanel : UserControl
 
         _settingsStore.Save(updated);
         _savedLabel.Text = "已保存。";
+    }
+
+    private void RefreshDiagnostics()
+    {
+        long? logBytes = TryGetLogBytes();
+        _diagnosticsLabel.Text =
+            $"应用版本：{Application.ProductVersion}\n" +
+            $"运行时：{System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}\n" +
+            $"操作系统：{System.Runtime.InteropServices.RuntimeInformation.OSDescription}\n" +
+            $"进程运行：{DateTime.Now - Process.GetCurrentProcess().StartTime:g}\n" +
+            $"显示器数量：{Screen.AllScreens.Length}\n" +
+            $"日志占用：{(logBytes.HasValue ? $"{logBytes.Value / 1024d / 1024d:F2} MB" : "无法读取")}\n" +
+            $"日志目录：{LogPaths.DefaultRoot}";
+    }
+
+    private static long? TryGetLogBytes()
+    {
+        try
+        {
+            return Directory.Exists(LogPaths.DefaultRoot)
+                ? Directory.EnumerateFiles(LogPaths.DefaultRoot, "*.log", SearchOption.AllDirectories).Sum(path => new FileInfo(path).Length)
+                : 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private void OnExportLogsClick(object? sender, EventArgs e)
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Filter = "ZIP 压缩包 (*.zip)|*.zip",
+            FileName = $"EveryStage-logs-{DateTime.Now:yyyyMMdd-HHmmss}.zip",
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            int count = LogExporter.Export(dialog.FileName);
+            _savedLabel.Text = $"已导出 {count} 个日志文件。";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"导出失败：{ex.Message}", "日志导出", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     private void OnSaveDeviceNameClick(object? sender, EventArgs e)
