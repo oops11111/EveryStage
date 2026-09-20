@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>EveryStage 投屏器 UI 原型</title>
+<style>
+  :root {
+    --bg: #10131a; --surface1: rgba(255,255,255,0.06);
+    --border: rgba(255,255,255,0.1); --border-accent: rgba(138,180,248,0.35);
+    --accent: #5b8def; --accent-soft: rgba(138,180,248,0.14);
+    --text: rgba(255,255,255,0.92); --text-muted: rgba(255,255,255,0.55);
+    --danger: #ff6b6b; --warning: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", sans-serif; background: linear-gradient(160deg,#1c2128,#0d1117); color: var(--text); padding: 40px; display:flex; gap:24px; flex-wrap:wrap; }
+  .card { width:260px; background: var(--surface1); backdrop-filter: blur(20px); border:1px solid var(--border); border-radius:14px; padding:16px; }
+  .card.live { border-color: var(--border-accent); }
+  .title { display:flex; align-items:center; gap:8px; margin-bottom:14px; font-size:14px; font-weight:500; }
+  .target { display:flex; align-items:center; gap:8px; padding:8px; border-radius:8px; margin-bottom:6px; border:1px solid var(--border); }
+  .target.selected { background: var(--accent-soft); border-color: var(--border-accent); }
+  .btn-primary { width:100%; padding:11px; font-size:14px; font-weight:500; background: var(--accent); color:#fff; border:none; border-radius:8px; cursor:pointer; }
+  .btn-danger { width:100%; padding:11px; font-size:14px; font-weight:500; background: var(--danger); color:#fff; border:none; border-radius:8px; cursor:pointer; }
+  .hint { font-size:11px; color: var(--text-muted); text-align:center; margin-top:8px; }
+  .live-box { background: var(--accent-soft); border-radius:10px; padding:12px; text-align:center; margin-bottom:12px; }
+  .warn { display:flex; align-items:center; gap:6px; font-size:11px; color: var(--text-muted); background: rgba(255,255,255,0.04); padding:8px; border-radius:8px; margin-bottom:12px; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="title">📡 投屏器 · 待机</div>
+  <div class="target selected">🖥️ 主展厅终端机 ✓</div>
+  <div class="target">🖥️ 会议室终端机</div>
+  <button class="btn-primary" style="margin-top:10px;">📡 开始投屏</button>
+  <div class="hint">开始后将投放您的整个屏幕</div>
+</div>
+
+<div class="card live">
+  <div class="title">📡 投屏器 · 投屏中</div>
+  <div class="live-box">
+    <div style="font-size:12px;color:var(--danger);margin-bottom:6px;">● 正在投屏</div>
+    <div style="font-size:14px;font-weight:500;">主展厅终端机</div>
+    <div style="font-size:12px;color:var(--text-muted);">已持续 03:24</div>
+  </div>
+  <div class="warn">⚠️ 您的整个屏幕正在被投放，请留意弹窗与隐私内容</div>
+  <button class="btn-danger">■ 停止投屏</button>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>EveryStage 终端机 UI 原型</title>
+<style>
+  :root {
+    --bg: #10131a; --surface1: rgba(255,255,255,0.06); --surface2: rgba(255,255,255,0.04);
+    --border: rgba(255,255,255,0.1); --border-accent: rgba(138,180,248,0.35);
+    --accent: #5b8def; --accent-soft: rgba(138,180,248,0.14);
+    --text: rgba(255,255,255,0.92); --text-muted: rgba(255,255,255,0.55);
+    --danger: #ff6b6b; --success: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, "Segoe UI", sans-serif; background: linear-gradient(160deg,#1c2128,#0d1117); color: var(--text); padding: 24px; }
+  .app { display:flex; gap:14px; max-width: 900px; margin:0 auto; }
+  .rail { width:80px; flex-shrink:0; background: var(--surface1); backdrop-filter: blur(20px); border:1px solid var(--border); border-radius:14px; padding:12px 8px; display:flex; flex-direction:column; align-items:center; gap:8px; }
+  .logo { font-size:20px; margin-bottom:4px; }
+  .toggle-btn { width:56px; padding:8px 0; border-radius:10px; background: var(--accent-soft); border:1px solid var(--border-accent); display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer; }
+  .switch { width:32px; height:18px; border-radius:9px; background: var(--accent); position:relative; }
+  .switch::after { content:''; position:absolute; top:2px; right:2px; width:14px; height:14px; border-radius:50%; background:#fff; }
+  .switch.off { background: rgba(255,255,255,0.15); }
+  .switch.off::after { left:2px; right:auto; }
+  .cut-btn { width:56px; height:44px; border-radius:10px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,90,90,0.35); color: var(--danger); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; cursor:pointer; font-size:11px; font-weight:600; }
+  .divider { width:40px; height:1px; background: var(--border); margin:4px 0; }
+  .nav-btn { width:56px; height:46px; border-radius:8px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; cursor:pointer; color: var(--text-muted); font-size:10px; background:transparent; border:none; }
+  .nav-btn.active { background: var(--accent-soft); color:#a8c7fa; }
+  .status { margin-top:auto; display:flex; flex-direction:column; align-items:center; gap:3px; font-size:9px; color:var(--text-muted); }
+  .dot { width:7px; height:7px; border-radius:50%; background: var(--success); }
+  .main { flex:1; min-width:0; display:flex; flex-direction:column; gap:12px; }
+  .panel { background: var(--surface1); backdrop-filter: blur(20px); border:1px solid var(--border); border-radius:14px; padding:16px; display:none; }
+  .panel.active { display:block; }
+  .panel h3 { font-size:13px; font-weight:500; color: var(--text-muted); margin:0 0 12px; }
+  .tabs { display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
+  .tab { font-size:12px; padding:6px 12px; border-radius:8px; background:transparent; border:1px solid var(--border); color: var(--text-muted); cursor:pointer; }
+  .tab.active { background: var(--accent); color:#fff; border:none; }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .thumb { aspect-ratio:4/3; border-radius:8px; background: var(--surface2); display:flex; align-items:center; justify-content:center; font-size:24px; margin-bottom:6px; }
+  .fname { font-size:12px; color: var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .audio-row { display:flex; align-items:center; gap:12px; padding:10px 12px; border-radius:10px; background: var(--surface2); margin-bottom:8px; }
+  .play-btn { width:34px; height:34px; border-radius:50%; background: var(--surface1); border:1px solid var(--border); color:var(--text); flex-shrink:0; cursor:pointer; }
+  .progress { flex:1; height:4px; border-radius:2px; background: var(--surface1); position:relative; }
+  .progress::after { content:''; position:absolute; left:0; top:0; height:100%; width:35%; border-radius:2px; background: var(--accent); }
+  .cast-btn { font-size:12px; padding:6px 12px; background: var(--surface1); border:1px solid var(--border); color:var(--text); border-radius:8px; cursor:pointer; }
+  .activity { padding:8px; border-radius:10px; margin-bottom:8px; }
+  .activity.active { background: var(--accent-soft); border:1px solid var(--border-accent); }
+  .activity.inactive { border:1px solid var(--border); }
+  .act-head { display:flex; align-items:center; gap:8px; }
+  .num { width:20px; height:20px; border-radius:50%; background: var(--surface2); display:flex; align-items:center; justify-content:center; font-size:11px; flex-shrink:0; }
+  .num.active { background: var(--accent); color:#fff; }
+  .mode-tag { font-size:10px; padding:2px 8px; border-radius:8px; background: var(--surface2); color: var(--text-muted); margin-left:auto; }
+  .file-thumbs { display:flex; gap:7px; padding:8px 0 0 28px; flex-wrap:wrap; }
+  .mini-thumb { width:34px; height:34px; border-radius:6px; background: var(--surface2); display:flex; align-items:center; justify-content:center; font-size:14px; }
+  .device-row { display:flex; align-items:center; gap:10px; padding:8px; border-radius:8px; border:1px solid var(--border); margin-bottom:6px; }
+  .device-row.pending { background: var(--accent-soft); border-color: var(--border-accent); }
+  .setting-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; font-size:13px; }
+  .setting-row select, .setting-row button { font-size:12px; padding:5px 10px; background: var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="rail">
+    <div class="logo">🖥️</div>
+    <div class="toggle-btn" onclick="document.getElementById('sw').classList.toggle('off')">
+      <span>📡</span>
+      <div class="switch" id="sw"></div>
+      <span style="font-size:9px;">投屏开关</span>
+    </div>
+    <div class="cut-btn">🔌 断</div>
+    <div class="divider"></div>
+    <button class="nav-btn active" onclick="showPanel('files',this)">📁<br>文件</button>
+    <button class="nav-btn" onclick="showPanel('activity',this)">📋<br>活动</button>
+    <button class="nav-btn" onclick="showPanel('devices',this)">🖧<br>设备</button>
+    <button class="nav-btn" onclick="showPanel('settings',this)">⚙️<br>设置</button>
+    <div class="status"><div class="dot"></div>已连接</div>
+  </div>
+
+  <div class="main">
+
+    <div class="panel active" id="panel-files">
+      <div class="tabs">
+        <div class="tab active">全部</div><div class="tab">图片</div><div class="tab">视频</div><div class="tab">文档</div><div class="tab">音频</div>
+      </div>
+      <div class="grid">
+        <div><div class="thumb">📊</div><div class="fname">季度汇报.pptx</div></div>
+        <div><div class="thumb">🖼️</div><div class="fname">产品图01.jpg</div></div>
+        <div><div class="thumb">🎬</div><div class="fname">宣传片.mp4</div></div>
+        <div><div class="thumb">📄</div><div class="fname">合同模板.docx</div></div>
+      </div>
+      <h3 style="margin-top:16px;">音频</h3>
+      <div class="audio-row">
+        <button class="play-btn">▶</button>
+        <div style="flex:1;">
+          <div style="font-size:13px;margin-bottom:6px;">背景音乐 - 轻音乐循环.mp3</div>
+          <div class="progress"></div>
+        </div>
+        <button class="cast-btn">📡 投屏</button>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-activity">
+      <h3>周一晨会方案 ▾</h3>
+      <div class="activity active">
+        <div class="act-head"><div class="num active">1</div><span>开场介绍</span><span class="mode-tag">顺序自动</span></div>
+        <div class="file-thumbs"><div class="mini-thumb">📊</div><div class="mini-thumb">🖼️</div><div class="mini-thumb">🖼️</div></div>
+      </div>
+      <div class="activity inactive">
+        <div class="act-head"><div class="num">2</div><span>产品展示</span><span class="mode-tag">手动点选</span></div>
+      </div>
+      <div class="activity inactive">
+        <div class="act-head"><div class="num">3</div><span>合同签署</span><span class="mode-tag">手动点选</span></div>
+      </div>
+    </div>
+
+    <div class="panel" id="panel-devices">
+      <h3>已配对设备</h3>
+      <div class="device-row pending"><span>💻</span><div style="flex:1;"><div>会议室笔记本</div><div style="font-size:11px;color:var(--text-muted);">请求投屏中</div></div><button class="cast-btn">接受</button></div>
+      <div class="device-row"><span>🖥️</span><div style="flex:1;"><div>展厅主机</div><div style="font-size:11px;color:var(--text-muted);">已配对 · 待机</div></div><button class="cast-btn">投放</button></div>
+    </div>
+
+    <div class="panel" id="panel-settings">
+      <h3>播放行为</h3>
+      <div class="setting-row"><span>投屏开关关闭时点击文件</span><select><option>仅本地预览</option></select></div>
+      <div class="setting-row"><span>新建活动默认模式</span><select><option>顺序自动</option><option>手动点选</option></select></div>
+      <div class="setting-row"><span>纯音频投屏时扩展屏显示</span><select><option>波形动效</option><option>默认背景图</option></select></div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+function showPanel(id, btn){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.getElementById('panel-'+id).classList.add('active');
+  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+}
+</script>
+</body>
+</html>
