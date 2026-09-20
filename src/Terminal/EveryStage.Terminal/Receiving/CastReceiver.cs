@@ -110,8 +110,7 @@ public sealed class CastReceiver : IDisposable
     // Guards the one-time initialization of _audioSyncOffsetTicks below — the audio RTP receive loop
     // is the only writer, but it's simplest to make the "first packet establishes the offset" check
     // explicit rather than relying on a data race that happens to be benign.
-    private readonly object _syncLock = new();
-    private long? _audioSyncOffsetTicks;
+    private readonly AvSyncOffsetEstimator _syncOffsetEstimator = new();
     private readonly uint _audioSampleRate;
     private readonly RtpTimestampUnwrapper _audioTimestampUnwrapper = new();
     private readonly RtpTimestampUnwrapper _videoTimestampUnwrapper = new();
@@ -340,14 +339,10 @@ public sealed class CastReceiver : IDisposable
         // timestamp convention whether payload is raw PCM or (as of this round) an AAC access unit —
         // LiveCastSession derives both the same way (elapsed wall-clock time × sample rate), just with
         // AAC's timestamps landing on AacSamplesPerFrame-sized boundaries instead of arbitrary ones.
-        if (_audioSyncOffsetTicks == null)
-        {
-            lock (_syncLock)
-            {
-                _audioSyncOffsetTicks ??= RtpVideoClock.ToElapsedTicks(
-                    _audioTimestampUnwrapper.Unwrap(timestamp), _audioSampleRate);
-            }
-        }
+        long audioTimelineTicks = RtpVideoClock.ToElapsedTicks(
+            _audioTimestampUnwrapper.Unwrap(timestamp), _audioSampleRate);
+        long scheduledPlaybackTicks = _audioClock!.PositionTicks + _audioClock.BufferedDurationTicks;
+        _syncOffsetEstimator.Update(audioTimelineTicks, scheduledPlaybackTicks);
 
         if (_audioDecoder != null)
         {
@@ -525,19 +520,18 @@ public sealed class CastReceiver : IDisposable
                 continue;
             }
 
-            // _audioSyncOffsetTicks is null until the first audio packet arrives — a frame decoded
+            // The estimator is unavailable until the first audio packet arrives — a frame decoded
             // before that point has no audio position to compare against yet. Presenting it
             // immediately (rather than dropping it or blocking indefinitely) means a cast with a
             // slow-starting audio path still shows video right away instead of a black/frozen
             // screen; sync simply begins once the offset becomes available.
-            long? offset = _audioSyncOffsetTicks;
-            if (offset == null)
+            if (!_syncOffsetEstimator.TryGetOffset(out long offset))
             {
                 Present(frame);
                 continue;
             }
 
-            long targetAudioPositionTicks = frame.PresentationTicks - offset.Value;
+            long targetAudioPositionTicks = frame.PresentationTicks - offset;
 
             waitStopwatch.Restart();
             while (!token.IsCancellationRequested

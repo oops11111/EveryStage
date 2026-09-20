@@ -93,6 +93,11 @@ public sealed class AudioPlaybackClock : IDisposable
         }
     }
 
+    /// <summary>Audio already queued but not yet rendered, expressed on the same 100ns timeline as
+    /// <see cref="PositionTicks"/>. Used to map an incoming RTP packet to when it will actually play.</summary>
+    public long BufferedDurationTicks =>
+        (long)(_buffer.BufferedBytes / (double)_format.AverageBytesPerSecond * TimeSpan.TicksPerSecond);
+
     public void Dispose()
     {
         _output.Stop();

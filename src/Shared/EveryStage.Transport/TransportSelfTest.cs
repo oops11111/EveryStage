@@ -78,6 +78,10 @@ public static class TransportSelfTest
         if (jitterFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, jitterFailure);
 
+        string? syncFailure = RunAvSyncOffsetEstimatorCheck();
+        if (syncFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, syncFailure);
+
         string? splitterFailure = RunAnnexBNalSplitterExtraPaddingCheck();
         if (splitterFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, splitterFailure);
@@ -129,6 +133,27 @@ public static class TransportSelfTest
         if (unwrapper.Unwrap(3) != (1UL << 32) + 3)
             return "RTP timestamp unwrapper misclassified small backward jitter after a wrap.";
 
+        return null;
+    }
+
+    private static string? RunAvSyncOffsetEstimatorCheck()
+    {
+        var estimator = new AvSyncOffsetEstimator(smoothingFactor: 0.5, maxCorrectionPerUpdate: TimeSpan.FromMilliseconds(1));
+        if (estimator.TryGetOffset(out _)) return "A/V sync estimator reported an offset before its first sample.";
+        estimator.Update(remoteTimelineTicks: 10_000_000, localScheduledPlaybackTicks: 9_000_000);
+        if (!estimator.TryGetOffset(out long initial) || initial != 1_000_000)
+            return "A/V sync estimator did not initialize from its first timeline sample.";
+
+        estimator.Update(remoteTimelineTicks: 10_100_000, localScheduledPlaybackTicks: 9_000_000);
+        estimator.TryGetOffset(out long corrected);
+        if (corrected != initial + TimeSpan.FromMilliseconds(1).Ticks)
+            return "A/V sync estimator failed to rate-limit a large correction.";
+
+        for (int i = 0; i < 100; i++)
+            estimator.Update(remoteTimelineTicks: 10_100_000, localScheduledPlaybackTicks: 9_000_000);
+        estimator.TryGetOffset(out long converged);
+        if (Math.Abs(converged - 1_100_000) > 2)
+            return "A/V sync estimator did not converge to a persistent clock offset.";
         return null;
     }
 
