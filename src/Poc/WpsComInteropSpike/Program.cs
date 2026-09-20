@@ -29,21 +29,24 @@ internal static class Program
         ["presentation"] = new[] { "KWPP.Application", "WPP.Application" },
     };
 
-    private static void Main(string[] args)
+    private static int Main(string[] args)
     {
         string? app = GetArg(args, "--app");
         string? file = GetArg(args, "--file");
+        string? selfTestDir = GetArg(args, "--self-test-dir");
 
-        if (app is null || file is null || !ProgIdCandidates.ContainsKey(app))
+        if (app is null || !ProgIdCandidates.ContainsKey(app) || (file is null && selfTestDir is null))
         {
-            Console.WriteLine("Usage: WpsComInteropSpike --app writer|spreadsheet|presentation --file <path>");
-            return;
+            Console.WriteLine("Usage: WpsComInteropSpike --app writer|spreadsheet|presentation (--file <path> | --self-test-dir <directory>)");
+            return 2;
         }
 
-        RunProbe(app, Path.GetFullPath(file));
+        return selfTestDir != null
+            ? RunCreateEditSaveProbe(app, Path.GetFullPath(selfTestDir))
+            : RunProbe(app, Path.GetFullPath(file!));
     }
 
-    private static void RunProbe(string appKind, string filePath)
+    private static int RunProbe(string appKind, string filePath)
     {
         object? wpsApp = null;
         object? document = null;
@@ -67,6 +70,7 @@ internal static class Program
             ReportContentAndTryPaging(document, appKind);
 
             Console.WriteLine("[spike] RESULT: silent open + basic object-model access succeeded.");
+            return 0;
         }
         catch (COMException comEx)
         {
@@ -78,15 +82,104 @@ internal static class Program
             Console.WriteLine("        process may have appeared to hang before this error surfaced —");
             Console.WriteLine("        check Task Manager for a lingering wps*.exe and note what the");
             Console.WriteLine("        dialog said, then close it manually before re-running.");
+            return 1;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[spike] RESULT: failed — {ex.GetType().Name}: {ex.Message}");
+            return 1;
         }
         finally
         {
             CloseAndQuit(wpsApp, document, appKind);
         }
+    }
+
+    private static int RunCreateEditSaveProbe(string appKind, string outputDirectory)
+    {
+        Directory.CreateDirectory(outputDirectory);
+        string marker = $"EveryStage-WPS-self-test-{Guid.NewGuid():N}";
+        string extension = appKind switch { "writer" => ".docx", "spreadsheet" => ".xlsx", _ => ".pptx" };
+        string filePath = Path.Combine(outputDirectory, appKind + extension);
+        object? wpsApp = null;
+        object? document = null;
+        try
+        {
+            (wpsApp, string usedProgId) = CreateWpsApplication(appKind);
+            dynamic app = wpsApp;
+            Console.WriteLine($"[spike] instantiated via ProgID '{usedProgId}'.");
+            TrySet(() => app.Visible = false, "Visible = false");
+            TrySet(() => app.DisplayAlerts = 0, "DisplayAlerts = 0");
+            TrySet(() => app.ScreenUpdating = false, "ScreenUpdating = false");
+
+            document = CreateAndPopulate(app, appKind, marker);
+            SaveDocument(document, appKind, filePath);
+            CloseDocument(document, appKind, saveChanges: true);
+            Marshal.FinalReleaseComObject(document);
+            document = null;
+
+            document = OpenDocument(app, appKind, filePath);
+            string actual = ReadMarker(document, appKind);
+            if (!actual.Contains(marker, StringComparison.Ordinal))
+                throw new InvalidOperationException($"Saved marker was not recovered after reopening. Actual: '{actual}'.");
+
+            Console.WriteLine($"[spike] verified edit/save/reopen: {filePath}");
+            Console.WriteLine("[spike] RESULT: PASS");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[spike] RESULT: FAIL — {ex.GetType().Name}: {ex.Message}");
+            return 1;
+        }
+        finally
+        {
+            CloseAndQuit(wpsApp, document, appKind);
+        }
+    }
+
+    private static object CreateAndPopulate(dynamic app, string appKind, string marker)
+    {
+        switch (appKind)
+        {
+            case "writer":
+                dynamic writer = app.Documents.Add();
+                writer.Content.Text = marker;
+                return writer;
+            case "spreadsheet":
+                dynamic workbook = app.Workbooks.Add();
+                workbook.Worksheets[1].Cells[1, 1].Value2 = marker;
+                return workbook;
+            case "presentation":
+                dynamic presentation = app.Presentations.Add();
+                dynamic slide = presentation.Slides.Add(1, 12); // ppLayoutBlank
+                dynamic shape = slide.Shapes.AddTextbox(1, 10, 10, 600, 80); // msoTextOrientationHorizontal
+                shape.TextFrame.TextRange.Text = marker;
+                Marshal.FinalReleaseComObject(shape);
+                Marshal.FinalReleaseComObject(slide);
+                return presentation;
+            default: throw new ArgumentOutOfRangeException(nameof(appKind));
+        }
+    }
+
+    private static void SaveDocument(dynamic document, string appKind, string filePath)
+    {
+        if (appKind == "writer") document.SaveAs2(filePath);
+        else document.SaveAs(filePath);
+    }
+
+    private static string ReadMarker(dynamic document, string appKind) => appKind switch
+    {
+        "writer" => (string)document.Content.Text,
+        "spreadsheet" => Convert.ToString(document.Worksheets[1].Cells[1, 1].Value2) ?? "",
+        "presentation" => (string)document.Slides[1].Shapes[1].TextFrame.TextRange.Text,
+        _ => throw new ArgumentOutOfRangeException(nameof(appKind)),
+    };
+
+    private static void CloseDocument(dynamic document, string appKind, bool saveChanges)
+    {
+        if (appKind == "presentation") document.Close();
+        else document.Close(SaveChanges: saveChanges);
     }
 
     private static (object app, string progId) CreateWpsApplication(string appKind)
@@ -170,16 +263,8 @@ internal static class Program
         {
             if (document != null)
             {
-                dynamic doc = document;
-                // SaveChanges: false (wdDoNotSaveChanges-equivalent) — this spike never edits
-                // anything, so nothing should be written back even if WPS thinks something changed.
-                switch (appKind)
-                {
-                    case "writer": doc.Close(SaveChanges: false); break;
-                    case "spreadsheet": doc.Close(SaveChanges: false); break;
-                    case "presentation": doc.Close(); break;
-                }
-                Marshal.ReleaseComObject(document);
+                CloseDocument((dynamic)document, appKind, saveChanges: false);
+                Marshal.FinalReleaseComObject(document);
             }
         }
         catch (Exception ex) { Console.WriteLine($"[spike] cleanup: closing document failed: {ex.Message}"); }
@@ -190,7 +275,7 @@ internal static class Program
             {
                 dynamic app = wpsApp;
                 app.Quit();
-                Marshal.ReleaseComObject(wpsApp);
+                Marshal.FinalReleaseComObject(wpsApp);
             }
         }
         catch (Exception ex) { Console.WriteLine($"[spike] cleanup: Quit() failed: {ex.Message}"); }

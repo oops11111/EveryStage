@@ -31,7 +31,7 @@
 - [ ] 60 分钟 GPU、内存和音画同步浸泡测试
 - [ ] 不同 GPU、驱动、显示器热插拔与全屏应用测试
 - [ ] 双机弱网、断网、重连和长时间投屏测试
-- [ ] WPS Writer、Spreadsheet、Presentation 编辑保存及进程退出测试
+- [x] WPS Writer、Spreadsheet、Presentation 编辑保存及进程退出测试
 
 ## 6. 产品与发布收尾
 

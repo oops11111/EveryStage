@@ -12,6 +12,9 @@ cd src/Poc/WpsComInteropSpike
 dotnet run -- --app writer --file C:\path\to\test.docx
 dotnet run -- --app spreadsheet --file C:\path\to\test.xlsx
 dotnet run -- --app presentation --file C:\path\to\test.pptx
+dotnet run -- --app writer --self-test-dir .\out
+dotnet run -- --app spreadsheet --self-test-dir .\out
+dotnet run -- --app presentation --self-test-dir .\out
 ```
 
 跑完后**去任务管理器确认没有残留的 `wps*.exe` 进程**——控制台最后一行会提醒你这件事，这本身就是
