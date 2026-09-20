@@ -11,6 +11,7 @@
     <AssemblyName>EveryStage.Caster</AssemblyName>
     <RootNamespace>EveryStage.Caster</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationIcon>Assets\EveryStage.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>

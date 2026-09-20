@@ -172,7 +172,7 @@ public sealed class MainForm : Form
         _identity = identity;
         _pairedTerminals = pairedTerminals;
 
-        Text = "EveryStage 投屏机";
+        Text = "EveryStage Caster";
         // Grown from an original 506: first to 600 to fit a fourth self-test section (audio
         // capture) below the existing capture/encode/transport three, then to 630 to give
         // _liveCastStatsLabel enough extra height for its new always-visible "确认≠健康" caveat
@@ -186,7 +186,8 @@ public sealed class MainForm : Form
         // discovery one, then to 1043 to fit a ninth section (DeviceIdentity's own on-disk round-trip
         // self-test — the same shared EveryStage.Discovery class both Terminal and Caster call
         // LoadOrCreate() on) below the paired-terminal-store one — see this class's doc comment.
-        ClientSize = new Size(320, 1043);
+        ClientSize = new Size(620, 700);
+        MinimumSize = new Size(620, 700);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -194,8 +195,10 @@ public sealed class MainForm : Form
         // --- 待机态 (PLANNING.md §12) ---
         _terminalListBox = new ListBox
         {
-            Bounds = new Rectangle(12, 12, 296, 160),
+            Bounds = new Rectangle(36, 112, 548, 218),
             DisplayMember = nameof(TerminalListEntry.DisplayText), // else ListBox shows the record's generated ToString().
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font("Segoe UI", 11F),
         };
         // Only a live (online) entry has a real IP address to pair/cast to — an offline paired
         // entry is shown for visibility (PLANNING.md §12 "已配对直显") but can't be selected to
@@ -214,40 +217,45 @@ public sealed class MainForm : Form
         {
             Text = "点击\"开始投屏\"后，将投放整个屏幕（全屏捕获），而不是仅本窗口或某个应用。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(12, 178, 296, 40),
+            Bounds = new Rectangle(36, 584, 548, 34),
         };
 
         // PLANNING.md §12"选择捕获哪个显示器"——之前ScreenCaptureSource固定捕获outputIndex=0，
         // 多显示器场景完全没有UI选择。RefreshMonitorList()（下面）在构造函数末尾和每次回到待机态
         // 时都会重新枚举，跟这一轮刚修过的SettingsPanel显示器列表是同一个"别只枚举一次"教训。
-        var monitorLabel = new Label { Text = "选择要投放的显示器：", AutoSize = true, Bounds = new Rectangle(12, 222, 296, 18) };
-        _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(12, 242, 296, 24) };
+        var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font("Segoe UI Semibold", 22F), AutoSize = true, Location = new Point(36, 34) };
+        var connected = new Label { Text = "●  已连接", ForeColor = ModernUi.Success, AutoSize = true, Location = new Point(486, 48) };
+        var targetLabel = new Label { Text = "选择终端", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(36, 88) };
+        var monitorLabel = new Label { Text = "显示器", ForeColor = ModernUi.Muted, AutoSize = true, Bounds = new Rectangle(36, 354, 548, 22) };
+        _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(36, 380, 548, 34) };
 
         _startButton = new Button
         {
             Text = "开始投屏",
             Enabled = false,
-            Bounds = new Rectangle(12, 274, 296, 32),
+            Bounds = new Rectangle(36, 442, 548, 52),
         };
         _startButton.Click += OnStartButtonClick;
+        ModernUi.Primary(_startButton);
 
         _removePairingButton = new Button
         {
             Text = "移除配对",
             Enabled = false,
-            Bounds = new Rectangle(12, 312, 296, 28),
+            Bounds = new Rectangle(36, 510, 548, 36),
         };
         _removePairingButton.Click += OnRemovePairingClick;
 
         _standbyPanel = new Panel { Dock = DockStyle.Fill };
         _standbyPanel.Controls.AddRange(new Control[]
         {
-            _terminalListBox, privacyLabel, monitorLabel, _monitorComboBox, _startButton, _removePairingButton,
+            standbyTitle, connected, targetLabel, _terminalListBox, privacyLabel, monitorLabel,
+            _monitorComboBox, _startButton, _removePairingButton,
         });
         RefreshMonitorList();
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
-        _pairedWithLabel = new Label { Bounds = new Rectangle(12, 12, 296, 32) };
+        _pairedWithLabel = new Label { Bounds = new Rectangle(36, 96, 548, 48), Font = new Font("Segoe UI Semibold", 17F) };
 
         // PLANNING.md §12 "投屏中" 状态里的隐私提醒条 + 时长显示——之前只有开始投屏前那条一次性的
         // privacyLabel，投屏过程中完全没有任何持续提醒或计时，这两个都是这次新加的。
@@ -255,16 +263,20 @@ public sealed class MainForm : Form
         {
             Text = "⚠ 正在投放整个屏幕｜已投屏时长: 00:00:00",
             ForeColor = Color.DarkRed,
-            Bounds = new Rectangle(12, 44, 296, 20),
+            Bounds = new Rectangle(36, 272, 548, 54),
         };
 
         // Height grown from 90 to 108 (+18) to fit RefreshLiveCastStats' new always-visible
         // "（仅代表状态通道送达...）" caveat line without clipping the 5 lines already packed in
         // here — every control below this one shifted down by that same 18px.
-        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 70, 296, 108), ForeColor = Color.DimGray };
+        _liveCastStatsLabel = new Label { Bounds = new Rectangle(36, 144, 548, 116), ForeColor = ModernUi.Muted };
 
-        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(12, 182, 296, 32) };
+        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(36, 342, 548, 52) };
         _stopCastButton.Click += (_, _) => ShowStandby();
+        ModernUi.Primary(_stopCastButton, danger: true);
+
+        var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font("Segoe UI Semibold", 22F), AutoSize = true, Location = new Point(36, 34) };
+        var liveState = new Label { Text = "●  正在投屏", ForeColor = ModernUi.Danger, AutoSize = true, Location = new Point(470, 48) };
 
         var diagnosticsNoteLabel = new Label
         {
@@ -333,10 +345,22 @@ public sealed class MainForm : Form
         _deviceIdentitySelfTestButton.Click += OnDeviceIdentitySelfTestClick;
         _deviceIdentityStatsLabel = new Label { Bounds = new Rectangle(12, 991, 296, 40), ForeColor = Color.DimGray };
 
-        _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
-        _pairedPanel.Controls.AddRange(new Control[]
+        var diagnosticsToggle = new Button { Text = "诊断工具  ▾", Bounds = new Rectangle(36, 414, 548, 38) };
+        var diagnosticsPanel = new Panel
         {
-            _pairedWithLabel, _privacyReminderLabel, _liveCastStatsLabel, _stopCastButton, diagnosticsNoteLabel,
+            Bounds = new Rectangle(36, 462, 548, 202),
+            AutoScroll = true,
+            AutoScrollMinSize = new Size(0, 1040),
+            Visible = false,
+        };
+        diagnosticsToggle.Click += (_, _) =>
+        {
+            diagnosticsPanel.Visible = !diagnosticsPanel.Visible;
+            diagnosticsToggle.Text = diagnosticsPanel.Visible ? "诊断工具  ▴" : "诊断工具  ▾";
+        };
+        diagnosticsPanel.Controls.AddRange(new Control[]
+        {
+            diagnosticsNoteLabel,
             _captureSelfTestButton, _captureStatsLabel,
             _encodeSelfTestButton, _encodeStatsLabel, _transportSelfTestButton, _transportStatsLabel,
             _audioCaptureSelfTestButton, _audioCaptureStatsLabel,
@@ -347,8 +371,18 @@ public sealed class MainForm : Form
             _deviceIdentitySelfTestButton, _deviceIdentityStatsLabel,
         });
 
+        _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
+        _pairedPanel.Controls.AddRange(new Control[]
+        {
+            castingTitle, liveState, _pairedWithLabel, _privacyReminderLabel, _liveCastStatsLabel,
+            _stopCastButton, diagnosticsToggle, diagnosticsPanel,
+        });
+
         Controls.Add(_pairedPanel);
         Controls.Add(_standbyPanel);
+        ModernUi.StyleTree(this);
+        ModernUi.Primary(_startButton);
+        ModernUi.Primary(_stopCastButton, danger: true);
 
         _listRefreshTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _listRefreshTimer.Tick += (_, _) => RefreshTerminalList();

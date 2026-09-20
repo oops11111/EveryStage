@@ -99,19 +99,30 @@ public sealed class FilesPanel : UserControl
         if (_playback != null) _playback.FileStarted += OnFileStarted;
         Dock = DockStyle.Fill;
         AllowDrop = true;
+        BackColor = ModernUi.Background;
+        Padding = new Padding(0);
 
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 36, FlowDirection = FlowDirection.LeftToRight };
+        var toolbar = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 68,
+            FlowDirection = FlowDirection.LeftToRight,
+            Padding = new Padding(8, 14, 8, 10),
+            BackColor = ModernUi.Background,
+        };
         toolbar.Controls.Add(MakeFilterButton("全部", null));
         toolbar.Controls.Add(MakeFilterButton("图片", MediaKind.Image));
         toolbar.Controls.Add(MakeFilterButton("视频", MediaKind.Video));
         toolbar.Controls.Add(MakeFilterButton("文档", MediaKind.Document));
         toolbar.Controls.Add(MakeFilterButton("音频", MediaKind.Audio));
 
-        var importButton = new Button { Text = "导入...", AutoSize = true };
+        var importButton = new Button { Text = "＋ 导入文件", AutoSize = true, Height = 36 };
+        ModernUi.StyleButton(importButton, primary: true);
         importButton.Click += (_, _) => ImportViaDialog();
         toolbar.Controls.Add(importButton);
 
-        _removeButton = new Button { Text = "移除", AutoSize = true, Enabled = false };
+        _removeButton = new Button { Text = "移除", AutoSize = true, Height = 36, Enabled = false };
+        ModernUi.StyleButton(_removeButton, danger: true);
         _removeButton.Click += OnRemoveClick;
         toolbar.Controls.Add(_removeButton);
 
@@ -120,11 +131,12 @@ public sealed class FilesPanel : UserControl
         // its own to add into; ActivityPickerDialog now supplies exactly that. Same
         // enable-on-selection reuse of the always-visible toolbar as _removeButton above, handles
         // any number of selected files at once.
-        _addToActivityButton = new Button { Text = "加入活动...", AutoSize = true, Enabled = false };
+        _addToActivityButton = new Button { Text = "加入活动...", AutoSize = true, Height = 36, Enabled = false };
+        ModernUi.StyleButton(_addToActivityButton);
         _addToActivityButton.Click += OnAddToActivityClick;
         toolbar.Controls.Add(_addToActivityButton);
 
-        _thumbnails = new ImageList { ImageSize = new Size(96, 96), ColorDepth = ColorDepth.Depth32Bit };
+        _thumbnails = new ImageList { ImageSize = new Size(112, 112), ColorDepth = ColorDepth.Depth32Bit };
         _listView = new ListView
         {
             Dock = DockStyle.Fill,
@@ -137,6 +149,11 @@ public sealed class FilesPanel : UserControl
             // building a separate floating one for the same enable/disable-on-selection behavior
             // "选中后悬浮工具栏出现" already describes in spirit.
             MultiSelect = true,
+            BackColor = ModernUi.Surface,
+            ForeColor = ModernUi.Text,
+            BorderStyle = BorderStyle.None,
+            Font = new Font("Segoe UI", 10F),
+            Padding = new Padding(14),
         };
         _listView.SelectedIndexChanged += (_, _) =>
         {
@@ -159,11 +176,13 @@ public sealed class FilesPanel : UserControl
         _audioBarPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
-            Height = 148,
+            Height = 142,
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
             AutoScroll = true,
-            BorderStyle = BorderStyle.FixedSingle,
+            BorderStyle = BorderStyle.None,
+            BackColor = ModernUi.SurfaceRaised,
+            Padding = new Padding(12, 12, 8, 8),
             Visible = false, // no audio files yet — RefreshAudioBar flips this once there are any.
         };
 
@@ -230,8 +249,19 @@ public sealed class FilesPanel : UserControl
 
     private Button MakeFilterButton(string label, MediaKind? filter)
     {
-        var button = new Button { Text = label, AutoSize = true };
-        button.Click += (_, _) => { _activeFilter = filter; Refresh_(); };
+        var button = new Button { Text = label, AutoSize = true, Height = 36, Margin = new Padding(4, 0, 4, 0) };
+        ModernUi.StyleButton(button, primary: _activeFilter == filter);
+        button.Click += (_, _) =>
+        {
+            _activeFilter = filter;
+            if (button.Parent != null) foreach (Control control in button.Parent.Controls)
+            {
+                if (control is Button filterButton && filterButton.Tag != null)
+                    ModernUi.StyleButton(filterButton, primary: ReferenceEquals(filterButton, button));
+            }
+            Refresh_();
+        };
+        button.Tag = filter.HasValue ? filter.Value : "all";
         return button;
     }
 

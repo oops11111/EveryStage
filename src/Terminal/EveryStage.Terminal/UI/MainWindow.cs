@@ -66,43 +66,77 @@ public sealed class MainWindow : Form
         _scenarioStore = scenarioStore;
         _scenarioRepository = scenarioRepository;
 
-        Text = "EveryStage 终端机";
-        ClientSize = new Size(900, 600);
+        Text = "EveryStage Terminal";
+        ClientSize = new Size(1280, 800);
+        MinimumSize = new Size(1100, 700);
+        BackColor = ModernUi.Background;
+        Font = new Font("Segoe UI", 10F);
         StartPosition = FormStartPosition.CenterScreen;
 
-        var nav = new Panel { Dock = DockStyle.Left, Width = 96, BackColor = Color.FromArgb(30, 30, 30) };
+        var nav = new Panel { Dock = DockStyle.Left, Width = 178, BackColor = ModernUi.Rail, Padding = new Padding(12) };
+
+        var brand = new Label
+        {
+            Text = "▰  EveryStage",
+            ForeColor = Color.White,
+            Font = new Font("Segoe UI Semibold", 15F),
+            AutoSize = true,
+            Location = new Point(18, 22),
+        };
+        var product = new Label
+        {
+            Text = "Terminal",
+            ForeColor = ModernUi.Muted,
+            Font = new Font("Segoe UI", 10F),
+            AutoSize = true,
+            Location = new Point(51, 54),
+        };
 
         // A plain checkbox standing in for §8.1's slide-switch visual — see class doc comment.
-        _castSwitchCheckbox = new CheckBox
+        _castSwitchCheckbox = new ToggleSwitch
+        {
+            Location = new Point(112, 92),
+            Checked = stateMachine.CastSwitchOn,
+        };
+        var switchLabel = new Label
         {
             Text = "投屏开关",
-            ForeColor = Color.White,
+            ForeColor = ModernUi.Text,
             AutoSize = true,
-            Location = new Point(8, 12),
-            Checked = stateMachine.CastSwitchOn,
+            Location = new Point(18, 97),
         };
         _castSwitchCheckbox.CheckedChanged += (_, _) => stateMachine.SetCastSwitch(_castSwitchCheckbox.Checked);
 
-        var disconnectButton = new Button { Text = "断", Location = new Point(8, 44), Width = 80 };
+        var disconnectButton = new Button { Text = "●  断开输出", Bounds = new Rectangle(16, 136, 146, 40) };
+        ModernUi.StyleButton(disconnectButton, danger: true);
         disconnectButton.Click += (_, _) => stateMachine.Disconnect();
 
-        var filesButton = MakeNavButton("文件", 90);
-        var activitiesButton = MakeNavButton("活动", 130);
-        var devicesButton = MakeNavButton("设备", 170);
-        var settingsButton = MakeNavButton("设置", 210);
+        var filesButton = ModernUi.NavButton("▣", "文件", 218);
+        var activitiesButton = ModernUi.NavButton("▤", "活动", 278);
+        var devicesButton = ModernUi.NavButton("▱", "设备", 338);
+        var settingsButton = ModernUi.NavButton("⚙", "设置", 398);
+        var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
 
-        _recallPreviewButton = new Button { Text = "显示预览窗", Location = new Point(8, 258), Width = 80, Height = 40 };
+        _recallPreviewButton = new Button { Text = "显示预览窗", Bounds = new Rectangle(16, 468, 146, 38) };
+        ModernUi.StyleButton(_recallPreviewButton);
         _recallPreviewButton.Click += (_, _) => PreviewRecallRequested?.Invoke();
 
-        _statusLabel = new Label { ForeColor = Color.LightGray, AutoSize = true, Location = new Point(8, 520) };
+        _statusLabel = new Label
+        {
+            ForeColor = ModernUi.Success,
+            AutoSize = true,
+            Location = new Point(18, 748),
+            Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
+        };
 
         nav.Controls.AddRange(new Control[]
         {
-            _castSwitchCheckbox, disconnectButton, filesButton, activitiesButton, devicesButton, settingsButton,
+            brand, product, switchLabel, _castSwitchCheckbox, disconnectButton,
+            filesButton, activitiesButton, devicesButton, settingsButton,
             _recallPreviewButton, _statusLabel,
         });
 
-        _contentHost = new Panel { Dock = DockStyle.Fill };
+        _contentHost = new Panel { Dock = DockStyle.Fill, BackColor = ModernUi.Background, Padding = new Padding(28) };
 
         // One shared instance rather than a separate `new FileOperationLogger()` per panel: both
         // panels' loggers ultimately append to the same physical file
@@ -122,10 +156,10 @@ public sealed class MainWindow : Form
         _settingsPanel = new SettingsPanel(settingsStore, identity);
         settingsStore.SettingsChanged += OnSettingsChanged;
 
-        filesButton.Click += (_, _) => ShowPanel(_filesPanel);
-        activitiesButton.Click += (_, _) => ShowPanel(_activitiesPanel);
-        devicesButton.Click += (_, _) => ShowPanel(_devicesPanel);
-        settingsButton.Click += (_, _) => ShowPanel(_settingsPanel);
+        filesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, filesButton); ShowPanel(_filesPanel); };
+        activitiesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, activitiesButton); ShowPanel(_activitiesPanel); };
+        devicesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, devicesButton); ShowPanel(_devicesPanel); };
+        settingsButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, settingsButton); ShowPanel(_settingsPanel); };
 
         Controls.Add(_contentHost);
         Controls.Add(nav);
@@ -156,6 +190,7 @@ public sealed class MainWindow : Form
         UpdateStatusLabel();
         ShowPanel(_filesPanel);
         ThemeManager.Apply(this, settingsStore.Current.Theme);
+        ModernUi.SetNavActive(navButtons, filesButton);
 
         // Terminal is meant to run unattended in the background (PLANNING.md's whole framing) —
         // closing this operator window shouldn't end the process, only hide it. Reopening it today
@@ -194,8 +229,6 @@ public sealed class MainWindow : Form
         _activitiesPanel.AttachPlaybackEngine(playback);
         _filesPanel.AttachPlaybackEngine(playback);
     }
-
-    private Button MakeNavButton(string text, int y) => new() { Text = text, Location = new Point(8, y), Width = 80 };
 
     private void ShowPanel(Control panel)
     {
