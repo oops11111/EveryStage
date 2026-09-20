@@ -53,6 +53,14 @@ public static class DiscoveryProtocol
         public abstract string Type { get; }
     }
 
+    public abstract class AuthenticatedMessage : Message
+    {
+        public Guid SenderDeviceId { get; set; }
+        public Guid MessageId { get; set; }
+        public DateTimeOffset IssuedAtUtc { get; set; }
+        public string? AuthenticationTag { get; set; }
+    }
+
     /// <summary>Sent periodically, broadcast, by a Terminal — "here I am" for Caster-side discovery
     /// UI (PLANNING.md §12 "待机态：目标终端机列表") to build its list from.</summary>
     public sealed class BeaconMessage : Message
@@ -91,7 +99,7 @@ public static class DiscoveryProtocol
     /// information). Not something PLANNING.md specifies — this repository's own addition, needed
     /// once the video pipeline (built well after the discovery/pairing protocol was originally
     /// drafted) actually had to negotiate anything end to end.</summary>
-    public sealed class CastStartMessage : Message
+    public sealed class CastStartMessage : AuthenticatedMessage
     {
         public override string Type => "cast_start";
         public Guid DeviceId { get; set; }
@@ -134,7 +142,7 @@ public static class DiscoveryProtocol
     /// <summary>Sent unicast, Caster -> Terminal, when the user stops casting — lets the Terminal
     /// return to standby deterministically instead of guessing "the stream stopped" from an RTP
     /// receive timeout (which this project doesn't implement).</summary>
-    public sealed class CastStopMessage : Message
+    public sealed class CastStopMessage : AuthenticatedMessage
     {
         public override string Type => "cast_stop";
         public Guid DeviceId { get; set; }
@@ -147,7 +155,7 @@ public static class DiscoveryProtocol
     /// "still sending without a local error". Not a full ack-per-packet protocol — just a periodic
     /// "still alive, here's roughly how much has gotten through" heartbeat, on the same
     /// best-effort, no-retry footing as every other message in this file.</summary>
-    public sealed class CastStatusMessage : Message
+    public sealed class CastStatusMessage : AuthenticatedMessage
     {
         public override string Type => "cast_status";
 
@@ -197,7 +205,7 @@ public static class DiscoveryProtocol
 
     /// <summary>Caster acknowledgment for one status report. A duplicate report receives another
     /// ACK so a lost ACK can recover without delivering duplicate status to the application.</summary>
-    public sealed class CastStatusAckMessage : Message
+    public sealed class CastStatusAckMessage : AuthenticatedMessage
     {
         public override string Type => "cast_status_ack";
         public Guid DeviceId { get; set; }

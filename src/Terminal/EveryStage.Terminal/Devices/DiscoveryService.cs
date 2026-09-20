@@ -41,6 +41,9 @@ public sealed class DiscoveryService : IDisposable
     private readonly Dictionary<(Guid DeviceId, Guid SessionId, long SequenceNumber), TaskCompletionSource<bool>> _pendingStatusAcks = new();
     private readonly Guid _statusSessionId = Guid.NewGuid();
     private long _nextStatusSequence;
+    private readonly ReplayGuard _replayGuard = new();
+    private Guid? _activeCasterDeviceId;
+    private string? _activeCasterKey;
 
     private Task? _receiveLoop;
     private Task? _beaconLoop;
@@ -262,7 +265,7 @@ public sealed class DiscoveryService : IDisposable
 
     private void HandleCastStart(DiscoveryProtocol.CastStartMessage msg, IPEndPoint remoteEndPoint)
     {
-        var device = _pairedDevices.Find(msg.DeviceId);
+        var device = _pairedDevices.Find(msg.SenderDeviceId);
         if (device is not { AllowCast: true })
         {
             // Not paired at all, or paired but casting was never granted (§7 "权限分离...不因配对
@@ -271,6 +274,10 @@ public sealed class DiscoveryService : IDisposable
             _connectionLog.LogDisconnected(msg.DeviceId.ToString(), "cast_start_rejected_not_allowed");
             return;
         }
+        if (!PairingSecurity.Verify(msg, device.PairingKey)
+            || !_replayGuard.TryAccept(msg, DateTimeOffset.UtcNow)) return;
+        _activeCasterDeviceId = msg.SenderDeviceId;
+        _activeCasterKey = device.PairingKey;
         CastStartRequested?.Invoke(new CastStartInfo(
             msg.DeviceId, msg.Width, msg.Height, msg.PayloadType,
             msg.HasAudio, msg.AudioSampleRate, msg.AudioChannels, msg.AudioPayloadType, msg.AudioIsAac,
@@ -285,6 +292,8 @@ public sealed class DiscoveryService : IDisposable
     {
         status.SequenceNumber = Interlocked.Increment(ref _nextStatusSequence);
         status.SessionId = _statusSessionId;
+        if (_activeCasterDeviceId == null || !PairingSecurity.IsValidKey(_activeCasterKey)) return;
+        PairingSecurity.Sign(status, _identity.DeviceId, _activeCasterKey!);
         var key = (status.DeviceId, status.SessionId, status.SequenceNumber);
         var acknowledged = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         lock (_pendingGate) _pendingStatusAcks[key] = acknowledged;
@@ -304,6 +313,9 @@ public sealed class DiscoveryService : IDisposable
 
     private void HandleCastStatusAck(DiscoveryProtocol.CastStatusAckMessage ack)
     {
+        if (_activeCasterDeviceId == null || ack.SenderDeviceId != _activeCasterDeviceId
+            || !PairingSecurity.Verify(ack, _activeCasterKey)
+            || !_replayGuard.TryAccept(ack, DateTimeOffset.UtcNow)) return;
         TaskCompletionSource<bool>? pending;
         lock (_pendingGate)
             _pendingStatusAcks.TryGetValue((ack.DeviceId, ack.SessionId, ack.SequenceNumber), out pending);
@@ -353,7 +365,15 @@ public sealed class DiscoveryService : IDisposable
         if (entry != null) entry.Value.Tcs.TrySetResult(entry.Value.Stopwatch.Elapsed);
     }
 
-    private void HandleCastStop(DiscoveryProtocol.CastStopMessage msg) => CastStopRequested?.Invoke(msg.DeviceId);
+    private void HandleCastStop(DiscoveryProtocol.CastStopMessage msg)
+    {
+        var device = _pairedDevices.Find(msg.SenderDeviceId);
+        if (device == null || !PairingSecurity.Verify(msg, device.PairingKey)
+            || !_replayGuard.TryAccept(msg, DateTimeOffset.UtcNow)) return;
+        CastStopRequested?.Invoke(msg.DeviceId);
+        _activeCasterDeviceId = null;
+        _activeCasterKey = null;
+    }
 
     private void HandlePairRequest(DiscoveryProtocol.PairRequestMessage req, IPEndPoint remoteEndPoint)
     {

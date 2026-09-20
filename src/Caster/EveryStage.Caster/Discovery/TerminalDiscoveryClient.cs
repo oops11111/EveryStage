@@ -22,6 +22,9 @@ public sealed class TerminalDiscoveryClient : IDisposable
     private static readonly TimeSpan ExpiryAfter = TimeSpan.FromSeconds(10);
 
     private readonly UdpClient _socket;
+    private readonly DeviceIdentity _identity;
+    private readonly PairedTerminalStore _pairedTerminals;
+    private readonly ReplayGuard _replayGuard = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
     private readonly Dictionary<Guid, DiscoveredTerminal> _terminals = new();
@@ -59,8 +62,10 @@ public sealed class TerminalDiscoveryClient : IDisposable
     // the constructor throwing before it ever finishes, so the caller never receives an instance
     // and can never call Dispose() — the UdpClient just constructed above leaks for the rest of the
     // process's lifetime.
-    public TerminalDiscoveryClient()
+    public TerminalDiscoveryClient(DeviceIdentity identity, PairedTerminalStore pairedTerminals)
     {
+        _identity = identity;
+        _pairedTerminals = pairedTerminals;
         var socket = new UdpClient();
         try
         {
@@ -208,6 +213,12 @@ public sealed class TerminalDiscoveryClient : IDisposable
     {
         try
         {
+            if (message is DiscoveryProtocol.AuthenticatedMessage authenticated)
+            {
+                string? key = _pairedTerminals.Find(terminal.DeviceId)?.PairingKey;
+                if (!PairingSecurity.IsValidKey(key)) return;
+                PairingSecurity.Sign(authenticated, _identity.DeviceId, key!);
+            }
             byte[] payload = DiscoveryProtocol.Encode(message);
             await _socket.SendAsync(payload, payload.Length, new IPEndPoint(terminal.Address, DiscoveryProtocol.Port));
         }
@@ -309,13 +320,19 @@ public sealed class TerminalDiscoveryClient : IDisposable
 
     private void HandleCastStatus(DiscoveryProtocol.CastStatusMessage status, IPEndPoint remoteEndPoint)
     {
-        _ = SendRawAsync(new DiscoveryProtocol.CastStatusAckMessage
+        string? key = _pairedTerminals.Find(status.DeviceId)?.PairingKey;
+        if (!PairingSecurity.Verify(status, key)) return;
+
+        var ack = new DiscoveryProtocol.CastStatusAckMessage
         {
             DeviceId = status.DeviceId,
             SessionId = status.SessionId,
             SequenceNumber = status.SequenceNumber,
-        }, remoteEndPoint);
+        };
+        PairingSecurity.Sign(ack, _identity.DeviceId, key!);
+        _ = SendRawAsync(ack, remoteEndPoint);
 
+        if (!_replayGuard.TryAccept(status, DateTimeOffset.UtcNow)) return;
         if (_statusSequences.TryAccept(status.DeviceId, status.SessionId, status.SequenceNumber))
             CastStatusReceived?.Invoke(status);
     }

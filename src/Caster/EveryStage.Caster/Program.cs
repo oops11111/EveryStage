@@ -71,7 +71,7 @@ internal static class Program
         TerminalDiscoveryClient discoveryClient;
         try
         {
-            discoveryClient = new TerminalDiscoveryClient();
+            discoveryClient = new TerminalDiscoveryClient(identity, pairedTerminals);
         }
         catch (Exception ex)
         {

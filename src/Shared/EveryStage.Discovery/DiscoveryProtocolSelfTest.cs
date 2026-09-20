@@ -77,6 +77,10 @@ public static class DiscoveryProtocolSelfTest
         if (retryFailure != null)
             return new Result(false, verified, retryFailure);
 
+        string? authenticationFailure = CheckAuthenticationAndReplayProtection();
+        if (authenticationFailure != null)
+            return new Result(false, verified, authenticationFailure);
+
         return new Result(true, verified, null);
     }
 
@@ -293,6 +297,31 @@ public static class DiscoveryProtocolSelfTest
             ack.Task, maxAttempts: 3, attemptTimeout: TimeSpan.FromMilliseconds(1));
         if (!succeeded || successfulAttempts != 2)
             return $"ACK retry should stop on the second attempt; result={succeeded}, attempts={successfulAttempts}.";
+        return null;
+    }
+
+    private static string? CheckAuthenticationAndReplayProtection()
+    {
+        string key = PairingSecurity.GenerateKey();
+        var message = new DiscoveryProtocol.CastStopMessage { DeviceId = Guid.NewGuid() };
+        Guid sender = Guid.NewGuid();
+        PairingSecurity.Sign(message, sender, key);
+        if (!PairingSecurity.Verify(message, key)) return "A freshly signed message failed authentication.";
+
+        message.DeviceId = Guid.NewGuid();
+        if (PairingSecurity.Verify(message, key)) return "Authentication accepted a tampered message.";
+        message.DeviceId = sender;
+        PairingSecurity.Sign(message, sender, key);
+        if (PairingSecurity.Verify(message, PairingSecurity.GenerateKey())) return "Authentication accepted the wrong key.";
+
+        var guard = new ReplayGuard();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (!guard.TryAccept(message, now)) return "Replay guard rejected a fresh message.";
+        if (guard.TryAccept(message, now)) return "Replay guard accepted the same MessageId twice.";
+
+        PairingSecurity.Sign(message, sender, key);
+        message.IssuedAtUtc = now - ReplayGuard.DefaultAllowedClockSkew - TimeSpan.FromSeconds(1);
+        if (guard.TryAccept(message, now)) return "Replay guard accepted an expired message.";
         return null;
     }
 }
