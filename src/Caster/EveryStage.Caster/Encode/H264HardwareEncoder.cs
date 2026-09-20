@@ -55,6 +55,8 @@ public sealed class H264HardwareEncoder : IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _eventLoopTask;
     private long _nextSampleTime;
+    private int _disposed;
+    private readonly object _lifecycleGate = new();
 
     /// <summary>Raised from the background event-loop thread with one Annex-B-framed encoded
     /// access unit — not yet split into RTP-sized packets, that's <c>AnnexBNalSplitter</c> +
@@ -126,19 +128,27 @@ public sealed class H264HardwareEncoder : IDisposable
     /// / <c>EncodeSelfTestRunner.RunLoop</c>), never blocks.</summary>
     public void SubmitFrame(ID3D11Texture2D texture, int arraySlice = 0)
     {
-        bool dropped = false;
-        if (_pendingFrames.Count >= MaxPendingFrames && _pendingFrames.TryDequeue(out var stale))
+        lock (_lifecycleGate)
         {
-            stale.Texture.Dispose();
-            dropped = true;
-            Interlocked.Increment(ref _framesDroppedForBackpressure);
+            if (_disposed != 0)
+            {
+                texture.Dispose();
+                throw new ObjectDisposedException(nameof(H264HardwareEncoder));
+            }
+            bool dropped = false;
+            if (_pendingFrames.Count >= MaxPendingFrames && _pendingFrames.TryDequeue(out var stale))
+            {
+                stale.Texture.Dispose();
+                dropped = true;
+                Interlocked.Increment(ref _framesDroppedForBackpressure);
+            }
+
+            _pendingFrames.Enqueue((texture, arraySlice));
+
+            // Only signal a net increase in queue depth — a drop-then-enqueue leaves depth (and
+            // therefore how many permits HandleNeedInput should be able to Wait for) unchanged.
+            if (!dropped) _frameAvailable.Release();
         }
-
-        _pendingFrames.Enqueue((texture, arraySlice));
-
-        // Only signal a net increase in queue depth — a drop-then-enqueue leaves depth (and
-        // therefore how many permits HandleNeedInput should be able to Wait for) unchanged.
-        if (!dropped) _frameAvailable.Release();
     }
 
     private void RunEventLoop(CancellationToken token)
@@ -147,48 +157,38 @@ public sealed class H264HardwareEncoder : IDisposable
         {
             while (!token.IsCancellationRequested)
             {
-                // NOTE: verify this blocks with no timeout parameter in Vortice's binding, and
-                // that "None" is the right no-flags value — native signature is
-                // IMFMediaEventGenerator::GetEvent(DWORD dwFlags, IMFMediaEvent**).
-                //
-                // Deeper, more severe risk connected to this note (found this audit, documented
-                // but NOT fixed — see README "已知风险" for the numbered entry): if this call
-                // truly has no cancellation support, then once the MFT stops raising events at
-                // all (e.g. capture upstream already died, so no more SubmitFrame calls ever
-                // arrive and the MFT has nothing left to react to), this thread can be blocked
-                // inside this single native call indefinitely — it never reaches the
-                // token.IsCancellationRequested check above again. In that scenario, Dispose()'s
-                // `_cts.Cancel(); _eventLoopTask.Wait(TimeSpan.FromSeconds(2));` is guaranteed to
-                // time out (the thread has no way to observe the cancellation), and Dispose()
-                // proceeds to dispose _events/_encoder/_frameAvailable regardless of that timeout
-                // — unlike the ObjectDisposedException instances fixed elsewhere in this file/
-                // session, disposing a COM object that a native call on another thread may still
-                // be blocked inside of is not a catchable .NET exception; it is a native-level
-                // risk (potential crash or memory corruption), not just an unhandled exception.
-                // Not fixed here: a real fix needs a non-blocking/pollable GetEvent variant
-                // (mirroring native MF_EVENT_FLAG_NO_WAIT) whose exact Vortice shape is
-                // unverified without a Windows/dotnet environment — guessing at it risks adding a
-                // second wrong assumption on top of this already-unverified one, so this is
-                // disclosed rather than "fixed" with unverified code.
-                using var mediaEvent = _events.GetEvent(0);
+                IMFMediaEvent mediaEvent;
+                try
+                {
+                    // MF_EVENT_FLAG_NO_WAIT = 1. Vortice exposes the native DWORD directly.
+                    mediaEvent = _events.GetEvent(1);
+                }
+                catch (Exception ex) when (ex.HResult == Vortice.MediaFoundation.ResultCode.NoEventsAvailable.Code)
+                {
+                    token.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(5));
+                    continue;
+                }
+                using (mediaEvent)
+                {
 
                 // NOTE: IMFMediaEvent::GetType() almost certainly isn't exposed as literally
                 // `GetType()` in the C# binding (that would collide with object.GetType()) —
                 // this is a placeholder name for "however Vortice actually exposes the native
                 // event type", likely a differently-named method or a property.
-                var eventType = mediaEvent.EventType;
+                    var eventType = mediaEvent.EventType;
 
-                if (eventType == MediaEventTypes.TransformNeedInput)
-                {
-                    HandleNeedInput(token);
-                }
-                else if (eventType == MediaEventTypes.TransformHaveOutput)
-                {
-                    HandleHaveOutput();
-                }
-                else if (eventType == MediaEventTypes.Error)
-                {
-                    throw new InvalidOperationException("H.264 encoder MFT reported an error event.");
+                    if (eventType == MediaEventTypes.TransformNeedInput)
+                    {
+                        HandleNeedInput(token);
+                    }
+                    else if (eventType == MediaEventTypes.TransformHaveOutput)
+                    {
+                        HandleHaveOutput();
+                    }
+                    else if (eventType == MediaEventTypes.Error)
+                    {
+                        throw new InvalidOperationException("H.264 encoder MFT reported an error event.");
+                    }
                 }
                 // Other event types (drain complete, etc.) are ignored — this encoder never calls
                 // MFT_MESSAGE_COMMAND_DRAIN, so METransformDrainComplete should never occur; if a
@@ -475,9 +475,14 @@ public sealed class H264HardwareEncoder : IDisposable
 
     public void Dispose()
     {
+        lock (_lifecycleGate)
+        {
+            if (_disposed != 0) return;
+            _disposed = 1;
+        }
         _cts.Cancel();
-        try { _eventLoopTask.Wait(TimeSpan.FromSeconds(2)); }
-        catch (AggregateException) { }
+        try { _eventLoopTask.GetAwaiter().GetResult(); }
+        catch (OperationCanceledException) { }
         _cts.Dispose();
 
         while (_pendingFrames.TryDequeue(out var frame)) frame.Texture.Dispose();
