@@ -1,3 +1,5 @@
+using EveryStage.Discovery;
+
 namespace EveryStage.Caster.Discovery;
 
 /// <summary>
@@ -42,8 +44,8 @@ public static class PairedTerminalStoreSelfTest
 
         try
         {
-            var terminalA = new PairedTerminal(Guid.NewGuid(), "自检-TerminalA", DateTimeOffset.UtcNow.AddDays(-1));
-            var terminalB = new PairedTerminal(Guid.NewGuid(), "自检-TerminalB", DateTimeOffset.UtcNow);
+            var terminalA = new PairedTerminal(Guid.NewGuid(), "自检-TerminalA", DateTimeOffset.UtcNow.AddDays(-1), PairingSecurity.GenerateKey());
+            var terminalB = new PairedTerminal(Guid.NewGuid(), "自检-TerminalB", DateTimeOffset.UtcNow, PairingSecurity.GenerateKey());
 
             // A fresh store at a path that doesn't exist yet: Load() must handle "no file" (return
             // empty, not throw), and Save() must handle "no existing file to File.Replace" (fall back

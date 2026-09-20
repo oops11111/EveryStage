@@ -79,6 +79,9 @@ public static class DiscoveryProtocol
         public string RequestId { get; set; } = "";
         public bool Accepted { get; set; }
         public string? Reason { get; set; }
+        /// <summary>Base64-encoded 256-bit device key issued only after the Terminal accepts pairing.
+        /// Null for a rejection. Subsequent authenticated control traffic uses this shared key.</summary>
+        public string? PairingKey { get; set; }
     }
 
     /// <summary>Sent unicast, Caster -> Terminal, right before a live RTP/H.264 stream begins —

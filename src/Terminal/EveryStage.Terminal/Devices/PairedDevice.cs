@@ -18,4 +18,7 @@ public sealed class PairedDevice
     public bool AllowCast { get; set; }
     public bool AllowMonitor { get; set; }
     public DateTimeOffset PairedAt { get; set; }
+    /// <summary>Shared 256-bit key. Null only for records migrated from the pre-authentication
+    /// format; those records must pair again before authenticated control messages are accepted.</summary>
+    public string? PairingKey { get; set; }
 }

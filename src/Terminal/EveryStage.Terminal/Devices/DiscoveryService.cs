@@ -9,9 +9,8 @@ namespace EveryStage.Terminal.Devices;
 /// <summary>
 /// Terminal-side LAN discovery/pairing (PLANNING.md §7) over the draft UDP protocol in
 /// <see cref="DiscoveryProtocol"/>. Broadcasts a presence beacon so Caster-side discovery UI can
-/// find this Terminal, and listens for pairing requests — auto-accepting only devices already
-/// paired with <see cref="TrustMode.Trusted"/>, everything else raises <see cref="PairingRequested"/>
-/// for a human to decide (no UI exists yet to show that prompt; see this project's README).
+/// find this Terminal, and listens for pairing requests. Pairing always requires a human decision:
+/// DeviceId alone is public and spoofable, so it must never authorize issuing or rotating a key.
 ///
 /// Runs its send/receive loops as background <see cref="Task"/>s, following the same
 /// background-thread pattern <c>VideoContentController</c> uses for its own reasons (the UI thread
@@ -127,6 +126,7 @@ public sealed class DiscoveryService : IDisposable
             RequestId = requestId,
             Accepted = accept,
             Reason = accept ? null : "declined_by_terminal",
+            PairingKey = accept ? PairingSecurity.GenerateKey() : null,
         };
         _ = SendAsync(response, pending.RemoteEndPoint);
 
@@ -140,6 +140,7 @@ public sealed class DiscoveryService : IDisposable
                 AllowCast = allowCast,
                 AllowMonitor = allowMonitor,
                 PairedAt = DateTimeOffset.Now,
+                PairingKey = response.PairingKey,
             });
             _connectionLog.LogPaired(pending.DeviceId.ToString(), pending.DeviceName);
             _connectionLog.LogConnected(pending.DeviceId.ToString());
@@ -356,15 +357,6 @@ public sealed class DiscoveryService : IDisposable
 
     private void HandlePairRequest(DiscoveryProtocol.PairRequestMessage req, IPEndPoint remoteEndPoint)
     {
-        var existing = _pairedDevices.Find(req.DeviceId);
-        if (existing is { TrustMode: TrustMode.Trusted })
-        {
-            var response = new DiscoveryProtocol.PairResponseMessage { RequestId = req.RequestId, Accepted = true };
-            _ = SendAsync(response, remoteEndPoint);
-            _connectionLog.LogConnected(req.DeviceId.ToString());
-            return;
-        }
-
         lock (_pendingGate)
         {
             _pendingRequests[req.RequestId] = new PendingRequest(remoteEndPoint, req.DeviceId, req.DeviceName, DateTimeOffset.Now);

@@ -18,4 +18,4 @@ namespace EveryStage.Caster.Discovery;
 /// shown as offline and cannot be selected to start a cast — see <see cref="UI.MainForm"/>'s doc
 /// comment on how the two lists are merged for display.
 /// </summary>
-public sealed record PairedTerminal(Guid DeviceId, string DeviceName, DateTimeOffset PairedAt);
+public sealed record PairedTerminal(Guid DeviceId, string DeviceName, DateTimeOffset PairedAt, string? PairingKey = null);
