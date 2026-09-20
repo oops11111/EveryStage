@@ -17,6 +17,12 @@ public sealed class H264RtpDepacketizer
     private MemoryStream? _fragmentBuffer;
     private byte _fragmentedNalHeader;
 
+    public void Reset()
+    {
+        _fragmentBuffer?.Dispose();
+        _fragmentBuffer = null;
+    }
+
     /// <summary>Feed one RTP payload (<see cref="RtpPacket.Payload"/>), in sequence-number order.
     /// Returns a complete NAL unit (header byte + RBSP, no start code — ready for
     /// <c>AnnexBNalSplitter</c>'s inverse, prefixing a start code before feeding a decoder) once one

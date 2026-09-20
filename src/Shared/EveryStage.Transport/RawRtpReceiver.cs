@@ -23,12 +23,11 @@ public sealed class RawRtpReceiver : IDisposable
 {
     private readonly UdpClient _socket;
     private readonly CancellationTokenSource _cts = new();
+    private readonly RtpReorderBuffer _reorderBuffer = new();
     private Task? _receiveLoop;
 
     private readonly byte? _expectedPayloadType;
-    private ushort? _lastSequenceNumber;
     private long _packetsReceived;
-    private long _gapEvents;
     private long _payloadTypeMismatches;
     private long _dispatchExceptions;
 
@@ -39,7 +38,10 @@ public sealed class RawRtpReceiver : IDisposable
     /// <summary>Same role/approximation caveats as <see cref="RtpReceiver.GapEvents"/> — a gap-event
     /// count, not an exact lost-packet count, and indistinguishable from reordering (this class has
     /// no reordering support either).</summary>
-    public long GapEvents => Interlocked.Read(ref _gapEvents);
+    public long GapEvents => _reorderBuffer.GapEvents;
+    public long PacketsLost => _reorderBuffer.PacketsLost;
+    public long PacketsReordered => _reorderBuffer.PacketsReordered;
+    public long DuplicatesOrLate => _reorderBuffer.DuplicatesOrLate;
 
     /// <summary>Same role as <see cref="RtpReceiver.PayloadTypeMismatches"/> — deliberately
     /// independent code rather than shared, see this class's own doc comment on why.</summary>
@@ -102,14 +104,15 @@ public sealed class RawRtpReceiver : IDisposable
                 continue; // same "not one of ours" treatment as a failed decode above.
             }
 
-            TrackSequenceNumber(packet.SequenceNumber);
-
-            try
+            Interlocked.Increment(ref _packetsReceived);
+            foreach (var delivery in _reorderBuffer.Add(packet, DateTimeOffset.UtcNow))
             {
-                PayloadReceived?.Invoke(packet.Payload.ToArray(), packet.Timestamp);
-            }
-            catch (Exception)
-            {
+                try
+                {
+                    PayloadReceived?.Invoke(delivery.Packet.Payload.ToArray(), delivery.Packet.Timestamp);
+                }
+                catch (Exception)
+                {
                 // Defensive hardening, not a fix for a confirmed bug: an audit this session ran
                 // looking for the same "unguarded exception kills a whole background receive loop
                 // forever" shape found three real instances elsewhere (see this library's README)
@@ -126,17 +129,10 @@ public sealed class RawRtpReceiver : IDisposable
                 // shared library used by both Terminal and Caster), matching how GapEvents/
                 // PayloadTypeMismatches were also added as bare counters well before either got a
                 // real diagnostic consumer.
-                Interlocked.Increment(ref _dispatchExceptions);
+                    Interlocked.Increment(ref _dispatchExceptions);
+                }
             }
         }
-    }
-
-    private void TrackSequenceNumber(ushort sequenceNumber)
-    {
-        Interlocked.Increment(ref _packetsReceived);
-        if (_lastSequenceNumber.HasValue && sequenceNumber != unchecked((ushort)(_lastSequenceNumber.Value + 1)))
-            Interlocked.Increment(ref _gapEvents);
-        _lastSequenceNumber = sequenceNumber;
     }
 
     public void Dispose()

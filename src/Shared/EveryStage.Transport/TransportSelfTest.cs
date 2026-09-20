@@ -74,11 +74,62 @@ public static class TransportSelfTest
         if (clockFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, clockFailure);
 
+        string? jitterFailure = RunJitterAndWraparoundCheck();
+        if (jitterFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, jitterFailure);
+
         string? splitterFailure = RunAnnexBNalSplitterExtraPaddingCheck();
         if (splitterFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, splitterFailure);
 
         return new Result(true, testPayloads.Count, receivedCount, null);
+    }
+
+    private static string? RunJitterAndWraparoundCheck()
+    {
+        static RtpPacket Packet(ushort sequence, uint timestamp = 0) => new()
+        {
+            PayloadType = 96,
+            SequenceNumber = sequence,
+            Timestamp = timestamp,
+            Ssrc = 1,
+            Payload = new byte[] { 1 },
+        };
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        var buffer = new RtpReorderBuffer(maxBufferedPackets: 4, maxHoldTime: TimeSpan.FromMilliseconds(10));
+        if (buffer.Add(Packet(65534), now).Single().Packet.SequenceNumber != 65534)
+            return "Jitter buffer did not immediately deliver its first packet.";
+        if (buffer.Add(Packet(0), now).Count != 0)
+            return "Jitter buffer delivered an out-of-order packet before the missing predecessor.";
+        ushort[] wrapped = buffer.Add(Packet(65535), now).Select(x => x.Packet.SequenceNumber).ToArray();
+        if (!wrapped.SequenceEqual(new ushort[] { 65535, 0 }))
+            return "Jitter buffer failed to restore order across the 16-bit sequence wrap.";
+        if (buffer.PacketsReordered != 1 || buffer.PacketsLost != 0)
+            return "Jitter buffer counters misclassified sequence wrap reordering as loss.";
+        buffer.Add(Packet(0), now);
+        if (buffer.DuplicatesOrLate != 1)
+            return "Jitter buffer failed to count a duplicate/late packet.";
+
+        var lossBuffer = new RtpReorderBuffer(maxBufferedPackets: 4, maxHoldTime: TimeSpan.FromMilliseconds(10));
+        lossBuffer.Add(Packet(10), now);
+        lossBuffer.Add(Packet(12), now);
+        var afterTimeout = lossBuffer.Add(Packet(13), now + TimeSpan.FromMilliseconds(11));
+        if (!afterTimeout.Select(x => x.Packet.SequenceNumber).SequenceEqual(new ushort[] { 12, 13 })
+            || afterTimeout[0].PacketsLostBefore != 1
+            || lossBuffer.PacketsLost != 1
+            || lossBuffer.GapEvents != 1)
+            return "Jitter buffer did not advance correctly after a bounded gap timeout.";
+
+        var unwrapper = new RtpTimestampUnwrapper();
+        ulong beforeWrap = unwrapper.Unwrap(uint.MaxValue - 2);
+        ulong afterWrap = unwrapper.Unwrap(5);
+        if (afterWrap <= beforeWrap || afterWrap != (1UL << 32) + 5)
+            return "RTP timestamp unwrapper failed across the 32-bit wrap.";
+        if (unwrapper.Unwrap(3) != (1UL << 32) + 3)
+            return "RTP timestamp unwrapper misclassified small backward jitter after a wrap.";
+
+        return null;
     }
 
     /// <summary>Verifies the bug fixed in <see cref="AnnexBNalSplitter.Split"/> (see that method's

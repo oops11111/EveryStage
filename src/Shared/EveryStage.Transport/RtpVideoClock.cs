@@ -35,4 +35,35 @@ public static class RtpVideoClock
     /// days) but worth remembering if that assumption ever stops holding.</summary>
     public static long ToElapsedTicks(uint rtpTimestamp, uint clockRate) =>
         (long)(rtpTimestamp / (double)clockRate * TimeSpan.TicksPerSecond);
+
+    public static long ToElapsedTicks(ulong extendedRtpTimestamp, uint clockRate) =>
+        (long)(extendedRtpTimestamp / (double)clockRate * TimeSpan.TicksPerSecond);
+}
+
+/// <summary>Extends wrapping 32-bit RTP timestamps onto a monotonic 64-bit timeline. Small backward
+/// moves are treated as jitter/reordering; a large backward move across half the uint range is a
+/// forward wrap.</summary>
+public sealed class RtpTimestampUnwrapper
+{
+    private uint? _latest;
+    private ulong _cycles;
+
+    public ulong Unwrap(uint timestamp)
+    {
+        if (_latest.HasValue)
+        {
+            uint latest = _latest.Value;
+            if (timestamp < latest && latest - timestamp > int.MaxValue)
+                _cycles += 1UL << 32;
+            else if (timestamp > latest && timestamp - latest > int.MaxValue && _cycles >= (1UL << 32))
+                return (_cycles - (1UL << 32)) + timestamp;
+
+            if (unchecked((int)(timestamp - latest)) > 0) _latest = timestamp;
+        }
+        else
+        {
+            _latest = timestamp;
+        }
+        return _cycles + timestamp;
+    }
 }

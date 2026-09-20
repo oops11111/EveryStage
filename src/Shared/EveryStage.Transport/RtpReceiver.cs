@@ -16,13 +16,12 @@ public sealed class RtpReceiver : IDisposable
 {
     private readonly UdpClient _socket;
     private readonly H264RtpDepacketizer _depacketizer = new();
+    private readonly RtpReorderBuffer _reorderBuffer = new();
     private readonly CancellationTokenSource _cts = new();
     private Task? _receiveLoop;
 
     private readonly byte? _expectedPayloadType;
-    private ushort? _lastSequenceNumber;
     private long _packetsReceived;
-    private long _gapEvents;
     private long _payloadTypeMismatches;
     private long _dispatchExceptions;
 
@@ -44,7 +43,10 @@ public sealed class RtpReceiver : IDisposable
     /// yes or no" counting. Meant to be combined with <see cref="PacketsReceived"/> into a rough
     /// loss-rate estimate for diagnostic logging (see <c>Terminal.Receiving.CastReceiver</c> and
     /// <c>DeviceConnectionLogger.LogQualityMetric</c>), not treated as an exact percentage.</summary>
-    public long GapEvents => Interlocked.Read(ref _gapEvents);
+    public long GapEvents => _reorderBuffer.GapEvents;
+    public long PacketsLost => _reorderBuffer.PacketsLost;
+    public long PacketsReordered => _reorderBuffer.PacketsReordered;
+    public long DuplicatesOrLate => _reorderBuffer.DuplicatesOrLate;
 
     /// <summary>How many otherwise-valid RTP packets were dropped because their PayloadType didn't
     /// match <see cref="_expectedPayloadType"/> — 0 always if this receiver was constructed without
@@ -135,15 +137,18 @@ public sealed class RtpReceiver : IDisposable
                 continue;
             }
 
-            TrackSequenceNumber(packet.SequenceNumber);
-
-            try
+            Interlocked.Increment(ref _packetsReceived);
+            foreach (var delivery in _reorderBuffer.Add(packet, DateTimeOffset.UtcNow))
             {
-                var nalUnit = _depacketizer.Process(packet.Payload);
-                if (nalUnit != null) NalUnitReceived?.Invoke(nalUnit, packet.Marker, packet.Timestamp);
-            }
-            catch (Exception)
-            {
+                try
+                {
+                    if (delivery.PacketsLostBefore > 0) _depacketizer.Reset();
+                    var ordered = delivery.Packet;
+                    var nalUnit = _depacketizer.Process(ordered.Payload);
+                    if (nalUnit != null) NalUnitReceived?.Invoke(nalUnit, ordered.Marker, ordered.Timestamp);
+                }
+                catch (Exception)
+                {
                 // Defensive hardening, not a fix for a confirmed bug: an audit this session ran
                 // looking for the same "unguarded exception kills a whole background receive loop
                 // forever" shape found three real instances elsewhere (see this library's README)
@@ -161,17 +166,10 @@ public sealed class RtpReceiver : IDisposable
                 // its own (it's a shared library used by both Terminal and Caster), matching how
                 // GapEvents/PayloadTypeMismatches were also added as bare counters well before either
                 // got a real diagnostic consumer.
-                Interlocked.Increment(ref _dispatchExceptions);
+                    Interlocked.Increment(ref _dispatchExceptions);
+                }
             }
         }
-    }
-
-    private void TrackSequenceNumber(ushort sequenceNumber)
-    {
-        Interlocked.Increment(ref _packetsReceived);
-        if (_lastSequenceNumber.HasValue && sequenceNumber != unchecked((ushort)(_lastSequenceNumber.Value + 1)))
-            Interlocked.Increment(ref _gapEvents);
-        _lastSequenceNumber = sequenceNumber;
     }
 
     public void Dispose()

@@ -113,6 +113,8 @@ public sealed class CastReceiver : IDisposable
     private readonly object _syncLock = new();
     private long? _audioSyncOffsetTicks;
     private readonly uint _audioSampleRate;
+    private readonly RtpTimestampUnwrapper _audioTimestampUnwrapper = new();
+    private readonly RtpTimestampUnwrapper _videoTimestampUnwrapper = new();
 
     private readonly ConcurrentQueue<PendingFrame> _pendingFrames = new();
     private CancellationTokenSource? _presentCts;
@@ -342,7 +344,8 @@ public sealed class CastReceiver : IDisposable
         {
             lock (_syncLock)
             {
-                _audioSyncOffsetTicks ??= RtpVideoClock.ToElapsedTicks(timestamp, _audioSampleRate);
+                _audioSyncOffsetTicks ??= RtpVideoClock.ToElapsedTicks(
+                    _audioTimestampUnwrapper.Unwrap(timestamp), _audioSampleRate);
             }
         }
 
@@ -422,7 +425,8 @@ public sealed class CastReceiver : IDisposable
             // with the audio stream (see RtpVideoClock's doc comment and OnAudioPayloadReceived
             // above) — this is the value H264HardwareDecoder's FIFO carries through to OnFrameDecoded
             // as presentationTicks, and what RunPresentLoop paces against the audio clock.
-            long presentationTicks = RtpVideoClock.ToElapsedTicks(timestamp, RtpVideoClock.ClockRate);
+            long presentationTicks = RtpVideoClock.ToElapsedTicks(
+                _videoTimestampUnwrapper.Unwrap(timestamp), RtpVideoClock.ClockRate);
             lock (_decoderLock)
             {
                 _decoder.SubmitAccessUnit(accessUnit, presentationTicks);
