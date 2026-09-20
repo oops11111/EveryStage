@@ -198,7 +198,7 @@ public sealed class AudioContentController : IDisposable
         // iteration, tens of milliseconds later) so a seek landing inside the fade-in/fade-out
         // window doesn't produce a brief, audible full-volume blip before the first real chunk
         // corrects it.
-        audioClock.Volume = _volume * ComputeFadeMultiplier(_seekBaseTicks);
+        audioClock.Volume = (float)(_volume * ComputeFadeMultiplier(_seekBaseTicks));
         _audioClock = audioClock;
 
         StartPlaybackThread(_source, audioClock);
@@ -300,7 +300,7 @@ public sealed class AudioContentController : IDisposable
             if (token.IsCancellationRequested) return;
 
             if (_fadeDuration.HasValue)
-                audioClock.Volume = _volume * ComputeFadeMultiplier(_seekBaseTicks + audioClock.PositionTicks);
+                audioClock.Volume = (float)(_volume * ComputeFadeMultiplier(_seekBaseTicks + audioClock.PositionTicks));
 
             audioClock.Enqueue(chunk.Value.Pcm);
             LevelChanged?.Invoke(ComputePeakLevel(chunk.Value.Pcm));

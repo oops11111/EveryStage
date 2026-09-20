@@ -43,25 +43,25 @@ public sealed class AudioDecodeSource : IDisposable
             // MFCreateSourceReaderFromURL's call shape in VideoDecodeSource rather than guessing whether
             // Vortice's binding accepts a null IMFAttributes here, matching this project's convention of
             // not introducing a new unverified parameter shape when an already-used one is available.
-            MediaFactory.MFCreateAttributes(out var attributes, 0).CheckError();
+            var attributes = MediaFactory.MFCreateAttributes(0);
             using (attributes)
             {
-                MediaFactory.MFCreateSourceReaderFromURL(filePathOrUrl, attributes, out _reader).CheckError();
+                _reader = MediaFactory.MFCreateSourceReaderFromURL(filePathOrUrl, attributes);
             }
 
-            MediaFactory.MFCreateMediaType(out var audioType).CheckError();
+            var audioType = MediaFactory.MFCreateMediaType();
             using (audioType)
             {
                 audioType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
                 audioType.Set(MF_MT_SUBTYPE, MFAudioFormat_PCM);
-                _reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, audioType);
+                _reader.SetCurrentMediaType(SourceReaderIndex.FirstAudioStream, audioType);
             }
 
-            using var actualAudioType = _reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
-            AudioChannels = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioNumChannels());
-            AudioSampleRate = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioSamplesPerSecond());
+            using var actualAudioType = _reader.GetCurrentMediaType(SourceReaderIndex.FirstAudioStream);
+            AudioChannels = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioNumChannels);
+            AudioSampleRate = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioSamplesPerSecond);
 
-            _reader.SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, true);
+            _reader.SetStreamSelection(SourceReaderIndex.FirstAudioStream, true);
             // Deliberately never calls SetStreamSelection for the video stream sentinel — leaving it
             // unselected (the IMFSourceReader default for a stream this class never asks about) means
             // ReadSample is never called against it and this class never has to handle a video sample it
@@ -168,10 +168,10 @@ public sealed class AudioDecodeSource : IDisposable
     /// zero-copy path either decode source exists to validate.</summary>
     public DecodedAudioChunk? ReadNextChunk()
     {
-        _reader.ReadSample(MF_SOURCE_READER_FIRST_AUDIO_STREAM, SourceReaderControlFlags.None,
-            out _, out var streamFlags, out var timestamp, out var sample);
+        var sample = _reader.ReadSample(SourceReaderIndex.FirstAudioStream, SourceReaderControlFlag.None,
+            out _, out var streamFlags, out var timestamp);
 
-        if ((streamFlags & SourceReaderFlags.Endofstream) != 0 || sample == null)
+        if ((streamFlags & SourceReaderFlag.EndOfStream) != 0 || sample == null)
             return null;
 
         using (sample)
@@ -179,9 +179,9 @@ public sealed class AudioDecodeSource : IDisposable
         {
             // NOTE: same unverified Lock() signature caveat as VideoDecodeSource.ReadNextAudioChunk
             // — see that method's doc comment, not repeated per-callsite elsewhere in this repo.
-            var span = buffer.Lock(out _, out var currentLength);
+            buffer.Lock(out var data, out _, out var currentLength);
             var pcm = new byte[currentLength];
-            span.Slice(0, currentLength).CopyTo(pcm);
+            System.Runtime.InteropServices.Marshal.Copy(data, pcm, 0, currentLength);
             buffer.Unlock();
             return new DecodedAudioChunk(pcm, timestamp);
         }

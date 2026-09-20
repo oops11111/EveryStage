@@ -67,7 +67,7 @@ public sealed class AudioTakeoverService : IDisposable
                     int processId = (int)session.GetProcessID;
                     if (processId == ownProcessId) continue;
 
-                    if (session.State != AudioSessionState.AudioSessionStateActive) continue;
+                    if (session.State != NAudio.CoreAudioApi.Interfaces.AudioSessionState.AudioSessionStateActive) continue;
                     if (session.SimpleAudioVolume.Mute) continue; // leave pre-existing mutes alone
 
                     session.SimpleAudioVolume.Mute = true;

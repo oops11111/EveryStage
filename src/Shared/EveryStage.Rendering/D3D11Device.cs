@@ -30,6 +30,8 @@ public sealed class D3D11Device : IDisposable
 #if DEBUG
         flags |= DeviceCreationFlags.Debug;
 #endif
+        ID3D11Device device;
+        ID3D11DeviceContext context;
         D3D11.D3D11CreateDevice(
             null,
             DriverType.Hardware,
@@ -39,8 +41,8 @@ public sealed class D3D11Device : IDisposable
                 FeatureLevel.Level_11_1,
                 FeatureLevel.Level_11_0,
             },
-            out var device,
-            out var context).CheckError();
+            out device,
+            out context).CheckError();
 
         Device = device!;
         ImmediateContext = context!;
@@ -87,11 +89,11 @@ public sealed class D3D11Device : IDisposable
             using var adapter = dxgiDevice.GetParent<IDXGIAdapter>();
             DxgiFactory = adapter.GetParent<IDXGIFactory2>();
 
-            MediaFactory.MFCreateDXGIDeviceManager(out var resetToken, out manager).CheckError();
-            manager!.ResetDevice(Device, resetToken).CheckError();
+            manager = MediaFactory.MFCreateDXGIDeviceManager();
+            manager.ResetDevice(Device).CheckError();
 
             DeviceManager = manager;
-            DeviceManagerResetToken = resetToken;
+            DeviceManagerResetToken = manager.ResetToken;
         }
         catch
         {

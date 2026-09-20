@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore projects
+        shell: pwsh
+        run: |
+          $projects = Get-ChildItem -Path src -Recurse -Filter *.csproj | Sort-Object FullName
+          foreach ($project in $projects) {
+            dotnet restore $project.FullName --nologo
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build projects
+        shell: pwsh
+        run: |
+          $projects = Get-ChildItem -Path src -Recurse -Filter *.csproj | Sort-Object FullName
+          foreach ($project in $projects) {
+            dotnet build $project.FullName --no-restore --configuration Release --nologo -warnaserror
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

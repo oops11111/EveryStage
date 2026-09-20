@@ -160,8 +160,8 @@ public sealed class SwapChainPresenter : IDisposable
         var desc = new VideoProcessorInputViewDescription
         {
             FourCC = 0, // 0 = use the texture's own format (NV12) as produced by the decoder.
-            ViewDimension = VpivDimension.Texture2D,
-            Texture2D = new Texture2DVpiv { MipSlice = 0, ArraySlice = (uint)arraySlice },
+            ViewDimension = VideoProcessorInputViewDimension.Texture2D,
+            Texture2D = new Texture2DVideoProcessorInputView { MipSlice = 0, ArraySlice = (uint)arraySlice },
         };
         return _videoDevice.CreateVideoProcessorInputView(texture, _enumerator!, desc);
     }
@@ -170,7 +170,7 @@ public sealed class SwapChainPresenter : IDisposable
     {
         var desc = new VideoProcessorOutputViewDescription
         {
-            ViewDimension = VpovDimension.Texture2D,
+            ViewDimension = VideoProcessorOutputViewDimension.Texture2D,
         };
         // Recreated lazily once _enumerator exists (see EnsureProcessor); guard first call before
         // any frame has arrived by deferring until PresentFrame if no enumerator yet.

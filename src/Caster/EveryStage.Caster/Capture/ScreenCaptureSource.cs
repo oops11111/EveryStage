@@ -46,10 +46,13 @@ public sealed class ScreenCaptureSource : IDisposable
 
         using var dxgiDevice = gpu.Device.QueryInterface<IDXGIDevice>();
         using var adapter = dxgiDevice.GetParent<IDXGIAdapter>();
-        using var output = adapter.GetOutput(outputIndex);
+        adapter.EnumOutputs((uint)outputIndex, out var output).CheckError();
+        using (output)
+        {
         using var output1 = output.QueryInterface<IDXGIOutput1>();
 
         _duplication = output1.DuplicateOutput(gpu.Device);
+        }
 
         var desc = _duplication.Description;
         Width = (int)desc.ModeDescription.Width;
@@ -88,7 +91,7 @@ public sealed class ScreenCaptureSource : IDisposable
             IDXGIOutput output;
             try
             {
-                output = adapter.GetOutput(i);
+                adapter.EnumOutputs((uint)i, out output).CheckError();
             }
             catch (Exception)
             {
@@ -116,7 +119,7 @@ public sealed class ScreenCaptureSource : IDisposable
     public CapturedFrame? AcquireNextFrame(int timeoutMs = 500)
     {
         var callResult = _duplication.AcquireNextFrame((uint)timeoutMs, out var frameInfo, out var desktopResource);
-        if (callResult == ResultCode.WaitTimeout) return null;
+        if (callResult == Vortice.DXGI.ResultCode.WaitTimeout) return null;
 
         try
         {

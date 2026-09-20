@@ -11,6 +11,10 @@
     <AssemblyName>EveryStage.Terminal</AssemblyName>
     <RootNamespace>EveryStage.Terminal</RootNamespace>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <!-- PdfiumViewer 2.13 only ships .NET Framework assets, but is intentionally used through its
+         WinForms API on this Windows-only target. Keep the compatibility warning documented here
+         without making every warnings-as-errors CI build fail on the known package shape. -->
+    <NoWarn>$(NoWarn);NU1701</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

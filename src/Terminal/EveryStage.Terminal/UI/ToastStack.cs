@@ -15,7 +15,7 @@ public sealed class ToastStack : Panel
 {
     public const int ToastWidth = 320;
     private const int Gap = 8;
-    private const int Margin = 16;
+    private const int EdgeMargin = 16;
 
     public ToastStack()
     {
@@ -77,7 +77,7 @@ public sealed class ToastStack : Panel
     private void RepositionToBottomRight()
     {
         if (Parent == null) return;
-        Left = Parent.ClientSize.Width - Margin - Width;
-        Top = Parent.ClientSize.Height - Margin - Height;
+        Left = Parent.ClientSize.Width - EdgeMargin - Width;
+        Top = Parent.ClientSize.Height - EdgeMargin - Height;
     }
 }

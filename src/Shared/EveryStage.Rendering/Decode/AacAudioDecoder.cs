@@ -81,8 +81,8 @@ public sealed class AacAudioDecoder : IDisposable
 
             // NOTE: same unverified exact enum member names as H264HardwareEncoder/AacAudioEncoder's
             // identical two calls.
-            _decoder.ProcessMessage(MFTMessageType.NotifyBeginStreaming, IntPtr.Zero);
-            _decoder.ProcessMessage(MFTMessageType.NotifyStartOfStream, IntPtr.Zero);
+            _decoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+            _decoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
         }
         catch
         {
@@ -112,27 +112,27 @@ public sealed class AacAudioDecoder : IDisposable
     {
         // NOTE: same unverified MFCreateMemoryBuffer signature caveat as
         // AacAudioEncoder.SubmitPcmCore's identical call.
-        MediaFactory.MFCreateMemoryBuffer(accessUnit.Length, out var buffer).CheckError();
+        var buffer = MediaFactory.MFCreateMemoryBuffer(accessUnit.Length);
         using (buffer)
         {
-            var span = buffer.Lock(out _, out _);
-            accessUnit.AsSpan().CopyTo(span);
-            buffer.SetCurrentLength(accessUnit.Length);
+            buffer.Lock(out var data, out _, out _);
+            System.Runtime.InteropServices.Marshal.Copy(accessUnit, 0, data, accessUnit.Length);
+            buffer.CurrentLength = accessUnit.Length;
             buffer.Unlock();
 
-            MediaFactory.MFCreateSample(out var sample).CheckError();
+            var sample = MediaFactory.MFCreateSample();
             using (sample)
             {
                 sample.AddBuffer(buffer);
                 // Nominal per-frame timing — see SamplesPerFrame's own doc comment on why this is a
                 // fixed assumption rather than something measured.
-                sample.SetSampleTime(_nextSampleTime);
-                sample.SetSampleDuration(_frameDurationTicks);
+                sample.SampleTime = _nextSampleTime;
+                sample.SampleDuration = _frameDurationTicks;
                 _nextSampleTime += _frameDurationTicks;
 
                 // Same "no retry-on-MF_E_NOTACCEPTING" simplification as AacAudioEncoder.SubmitPcmCore
                 // — SubmitAccessUnit always fully drains output (below) before returning.
-                _decoder.ProcessInput(0, sample, 0).CheckError();
+                _decoder.ProcessInput(0, sample, 0);
             }
         }
 
@@ -143,22 +143,21 @@ public sealed class AacAudioDecoder : IDisposable
     {
         while (true)
         {
-            var outputBuffer = new MFTOutputDataBuffer { StreamID = 0 };
-            var buffers = new[] { outputBuffer };
+            var outputBuffer = new OutputDataBuffer { StreamID = 0 };
             // Same "treat any ProcessOutput failure as nothing-ready-yet" simplification
             // H264HardwareEncoder.HandleHaveOutput/AacAudioEncoder.DrainOutput already use.
-            var result = _decoder.ProcessOutput(0, buffers, out _);
+            var result = _decoder.ProcessOutput(ProcessOutputFlags.None, 1, ref outputBuffer, out _);
             if (result.Failure) return;
 
-            var sample = buffers[0].Sample;
+            var sample = outputBuffer.Sample;
             if (sample == null) return;
 
             try
             {
                 using var contiguousBuffer = sample.ConvertToContiguousBuffer();
-                var span = contiguousBuffer.Lock(out _, out var currentLength);
+                contiguousBuffer.Lock(out var data, out _, out var currentLength);
                 var pcm = new byte[currentLength];
-                span.Slice(0, currentLength).CopyTo(pcm);
+                System.Runtime.InteropServices.Marshal.Copy(data, pcm, 0, currentLength);
                 contiguousBuffer.Unlock();
 
                 PcmDecoded?.Invoke(pcm);
@@ -186,26 +185,13 @@ public sealed class AacAudioDecoder : IDisposable
             // parameters describe input/output types the candidate MFT must support — for a decoder
             // that's the compressed format going in) — mirrors AacAudioEncoder.ActivateFirstAacEncoder's
             // identical call shape, matched on the opposite side.
-            var inputType = new MFTRegisterTypeInfo { GuidMajorType = MFMediaType_Audio, GuidSubtype = MFAudioFormat_AAC };
+            var inputType = new RegisterTypeInfo { GuidMajorType = MFMediaType_Audio, GuidSubtype = MFAudioFormat_AAC };
 
-            MediaFactory.MFTEnumEx(
+            return MediaFoundationHelpers.ActivateFirstTransform(
                 MFT_CATEGORY_AUDIO_DECODER,
-                MFTEnumFlag.SortAndFilter,
+                EnumFlag.EnumFlagSortandfilter,
                 inputType,
-                null,
-                out IMFActivate[] activates).CheckError();
-
-            if (activates == null || activates.Length == 0)
-                throw new InvalidOperationException("No AAC decoder MFT found on this machine (MFTEnumEx returned none).");
-
-            try
-            {
-                return activates[0].ActivateObject<IMFTransform>();
-            }
-            finally
-            {
-                foreach (var activate in activates) activate.Dispose();
-            }
+                null);
         }
         catch
         {
@@ -224,7 +210,7 @@ public sealed class AacAudioDecoder : IDisposable
 
     private static void ConfigureInputType(IMFTransform decoder, int sampleRate, int channels)
     {
-        MediaFactory.MFCreateMediaType(out var type).CheckError();
+        var type = MediaFactory.MFCreateMediaType();
         using (type)
         {
             type.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
@@ -234,7 +220,7 @@ public sealed class AacAudioDecoder : IDisposable
             // ADTS — matches what AacAudioEncoder emits; see that class's and this file's own doc
             // comments for why this avoids needing a separate out-of-band AudioSpecificConfig.
             type.Set(MF_MT_AAC_PAYLOAD_TYPE, 1u);
-            decoder.SetInputType(0, type, 0).CheckError();
+            decoder.SetInputType(0, type, 0);
         }
     }
 
@@ -247,10 +233,10 @@ public sealed class AacAudioDecoder : IDisposable
     {
         // NOTE: same unverified GetOutputAvailableType signature caveat as
         // AacAudioEncoder.ConfigureOutputType's identical call.
-        decoder.GetOutputAvailableType(0, 0, out var type).CheckError();
+        var type = decoder.GetOutputAvailableType(0, 0);
         using (type)
         {
-            decoder.SetOutputType(0, type, 0).CheckError();
+            decoder.SetOutputType(0, type, 0);
         }
     }
 

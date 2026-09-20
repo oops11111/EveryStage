@@ -202,11 +202,11 @@ public sealed class MainForm : Form
         // start anything until a fresh beacon from it turns it back into a live entry.
         _terminalListBox.SelectedIndexChanged += (_, _) =>
         {
-            _startButton.Enabled = _terminalListBox.SelectedItem is TerminalListEntry { Live: not null };
+            _startButton!.Enabled = _terminalListBox.SelectedItem is TerminalListEntry { Live: not null };
             // Enabled for either an online or offline entry, as long as it actually has a
             // persisted record — a live entry from a terminal this Caster has never successfully
             // paired with (just currently broadcasting) has nothing to remove.
-            _removePairingButton.Enabled = _terminalListBox.SelectedItem is TerminalListEntry entry
+            _removePairingButton!.Enabled = _terminalListBox.SelectedItem is TerminalListEntry entry
                 && _pairedTerminals.Find(entry.DeviceId) != null;
         };
 

@@ -22,6 +22,7 @@ public static class AnnexBNalSplitter
     public static IEnumerable<ReadOnlyMemory<byte>> Split(ReadOnlyMemory<byte> annexBBytes)
     {
         var span = annexBBytes.Span;
+        var units = new List<ReadOnlyMemory<byte>>();
 
         // For each start code found: where its own leading zero bytes begin (codeBegin) and where
         // the NAL unit after it begins (nalStart). Advancing `i` past a matched start code before
@@ -78,7 +79,9 @@ public static class AnnexBNalSplitter
                 nalEnd--;
 
             if (nalEnd > nalStart)
-                yield return annexBBytes.Slice(nalStart, nalEnd - nalStart);
+                units.Add(annexBBytes.Slice(nalStart, nalEnd - nalStart));
         }
+
+        return units;
     }
 }

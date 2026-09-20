@@ -61,8 +61,8 @@ public sealed class BgraToNv12Converter : IDisposable
         var inputViewDesc = new VideoProcessorInputViewDescription
         {
             FourCC = 0, // 0 = use the source texture's own format (BGRA) as-is.
-            ViewDimension = VpivDimension.Texture2D,
-            Texture2D = new Texture2DVpiv { MipSlice = 0, ArraySlice = 0 },
+            ViewDimension = VideoProcessorInputViewDimension.Texture2D,
+            Texture2D = new Texture2DVideoProcessorInputView { MipSlice = 0, ArraySlice = 0 },
         };
         using var inputView = _videoDevice.CreateVideoProcessorInputView(bgraSource, _enumerator!, inputViewDesc);
 
@@ -118,7 +118,7 @@ public sealed class BgraToNv12Converter : IDisposable
         };
         _outputTexture = _gpu.Device.CreateTexture2D(textureDesc);
 
-        var outputViewDesc = new VideoProcessorOutputViewDescription { ViewDimension = VpovDimension.Texture2D };
+        var outputViewDesc = new VideoProcessorOutputViewDescription { ViewDimension = VideoProcessorOutputViewDimension.Texture2D };
         _outputView = _videoDevice.CreateVideoProcessorOutputView(_outputTexture, _enumerator, outputViewDesc);
     }
 

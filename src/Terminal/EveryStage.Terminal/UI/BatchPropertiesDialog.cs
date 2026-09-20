@@ -38,8 +38,8 @@ namespace EveryStage.Terminal.UI;
 /// </summary>
 public sealed class BatchPropertiesDialog : Form
 {
-    private const int Width = 420;
-    private const int ContentWidth = Width - 12 - 12 - 16; // ClientSize width minus left/right margins and a little slack for the border.
+    private const int DialogWidth = 420;
+    private const int ContentWidth = DialogWidth - 12 - 12 - 16; // ClientSize width minus left/right margins and a little slack for the border.
 
     // --- 播放方式 (always applicable) ---
     private readonly CheckBox _playModeCheckbox;
@@ -271,15 +271,15 @@ public sealed class BatchPropertiesDialog : Form
         }
 
         y += 8;
-        var okButton = new Button { Text = "确定", DialogResult = DialogResult.OK, Bounds = new Rectangle(Width - 12 - 80 - 88, y, 80, 28) };
-        var cancelButton = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Bounds = new Rectangle(Width - 12 - 80, y, 80, 28) };
+        var okButton = new Button { Text = "确定", DialogResult = DialogResult.OK, Bounds = new Rectangle(DialogWidth - 12 - 80 - 88, y, 80, 28) };
+        var cancelButton = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Bounds = new Rectangle(DialogWidth - 12 - 80, y, 80, 28) };
         AcceptButton = okButton;
         CancelButton = cancelButton;
         controls.Add(okButton);
         controls.Add(cancelButton);
         y += 40;
 
-        ClientSize = new Size(Width, y);
+        ClientSize = new Size(DialogWidth, y);
         Controls.AddRange(controls.ToArray());
     }
 

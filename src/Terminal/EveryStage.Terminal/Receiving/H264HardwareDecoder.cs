@@ -93,8 +93,8 @@ public sealed class H264HardwareDecoder : IDisposable
             // NOTE: verify these two message constants' exact Vortice enum member names, same caveat as
             // H264HardwareEncoder — native values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING /
             // MFT_MESSAGE_NOTIFY_START_OF_STREAM.
-            _decoder.ProcessMessage(MFTMessageType.NotifyBeginStreaming, IntPtr.Zero);
-            _decoder.ProcessMessage(MFTMessageType.NotifyStartOfStream, IntPtr.Zero);
+            _decoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+            _decoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
         }
         catch
         {
@@ -110,33 +110,33 @@ public sealed class H264HardwareDecoder : IDisposable
     /// returning.</summary>
     public void SubmitAccessUnit(byte[] annexBAccessUnit, long sampleTimeTicks)
     {
-        MediaFactory.MFCreateMemoryBuffer((uint)annexBAccessUnit.Length, out var buffer).CheckError();
+        var buffer = MediaFactory.MFCreateMemoryBuffer(annexBAccessUnit.Length);
         using (buffer)
         {
             // NOTE: Lock()'s exact signature/return type is unverified — same caveat already
             // flagged in VideoDecodeSource.ReadNextAudioChunk. Native IMFMediaBuffer::Lock is
             // (out BYTE*, out maxLength, out currentLength); this assumes it comes back as a
             // writable Span<byte>.
-            var span = buffer.Lock(out _, out _);
-            annexBAccessUnit.CopyTo(span);
+            buffer.Lock(out var data, out _, out _);
+            System.Runtime.InteropServices.Marshal.Copy(annexBAccessUnit, 0, data, annexBAccessUnit.Length);
             // NOTE: written as a method call (native IMFMediaBuffer::SetCurrentLength(DWORD))
             // rather than guessed as a C# property, matching this codebase's established
             // convention for uncertain COM setters (see H264HardwareEncoder's SetSampleTime note).
-            buffer.SetCurrentLength((uint)annexBAccessUnit.Length);
+            buffer.CurrentLength = annexBAccessUnit.Length;
             buffer.Unlock();
 
-            MediaFactory.MFCreateSample(out var sample).CheckError();
+            var sample = MediaFactory.MFCreateSample();
             using (sample)
             {
                 sample.AddBuffer(buffer);
-                sample.SetSampleTime(sampleTimeTicks);
+                sample.SampleTime = sampleTimeTicks;
 
                 // NOTE: MF_E_NOTACCEPTING (input queue full, ProcessOutput must be drained first)
                 // is not expected here since DrainOutput() below always drains to exhaustion after
                 // every submitted access unit — but if a real decoder buffers more aggressively
                 // than assumed, this call could fail and the access unit would be lost. Flagged via
                 // CheckError() rather than silently swallowed.
-                _decoder.ProcessInput(InputStreamId, sample, 0).CheckError();
+                _decoder.ProcessInput(InputStreamId, sample, 0);
             }
         }
 
@@ -152,7 +152,7 @@ public sealed class H264HardwareDecoder : IDisposable
     {
         while (true)
         {
-            var outputBuffer = new MFTOutputDataBuffer { StreamID = OutputStreamId };
+            var outputBuffer = new OutputDataBuffer { StreamID = OutputStreamId };
             IMFSample? ownedSample = null;
 
             if (!_outputProvidesOwnSamples)
@@ -165,8 +165,7 @@ public sealed class H264HardwareDecoder : IDisposable
                     "This H.264 decoder MFT does not provide its own output samples, and self-allocating one isn't implemented — see H264HardwareDecoder.DrainOutput.");
             }
 
-            var buffers = new[] { outputBuffer };
-            var result = _decoder.ProcessOutput(0, buffers, out _);
+            var result = _decoder.ProcessOutput(ProcessOutputFlags.None, 1, ref outputBuffer, out _);
 
             // NOTE: MF_E_TRANSFORM_NEED_MORE_INPUT is the normal "nothing more to drain right now"
             // outcome — verify this Failure-result comparison against however Vortice surfaces that
@@ -175,13 +174,13 @@ public sealed class H264HardwareDecoder : IDisposable
 
             try
             {
-                ownedSample = buffers[0].Sample;
+                ownedSample = outputBuffer.Sample;
                 if (ownedSample == null) return;
 
                 using var contiguousBuffer = ownedSample.ConvertToContiguousBuffer();
                 using var dxgiBuffer = contiguousBuffer.QueryInterface<IMFDXGIBuffer>();
-                var texture = dxgiBuffer.GetResource<ID3D11Texture2D>();
-                int arraySlice = (int)dxgiBuffer.GetSubresourceIndex();
+                var texture = new ID3D11Texture2D(dxgiBuffer.GetResource(typeof(ID3D11Texture2D).GUID));
+                int arraySlice = (int)dxgiBuffer.SubresourceIndex;
                 var desc = texture.Description;
                 // See FrameDecoded's own doc comment on why this FIFO dequeue is only correct under
                 // the no-reordering, no-buffering assumption documented there.
@@ -209,31 +208,18 @@ public sealed class H264HardwareDecoder : IDisposable
         // uptime.
         try
         {
-            var inputType = new MFTRegisterTypeInfo { GuidMajorType = MFMediaType_Video, GuidSubtype = MFVideoFormat_H264 };
+            var inputType = new RegisterTypeInfo { GuidMajorType = MFMediaType_Video, GuidSubtype = MFVideoFormat_H264 };
 
             // NOTE: MFTEnumEx's exact Vortice signature (parameter order, whether flags is a [Flags]
             // enum called MFTEnumFlag or similar) is unverified — same caveat as
             // H264HardwareEncoder.ActivateFirstHardwareEncoder, mirrored here with input/output type
             // arguments swapped (this asks "which MFTs accept H264 input", not "which produce H264
             // output").
-            MediaFactory.MFTEnumEx(
+            return MediaFoundationHelpers.ActivateFirstTransform(
                 MFT_CATEGORY_VIDEO_DECODER,
-                MFTEnumFlag.Hardware | MFTEnumFlag.SortAndFilter,
+                EnumFlag.EnumFlagHardware | EnumFlag.EnumFlagSortandfilter,
                 inputType,
-                null,
-                out IMFActivate[] activates).CheckError();
-
-            if (activates == null || activates.Length == 0)
-                throw new InvalidOperationException("No hardware H.264 decoder MFT found on this machine (MFTEnumEx returned none).");
-
-            try
-            {
-                return activates[0].ActivateObject<IMFTransform>();
-            }
-            finally
-            {
-                foreach (var activate in activates) activate.Dispose();
-            }
+                null);
         }
         catch
         {
@@ -244,7 +230,7 @@ public sealed class H264HardwareDecoder : IDisposable
 
     private static void ConfigureInputType(IMFTransform decoder, int width, int height)
     {
-        MediaFactory.MFCreateMediaType(out var type).CheckError();
+        var type = MediaFactory.MFCreateMediaType();
         using (type)
         {
             type.Set(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -253,7 +239,7 @@ public sealed class H264HardwareDecoder : IDisposable
             // Decoders generally require the INPUT type set before the OUTPUT type can be
             // negotiated — the opposite order from H264HardwareEncoder, where the encoder's OUTPUT
             // type must be set first.
-            decoder.SetInputType(InputStreamId, type, 0).CheckError();
+            decoder.SetInputType(InputStreamId, type, 0);
         }
     }
 
@@ -264,7 +250,7 @@ public sealed class H264HardwareDecoder : IDisposable
         // exact NV12 variant/attributes its own DXVA surface pool produces, same reasoning
         // VideoDecodeSource relies on IMFSourceReader to handle internally; here there's no source
         // reader doing that for us, so this loop does it directly.
-        for (uint i = 0; ; i++)
+        for (var i = 0; ; i++)
         {
             IMFMediaType candidate;
             try
@@ -284,10 +270,10 @@ public sealed class H264HardwareDecoder : IDisposable
                 // NOTE: Get<Guid> is extrapolated from VideoDecodeSource's use of Get<uint>/
                 // Get<ulong> on the same IMFMediaType.Get<T> generic accessor — never verified with
                 // Guid as the type argument specifically.
-                var subtype = candidate.Get<Guid>(MF_MT_SUBTYPE);
+                var subtype = candidate.GetGUID(MF_MT_SUBTYPE);
                 if (subtype == MFVideoFormat_NV12)
                 {
-                    decoder.SetOutputType(OutputStreamId, candidate, 0).CheckError();
+                    decoder.SetOutputType(OutputStreamId, candidate, 0);
                     return;
                 }
             }
@@ -298,14 +284,14 @@ public sealed class H264HardwareDecoder : IDisposable
         // NOTE: same caveat as H264HardwareEncoder.BindDeviceManager — ulParam must be the device
         // manager's raw IUnknown pointer; whether Vortice exposes that as `.NativePointer` on the
         // wrapper is unverified.
-        decoder.ProcessMessage(MFTMessageType.SetD3DManager, gpu.DeviceManager.NativePointer).CheckError();
+        decoder.ProcessMessage(TMessageType.MessageSetD3DManager, (UIntPtr)(nuint)gpu.DeviceManager.NativePointer);
 
     private static bool OutputProvidesOwnSamples(IMFTransform decoder)
     {
         var info = decoder.GetOutputStreamInfo(OutputStreamId);
         // NOTE: exact flag enum member name unverified — native flag is
         // MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, same as H264HardwareEncoder's identical check.
-        return (info.Flags & MFTOutputStreamInfoFlags.ProvidesSamples) != 0;
+        return (info.Flags & (int)OutputStreamInfoFlags.OutputStreamProvidesSamples) != 0;
     }
 
     private static ulong PackUInt64(uint high, uint low) => ((ulong)high << 32) | low;

@@ -48,42 +48,42 @@ public sealed class VideoDecodeSource : IDisposable
             // SetCurrentMediaType only ever reads from, never takes ownership of, so all three used
             // to leak one native handle per VideoDecodeSource construction (i.e. every time local
             // video playback starts).
-            MediaFactory.MFCreateAttributes(out var attributes, 2).CheckError();
+            var attributes = MediaFactory.MFCreateAttributes(2);
             using (attributes)
             {
                 attributes.Set(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1u);
                 attributes.Set(MF_SOURCE_READER_D3D_MANAGER, gpu.DeviceManager);
-                MediaFactory.MFCreateSourceReaderFromURL(filePathOrUrl, attributes, out _reader).CheckError();
+                _reader = MediaFactory.MFCreateSourceReaderFromURL(filePathOrUrl, attributes);
             }
 
             // Force NV12 on the video stream: keeps the decoder's native DXVA surface format flowing
             // straight through instead of an internal color-conversion transform breaking the
             // zero-copy chain ahead of us.
-            MediaFactory.MFCreateMediaType(out var videoType).CheckError();
+            var videoType = MediaFactory.MFCreateMediaType();
             using (videoType)
             {
                 videoType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Video);
                 videoType.Set(MF_MT_SUBTYPE, MFVideoFormat_NV12);
-                _reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, videoType);
+                _reader.SetCurrentMediaType(SourceReaderIndex.FirstVideoStream, videoType);
             }
 
-            MediaFactory.MFCreateMediaType(out var audioType).CheckError();
+            var audioType = MediaFactory.MFCreateMediaType();
             using (audioType)
             {
                 audioType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
                 audioType.Set(MF_MT_SUBTYPE, MFAudioFormat_PCM);
-                _reader.SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, audioType);
+                _reader.SetCurrentMediaType(SourceReaderIndex.FirstAudioStream, audioType);
             }
 
-            using var actualVideoType = _reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+            using var actualVideoType = _reader.GetCurrentMediaType(SourceReaderIndex.FirstVideoStream);
             (VideoWidth, VideoHeight) = ReadFrameSize(actualVideoType);
 
-            using var actualAudioType = _reader.GetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
-            AudioChannels = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioNumChannels());
-            AudioSampleRate = (int)actualAudioType.Get<uint>(MediaTypeAttributeKeys.AudioSamplesPerSecond());
+            using var actualAudioType = _reader.GetCurrentMediaType(SourceReaderIndex.FirstAudioStream);
+            AudioChannels = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioNumChannels);
+            AudioSampleRate = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioSamplesPerSecond);
 
-            _reader.SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, true);
-            _reader.SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, true);
+            _reader.SetStreamSelection(SourceReaderIndex.FirstVideoStream, true);
+            _reader.SetStreamSelection(SourceReaderIndex.FirstAudioStream, true);
         }
         catch
         {
@@ -96,18 +96,18 @@ public sealed class VideoDecodeSource : IDisposable
     /// <summary>Returns null once the video stream reports end-of-stream.</summary>
     public DecodedVideoFrame? ReadNextVideoFrame()
     {
-        _reader.ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, SourceReaderControlFlags.None,
-            out _, out var streamFlags, out var timestamp, out var sample);
+        var sample = _reader.ReadSample(SourceReaderIndex.FirstVideoStream, SourceReaderControlFlag.None,
+            out _, out var streamFlags, out var timestamp);
 
-        if ((streamFlags & SourceReaderFlags.Endofstream) != 0 || sample == null)
+        if ((streamFlags & SourceReaderFlag.EndOfStream) != 0 || sample == null)
             return null;
 
         using (sample)
         using (var buffer = sample.ConvertToContiguousBuffer())
         using (var dxgiBuffer = buffer.QueryInterface<IMFDXGIBuffer>())
         {
-            var texture = dxgiBuffer.GetResource<ID3D11Texture2D>();
-            int arraySlice = (int)dxgiBuffer.GetSubresourceIndex();
+            var texture = new ID3D11Texture2D(dxgiBuffer.GetResource(typeof(ID3D11Texture2D).GUID));
+            int arraySlice = (int)dxgiBuffer.SubresourceIndex;
             return new DecodedVideoFrame(texture, arraySlice, VideoWidth, VideoHeight, timestamp);
         }
     }
@@ -145,10 +145,10 @@ public sealed class VideoDecodeSource : IDisposable
     /// <summary>Returns null once the audio stream reports end-of-stream.</summary>
     public DecodedAudioChunk? ReadNextAudioChunk()
     {
-        _reader.ReadSample(MF_SOURCE_READER_FIRST_AUDIO_STREAM, SourceReaderControlFlags.None,
-            out _, out var streamFlags, out var timestamp, out var sample);
+        var sample = _reader.ReadSample(SourceReaderIndex.FirstAudioStream, SourceReaderControlFlag.None,
+            out _, out var streamFlags, out var timestamp);
 
-        if ((streamFlags & SourceReaderFlags.Endofstream) != 0 || sample == null)
+        if ((streamFlags & SourceReaderFlag.EndOfStream) != 0 || sample == null)
             return null;
 
         using (sample)
@@ -158,9 +158,9 @@ public sealed class VideoDecodeSource : IDisposable
             // needs checking against the installed Vortice.MediaFoundation version — see the
             // Phase 0 demo's README "待验证事项". Native IMFMediaBuffer::Lock is
             // (out BYTE*, out maxLength, out currentLength).
-            var span = buffer.Lock(out _, out var currentLength);
+            buffer.Lock(out var data, out _, out var currentLength);
             var pcm = new byte[currentLength];
-            span.Slice(0, currentLength).CopyTo(pcm);
+            System.Runtime.InteropServices.Marshal.Copy(data, pcm, 0, currentLength);
             buffer.Unlock();
             return new DecodedAudioChunk(pcm, timestamp);
         }
@@ -168,7 +168,7 @@ public sealed class VideoDecodeSource : IDisposable
 
     private static (int width, int height) ReadFrameSize(IMFMediaType type)
     {
-        ulong packed = type.Get<ulong>(MediaTypeAttributeKeys.FrameSize());
+        ulong packed = type.GetUInt64(MediaTypeAttributeKeys.FrameSize);
         int width = (int)(packed >> 32);
         int height = (int)(packed & 0xFFFFFFFF);
         return (width, height);

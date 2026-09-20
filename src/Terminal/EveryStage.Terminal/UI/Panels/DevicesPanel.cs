@@ -34,8 +34,8 @@ public sealed class DevicesPanel : UserControl
         _listView.Columns.Add("配对时间", 140);
         _listView.SelectedIndexChanged += (_, _) =>
         {
-            _removeButton.Enabled = _listView.SelectedItems.Count > 0;
-            _editPermissionsButton.Enabled = _listView.SelectedItems.Count > 0;
+            _removeButton!.Enabled = _listView.SelectedItems.Count > 0;
+            _editPermissionsButton!.Enabled = _listView.SelectedItems.Count > 0;
         };
 
         // Until now the only way to change a paired device's trust/permission flags after the

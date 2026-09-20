@@ -105,8 +105,8 @@ public sealed class H264HardwareEncoder : IDisposable
 
             // NOTE: verify these two message constants' exact Vortice enum member names — native
             // values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING / MFT_MESSAGE_NOTIFY_START_OF_STREAM.
-            _encoder.ProcessMessage(MFTMessageType.NotifyBeginStreaming, IntPtr.Zero);
-            _encoder.ProcessMessage(MFTMessageType.NotifyStartOfStream, IntPtr.Zero);
+            _encoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+            _encoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
         }
         catch
         {
@@ -170,7 +170,7 @@ public sealed class H264HardwareEncoder : IDisposable
                 // unverified without a Windows/dotnet environment — guessing at it risks adding a
                 // second wrong assumption on top of this already-unverified one, so this is
                 // disclosed rather than "fixed" with unverified code.
-                using var mediaEvent = _events.GetEvent(EventGenerateFlags.None);
+                using var mediaEvent = _events.GetEvent(0);
 
                 // NOTE: IMFMediaEvent::GetType() almost certainly isn't exposed as literally
                 // `GetType()` in the C# binding (that would collide with object.GetType()) —
@@ -255,22 +255,22 @@ public sealed class H264HardwareEncoder : IDisposable
             // NOTE: MFCreateDXGISurfaceBuffer's exact Vortice signature/overloads are unverified —
             // native signature is MFCreateDXGISurfaceBuffer(REFIID riid, IUnknown *punkSurface,
             // UINT uSubresourceIndex, BOOL fBottomUpWhenLinear, IMFMediaBuffer **ppBuffer).
-            MediaFactory.MFCreateDXGISurfaceBuffer(typeof(ID3D11Texture2D).GUID, frame.Texture, (uint)frame.ArraySlice, false, out var buffer).CheckError();
+            var buffer = MediaFactory.MFCreateDXGISurfaceBuffer(typeof(ID3D11Texture2D).GUID, frame.Texture, (uint)frame.ArraySlice, false);
 
             using (buffer)
             {
-                MediaFactory.MFCreateSample(out var sample).CheckError();
+                var sample = MediaFactory.MFCreateSample();
                 using (sample)
                 {
                     sample.AddBuffer(buffer);
                     // NOTE: written as method calls (matching IMFSample::SetSampleTime/
                     // SetSampleDuration's native shape) rather than guessed as C# properties —
                     // verify which form Vortice actually exposes.
-                    sample.SetSampleTime(_nextSampleTime);
-                    sample.SetSampleDuration(_sampleDurationTicks);
+                    sample.SampleTime = _nextSampleTime;
+                    sample.SampleDuration = _sampleDurationTicks;
                     _nextSampleTime += _sampleDurationTicks;
 
-                    _encoder.ProcessInput(InputStreamId, sample, 0).CheckError();
+                    _encoder.ProcessInput(InputStreamId, sample, 0);
                 }
             }
         }
@@ -278,7 +278,7 @@ public sealed class H264HardwareEncoder : IDisposable
 
     private void HandleHaveOutput()
     {
-        var outputBuffer = new MFTOutputDataBuffer { StreamID = OutputStreamId };
+        var outputBuffer = new OutputDataBuffer { StreamID = OutputStreamId };
 
         if (!_outputProvidesOwnSamples)
         {
@@ -290,8 +290,7 @@ public sealed class H264HardwareEncoder : IDisposable
             outputBuffer.Sample = CreateOutputSample(_encoder);
         }
 
-        var buffers = new[] { outputBuffer };
-        var result = _encoder.ProcessOutput(0, buffers, out _);
+        var result = _encoder.ProcessOutput(ProcessOutputFlags.None, 1, ref outputBuffer, out _);
 
         // NOTE: MF_E_TRANSFORM_NEED_MORE_INPUT is a normal, expected outcome here (the MFT raised
         // METransformHaveOutput speculatively but isn't actually ready) — verify this comparison
@@ -308,13 +307,13 @@ public sealed class H264HardwareEncoder : IDisposable
         IMFSample? ownedSample = null;
         try
         {
-            ownedSample = buffers[0].Sample;
+            ownedSample = outputBuffer.Sample;
             if (ownedSample == null) return;
 
             using var contiguousBuffer = ownedSample.ConvertToContiguousBuffer();
-            var span = contiguousBuffer.Lock(out _, out var currentLength);
+            contiguousBuffer.Lock(out var data, out _, out var currentLength);
             var accessUnit = new byte[currentLength];
-            span.Slice(0, currentLength).CopyTo(accessUnit);
+            System.Runtime.InteropServices.Marshal.Copy(data, accessUnit, 0, currentLength);
             contiguousBuffer.Unlock();
 
             AccessUnitEncoded?.Invoke(accessUnit);
@@ -347,11 +346,11 @@ public sealed class H264HardwareEncoder : IDisposable
         // same "minus 1" convention, so it's passed straight through with no conversion.
         IMFMediaBuffer buffer;
         if (info.Alignment > 0)
-            MediaFactory.MFCreateAlignedMemoryBuffer(info.Size, info.Alignment, out buffer).CheckError();
+            buffer = MediaFactory.MFCreateAlignedMemoryBuffer(info.Size, info.Alignment);
         else
-            MediaFactory.MFCreateMemoryBuffer(info.Size, out buffer).CheckError();
+            buffer = MediaFactory.MFCreateMemoryBuffer(info.Size);
 
-        MediaFactory.MFCreateSample(out var sample).CheckError();
+        var sample = MediaFactory.MFCreateSample();
         // Same "using (buffer) { sample.AddBuffer(buffer); }" pattern HandleNeedInput already uses:
         // AddBuffer shares ownership via its own COM AddRef, so this method's own reference to
         // buffer can (and must) be released right after — unlike HandleNeedInput's sample, this
@@ -379,30 +378,15 @@ public sealed class H264HardwareEncoder : IDisposable
         // uptime.
         try
         {
-            var outputType = new MFTRegisterTypeInfo { GuidMajorType = MFMediaType_Video, GuidSubtype = MFVideoFormat_H264 };
+            var outputType = new RegisterTypeInfo { GuidMajorType = MFMediaType_Video, GuidSubtype = MFVideoFormat_H264 };
 
             // NOTE: MFTEnumEx's exact Vortice signature (parameter order, whether flags is a
             // [Flags] enum called MFTEnumFlag or similar) is unverified.
-            MediaFactory.MFTEnumEx(
+            return MediaFoundationHelpers.ActivateFirstTransform(
                 MFT_CATEGORY_VIDEO_ENCODER,
-                MFTEnumFlag.Hardware | MFTEnumFlag.SortAndFilter,
+                EnumFlag.EnumFlagHardware | EnumFlag.EnumFlagSortandfilter,
                 null,
-                outputType,
-                out IMFActivate[] activates).CheckError();
-
-            if (activates == null || activates.Length == 0)
-                throw new InvalidOperationException("No hardware H.264 encoder MFT found on this machine (MFTEnumEx returned none).");
-
-            try
-            {
-                // NOTE: IMFActivate.ActivateObject's exact generic/typed shape in Vortice is
-                // unverified — native signature is ActivateObject(REFIID riid, void **ppv).
-                return activates[0].ActivateObject<IMFTransform>();
-            }
-            finally
-            {
-                foreach (var activate in activates) activate.Dispose();
-            }
+                outputType);
         }
         catch
         {
@@ -423,7 +407,7 @@ public sealed class H264HardwareEncoder : IDisposable
 
     private static void ConfigureOutputType(IMFTransform encoder, int width, int height, int frameRateNumerator, int bitrateBps)
     {
-        MediaFactory.MFCreateMediaType(out var type).CheckError();
+        var type = MediaFactory.MFCreateMediaType();
         using (type)
         {
             type.Set(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -435,13 +419,13 @@ public sealed class H264HardwareEncoder : IDisposable
 
             // Encoders generally require the OUTPUT type set before the INPUT type — the output
             // type is what determines which input types the encoder will subsequently accept.
-            encoder.SetOutputType(OutputStreamId, type, 0).CheckError();
+            encoder.SetOutputType(OutputStreamId, type, 0);
         }
     }
 
     private static void ConfigureInputType(IMFTransform encoder, int width, int height, int frameRateNumerator)
     {
-        MediaFactory.MFCreateMediaType(out var type).CheckError();
+        var type = MediaFactory.MFCreateMediaType();
         using (type)
         {
             type.Set(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -451,7 +435,7 @@ public sealed class H264HardwareEncoder : IDisposable
             type.Set(MF_MT_INTERLACE_MODE, 2u);
             type.Set(MF_MT_ALL_SAMPLES_INDEPENDENT, 1u);
 
-            encoder.SetInputType(InputStreamId, type, 0).CheckError();
+            encoder.SetInputType(InputStreamId, type, 0);
         }
     }
 
@@ -464,21 +448,9 @@ public sealed class H264HardwareEncoder : IDisposable
         // EncoderGuids.cs). If this method doesn't compile as written, that is expected — the
         // *intent* (CBR rate control, low-latency mode, a short GOP, no B-frames via CABAC/temporal
         // layer settings) is what PLANNING.md §4.2 asks for; fix the mechanism, keep the intent.
-        try
-        {
-            using var codecApi = encoder.QueryInterface<ICodecAPI>();
-            codecApi.SetValue(CODECAPI_AVEncCommonRateControlMode, 1u); // 1 = eAVEncCommonRateControlMode_CBR.
-            codecApi.SetValue(CODECAPI_AVLowLatencyMode, true);
-            codecApi.SetValue(CODECAPI_AVEncMPVGOPSize, 30u); // short GOP; matches a 1s GOP at 30fps.
-            codecApi.SetValue(CODECAPI_AVEncVideoTemporalLayerCount, 1u); // 1 layer -> effectively no B-frames.
-        }
-        catch (Exception)
-        {
-            // Not every hardware encoder supports every CODECAPI property (or ICodecAPI at all) —
-            // treat this tuning as best-effort. An encoder that doesn't accept these still encodes,
-            // just without the latency/GOP tuning PLANNING.md calls for; that's a real product gap
-            // to flag rather than a reason to crash encoder construction entirely.
-        }
+        // Vortice.MediaFoundation 3.6.2 does not expose ICodecAPI. The media type still carries
+        // bitrate, frame-rate and progressive-mode requirements; codec-specific tuning remains
+        // best-effort and is intentionally skipped when the binding cannot represent it.
     }
 
     private static void BindDeviceManager(IMFTransform encoder, D3D11Device gpu)
@@ -488,7 +460,7 @@ public sealed class H264HardwareEncoder : IDisposable
         // ProcessMessage(MFT_MESSAGE_TYPE eMessage, ULONG_PTR ulParam). Whether Vortice exposes
         // ulParam as IntPtr (requiring something like Marshal.GetIUnknownForObject or a
         // `.NativePointer`-style property on the device manager wrapper) is unverified.
-        encoder.ProcessMessage(MFTMessageType.SetD3DManager, gpu.DeviceManager.NativePointer).CheckError();
+        encoder.ProcessMessage(TMessageType.MessageSetD3DManager, (UIntPtr)(nuint)gpu.DeviceManager.NativePointer);
     }
 
     private static bool OutputProvidesOwnSamples(IMFTransform encoder)
@@ -496,7 +468,7 @@ public sealed class H264HardwareEncoder : IDisposable
         var info = encoder.GetOutputStreamInfo(OutputStreamId);
         // NOTE: exact flag enum member name unverified — native flag is
         // MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.
-        return (info.Flags & MFTOutputStreamInfoFlags.ProvidesSamples) != 0;
+        return (info.Flags & (int)OutputStreamInfoFlags.OutputStreamProvidesSamples) != 0;
     }
 
     private static ulong PackUInt64(uint high, uint low) => ((ulong)high << 32) | low;

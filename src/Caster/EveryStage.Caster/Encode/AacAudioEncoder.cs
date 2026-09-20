@@ -1,3 +1,4 @@
+using EveryStage.Rendering;
 using Vortice.MediaFoundation;
 using static EveryStage.Caster.Encode.EncoderGuids;
 
@@ -80,8 +81,8 @@ public sealed class AacAudioEncoder : IDisposable
 
             // NOTE: same unverified exact enum member names as H264HardwareEncoder's identical two
             // calls — native values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING / MFT_MESSAGE_NOTIFY_START_OF_STREAM.
-            _encoder.ProcessMessage(MFTMessageType.NotifyBeginStreaming, IntPtr.Zero);
-            _encoder.ProcessMessage(MFTMessageType.NotifyStartOfStream, IntPtr.Zero);
+            _encoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+            _encoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
         }
         catch
         {
@@ -114,24 +115,24 @@ public sealed class AacAudioEncoder : IDisposable
         // NOTE: MFCreateMemoryBuffer's exact Vortice signature (does it take the size as int or
         // uint?) is unverified, same caveat as H264HardwareEncoder.CreateOutputSample's identical
         // call.
-        MediaFactory.MFCreateMemoryBuffer(pcm.Length, out var buffer).CheckError();
+        var buffer = MediaFactory.MFCreateMemoryBuffer(pcm.Length);
         using (buffer)
         {
             // Same Lock()-returns-a-Span<byte> assumption AudioDecodeSource.ReadNextChunk/
             // VideoDecodeSource.ReadNextAudioChunk already make for reading — here used in reverse,
             // to write into the buffer instead of out of it.
-            var span = buffer.Lock(out _, out _);
-            pcm.AsSpan().CopyTo(span);
-            buffer.SetCurrentLength(pcm.Length);
+            buffer.Lock(out var data, out _, out _);
+            System.Runtime.InteropServices.Marshal.Copy(pcm, 0, data, pcm.Length);
+            buffer.CurrentLength = pcm.Length;
             buffer.Unlock();
 
-            MediaFactory.MFCreateSample(out var sample).CheckError();
+            var sample = MediaFactory.MFCreateSample();
             using (sample)
             {
                 sample.AddBuffer(buffer);
                 long durationTicks = (long)(pcm.Length / (double)_bytesPerSecond * 10_000_000L);
-                sample.SetSampleTime(_nextSampleTime);
-                sample.SetSampleDuration(durationTicks);
+                sample.SampleTime = _nextSampleTime;
+                sample.SampleDuration = durationTicks;
                 _nextSampleTime += durationTicks;
 
                 // Unlike H264HardwareEncoder's HandleNeedInput (which only ever calls ProcessInput
@@ -142,7 +143,7 @@ public sealed class AacAudioEncoder : IDisposable
                 // the steady state. A real MF_E_NOTACCEPTING here would surface as an exception via
                 // CheckError() and reach EncodingFailed like any other failure, rather than being
                 // silently retried — flagged here as a known simplification, not a verified-safe one.
-                _encoder.ProcessInput(0, sample, 0).CheckError();
+                _encoder.ProcessInput(0, sample, 0);
             }
         }
 
@@ -153,23 +154,22 @@ public sealed class AacAudioEncoder : IDisposable
     {
         while (true)
         {
-            var outputBuffer = new MFTOutputDataBuffer { StreamID = 0 };
-            var buffers = new[] { outputBuffer };
+            var outputBuffer = new OutputDataBuffer { StreamID = 0 };
             // Same "treat any ProcessOutput failure as nothing-ready-yet rather than distinguishing
             // MF_E_TRANSFORM_NEED_MORE_INPUT from a real error" simplification
             // H264HardwareEncoder.HandleHaveOutput already uses — see that method's own NOTE.
-            var result = _encoder.ProcessOutput(0, buffers, out _);
+            var result = _encoder.ProcessOutput(ProcessOutputFlags.None, 1, ref outputBuffer, out _);
             if (result.Failure) return;
 
-            var sample = buffers[0].Sample;
+            var sample = outputBuffer.Sample;
             if (sample == null) return;
 
             try
             {
                 using var contiguousBuffer = sample.ConvertToContiguousBuffer();
-                var span = contiguousBuffer.Lock(out _, out var currentLength);
+                contiguousBuffer.Lock(out var data, out _, out var currentLength);
                 var accessUnit = new byte[currentLength];
-                span.Slice(0, currentLength).CopyTo(accessUnit);
+                System.Runtime.InteropServices.Marshal.Copy(data, accessUnit, 0, currentLength);
                 contiguousBuffer.Unlock();
 
                 AccessUnitEncoded?.Invoke(accessUnit);
@@ -193,28 +193,15 @@ public sealed class AacAudioEncoder : IDisposable
         // would leak one MFStartup() reference count every time casting with audio is attempted.
         try
         {
-            var outputType = new MFTRegisterTypeInfo { GuidMajorType = MFMediaType_Audio, GuidSubtype = MFAudioFormat_AAC };
+            var outputType = new RegisterTypeInfo { GuidMajorType = MFMediaType_Audio, GuidSubtype = MFAudioFormat_AAC };
 
             // No MFTEnumFlag.Hardware here (unlike H264HardwareEncoder's identical call) — the built-in
             // AAC encoder is a software MFT, and filtering for hardware would just find nothing.
-            MediaFactory.MFTEnumEx(
+            return MediaFoundationHelpers.ActivateFirstTransform(
                 MFT_CATEGORY_AUDIO_ENCODER,
-                MFTEnumFlag.SortAndFilter,
+                EnumFlag.EnumFlagSortandfilter,
                 null,
-                outputType,
-                out IMFActivate[] activates).CheckError();
-
-            if (activates == null || activates.Length == 0)
-                throw new InvalidOperationException("No AAC encoder MFT found on this machine (MFTEnumEx returned none).");
-
-            try
-            {
-                return activates[0].ActivateObject<IMFTransform>();
-            }
-            finally
-            {
-                foreach (var activate in activates) activate.Dispose();
-            }
+                outputType);
         }
         catch
         {
@@ -235,7 +222,7 @@ public sealed class AacAudioEncoder : IDisposable
 
     private static void ConfigureInputType(IMFTransform encoder, int sampleRate, int channels)
     {
-        MediaFactory.MFCreateMediaType(out var type).CheckError();
+        var type = MediaFactory.MFCreateMediaType();
         using (type)
         {
             type.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
@@ -245,7 +232,7 @@ public sealed class AacAudioEncoder : IDisposable
             type.Set(MF_MT_AUDIO_BITS_PER_SAMPLE, 16u);
             type.Set(MF_MT_AUDIO_BLOCK_ALIGNMENT, (uint)(channels * 2));
             type.Set(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (uint)(sampleRate * channels * 2));
-            encoder.SetInputType(0, type, 0).CheckError();
+            encoder.SetInputType(0, type, 0);
         }
     }
 
@@ -265,14 +252,14 @@ public sealed class AacAudioEncoder : IDisposable
         // NOTE: GetOutputAvailableType's exact Vortice signature/return shape is unverified — native
         // signature is GetOutputAvailableType(DWORD dwOutputStreamID, DWORD dwTypeIndex,
         // IMFMediaType **ppType), returning MF_E_NO_MORE_TYPES once dwTypeIndex is out of range.
-        encoder.GetOutputAvailableType(0, 0, out var type).CheckError();
+        var type = encoder.GetOutputAvailableType(0, 0);
         using (type)
         {
             // ADTS-framed access units — see MF_MT_AAC_PAYLOAD_TYPE's own doc comment in
             // EncoderGuids.cs for why (self-describing per-frame headers mean AacAudioDecoder needs
             // no separate out-of-band AudioSpecificConfig).
             type.Set(MF_MT_AAC_PAYLOAD_TYPE, 1u);
-            encoder.SetOutputType(0, type, 0).CheckError();
+            encoder.SetOutputType(0, type, 0);
         }
     }
 
