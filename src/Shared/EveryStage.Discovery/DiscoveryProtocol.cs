@@ -90,6 +90,7 @@ public static class DiscoveryProtocol
         /// <summary>Base64-encoded 256-bit device key issued only after the Terminal accepts pairing.
         /// Null for a rejection. Subsequent authenticated control traffic uses this shared key.</summary>
         public string? PairingKey { get; set; }
+        public int PairingKeyFormatVersion { get; set; }
     }
 
     /// <summary>Sent unicast, Caster -> Terminal, right before a live RTP/H.264 stream begins —

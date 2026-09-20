@@ -161,6 +161,7 @@ public static class DiscoveryProtocolSelfTest
                 if (o.Accepted != r.Accepted) return $"Accepted {o.Accepted} != {r.Accepted}";
                 if (o.Reason != r.Reason) return $"Reason '{o.Reason}' != '{r.Reason}'";
                 if (o.PairingKey != r.PairingKey) return "PairingKey did not round-trip.";
+                if (o.PairingKeyFormatVersion != r.PairingKeyFormatVersion) return "PairingKeyFormatVersion did not round-trip.";
                 return null;
 
             case DiscoveryProtocol.CastStartMessage o when received is DiscoveryProtocol.CastStartMessage r:
@@ -229,7 +230,7 @@ public static class DiscoveryProtocolSelfTest
             new DiscoveryProtocol.BeaconMessage { DeviceId = deviceId, DeviceName = "自检-Terminal" },
             new DiscoveryProtocol.PairRequestMessage { RequestId = "req-1", DeviceId = deviceId, DeviceName = "自检-Caster" },
             new DiscoveryProtocol.PairResponseMessage { RequestId = "req-1", Accepted = false, Reason = "用户拒绝", PairingKey = null },
-            new DiscoveryProtocol.PairResponseMessage { RequestId = "req-2", Accepted = true, Reason = null, PairingKey = PairingSecurity.GenerateKey() },
+            new DiscoveryProtocol.PairResponseMessage { RequestId = "req-2", Accepted = true, Reason = null, PairingKey = PairingSecurity.GenerateKey(), PairingKeyFormatVersion = PairingSecurity.CurrentKeyFormatVersion },
             new DiscoveryProtocol.CastStartMessage
             {
                 DeviceId = deviceId, Width = 1920, Height = 1080, PayloadType = 96,
@@ -277,6 +278,10 @@ public static class DiscoveryProtocolSelfTest
         if (key1 == key2) return "Two generated pairing keys unexpectedly matched.";
         if (PairingSecurity.IsValidKey(null) || PairingSecurity.IsValidKey("not-base64"))
             return "Pairing key validation accepted invalid input.";
+        if (!PairingSecurity.IsSupportedKey(key1, PairingSecurity.CurrentKeyFormatVersion))
+            return "Current key format was rejected.";
+        if (PairingSecurity.IsSupportedKey(key1, 0) || PairingSecurity.IsSupportedKey(key1, 999))
+            return "Legacy or future key format was accepted without an explicit migration.";
         return null;
     }
 

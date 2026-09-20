@@ -130,6 +130,7 @@ public sealed class DiscoveryService : IDisposable
             Accepted = accept,
             Reason = accept ? null : "declined_by_terminal",
             PairingKey = accept ? PairingSecurity.GenerateKey() : null,
+            PairingKeyFormatVersion = accept ? PairingSecurity.CurrentKeyFormatVersion : 0,
         };
         _ = SendAsync(response, pending.RemoteEndPoint);
 
@@ -144,6 +145,7 @@ public sealed class DiscoveryService : IDisposable
                 AllowMonitor = allowMonitor,
                 PairedAt = DateTimeOffset.Now,
                 PairingKey = response.PairingKey,
+                PairingKeyFormatVersion = response.PairingKeyFormatVersion,
             });
             _connectionLog.LogPaired(pending.DeviceId.ToString(), pending.DeviceName);
             _connectionLog.LogConnected(pending.DeviceId.ToString());
@@ -274,7 +276,8 @@ public sealed class DiscoveryService : IDisposable
             _connectionLog.LogDisconnected(msg.DeviceId.ToString(), "cast_start_rejected_not_allowed");
             return;
         }
-        if (!PairingSecurity.Verify(msg, device.PairingKey)
+        if (!PairingSecurity.IsSupportedKey(device.PairingKey, device.PairingKeyFormatVersion)
+            || !PairingSecurity.Verify(msg, device.PairingKey)
             || !_replayGuard.TryAccept(msg, DateTimeOffset.UtcNow)) return;
         _activeCasterDeviceId = msg.SenderDeviceId;
         _activeCasterKey = device.PairingKey;
@@ -368,7 +371,9 @@ public sealed class DiscoveryService : IDisposable
     private void HandleCastStop(DiscoveryProtocol.CastStopMessage msg)
     {
         var device = _pairedDevices.Find(msg.SenderDeviceId);
-        if (device == null || !PairingSecurity.Verify(msg, device.PairingKey)
+        if (device == null
+            || !PairingSecurity.IsSupportedKey(device.PairingKey, device.PairingKeyFormatVersion)
+            || !PairingSecurity.Verify(msg, device.PairingKey)
             || !_replayGuard.TryAccept(msg, DateTimeOffset.UtcNow)) return;
         CastStopRequested?.Invoke(msg.DeviceId);
         _activeCasterDeviceId = null;

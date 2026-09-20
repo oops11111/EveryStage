@@ -6,6 +6,7 @@ namespace EveryStage.Discovery;
 public static class PairingSecurity
 {
     public const int KeySizeBytes = 32;
+    public const int CurrentKeyFormatVersion = 1;
 
     public static string GenerateKey() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(KeySizeBytes));
 
@@ -15,6 +16,9 @@ public static class PairingSecurity
         try { return Convert.FromBase64String(key).Length == KeySizeBytes; }
         catch (FormatException) { return false; }
     }
+
+    public static bool IsSupportedKey(string? key, int keyFormatVersion) =>
+        keyFormatVersion == CurrentKeyFormatVersion && IsValidKey(key);
 
     public static void Sign(DiscoveryProtocol.AuthenticatedMessage message, Guid senderDeviceId, string key)
     {

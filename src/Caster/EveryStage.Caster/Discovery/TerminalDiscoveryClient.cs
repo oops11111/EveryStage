@@ -215,8 +215,9 @@ public sealed class TerminalDiscoveryClient : IDisposable
         {
             if (message is DiscoveryProtocol.AuthenticatedMessage authenticated)
             {
-                string? key = _pairedTerminals.Find(terminal.DeviceId)?.PairingKey;
-                if (!PairingSecurity.IsValidKey(key)) return;
+                var paired = _pairedTerminals.Find(terminal.DeviceId);
+                string? key = paired?.PairingKey;
+                if (paired == null || !PairingSecurity.IsSupportedKey(key, paired.PairingKeyFormatVersion)) return;
                 PairingSecurity.Sign(authenticated, _identity.DeviceId, key!);
             }
             byte[] payload = DiscoveryProtocol.Encode(message);
@@ -320,8 +321,10 @@ public sealed class TerminalDiscoveryClient : IDisposable
 
     private void HandleCastStatus(DiscoveryProtocol.CastStatusMessage status, IPEndPoint remoteEndPoint)
     {
-        string? key = _pairedTerminals.Find(status.DeviceId)?.PairingKey;
-        if (!PairingSecurity.Verify(status, key)) return;
+        var paired = _pairedTerminals.Find(status.DeviceId);
+        string? key = paired?.PairingKey;
+        if (paired == null || !PairingSecurity.IsSupportedKey(key, paired.PairingKeyFormatVersion)
+            || !PairingSecurity.Verify(status, key)) return;
 
         var ack = new DiscoveryProtocol.CastStatusAckMessage
         {

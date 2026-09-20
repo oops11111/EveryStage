@@ -824,13 +824,13 @@ public sealed class MainForm : Form
             var response = await _discoveryClient.RequestPairingAsync(terminal, _identity);
             if (response is { Accepted: true })
             {
-                if (!PairingSecurity.IsValidKey(response.PairingKey))
+                if (!PairingSecurity.IsSupportedKey(response.PairingKey, response.PairingKeyFormatVersion))
                 {
                     MessageBox.Show(this, "终端机返回的配对密钥无效，请升级两端后重新配对。",
                         "配对失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-                ShowPaired(terminal, outputIndex, response.PairingKey!);
+                ShowPaired(terminal, outputIndex, response.PairingKey!, response.PairingKeyFormatVersion);
             }
             else
             {
@@ -856,14 +856,14 @@ public sealed class MainForm : Form
         }
     }
 
-    private void ShowPaired(DiscoveredTerminal terminal, int outputIndex, string pairingKey)
+    private void ShowPaired(DiscoveredTerminal terminal, int outputIndex, string pairingKey, int keyFormatVersion)
     {
         // Remembered here, not just when the standby list was last built — this is the one point
         // where a pairing is actually confirmed successful, which is the right moment to persist it
         // for next time's "已配对直显" list (PLANNING.md §12), independent of whether/when the
         // standby list next happens to refresh.
         _pairedTerminals.Upsert(new PairedTerminal(
-            terminal.DeviceId, terminal.DeviceName, DateTimeOffset.Now, pairingKey));
+            terminal.DeviceId, terminal.DeviceName, DateTimeOffset.Now, pairingKey, keyFormatVersion));
 
         _pairedTerminal = terminal;
         _pairedWithLabel.Text = $"正在向 \"{terminal.DeviceName}\" 投屏...";

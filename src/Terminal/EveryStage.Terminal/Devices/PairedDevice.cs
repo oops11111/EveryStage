@@ -21,4 +21,5 @@ public sealed class PairedDevice
     /// <summary>Shared 256-bit key. Null only for records migrated from the pre-authentication
     /// format; those records must pair again before authenticated control messages are accepted.</summary>
     public string? PairingKey { get; set; }
+    public int PairingKeyFormatVersion { get; set; }
 }
