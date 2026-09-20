@@ -13,6 +13,7 @@ public static class ThemeManager
             _ => new Palette(SystemColors.Control, Color.White, SystemColors.ControlText, Color.FromArgb(0, 120, 215)),
         };
         ApplyRecursive(root, palette);
+        root.Invalidate(true);
     }
 
     private static void ApplyRecursive(Control control, Palette palette)
@@ -24,6 +25,8 @@ public static class ThemeManager
             Button => palette.Surface,
             TextBoxBase or ListView or TreeView or ListBox or ComboBox or NumericUpDown => palette.Surface,
             TabPage => palette.Background,
+            Panel panel when palette.Background == ModernUi.Background && panel.BackColor is var existing
+                && (existing == ModernUi.Rail || existing == ModernUi.Surface || existing == ModernUi.SurfaceRaised) => existing,
             _ => palette.Background,
         };
         if (control is Button button) button.FlatStyle = FlatStyle.Flat;

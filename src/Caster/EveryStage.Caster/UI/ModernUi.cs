@@ -15,13 +15,17 @@ internal static class ModernUi
 
     public static void StyleTree(Control root)
     {
-        root.BackColor = Background;
-        root.ForeColor = Text;
         root.Font = new Font("Segoe UI", 10F);
+        Apply(root, isRoot: true);
+    }
+
+    private static void Apply(Control root, bool isRoot = false)
+    {
+        if (isRoot || root is Panel) root.BackColor = Background;
+        if (root is not Label || root.ForeColor == SystemColors.ControlText) root.ForeColor = Text;
         foreach (Control child in root.Controls)
         {
-            child.ForeColor = child is Label label && label.ForeColor is var c && c != SystemColors.ControlText
-                ? label.ForeColor : Text;
+            if (child is not Label || child.ForeColor == SystemColors.ControlText) child.ForeColor = Text;
             child.BackColor = child switch
             {
                 Button => Surface,
@@ -35,7 +39,7 @@ internal static class ModernUi
                 button.FlatAppearance.BorderColor = Border;
                 button.Cursor = Cursors.Hand;
             }
-            StyleTree(child);
+            Apply(child);
         }
     }
 

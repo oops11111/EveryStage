@@ -71,7 +71,9 @@ public sealed class MainWindow : Form
         MinimumSize = new Size(1100, 700);
         BackColor = ModernUi.Background;
         Font = new Font("Segoe UI", 10F);
+        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
+        WindowsAppearance.UseDarkTitleBar(this);
 
         var nav = new Panel { Dock = DockStyle.Left, Width = 178, BackColor = ModernUi.Rail, Padding = new Padding(12) };
 

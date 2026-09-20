@@ -186,16 +186,18 @@ public sealed class MainForm : Form
         // discovery one, then to 1043 to fit a ninth section (DeviceIdentity's own on-disk round-trip
         // self-test — the same shared EveryStage.Discovery class both Terminal and Caster call
         // LoadOrCreate() on) below the paired-terminal-store one — see this class's doc comment.
-        ClientSize = new Size(620, 700);
-        MinimumSize = new Size(620, 700);
+        ClientSize = new Size(520, 620);
+        MinimumSize = new Size(500, 600);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
+        AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
+        WindowsAppearance.UseDarkTitleBar(this);
 
         // --- 待机态 (PLANNING.md §12) ---
         _terminalListBox = new ListBox
         {
-            Bounds = new Rectangle(36, 112, 548, 218),
+            Bounds = new Rectangle(24, 104, 472, 190),
             DisplayMember = nameof(TerminalListEntry.DisplayText), // else ListBox shows the record's generated ToString().
             BorderStyle = BorderStyle.FixedSingle,
             Font = new Font("Segoe UI", 11F),
@@ -217,23 +219,23 @@ public sealed class MainForm : Form
         {
             Text = "点击\"开始投屏\"后，将投放整个屏幕（全屏捕获），而不是仅本窗口或某个应用。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(36, 584, 548, 34),
+            Bounds = new Rectangle(24, 536, 472, 34),
         };
 
         // PLANNING.md §12"选择捕获哪个显示器"——之前ScreenCaptureSource固定捕获outputIndex=0，
         // 多显示器场景完全没有UI选择。RefreshMonitorList()（下面）在构造函数末尾和每次回到待机态
         // 时都会重新枚举，跟这一轮刚修过的SettingsPanel显示器列表是同一个"别只枚举一次"教训。
-        var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font("Segoe UI Semibold", 22F), AutoSize = true, Location = new Point(36, 34) };
-        var connected = new Label { Text = "●  已连接", ForeColor = ModernUi.Success, AutoSize = true, Location = new Point(486, 48) };
-        var targetLabel = new Label { Text = "选择终端", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(36, 88) };
-        var monitorLabel = new Label { Text = "显示器", ForeColor = ModernUi.Muted, AutoSize = true, Bounds = new Rectangle(36, 354, 548, 22) };
-        _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(36, 380, 548, 34) };
+        var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font("Segoe UI Semibold", 22F), AutoSize = true, Location = new Point(24, 28) };
+        var connected = new Label { Text = "●  已连接", ForeColor = ModernUi.Success, AutoSize = true, Location = new Point(402, 42) };
+        var targetLabel = new Label { Text = "选择终端", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(24, 80) };
+        var monitorLabel = new Label { Text = "显示器", ForeColor = ModernUi.Muted, AutoSize = true, Bounds = new Rectangle(24, 316, 472, 22) };
+        _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(24, 342, 472, 34) };
 
         _startButton = new Button
         {
             Text = "开始投屏",
             Enabled = false,
-            Bounds = new Rectangle(36, 442, 548, 52),
+            Bounds = new Rectangle(24, 400, 472, 50),
         };
         _startButton.Click += OnStartButtonClick;
         ModernUi.Primary(_startButton);
@@ -242,7 +244,7 @@ public sealed class MainForm : Form
         {
             Text = "移除配对",
             Enabled = false,
-            Bounds = new Rectangle(36, 510, 548, 36),
+            Bounds = new Rectangle(24, 466, 472, 34),
         };
         _removePairingButton.Click += OnRemovePairingClick;
 
@@ -255,7 +257,7 @@ public sealed class MainForm : Form
         RefreshMonitorList();
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
-        _pairedWithLabel = new Label { Bounds = new Rectangle(36, 96, 548, 48), Font = new Font("Segoe UI Semibold", 17F) };
+        _pairedWithLabel = new Label { Bounds = new Rectangle(24, 88, 472, 46), Font = new Font("Segoe UI Semibold", 17F) };
 
         // PLANNING.md §12 "投屏中" 状态里的隐私提醒条 + 时长显示——之前只有开始投屏前那条一次性的
         // privacyLabel，投屏过程中完全没有任何持续提醒或计时，这两个都是这次新加的。
@@ -263,20 +265,20 @@ public sealed class MainForm : Form
         {
             Text = "⚠ 正在投放整个屏幕｜已投屏时长: 00:00:00",
             ForeColor = Color.DarkRed,
-            Bounds = new Rectangle(36, 272, 548, 54),
+            Bounds = new Rectangle(24, 252, 472, 52),
         };
 
         // Height grown from 90 to 108 (+18) to fit RefreshLiveCastStats' new always-visible
         // "（仅代表状态通道送达...）" caveat line without clipping the 5 lines already packed in
         // here — every control below this one shifted down by that same 18px.
-        _liveCastStatsLabel = new Label { Bounds = new Rectangle(36, 144, 548, 116), ForeColor = ModernUi.Muted };
+        _liveCastStatsLabel = new Label { Bounds = new Rectangle(24, 134, 472, 108), ForeColor = ModernUi.Muted };
 
-        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(36, 342, 548, 52) };
+        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(24, 324, 472, 50) };
         _stopCastButton.Click += (_, _) => ShowStandby();
         ModernUi.Primary(_stopCastButton, danger: true);
 
-        var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font("Segoe UI Semibold", 22F), AutoSize = true, Location = new Point(36, 34) };
-        var liveState = new Label { Text = "●  正在投屏", ForeColor = ModernUi.Danger, AutoSize = true, Location = new Point(470, 48) };
+        var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font("Segoe UI Semibold", 22F), AutoSize = true, Location = new Point(24, 28) };
+        var liveState = new Label { Text = "●  正在投屏", ForeColor = ModernUi.Danger, AutoSize = true, Location = new Point(392, 42) };
 
         var diagnosticsNoteLabel = new Label
         {
@@ -345,10 +347,10 @@ public sealed class MainForm : Form
         _deviceIdentitySelfTestButton.Click += OnDeviceIdentitySelfTestClick;
         _deviceIdentityStatsLabel = new Label { Bounds = new Rectangle(12, 991, 296, 40), ForeColor = Color.DimGray };
 
-        var diagnosticsToggle = new Button { Text = "诊断工具  ▾", Bounds = new Rectangle(36, 414, 548, 38) };
+        var diagnosticsToggle = new Button { Text = "诊断工具  ▾", Bounds = new Rectangle(24, 394, 472, 36) };
         var diagnosticsPanel = new Panel
         {
-            Bounds = new Rectangle(36, 462, 548, 202),
+            Bounds = new Rectangle(24, 440, 472, 146),
             AutoScroll = true,
             AutoScrollMinSize = new Size(0, 1040),
             Visible = false,

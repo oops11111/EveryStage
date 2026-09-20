@@ -79,6 +79,7 @@ public sealed class FilesPanel : UserControl
     private readonly FlowLayoutPanel _audioBarPanel;
     private readonly List<AudioRow> _audioRows = new();
     private readonly System.Windows.Forms.Timer _audioBarRefreshTimer;
+    private readonly Label _emptyStateLabel;
 
     /// <summary>Raised when the user double-clicks a file to play it standalone (no activity
     /// context — see <c>PlaybackEngine.RequestPlay(MediaFile)</c>'s own doc comment on what that
@@ -195,6 +196,20 @@ public sealed class FilesPanel : UserControl
         Controls.Add(_listView);
         Controls.Add(_audioBarPanel);
         Controls.Add(toolbar);
+
+        _emptyStateLabel = new Label
+        {
+            Text = "文件库还是空的\n\n点击“＋ 导入文件”或将文件拖到这里",
+            ForeColor = ModernUi.Muted,
+            BackColor = ModernUi.Surface,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font("Segoe UI", 12F),
+            Size = new Size(420, 110),
+            Visible = false,
+        };
+        Controls.Add(_emptyStateLabel);
+        _emptyStateLabel.BringToFront();
+        Resize += (_, _) => PositionEmptyState();
 
         // Not tied to this panel's own show/hide — MainWindow.ShowPanel fully removes/re-adds panels
         // from _contentHost on every tab switch rather than hiding them (see that method), so there's
@@ -398,6 +413,15 @@ public sealed class FilesPanel : UserControl
 
         RefreshAudioBar();
         HighlightCurrentFile();
+        _emptyStateLabel.Visible = _listView.Items.Count == 0;
+        PositionEmptyState();
+    }
+
+    private void PositionEmptyState()
+    {
+        _emptyStateLabel.Location = new Point(
+            Math.Max(0, (ClientSize.Width - _emptyStateLabel.Width) / 2),
+            Math.Max(76, (ClientSize.Height - _emptyStateLabel.Height) / 2));
     }
 
     private void OnFileStarted(MediaFile file)

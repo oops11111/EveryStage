@@ -9,13 +9,13 @@ namespace EveryStage.Terminal.Data;
 /// </summary>
 public sealed class AppSettings
 {
-    public const int CurrentSchemaVersion = 2;
+    public const int CurrentSchemaVersion = 3;
 
     /// <summary>Persisted configuration schema. A missing value denotes the original unversioned
     /// format and is migrated by <see cref="SettingsStore"/> when loaded.</summary>
     public int SchemaVersion { get; set; } = CurrentSchemaVersion;
 
-    public AppTheme Theme { get; set; } = AppTheme.Light;
+    public AppTheme Theme { get; set; } = AppTheme.Dark;
 
     // --- 通用 ---
 

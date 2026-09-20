@@ -92,8 +92,12 @@ public sealed class SettingsStore
 
     private static AppSettings Migrate(AppSettings settings)
     {
-        // Versions 0/1 predate explicit theme selection. AppSettings' Light default supplies the
-        // new value while every existing user choice remains intact.
+        // Version 3 makes the product's designed dark appearance the default. Earlier builds wrote
+        // Light even when the user had never made a theme choice, which caused the modern shell to
+        // be recolored back to stock WinForms gray on first launch.
+        if (settings.SchemaVersion < 3)
+            settings.Theme = AppTheme.Dark;
+
         if (settings.SchemaVersion < AppSettings.CurrentSchemaVersion)
             settings.SchemaVersion = AppSettings.CurrentSchemaVersion;
 

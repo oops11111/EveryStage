@@ -144,13 +144,15 @@ async Task RunAsync(string name, Func<Task<(bool Success, string? FailureReason)
     {
         File.WriteAllText(path, "{\"CastSwitchDefaultOn\":false,\"PreferredMonitorDeviceName\":\"DISPLAY-LEGACY\",\"DefaultStayDurationSeconds\":15}");
         var migrated = new SettingsStore(path).Current;
-        if (migrated.SchemaVersion != AppSettings.CurrentSchemaVersion || migrated.CastSwitchDefaultOn
+        if (migrated.SchemaVersion != AppSettings.CurrentSchemaVersion || migrated.Theme != AppTheme.Dark
+            || migrated.CastSwitchDefaultOn
             || migrated.PreferredMonitorDeviceName != "DISPLAY-LEGACY" || migrated.DefaultStayDurationSeconds != 15)
             return (false, "Legacy settings were not preserved during migration.");
 
         File.WriteAllText(path, "{\"SchemaVersion\":999,\"CastSwitchDefaultOn\":false}");
         var future = new SettingsStore(path).Current;
-        if (future.SchemaVersion != AppSettings.CurrentSchemaVersion || !future.CastSwitchDefaultOn)
+        if (future.SchemaVersion != AppSettings.CurrentSchemaVersion || future.Theme != AppTheme.Dark
+            || !future.CastSwitchDefaultOn)
             return (false, "Future-version settings did not fail safe to defaults.");
         return (true, null);
     }
