@@ -19,6 +19,11 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        // Custom chrome and the fixed-pixel media cards must be scaled by WinForms for the DPI of
+        // the monitor they are actually on. Without an explicit process mode Windows can bitmap-
+        // stretch the whole window on 125%/150% displays (or after moving it between monitors),
+        // producing the blurred text and incorrect initial dimensions seen on Windows 10.
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 

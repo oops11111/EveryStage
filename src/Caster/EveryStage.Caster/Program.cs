@@ -9,6 +9,9 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        // Keep the compact fixed-layout caster form crisp and correctly sized on Windows 10 at
+        // 125%/150% scaling and when it is moved between monitors with different DPI values.
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
 
