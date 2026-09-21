@@ -108,6 +108,8 @@ public sealed class MainForm : GradientForm
 
     private readonly Panel _pairedPanel;
     private readonly Label _pairedWithLabel;
+    private readonly Label _elapsedLabel;
+    private readonly Label _qualityLabel;
     private readonly Label _privacyReminderLabel;
     private readonly Label _liveCastStatsLabel;
     private readonly Button _stopCastButton;
@@ -265,23 +267,54 @@ public sealed class MainForm : GradientForm
         RefreshMonitorList();
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
-        _pairedWithLabel = new Label { Bounds = new Rectangle(24, 88, 472, 46), Font = new Font("Segoe UI Semibold", 17F) };
+        _pairedWithLabel = new Label { Bounds = new Rectangle(82, 18, 350, 34), Font = new Font("Segoe UI Semibold", 16F) };
+        _elapsedLabel = new Label
+        {
+            Text = "00:00", Bounds = new Rectangle(82, 48, 330, 60),
+            Font = new Font("Segoe UI Semibold", 31F), ForeColor = Color.FromArgb(102, 163, 255),
+        };
+        _qualityLabel = new Label
+        {
+            Text = "●  正在建立连接…", Bounds = new Rectangle(24, 118, 420, 30),
+            Font = new Font("Segoe UI", 10F), ForeColor = ModernUi.Success,
+        };
+        var liveCard = new GlassPanel
+        {
+            Bounds = new Rectangle(24, 82, 472, 166), CornerRadius = 16,
+            GlassTint = Color.FromArgb(215, 20, 39, 62),
+        };
+        liveCard.Controls.AddRange(new Control[]
+        {
+            new Label
+            {
+                Text = "▣", TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Segoe UI Symbol", 34F), ForeColor = Color.FromArgb(184, 205, 239),
+                Bounds = new Rectangle(20, 24, 54, 72),
+            },
+            _pairedWithLabel, _elapsedLabel, _qualityLabel,
+        });
 
         // PLANNING.md §12 "投屏中" 状态里的隐私提醒条 + 时长显示——之前只有开始投屏前那条一次性的
         // privacyLabel，投屏过程中完全没有任何持续提醒或计时，这两个都是这次新加的。
         _privacyReminderLabel = new Label
         {
-            Text = "⚠ 正在投放整个屏幕｜已投屏时长: 00:00:00",
-            ForeColor = Color.DarkRed,
-            Bounds = new Rectangle(24, 252, 472, 52),
+            Text = "♢  当前正在共享所选显示器",
+            ForeColor = ModernUi.Warning,
+            Bounds = new Rectangle(20, 14, 430, 34),
         };
+        var privacyCard = new GlassPanel
+        {
+            Bounds = new Rectangle(24, 264, 472, 62), CornerRadius = 14,
+            GlassTint = Color.FromArgb(215, 66, 49, 24),
+        };
+        privacyCard.Controls.Add(_privacyReminderLabel);
 
         // Height grown from 90 to 108 (+18) to fit RefreshLiveCastStats' new always-visible
         // "（仅代表状态通道送达...）" caveat line without clipping the 5 lines already packed in
         // here — every control below this one shifted down by that same 18px.
-        _liveCastStatsLabel = new Label { Bounds = new Rectangle(24, 134, 472, 108), ForeColor = ModernUi.Muted };
+        _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 38, 430, 120), ForeColor = ModernUi.Muted };
 
-        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(24, 324, 472, 50) };
+        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(24, 344, 472, 50) };
         _stopCastButton.Click += (_, _) => ShowStandby();
         ModernUi.Primary(_stopCastButton, danger: true);
 
@@ -355,10 +388,10 @@ public sealed class MainForm : GradientForm
         _deviceIdentitySelfTestButton.Click += OnDeviceIdentitySelfTestClick;
         _deviceIdentityStatsLabel = new Label { Bounds = new Rectangle(12, 991, 296, 40), ForeColor = Color.DimGray };
 
-        var diagnosticsToggle = new Button { Text = "诊断工具  ▾", Bounds = new Rectangle(24, 394, 472, 36) };
+        var diagnosticsToggle = new Button { Text = "诊断工具  ▾", Bounds = new Rectangle(24, 412, 472, 36) };
         var diagnosticsPanel = new GlassPanel
         {
-            Bounds = new Rectangle(24, 440, 472, 146),
+            Bounds = new Rectangle(24, 456, 472, 130),
             AutoScroll = true,
             AutoScrollMinSize = new Size(0, 1040),
             Visible = false,
@@ -370,7 +403,7 @@ public sealed class MainForm : GradientForm
         };
         diagnosticsPanel.Controls.AddRange(new Control[]
         {
-            diagnosticsNoteLabel,
+            _liveCastStatsLabel, diagnosticsNoteLabel,
             _captureSelfTestButton, _captureStatsLabel,
             _encodeSelfTestButton, _encodeStatsLabel, _transportSelfTestButton, _transportStatsLabel,
             _audioCaptureSelfTestButton, _audioCaptureStatsLabel,
@@ -388,7 +421,7 @@ public sealed class MainForm : GradientForm
         };
         _pairedPanel.Controls.AddRange(new Control[]
         {
-            castingTitle, liveState, _pairedWithLabel, _privacyReminderLabel, _liveCastStatsLabel,
+            castingTitle, liveState, liveCard, privacyCard,
             _stopCastButton, diagnosticsToggle, diagnosticsPanel,
         });
 
@@ -938,13 +971,16 @@ public sealed class MainForm : GradientForm
         // avoids silently showing a wrong, wrapped-around hour count if it ever happens. Purely a
         // display nicety; note this project's README already documents RTP's own 32-bit timestamp
         // wraparound at ~13.25 hours as a separate, more fundamental limit on session length.
-        _privacyReminderLabel.Text =
-            $"⚠ 正在投放整个屏幕｜已投屏时长: {(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}";
+        _elapsedLabel.Text = elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}"
+            : $"{elapsed.Minutes:D2}:{elapsed.Seconds:D2}";
 
         if (_liveCastSession.LastError != null)
         {
             _liveCastStatsLabel.ForeColor = Color.DarkRed;
             _liveCastStatsLabel.Text = $"投屏出错：{_liveCastSession.LastError}";
+            _qualityLabel.ForeColor = ModernUi.Danger;
+            _qualityLabel.Text = "●  投屏连接异常";
             _liveCastStatsTimer.Stop();
             return;
         }
@@ -966,6 +1002,13 @@ public sealed class MainForm : GradientForm
         string latencyNote = _liveCastSession.LastStatusLatencyEstimate is { } latency
             ? $"，延迟估算: {latency.TotalMilliseconds:F0}ms"
             : "";
+        string qualityLatency = _liveCastSession.RealRoundTripEstimate is { } liveRtt
+            ? $"延迟 {liveRtt.TotalMilliseconds:F0} ms"
+            : "延迟测量中";
+        _qualityLabel.ForeColor = _liveCastSession.IsTerminalAlive ? ModernUi.Success : ModernUi.Warning;
+        _qualityLabel.Text = _liveCastSession.IsTerminalAlive
+            ? $"●  {qualityLatency}  ·  终端在线"
+            : $"●  {qualityLatency}  ·  等待终端确认";
         // The trailing "（仅代表状态通道...）" caveat is the one piece of this project's README risk
         // #35 that's actually user-facing rather than just a code comment: it directly answers that
         // risk's own complaint ("这个仓库现在把两者放在UI上却没有特别提醒用户这个区别") without
@@ -1063,7 +1106,9 @@ public sealed class MainForm : GradientForm
         _liveCastSession?.Dispose();
         _liveCastSession = null;
         _liveCastStatsLabel.Text = "";
-        _privacyReminderLabel.Text = "⚠ 正在投放整个屏幕｜已投屏时长: 00:00:00";
+        _privacyReminderLabel.Text = "♢  当前正在共享所选显示器";
+        _elapsedLabel.Text = "00:00";
+        _qualityLabel.Text = "●  正在建立连接…";
 
         if (_captureSelfTest.IsRunning)
         {

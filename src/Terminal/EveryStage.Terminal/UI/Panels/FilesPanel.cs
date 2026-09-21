@@ -186,7 +186,7 @@ public sealed class FilesPanel : UserControl
         _audioBarPanel = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
-            Height = 142,
+            Height = 124,
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
             AutoScroll = true,
@@ -518,13 +518,26 @@ public sealed class FilesPanel : UserControl
 
     private AudioRow BuildAudioRow(MediaFile file)
     {
-        var container = new Panel { Width = 632, Height = 30, Margin = new Padding(2) };
+        var container = new GlassPanel
+        {
+            Width = Math.Max(760, _audioBarPanel.ClientSize.Width - 36), Height = 88,
+            Margin = new Padding(2, 2, 2, 8), CornerRadius = 14,
+            GlassTint = Color.FromArgb(210, 18, 39, 64),
+        };
+
+        var artwork = new Label
+        {
+            Text = "♫", TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font("Segoe UI Symbol", 24F), ForeColor = Color.White,
+            BackColor = Color.FromArgb(35, 78, 124), Bounds = new Rectangle(12, 12, 64, 64),
+        };
 
         var nameLabel = new Label
         {
             Text = Path.GetFileName(file.SourcePath),
             AutoEllipsis = true,
-            Bounds = new Rectangle(4, 4, 200, 22),
+            Font = new Font("Segoe UI Semibold", 11F), ForeColor = ModernUi.Text,
+            Bounds = new Rectangle(92, 12, 300, 26),
         };
 
         // Pause is meaningful only while THIS row is the one PlaybackEngine.CurrentFile actually
@@ -534,7 +547,8 @@ public sealed class FilesPanel : UserControl
         // — same division FloatingPreviewWindow's own "暂停" button already has with a fresh
         // RequestPlay/double-click (it can't start a new file either, only pause/resume whatever's
         // already current).
-        var playPauseButton = new Button { Text = "暂停", Enabled = false, Bounds = new Rectangle(208, 1, 44, 26) };
+        var playPauseButton = new Button { Text = "▶", Enabled = false, Bounds = new Rectangle(92, 46, 40, 34) };
+        ModernUi.StyleButton(playPauseButton, primary: true);
         playPauseButton.Click += (_, _) =>
         {
             if (_playback == null || !ReferenceEquals(_playback.CurrentFile, file)) return;
@@ -542,21 +556,24 @@ public sealed class FilesPanel : UserControl
             RefreshAudioRowLiveState();
         };
 
-        var progressLabel = new Label { TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(256, 4, 90, 22) };
+        var progressLine = new Panel { BackColor = Color.FromArgb(60, 91, 126), Bounds = new Rectangle(144, 62, 205, 3) };
+        var progressLabel = new Label { ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(354, 48, 104, 30) };
 
         // Same fixed-step convention as FloatingPreviewWindow._volumeDownButton/_volumeUpButton
         // (10% per click) — PlaybackEngine.AudioVolume is a single engine-wide value, so these are
         // only enabled while this row is the currently-playing one, same reasoning as playPauseButton
         // above.
-        var volumeDownButton = new Button { Text = "－", Enabled = false, Bounds = new Rectangle(350, 1, 26, 26) };
+        var volumeDownButton = new Button { Text = "－", Enabled = false, Bounds = new Rectangle(470, 48, 32, 30) };
+        ModernUi.StyleButton(volumeDownButton);
         volumeDownButton.Click += (_, _) =>
         {
             if (_playback == null || !ReferenceEquals(_playback.CurrentFile, file)) return;
             _playback.AudioVolume -= 0.1f;
             RefreshAudioRowLiveState();
         };
-        var volumeLabel = new Label { TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(378, 4, 60, 22) };
-        var volumeUpButton = new Button { Text = "＋", Enabled = false, Bounds = new Rectangle(440, 1, 26, 26) };
+        var volumeLabel = new Label { ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(504, 48, 58, 30) };
+        var volumeUpButton = new Button { Text = "＋", Enabled = false, Bounds = new Rectangle(564, 48, 32, 30) };
+        ModernUi.StyleButton(volumeUpButton);
         volumeUpButton.Click += (_, _) =>
         {
             if (_playback == null || !ReferenceEquals(_playback.CurrentFile, file)) return;
@@ -574,7 +591,7 @@ public sealed class FilesPanel : UserControl
         // some other previous value (HoldOnLastFrame) this checkbox has no way to represent anyway —
         // no real loss, since nothing before this checkbox ever let a library entry's OnCompletion be
         // set to anything but its default in the first place.
-        var loopCheckbox = new CheckBox { Text = "循环", Checked = file.OnCompletion == CompletionAction.Loop, Bounds = new Rectangle(470, 4, 56, 22) };
+        var loopCheckbox = new CheckBox { Text = "循环", ForeColor = ModernUi.Muted, Checked = file.OnCompletion == CompletionAction.Loop, Bounds = new Rectangle(610, 52, 62, 24) };
         loopCheckbox.CheckedChanged += (_, _) =>
         {
             var newValue = loopCheckbox.Checked ? CompletionAction.Loop : CompletionAction.NextItem;
@@ -588,12 +605,13 @@ public sealed class FilesPanel : UserControl
         // "独立投屏" — confirmed with the user to mean exactly what double-clicking a tile in
         // _listView already does, nothing new: raise the same FilePlayRequested event MainWindow
         // already wires to PlaybackEngine.RequestPlay(MediaFile).
-        var castButton = new Button { Text = "投屏播放", Bounds = new Rectangle(530, 1, 90, 26) };
+        var castButton = new Button { Text = "▱  投屏", Bounds = new Rectangle(container.Width - 116, 24, 96, 44), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+        ModernUi.StyleButton(castButton, primary: true);
         castButton.Click += (_, _) => OnCastFromAudioBar(file);
 
         container.Controls.AddRange(new Control[]
         {
-            nameLabel, playPauseButton, progressLabel,
+            artwork, nameLabel, playPauseButton, progressLine, progressLabel,
             volumeDownButton, volumeLabel, volumeUpButton,
             loopCheckbox, castButton,
         });
@@ -626,7 +644,7 @@ public sealed class FilesPanel : UserControl
         {
             bool isCurrent = currentFile != null && ReferenceEquals(currentFile, row.File);
             row.PlayPauseButton.Enabled = isCurrent;
-            row.PlayPauseButton.Text = isCurrent && _playback!.IsPaused ? "继续" : "暂停";
+            row.PlayPauseButton.Text = isCurrent && !_playback!.IsPaused ? "Ⅱ" : "▶";
             row.VolumeDownButton.Enabled = isCurrent;
             row.VolumeUpButton.Enabled = isCurrent;
             row.VolumeLabel.Text = isCurrent ? $"{(int)Math.Round(_playback!.AudioVolume * 100)}%" : "";
