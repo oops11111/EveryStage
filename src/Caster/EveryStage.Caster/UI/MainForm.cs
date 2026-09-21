@@ -190,7 +190,7 @@ public sealed class MainForm : GradientForm
         // LoadOrCreate() on) below the paired-terminal-store one — see this class's doc comment.
         ClientSize = new Size(520, 620);
         MinimumSize = new Size(500, 600);
-        FormBorderStyle = FormBorderStyle.FixedSingle;
+        FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false;
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
@@ -427,6 +427,9 @@ public sealed class MainForm : GradientForm
 
         Controls.Add(_pairedPanel);
         Controls.Add(_standbyPanel);
+        var titleBar = new AppTitleBar(this);
+        Controls.Add(titleBar);
+        titleBar.BringToFront();
         ModernUi.StyleTree(this);
         ModernUi.Primary(_startButton);
         ModernUi.Primary(_stopCastButton, danger: true);

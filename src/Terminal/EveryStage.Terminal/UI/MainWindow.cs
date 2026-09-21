@@ -73,6 +73,7 @@ public sealed class MainWindow : GradientForm
         Font = new Font("Segoe UI", 10F);
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
+        FormBorderStyle = FormBorderStyle.None;
         WindowsAppearance.UseDarkTitleBar(this);
 
         var nav = new GlassPanel
@@ -173,6 +174,9 @@ public sealed class MainWindow : GradientForm
 
         Controls.Add(_contentHost);
         Controls.Add(nav);
+        var titleBar = new AppTitleBar(this, "Terminal");
+        Controls.Add(titleBar);
+        titleBar.BringToFront();
 
         // PLANNING.md §11 "异常提示"："右下角Toast通知栈" — added to Controls last (and pinned via
         // its own OnParentChanged/SizeChanged handling, see ToastStack's doc comment) so it renders

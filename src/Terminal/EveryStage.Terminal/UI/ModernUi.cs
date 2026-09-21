@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 
 namespace EveryStage.Terminal.UI;
 
@@ -68,6 +69,25 @@ public class GradientForm : Form
         using var glow = new SolidBrush(Color.FromArgb(28, 55, 125, 218));
         e.Graphics.FillEllipse(glow, ClientSize.Width / 3, -ClientSize.Height / 2,
             ClientSize.Width, ClientSize.Height);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x84 && WindowState == FormWindowState.Normal)
+        {
+            var p = PointToClient(Cursor.Position);
+            const int g = 7;
+            bool l = p.X <= g, r = p.X >= ClientSize.Width - g, t = p.Y <= g, b = p.Y >= ClientSize.Height - g;
+            if (l && t) { m.Result = new IntPtr(13); return; }
+            if (r && t) { m.Result = new IntPtr(14); return; }
+            if (l && b) { m.Result = new IntPtr(16); return; }
+            if (r && b) { m.Result = new IntPtr(17); return; }
+            if (l) { m.Result = new IntPtr(10); return; }
+            if (r) { m.Result = new IntPtr(11); return; }
+            if (t) { m.Result = new IntPtr(12); return; }
+            if (b) { m.Result = new IntPtr(15); return; }
+        }
+        base.WndProc(ref m);
     }
 }
 
@@ -150,6 +170,70 @@ internal sealed class PillButton : Button
         path.CloseFigure();
         return path;
     }
+}
+
+internal sealed class AppTitleBar : Panel
+{
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    private readonly Form _form;
+
+    public AppTitleBar(Form form, string product)
+    {
+        _form = form;
+        Dock = DockStyle.Top;
+        Height = 42;
+        BackColor = Color.FromArgb(9, 23, 39);
+
+        var title = new Label
+        {
+            Text = $"▰  EveryStage {product}", Dock = DockStyle.Left, Width = 260,
+            Padding = new Padding(14, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = ModernUi.Text, Font = new Font("Segoe UI Semibold", 10F),
+        };
+        var close = ChromeButton("×");
+        var maximize = ChromeButton("□");
+        var minimize = ChromeButton("—");
+        close.Click += (_, _) => _form.Close();
+        maximize.Click += (_, _) => ToggleMaximize();
+        minimize.Click += (_, _) => _form.WindowState = FormWindowState.Minimized;
+        close.MouseEnter += (_, _) => close.BackColor = Color.FromArgb(196, 43, 51);
+        close.MouseLeave += (_, _) => close.BackColor = BackColor;
+
+        Controls.Add(title);
+        Controls.Add(close);
+        Controls.Add(maximize);
+        Controls.Add(minimize);
+        title.MouseDown += DragWindow;
+        MouseDown += DragWindow;
+        title.DoubleClick += (_, _) => ToggleMaximize();
+        DoubleClick += (_, _) => ToggleMaximize();
+    }
+
+    private Button ChromeButton(string text)
+    {
+        var button = new Button
+        {
+            Text = text, Dock = DockStyle.Right, Width = 46,
+            FlatStyle = FlatStyle.Flat, BackColor = BackColor, ForeColor = ModernUi.Muted,
+            Font = new Font("Segoe UI Symbol", 11F), TabStop = false,
+        };
+        button.FlatAppearance.BorderSize = 0;
+        return button;
+    }
+
+    private void DragWindow(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        ReleaseCapture();
+        SendMessage(_form.Handle, 0xA1, new IntPtr(2), IntPtr.Zero);
+    }
+
+    private void ToggleMaximize() => _form.WindowState = _form.WindowState == FormWindowState.Maximized
+        ? FormWindowState.Normal : FormWindowState.Maximized;
 }
 
 internal sealed class ToggleSwitch : CheckBox
