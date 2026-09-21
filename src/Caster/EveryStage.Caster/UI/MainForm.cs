@@ -199,9 +199,13 @@ public sealed class MainForm : GradientForm
         {
             Bounds = new Rectangle(24, 104, 472, 190),
             DisplayMember = nameof(TerminalListEntry.DisplayText), // else ListBox shows the record's generated ToString().
-            BorderStyle = BorderStyle.FixedSingle,
             Font = new Font("Segoe UI", 11F),
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 84,
+            BorderStyle = BorderStyle.None,
+            IntegralHeight = false,
         };
+        _terminalListBox.DrawItem += DrawTerminalCard;
         // Only a live (online) entry has a real IP address to pair/cast to — an offline paired
         // entry is shown for visibility (PLANNING.md §12 "已配对直显") but can't be selected to
         // start anything until a fresh beacon from it turns it back into a live entry.
@@ -1099,6 +1103,60 @@ public sealed class MainForm : GradientForm
         // doc comment — re-enumerate every time standby becomes visible again, not just once at
         // startup, so a monitor unplugged/replugged while a cast was running shows up correctly.
         RefreshMonitorList();
+    }
+
+    private void DrawTerminalCard(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || e.Index >= _terminalListBox.Items.Count) return;
+        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        var entry = (TerminalListEntry)_terminalListBox.Items[e.Index];
+        bool selected = (e.State & DrawItemState.Selected) != 0;
+        var card = e.Bounds;
+        card.Inflate(-4, -5);
+        using var path = RoundedCard(card, 13);
+        using var fill = new SolidBrush(selected ? Color.FromArgb(39, 72, 112) : ModernUi.SurfaceRaised);
+        using var border = new Pen(selected ? ModernUi.Accent : ModernUi.Border, selected ? 2F : 1F);
+        e.Graphics.FillPath(fill, path);
+        e.Graphics.DrawPath(border, path);
+
+        var iconRect = new Rectangle(card.Left + 18, card.Top + 18, 42, 32);
+        using var iconPen = new Pen(Color.FromArgb(174, 198, 235), 3F);
+        e.Graphics.DrawRectangle(iconPen, iconRect);
+        e.Graphics.DrawLine(iconPen, iconRect.Left + 13, iconRect.Bottom + 8, iconRect.Right - 13, iconRect.Bottom + 8);
+        e.Graphics.DrawLine(iconPen, iconRect.Left + 21, iconRect.Bottom, iconRect.Left + 21, iconRect.Bottom + 8);
+
+        using var titleFont = new Font("Segoe UI Semibold", 11F);
+        using var metaFont = new Font("Segoe UI", 9F);
+        TextRenderer.DrawText(e.Graphics, entry.DeviceName, titleFont,
+            new Rectangle(card.Left + 78, card.Top + 13, card.Width - 120, 27), ModernUi.Text,
+            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+        string meta = entry.Live != null ? "在线 · 可投屏" : "离线 · 等待终端上线";
+        TextRenderer.DrawText(e.Graphics, meta, metaFont,
+            new Rectangle(card.Left + 78, card.Top + 40, card.Width - 120, 24),
+            entry.Live != null ? ModernUi.Muted : Color.FromArgb(128, 143, 164),
+            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+
+        using var stateBrush = new SolidBrush(entry.Live != null ? ModernUi.Success : Color.FromArgb(91, 108, 130));
+        e.Graphics.FillEllipse(stateBrush, card.Right - 34, card.Top + 31, 12, 12);
+        if (selected)
+        {
+            using var checkFont = new Font("Segoe UI Symbol", 12F, FontStyle.Bold);
+            TextRenderer.DrawText(e.Graphics, "✓", checkFont,
+                new Rectangle(card.Right - 48, card.Top + 22, 32, 32), Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+    }
+
+    private static System.Drawing.Drawing2D.GraphicsPath RoundedCard(Rectangle r, int radius)
+    {
+        int d = radius * 2;
+        var path = new System.Drawing.Drawing2D.GraphicsPath();
+        path.AddArc(r.Left, r.Top, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 
     protected override void Dispose(bool disposing)

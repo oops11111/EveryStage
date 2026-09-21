@@ -114,6 +114,44 @@ internal class GlassPanel : Panel
     }
 }
 
+internal sealed class PillButton : Button
+{
+    public bool Selected { get; set; }
+
+    public PillButton()
+    {
+        FlatStyle = FlatStyle.Flat;
+        FlatAppearance.BorderSize = 0;
+        Height = 38;
+        Padding = new Padding(16, 0, 16, 0);
+        Cursor = Cursors.Hand;
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var rect = ClientRectangle;
+        rect.Inflate(-1, -1);
+        using var path = Rounded(rect, rect.Height / 2);
+        using var fill = new SolidBrush(Selected ? ModernUi.Accent : ModernUi.SurfaceRaised);
+        using var border = new Pen(Selected ? Color.FromArgb(120, 117, 181, 255) : ModernUi.Border);
+        e.Graphics.FillPath(fill, path);
+        e.Graphics.DrawPath(border, path);
+        TextRenderer.DrawText(e.Graphics, Text, Font, rect, ModernUi.Text,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+    }
+
+    private static GraphicsPath Rounded(Rectangle r, int radius)
+    {
+        int d = radius * 2;
+        var path = new GraphicsPath();
+        path.AddArc(r.Left, r.Top, d, d, 90, 180);
+        path.AddArc(r.Right - d, r.Top, d, d, 270, 180);
+        path.CloseFigure();
+        return path;
+    }
+}
+
 internal sealed class ToggleSwitch : CheckBox
 {
     public ToggleSwitch()

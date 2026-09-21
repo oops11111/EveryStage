@@ -147,8 +147,10 @@ public sealed class FilesPanel : UserControl
         _listView = new ListView
         {
             Dock = DockStyle.Fill,
-            View = View.LargeIcon,
+            View = View.Tile,
+            TileSize = new Size(220, 188),
             LargeImageList = _thumbnails,
+            OwnerDraw = true,
             // PLANNING.md §11 "批量选择": Ctrl/Shift+点击 multi-select now works, and both "删除"
             // (below) and "加入活动" (OnAddToActivityClick) handle any number of selected items —
             // see class doc comment for why the remaining action, "统一设置属性", still isn't
@@ -162,6 +164,7 @@ public sealed class FilesPanel : UserControl
             Font = new Font("Segoe UI", 10F),
             Padding = new Padding(14),
         };
+        _listView.DrawItem += DrawMediaCard;
         _listView.SelectedIndexChanged += (_, _) =>
         {
             bool hasSelection = _listView.SelectedItems.Count > 0;
@@ -270,15 +273,17 @@ public sealed class FilesPanel : UserControl
 
     private Button MakeFilterButton(string label, MediaKind? filter)
     {
-        var button = new Button { Text = label, AutoSize = true, Height = 36, Margin = new Padding(4, 0, 4, 0) };
-        ModernUi.StyleButton(button, primary: _activeFilter == filter);
+        var button = new PillButton { Text = label, AutoSize = true, Height = 38, Margin = new Padding(4, 0, 4, 0), Selected = _activeFilter == filter };
         button.Click += (_, _) =>
         {
             _activeFilter = filter;
             if (button.Parent != null) foreach (Control control in button.Parent.Controls)
             {
-                if (control is Button filterButton && filterButton.Tag != null)
-                    ModernUi.StyleButton(filterButton, primary: ReferenceEquals(filterButton, button));
+                if (control is PillButton filterButton && filterButton.Tag != null)
+                {
+                    filterButton.Selected = ReferenceEquals(filterButton, button);
+                    filterButton.Invalidate();
+                }
             }
             Refresh_();
         };
@@ -688,6 +693,79 @@ public sealed class FilesPanel : UserControl
             _ => BuildKindTile("•", "文件", ModernUi.Accent),
         };
     }
+
+    private void DrawMediaCard(object? sender, DrawListViewItemEventArgs e)
+    {
+        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        var card = e.Bounds;
+        card.Inflate(-7, -7);
+        bool selected = e.Item.Selected;
+        using var path = RoundedCard(card, 14);
+        using var fill = new SolidBrush(selected ? Color.FromArgb(38, 72, 112) : ModernUi.SurfaceRaised);
+        using var border = new Pen(selected ? ModernUi.Accent : ModernUi.Border, selected ? 2F : 1F);
+        e.Graphics.FillPath(fill, path);
+        e.Graphics.DrawPath(border, path);
+
+        var imageRect = new Rectangle(card.Left + 12, card.Top + 12, card.Width - 24, 104);
+        using (var imagePath = RoundedCard(imageRect, 10))
+        {
+            var previous = e.Graphics.Clip;
+            e.Graphics.SetClip(imagePath);
+            if (e.Item.ImageKey.Length > 0 && _thumbnails.Images[e.Item.ImageKey] is Image image)
+                e.Graphics.DrawImage(image, imageRect);
+            e.Graphics.Clip = previous;
+        }
+
+        string name = e.Item.Tag is MediaFile file ? Path.GetFileName(file.SourcePath) : e.Item.Text;
+        var nameRect = new Rectangle(card.Left + 12, imageRect.Bottom + 9, card.Width - 24, 25);
+        using var nameFont = new Font("Segoe UI Semibold", 10F);
+        TextRenderer.DrawText(e.Graphics, name, nameFont, nameRect,
+            ModernUi.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+
+        string meta = "";
+        if (e.Item.Tag is MediaFile media)
+        {
+            try
+            {
+                var info = new FileInfo(media.SourcePath);
+                meta = $"{KindLabel(media.Kind)}  ·  {FormatBytes(info.Length)}";
+            }
+            catch (Exception) { meta = KindLabel(media.Kind); }
+        }
+        var metaRect = new Rectangle(card.Left + 12, nameRect.Bottom, card.Width - 24, 20);
+        using var metaFont = new Font("Segoe UI", 8.5F);
+        TextRenderer.DrawText(e.Graphics, meta, metaFont, metaRect,
+            ModernUi.Muted, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+    }
+
+    private static System.Drawing.Drawing2D.GraphicsPath RoundedCard(Rectangle r, int radius)
+    {
+        int d = radius * 2;
+        var path = new System.Drawing.Drawing2D.GraphicsPath();
+        path.AddArc(r.Left, r.Top, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+
+    private static string FormatBytes(long bytes) => bytes switch
+    {
+        >= 1024L * 1024 * 1024 => $"{bytes / (1024d * 1024 * 1024):0.0} GB",
+        >= 1024L * 1024 => $"{bytes / (1024d * 1024):0.0} MB",
+        >= 1024L => $"{bytes / 1024d:0} KB",
+        _ => $"{bytes} B",
+    };
+
+    private static string KindLabel(MediaKind kind) => kind switch
+    {
+        MediaKind.Image => "图片",
+        MediaKind.Video => "视频",
+        MediaKind.Document => "文档",
+        MediaKind.Audio => "音频",
+        _ => "文件",
+    };
 
     private void PlayOrPreviewSelected()
     {
