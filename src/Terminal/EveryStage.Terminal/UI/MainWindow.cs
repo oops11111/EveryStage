@@ -67,8 +67,8 @@ public sealed class MainWindow : Form
         _scenarioRepository = scenarioRepository;
 
         Text = "EveryStage Terminal";
-        ClientSize = new Size(1280, 800);
-        MinimumSize = new Size(1100, 700);
+        ClientSize = new Size(1050, 680);
+        MinimumSize = new Size(900, 600);
         BackColor = ModernUi.Background;
         Font = new Font("Segoe UI", 10F);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -150,7 +150,7 @@ public sealed class MainWindow : Form
         _fileOpLog = new FileOperationLogger();
 
         _filesPanel = new FilesPanel(library, _fileOpLog, scenarioStore, scenarioRepository, _playback);
-        _filesPanel.FilePlayRequested += file => _playback?.RequestPlay(file);
+        _filesPanel.FilePlayRequested += OnFilePlayRequested;
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);
         _activitiesPanel = new ActivitiesPanel(
@@ -230,6 +230,7 @@ public sealed class MainWindow : Form
         _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
         _activitiesPanel.AttachPlaybackEngine(playback);
         _filesPanel.AttachPlaybackEngine(playback);
+        UpdateStatusLabel();
     }
 
     private void ShowPanel(Control panel)
@@ -246,10 +247,42 @@ public sealed class MainWindow : Form
 
     private void OnStateChanged(OutputState state) => UpdateStatusLabel();
 
+    private void OnFilePlayRequested(MediaFile file)
+    {
+        if (_playback != null)
+        {
+            _playback.RequestPlay(file);
+            return;
+        }
+
+        // A dedicated output display is not available, so the D3D-backed output graph cannot be
+        // created. Do not silently ignore the click: open the media through Windows' registered
+        // local application so operators can still verify the imported file on a single-monitor
+        // setup. Once an extended display is attached, the same action automatically returns to
+        // EveryStage's managed output path through AttachPlaybackEngine.
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(file.SourcePath) { UseShellExecute = true });
+            _statusLabel.Text = $"● 本机预览：{Path.GetFileName(file.SourcePath)}";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"无法使用系统默认程序预览该文件：\n\n{ex.Message}",
+                "本机预览失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
     private void OnSettingsChanged(AppSettings settings) => ThemeManager.Apply(this, settings.Theme);
 
     private void UpdateStatusLabel()
     {
+        if (_playback == null)
+        {
+            _statusLabel.Text = "● 本机预览模式\n未连接扩展屏";
+            _recallPreviewButton.Enabled = false;
+            _filesPanel.SetOutputActive(false);
+            return;
+        }
         bool active = _stateMachine.State == OutputState.Active;
         _statusLabel.Text = active ? "● 输出中" : "○ 待机中";
         _recallPreviewButton.Enabled = active;

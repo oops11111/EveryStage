@@ -62,6 +62,7 @@ public sealed class FilesPanel : UserControl
     private readonly ImageList _thumbnails;
     private readonly Button _removeButton;
     private readonly Button _addToActivityButton;
+    private readonly Button _previewButton;
     private MediaKind? _activeFilter;
     private bool _outputActive;
 
@@ -137,6 +138,11 @@ public sealed class FilesPanel : UserControl
         _addToActivityButton.Click += OnAddToActivityClick;
         toolbar.Controls.Add(_addToActivityButton);
 
+        _previewButton = new Button { Text = "播放 / 预览", AutoSize = true, Height = 36, Enabled = false };
+        ModernUi.StyleButton(_previewButton, primary: true);
+        _previewButton.Click += (_, _) => PlayOrPreviewSelected();
+        toolbar.Controls.Add(_previewButton);
+
         _thumbnails = new ImageList { ImageSize = new Size(112, 112), ColorDepth = ColorDepth.Depth32Bit };
         _listView = new ListView
         {
@@ -161,11 +167,11 @@ public sealed class FilesPanel : UserControl
             bool hasSelection = _listView.SelectedItems.Count > 0;
             _removeButton.Enabled = hasSelection;
             _addToActivityButton.Enabled = hasSelection;
+            _previewButton.Enabled = hasSelection;
         };
         _listView.DoubleClick += (_, _) =>
         {
-            if (_listView.SelectedItems.Count > 0 && _listView.SelectedItems[0].Tag is MediaFile file)
-                FilePlayRequested?.Invoke(file);
+            PlayOrPreviewSelected();
         };
 
         DragEnter += OnDragEnter;
@@ -656,18 +662,63 @@ public sealed class FilesPanel : UserControl
             {
                 using var stream = File.OpenRead(file.SourcePath);
                 using var loaded = Image.FromStream(stream);
-                return new Bitmap(loaded, new Size(96, 96));
+                var thumbnail = new Bitmap(112, 112);
+                using var graphics = Graphics.FromImage(thumbnail);
+                graphics.Clear(Color.FromArgb(20, 37, 58));
+                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                float scale = Math.Min(112f / loaded.Width, 112f / loaded.Height);
+                int width = Math.Max(1, (int)(loaded.Width * scale));
+                int height = Math.Max(1, (int)(loaded.Height * scale));
+                graphics.DrawImage(loaded, (112 - width) / 2, (112 - height) / 2, width, height);
+                return thumbnail;
             }
             catch (Exception ex) when (ex is IOException or OutOfMemoryException or ArgumentException)
             {
                 // Missing/moved/corrupt file since it was imported — show a warning icon rather
                 // than let a bad file crash the whole library view.
-                return SystemIcons.Warning.ToBitmap();
+                return BuildKindTile("!", "文件不可用", Color.FromArgb(186, 55, 65));
             }
         }
 
-        // Video/Document/Audio: generic placeholder — see class doc comment on why a real
-        // thumbnail (decoded video frame / PDF first page / waveform) isn't implemented here.
-        return SystemIcons.Application.ToBitmap();
+        return file.Kind switch
+        {
+            MediaKind.Video => BuildKindTile("▶", "视频", Color.FromArgb(105, 74, 220)),
+            MediaKind.Document => BuildKindTile(DocumentBadge(file.SourcePath), "文档", Color.FromArgb(44, 113, 218)),
+            MediaKind.Audio => BuildKindTile("♫", "音频", Color.FromArgb(34, 154, 130)),
+            _ => BuildKindTile("•", "文件", ModernUi.Accent),
+        };
+    }
+
+    private void PlayOrPreviewSelected()
+    {
+        if (_listView.SelectedItems.Count > 0 && _listView.SelectedItems[0].Tag is MediaFile file)
+            FilePlayRequested?.Invoke(file);
+    }
+
+    private static string DocumentBadge(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".pdf" => "PDF",
+        ".ppt" or ".pptx" => "P",
+        ".xls" or ".xlsx" => "X",
+        ".doc" or ".docx" => "W",
+        _ => "DOC",
+    };
+
+    private static Bitmap BuildKindTile(string badge, string caption, Color accent)
+    {
+        var bitmap = new Bitmap(112, 112);
+        using var graphics = Graphics.FromImage(bitmap);
+        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        graphics.Clear(Color.FromArgb(20, 37, 58));
+        using var accentBrush = new SolidBrush(accent);
+        using var badgeBrush = new SolidBrush(Color.White);
+        using var captionBrush = new SolidBrush(Color.FromArgb(180, 199, 224));
+        using var badgeFont = new Font("Segoe UI Semibold", badge.Length > 2 ? 17F : 28F, FontStyle.Bold);
+        using var captionFont = new Font("Segoe UI", 9F);
+        using var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        graphics.FillEllipse(accentBrush, 25, 14, 62, 62);
+        graphics.DrawString(badge, badgeFont, badgeBrush, new RectangleF(25, 14, 62, 62), centered);
+        graphics.DrawString(caption, captionFont, captionBrush, new RectangleF(4, 84, 104, 22), centered);
+        return bitmap;
     }
 }
