@@ -51,6 +51,42 @@ internal static class ModernUi
             button.ForeColor = selected ? Color.White : Muted;
         }
     }
+
+    public static void MakeResponsiveToolbar(FlowLayoutPanel toolbar, int minimumHeight = 44)
+    {
+        toolbar.MinimumSize = new Size(0, minimumHeight);
+        toolbar.WrapContents = true;
+        toolbar.Padding = new Padding(6, 5, 6, 5);
+        toolbar.BackColor = Background;
+        toolbar.Layout += (_, _) =>
+        {
+            if (toolbar.Controls.Count == 0) return;
+            int required = toolbar.Controls.Cast<Control>().Max(control => control.Bottom + control.Margin.Bottom)
+                + toolbar.Padding.Bottom;
+            required = Math.Max(minimumHeight, required);
+            if (toolbar.Height != required) toolbar.Height = required;
+        };
+    }
+
+    public static void StyleComboBox(ComboBox comboBox)
+    {
+        comboBox.DrawMode = DrawMode.OwnerDrawFixed;
+        comboBox.FlatStyle = FlatStyle.Flat;
+        comboBox.BackColor = SurfaceRaised;
+        comboBox.ForeColor = Text;
+        comboBox.ItemHeight = 26;
+        comboBox.DrawItem += (_, e) =>
+        {
+            if (e.Index < 0) return;
+            bool selected = (e.State & DrawItemState.Selected) != 0;
+            using var background = new SolidBrush(selected ? Color.FromArgb(38, 72, 112) : SurfaceRaised);
+            e.Graphics.FillRectangle(background, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, comboBox.Items[e.Index]?.ToString() ?? string.Empty,
+                comboBox.Font, new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, e.Bounds.Width - 12, e.Bounds.Height),
+                Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
+        };
+    }
 }
 
 public class GradientForm : Form

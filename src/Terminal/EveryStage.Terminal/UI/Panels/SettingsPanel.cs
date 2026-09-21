@@ -42,7 +42,23 @@ public sealed class SettingsPanel : UserControl
         _identity = identity;
         Dock = DockStyle.Fill;
 
-        var tabs = new TabControl { Dock = DockStyle.Fill };
+        var tabs = new TabControl
+        {
+            Dock = DockStyle.Fill,
+            DrawMode = TabDrawMode.OwnerDrawFixed,
+            ItemSize = new Size(112, 34),
+            SizeMode = TabSizeMode.Fixed,
+        };
+        tabs.DrawItem += (_, e) =>
+        {
+            bool selected = e.Index == tabs.SelectedIndex;
+            var bounds = tabs.GetTabRect(e.Index);
+            using var background = new SolidBrush(selected ? ModernUi.Accent : ModernUi.SurfaceRaised);
+            e.Graphics.FillRectangle(background, bounds);
+            TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, tabs.Font, bounds,
+                selected ? Color.White : ModernUi.Muted,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        };
 
         var settings = _settingsStore.Current;
 
@@ -56,6 +72,7 @@ public sealed class SettingsPanel : UserControl
         };
         var themeLabel = new Label { Text = "界面主题：", AutoSize = true, Location = new Point(16, 78) };
         _themeComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(16, 100), Width = 180 };
+        ModernUi.StyleComboBox(_themeComboBox);
         _themeComboBox.Items.AddRange(new object[] { "白色系", "黑色系", "高科技系" });
         _themeComboBox.SelectedIndex = Math.Clamp((int)settings.Theme, 0, _themeComboBox.Items.Count - 1);
         var generalNote = new Label
@@ -71,6 +88,7 @@ public sealed class SettingsPanel : UserControl
         // --- 显示 ---
         var monitorLabel = new Label { Text = "扩展屏选择：", AutoSize = true, Location = new Point(16, 20) };
         _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(16, 44), Width = 360 };
+        ModernUi.StyleComboBox(_monitorComboBox);
         PopulateMonitorComboBox(settings.PreferredMonitorDeviceName);
         var displayNote = new Label
         {
@@ -121,6 +139,7 @@ public sealed class SettingsPanel : UserControl
         var deviceNameLabel = new Label { Text = "设备名称（其他设备发现/配对本机时看到的名字）：", AutoSize = true, Location = new Point(16, 20) };
         _deviceNameTextBox = new TextBox { Text = _identity.DeviceName, Location = new Point(16, 44), Width = 280 };
         var saveDeviceNameButton = new Button { Text = "保存设备名称", Location = new Point(304, 43), Width = 100 };
+        ModernUi.StyleButton(saveDeviceNameButton);
         saveDeviceNameButton.Click += OnSaveDeviceNameClick;
         var networkNote = new Label
         {
@@ -146,8 +165,10 @@ public sealed class SettingsPanel : UserControl
         // --- 诊断 ---
         _diagnosticsLabel = new Label { AutoSize = true, Location = new Point(16, 16) };
         var refreshDiagnosticsButton = new Button { Text = "刷新诊断", Location = new Point(16, 180), Width = 100 };
+        ModernUi.StyleButton(refreshDiagnosticsButton);
         refreshDiagnosticsButton.Click += (_, _) => RefreshDiagnostics();
         var exportLogsButton = new Button { Text = "导出日志...", Location = new Point(124, 180), Width = 100 };
+        ModernUi.StyleButton(exportLogsButton);
         exportLogsButton.Click += OnExportLogsClick;
         var diagnosticsTab = new TabPage("诊断");
         diagnosticsTab.Controls.AddRange(new Control[] { _diagnosticsLabel, refreshDiagnosticsButton, exportLogsButton });
@@ -156,6 +177,7 @@ public sealed class SettingsPanel : UserControl
         tabs.TabPages.AddRange(new[] { generalTab, displayTab, playbackTab, networkTab, diagnosticsTab, aboutTab });
 
         var saveSettingsButton = new Button { Text = "保存设置", Dock = DockStyle.Left, Width = 120, Height = 32 };
+        ModernUi.StyleButton(saveSettingsButton, primary: true);
         saveSettingsButton.Click += OnSaveSettingsClick;
         _savedLabel = new Label { ForeColor = Color.SeaGreen, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0) };
 

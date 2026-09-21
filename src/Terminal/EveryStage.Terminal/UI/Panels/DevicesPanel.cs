@@ -26,12 +26,39 @@ public sealed class DevicesPanel : UserControl
         _connectionLog = connectionLog;
         Dock = DockStyle.Fill;
 
-        _listView = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true };
+        _listView = new ListView
+        {
+            Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true,
+            OwnerDraw = true, BorderStyle = BorderStyle.None, GridLines = false,
+            BackColor = ModernUi.Surface, ForeColor = ModernUi.Text, HeaderStyle = ColumnHeaderStyle.Nonclickable,
+        };
         _listView.Columns.Add("设备名", 160);
         _listView.Columns.Add("信任状态", 100);
         _listView.Columns.Add("允许被投放", 90);
         _listView.Columns.Add("允许被监看", 90);
         _listView.Columns.Add("配对时间", 140);
+        _listView.DrawColumnHeader += (_, e) =>
+        {
+            using var background = new SolidBrush(ModernUi.SurfaceRaised);
+            using var border = new Pen(ModernUi.Border);
+            using var headerFont = new Font("Segoe UI Semibold", 9.5F);
+            e.Graphics.FillRectangle(background, e.Bounds);
+            e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
+            TextRenderer.DrawText(e.Graphics, e.Header?.Text ?? string.Empty,
+                headerFont, new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, e.Bounds.Width - 14, e.Bounds.Height),
+                ModernUi.Muted, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        };
+        _listView.DrawItem += (_, e) => e.DrawDefault = false;
+        _listView.DrawSubItem += (_, e) =>
+        {
+            Color backgroundColor = e.Item?.Selected == true ? Color.FromArgb(38, 72, 112)
+                : e.ItemIndex % 2 == 0 ? ModernUi.Surface : Color.FromArgb(21, 42, 66);
+            using var background = new SolidBrush(backgroundColor);
+            e.Graphics.FillRectangle(background, e.Bounds);
+            TextRenderer.DrawText(e.Graphics, e.SubItem?.Text ?? string.Empty, _listView.Font,
+                new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, e.Bounds.Width - 14, e.Bounds.Height),
+                ModernUi.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        };
         _listView.SelectedIndexChanged += (_, _) =>
         {
             _removeButton!.Enabled = _listView.SelectedItems.Count > 0;
@@ -49,9 +76,11 @@ public sealed class DevicesPanel : UserControl
         // otherwise favors absolute Bounds over stacking multiple same-edge-docked controls, whose
         // relative order depends on Controls collection order in a way that's easy to get backwards.
         _editPermissionsButton = new Button { Text = "编辑权限", Bounds = new Rectangle(8, 4, 140, 32), Enabled = false };
+        ModernUi.StyleButton(_editPermissionsButton);
         _editPermissionsButton.Click += OnEditPermissionsClick;
 
         _removeButton = new Button { Text = "移除配对", Bounds = new Rectangle(156, 4, 140, 32), Enabled = false };
+        ModernUi.StyleButton(_removeButton, danger: true);
         _removeButton.Click += OnRemoveClick;
 
         var buttonBar = new Panel { Dock = DockStyle.Bottom, Height = 40 };

@@ -81,8 +81,10 @@ public sealed class ActivitiesPanel : UserControl
         EnsureAtLeastOneScenario();
 
         // --- 方案选择器 ---
-        var scenarioBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32 };
+        var scenarioBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 44 };
+        ModernUi.MakeResponsiveToolbar(scenarioBar);
         _scenarioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+        ModernUi.StyleComboBox(_scenarioCombo);
         _scenarioCombo.SelectedIndexChanged += OnScenarioComboChanged;
         var newScenarioButton = new Button { Text = "新建方案", AutoSize = true };
         newScenarioButton.Click += (_, _) => OnNewScenario();
@@ -93,7 +95,8 @@ public sealed class ActivitiesPanel : UserControl
         scenarioBar.Controls.AddRange(new Control[] { _scenarioCombo, newScenarioButton, saveAsButton, deleteScenarioButton });
 
         // --- 活动列表工具栏 ---
-        var activityBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 32 };
+        var activityBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 44 };
+        ModernUi.MakeResponsiveToolbar(activityBar);
         var newActivityButton = new Button { Text = "新建活动", AutoSize = true };
         newActivityButton.Click += (_, _) => OnNewActivity();
         var renameActivityButton = new Button { Text = "重命名活动", AutoSize = true };
@@ -162,7 +165,24 @@ public sealed class ActivitiesPanel : UserControl
             _batchPropertiesButton, _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
         });
 
-        _tree = new TreeView { Dock = DockStyle.Fill };
+        foreach (var button in scenarioBar.Controls.OfType<Button>().Concat(activityBar.Controls.OfType<Button>()))
+        {
+            button.Height = 32;
+            ModernUi.StyleButton(button);
+        }
+
+        _tree = new TreeView
+        {
+            Dock = DockStyle.Fill,
+            BackColor = ModernUi.Surface,
+            ForeColor = ModernUi.Text,
+            BorderStyle = BorderStyle.None,
+            LineColor = ModernUi.Border,
+            ItemHeight = 30,
+            ShowLines = false,
+            ShowRootLines = false,
+            HideSelection = false,
+        };
         _tree.AfterSelect += (_, _) => UpdateButtonStates();
         _tree.NodeMouseDoubleClick += OnNodeDoubleClick;
         _tree.NodeMouseClick += OnTreeNodeMouseClick;
