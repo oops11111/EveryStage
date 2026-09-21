@@ -132,7 +132,8 @@ public sealed class MainWindow : GradientForm
         {
             ForeColor = ModernUi.Success,
             AutoSize = true,
-            Location = new Point(18, 748),
+            Location = new Point(18, 590),
+            MaximumSize = new Size(126, 0),
             Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
         };
 
