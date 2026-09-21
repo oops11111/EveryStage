@@ -261,7 +261,7 @@ public sealed class MainForm : GradientForm
 
         _standbyPanel = new GlassPanel
         {
-            Dock = DockStyle.Fill, Padding = new Padding(8), CornerRadius = 20,
+            Dock = DockStyle.Fill, Padding = new Padding(8), CornerRadius = 20, AutoScroll = true,
             GlassTint = Color.FromArgb(190, 12, 31, 52),
         };
         _standbyPanel.Controls.AddRange(new Control[]
@@ -421,7 +421,7 @@ public sealed class MainForm : GradientForm
 
         _pairedPanel = new GlassPanel
         {
-            Dock = DockStyle.Fill, Visible = false, Padding = new Padding(8), CornerRadius = 20,
+            Dock = DockStyle.Fill, Visible = false, Padding = new Padding(8), CornerRadius = 20, AutoScroll = true,
             GlassTint = Color.FromArgb(190, 12, 31, 52),
         };
         _pairedPanel.Controls.AddRange(new Control[]

@@ -135,10 +135,56 @@ internal static class ModernUi
 
 public class GradientForm : Form
 {
+    private Size _logicalMinimumSize;
+
     public GradientForm()
     {
         DoubleBuffered = true;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        CaptureLogicalMinimumSize();
+        FitToCurrentWorkingArea();
+        base.OnShown(e);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        FitToCurrentWorkingArea();
+    }
+
+    private void CaptureLogicalMinimumSize()
+    {
+        if (!_logicalMinimumSize.IsEmpty || MinimumSize.IsEmpty) return;
+        _logicalMinimumSize = new Size(
+            Math.Max(1, MinimumSize.Width * 96 / DeviceDpi),
+            Math.Max(1, MinimumSize.Height * 96 / DeviceDpi));
+    }
+
+    private void FitToCurrentWorkingArea()
+    {
+        if (WindowState != FormWindowState.Normal) return;
+
+        CaptureLogicalMinimumSize();
+        Rectangle workingArea = Screen.FromControl(this).WorkingArea;
+        int margin = LogicalToDeviceUnits(12);
+        int maximumWidth = Math.Max(LogicalToDeviceUnits(320), workingArea.Width - margin * 2);
+        int maximumHeight = Math.Max(LogicalToDeviceUnits(320), workingArea.Height - margin * 2);
+
+        if (!_logicalMinimumSize.IsEmpty)
+        {
+            MinimumSize = new Size(
+                Math.Min(LogicalToDeviceUnits(_logicalMinimumSize.Width), maximumWidth),
+                Math.Min(LogicalToDeviceUnits(_logicalMinimumSize.Height), maximumHeight));
+        }
+
+        Size = new Size(Math.Min(Width, maximumWidth), Math.Min(Height, maximumHeight));
+        Location = new Point(
+            Math.Clamp(Left, workingArea.Left + margin, Math.Max(workingArea.Left + margin, workingArea.Right - margin - Width)),
+            Math.Clamp(Top, workingArea.Top + margin, Math.Max(workingArea.Top + margin, workingArea.Bottom - margin - Height)));
     }
 
     protected override void OnPaintBackground(PaintEventArgs e)

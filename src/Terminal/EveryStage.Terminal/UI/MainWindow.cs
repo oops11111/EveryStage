@@ -78,7 +78,7 @@ public sealed class MainWindow : GradientForm
 
         var nav = new GlassPanel
         {
-            Dock = DockStyle.Left, Width = 160, Padding = new Padding(10), CornerRadius = 0,
+            Dock = DockStyle.Left, Width = 160, Padding = new Padding(10), CornerRadius = 0, AutoScroll = true,
             GlassTint = Color.FromArgb(220, 8, 23, 40),
         };
 
