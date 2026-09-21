@@ -82,7 +82,7 @@ public class GradientForm : Form
         if (m.Msg == 0x84 && WindowState == FormWindowState.Normal)
         {
             var p = PointToClient(Cursor.Position);
-            const int g = 6;
+            int g = LogicalToDeviceUnits(6);
             bool l = p.X <= g, r = p.X >= ClientSize.Width - g, t = p.Y <= g, b = p.Y >= ClientSize.Height - g;
             if (l && t) { m.Result = new IntPtr(13); return; }
             if (r && t) { m.Result = new IntPtr(14); return; }
@@ -112,7 +112,7 @@ internal class GlassPanel : Panel
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = Rounded(ClientRectangle, CornerRadius);
+        using var path = Rounded(ClientRectangle, LogicalToDeviceUnits(CornerRadius));
         using var fill = new LinearGradientBrush(ClientRectangle,
             Color.FromArgb(Math.Min(255, GlassTint.A + 25), GlassTint), GlassTint, 112F);
         e.Graphics.FillPath(fill, path);
