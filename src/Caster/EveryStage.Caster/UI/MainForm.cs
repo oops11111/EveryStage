@@ -84,7 +84,7 @@ namespace EveryStage.Caster.UI;
 /// <see cref="ScreenCaptureSource"/>'s — previously that was hardcoded to 0 (whatever DXGI enumerates
 /// first) with no UI to change it at all.
 /// </summary>
-public sealed class MainForm : Form
+public sealed class MainForm : GradientForm
 {
     private readonly TerminalDiscoveryClient _discoveryClient;
     private readonly DeviceIdentity _identity;
@@ -248,7 +248,11 @@ public sealed class MainForm : Form
         };
         _removePairingButton.Click += OnRemovePairingClick;
 
-        _standbyPanel = new Panel { Dock = DockStyle.Fill };
+        _standbyPanel = new GlassPanel
+        {
+            Dock = DockStyle.Fill, Padding = new Padding(8), CornerRadius = 20,
+            GlassTint = Color.FromArgb(190, 12, 31, 52),
+        };
         _standbyPanel.Controls.AddRange(new Control[]
         {
             standbyTitle, connected, targetLabel, _terminalListBox, privacyLabel, monitorLabel,
@@ -348,7 +352,7 @@ public sealed class MainForm : Form
         _deviceIdentityStatsLabel = new Label { Bounds = new Rectangle(12, 991, 296, 40), ForeColor = Color.DimGray };
 
         var diagnosticsToggle = new Button { Text = "诊断工具  ▾", Bounds = new Rectangle(24, 394, 472, 36) };
-        var diagnosticsPanel = new Panel
+        var diagnosticsPanel = new GlassPanel
         {
             Bounds = new Rectangle(24, 440, 472, 146),
             AutoScroll = true,
@@ -373,7 +377,11 @@ public sealed class MainForm : Form
             _deviceIdentitySelfTestButton, _deviceIdentityStatsLabel,
         });
 
-        _pairedPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
+        _pairedPanel = new GlassPanel
+        {
+            Dock = DockStyle.Fill, Visible = false, Padding = new Padding(8), CornerRadius = 20,
+            GlassTint = Color.FromArgb(190, 12, 31, 52),
+        };
         _pairedPanel.Controls.AddRange(new Control[]
         {
             castingTitle, liveState, _pairedWithLabel, _privacyReminderLabel, _liveCastStatsLabel,

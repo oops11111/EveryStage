@@ -21,10 +21,12 @@ public static class ThemeManager
         control.ForeColor = palette.Foreground;
         control.BackColor = control switch
         {
+            GlassPanel => Color.Transparent,
             Button modernButton when modernButton.BackColor == ModernUi.Accent || modernButton.BackColor == ModernUi.Danger => modernButton.BackColor,
             Button => palette.Surface,
             TextBoxBase or ListView or TreeView or ListBox or ComboBox or NumericUpDown => palette.Surface,
             TabPage => palette.Background,
+            UserControl userControl when palette.Background == ModernUi.Background && userControl.BackColor == Color.Transparent => Color.Transparent,
             Panel panel when palette.Background == ModernUi.Background && panel.BackColor is var existing
                 && (existing == ModernUi.Rail || existing == ModernUi.Surface || existing == ModernUi.SurfaceRaised) => existing,
             _ => palette.Background,

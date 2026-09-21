@@ -101,7 +101,7 @@ public sealed class FilesPanel : UserControl
         if (_playback != null) _playback.FileStarted += OnFileStarted;
         Dock = DockStyle.Fill;
         AllowDrop = true;
-        BackColor = ModernUi.Background;
+        BackColor = Color.Transparent;
         Padding = new Padding(0);
 
         var toolbar = new FlowLayoutPanel

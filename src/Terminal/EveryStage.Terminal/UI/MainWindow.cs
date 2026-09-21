@@ -28,7 +28,7 @@ namespace EveryStage.Terminal.UI;
 /// <see cref="PlaybackEngine.PlaybackAbnormallyInterrupted"/>, see
 /// <see cref="OnPlaybackAbnormallyInterrupted"/>.
 /// </summary>
-public sealed class MainWindow : Form
+public sealed class MainWindow : GradientForm
 {
     private readonly OutputStateMachine _stateMachine;
     private readonly SettingsStore _settingsStore;
@@ -75,7 +75,11 @@ public sealed class MainWindow : Form
         StartPosition = FormStartPosition.CenterScreen;
         WindowsAppearance.UseDarkTitleBar(this);
 
-        var nav = new Panel { Dock = DockStyle.Left, Width = 178, BackColor = ModernUi.Rail, Padding = new Padding(12) };
+        var nav = new GlassPanel
+        {
+            Dock = DockStyle.Left, Width = 178, Padding = new Padding(12), CornerRadius = 0,
+            GlassTint = Color.FromArgb(220, 8, 23, 40),
+        };
 
         var brand = new Label
         {
@@ -138,7 +142,11 @@ public sealed class MainWindow : Form
             _recallPreviewButton, _statusLabel,
         });
 
-        _contentHost = new Panel { Dock = DockStyle.Fill, BackColor = ModernUi.Background, Padding = new Padding(28) };
+        _contentHost = new GlassPanel
+        {
+            Dock = DockStyle.Fill, Padding = new Padding(28), CornerRadius = 22,
+            GlassTint = Color.FromArgb(190, 15, 35, 58),
+        };
 
         // One shared instance rather than a separate `new FileOperationLogger()` per panel: both
         // panels' loggers ultimately append to the same physical file

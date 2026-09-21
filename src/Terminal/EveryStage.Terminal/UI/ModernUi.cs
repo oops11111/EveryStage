@@ -52,6 +52,68 @@ internal static class ModernUi
     }
 }
 
+public class GradientForm : Form
+{
+    public GradientForm()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        using var background = new LinearGradientBrush(ClientRectangle,
+            Color.FromArgb(7, 17, 31), Color.FromArgb(18, 39, 65), 32F);
+        e.Graphics.FillRectangle(background, ClientRectangle);
+        using var glow = new SolidBrush(Color.FromArgb(28, 55, 125, 218));
+        e.Graphics.FillEllipse(glow, ClientSize.Width / 3, -ClientSize.Height / 2,
+            ClientSize.Width, ClientSize.Height);
+    }
+}
+
+internal class GlassPanel : Panel
+{
+    public int CornerRadius { get; set; } = 16;
+    public Color GlassTint { get; set; } = Color.FromArgb(205, 13, 30, 50);
+
+    public GlassPanel()
+    {
+        DoubleBuffered = true;
+        BackColor = Color.Transparent;
+        SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer, true);
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = Rounded(ClientRectangle, CornerRadius);
+        using var fill = new LinearGradientBrush(ClientRectangle,
+            Color.FromArgb(Math.Min(255, GlassTint.A + 24), GlassTint), GlassTint, 110F);
+        e.Graphics.FillPath(fill, path);
+        using var highlight = new Pen(Color.FromArgb(70, 185, 217, 255), 1F);
+        e.Graphics.DrawPath(highlight, path);
+        var inset = ClientRectangle;
+        inset.Inflate(-2, -2);
+        using var innerPath = Rounded(inset, Math.Max(2, CornerRadius - 2));
+        using var inner = new Pen(Color.FromArgb(22, 255, 255, 255), 1F);
+        e.Graphics.DrawPath(inner, innerPath);
+    }
+
+    private static GraphicsPath Rounded(Rectangle bounds, int radius)
+    {
+        bounds.Width = Math.Max(1, bounds.Width - 1);
+        bounds.Height = Math.Max(1, bounds.Height - 1);
+        int diameter = Math.Max(2, Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height)));
+        var path = new GraphicsPath();
+        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+}
+
 internal sealed class ToggleSwitch : CheckBox
 {
     public ToggleSwitch()
