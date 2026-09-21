@@ -81,6 +81,7 @@ public sealed class PlayModeDialog : Form
         var controls = new List<Control> { promptLabel, _comboBox, okButton, cancelButton };
         if (_overrideCheckbox != null) controls.Add(_overrideCheckbox);
         Controls.AddRange(controls.ToArray());
+        ModernUi.StyleDialog(this);
     }
 
     private sealed record ComboItem(PlayMode Value, string Label)

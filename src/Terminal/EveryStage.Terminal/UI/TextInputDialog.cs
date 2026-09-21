@@ -27,6 +27,7 @@ public sealed class TextInputDialog : Form
         CancelButton = cancelButton;
 
         Controls.AddRange(new Control[] { promptLabel, _textBox, okButton, cancelButton });
+        ModernUi.StyleDialog(this);
     }
 
     /// <summary>Shows the dialog and returns the entered text, or null if cancelled or left blank.</summary>

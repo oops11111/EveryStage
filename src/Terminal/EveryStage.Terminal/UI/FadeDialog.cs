@@ -88,5 +88,6 @@ public sealed class FadeDialog : Form
         {
             _enabledCheckbox, _secondsUpDown, secondsLabel, noteLabel, okButton, cancelButton,
         });
+        ModernUi.StyleDialog(this);
     }
 }

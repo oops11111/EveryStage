@@ -35,6 +35,7 @@ public sealed class LibraryFilePickerDialog : Form
         CancelButton = cancelButton;
 
         Controls.AddRange(new Control[] { _listBox, okButton, cancelButton });
+        ModernUi.StyleDialog(this);
     }
 
     private void AcceptSelection()

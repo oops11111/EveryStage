@@ -86,6 +86,7 @@ public sealed class AudioPropertiesDialog : Form
         {
             _backgroundCheckbox, _backgroundCaveatLabel, visualLabel, _visualCombo, okButton, cancelButton,
         });
+        ModernUi.StyleDialog(this);
     }
 
     private sealed record ComboItem(AudioVisual Value, string Label)

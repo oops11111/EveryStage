@@ -86,6 +86,8 @@ public sealed class ToastNotification : Panel
                     Text = action.Label,
                     Bounds = new Rectangle(cursorX, y, ActionButtonWidth, ActionButtonHeight),
                 };
+                ModernUi.StyleButton(button, danger: severity == ToastSeverity.Critical && action.Label == "移除");
+                button.Padding = Padding.Empty;
                 button.Click += (_, _) =>
                 {
                     action.Callback();

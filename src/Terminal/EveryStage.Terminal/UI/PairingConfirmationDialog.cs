@@ -73,6 +73,7 @@ public sealed class PairingConfirmationDialog : Form
         {
             infoLabel, _allowCastCheckbox, _allowMonitorCheckbox, monitorDisclaimer, _trustCheckbox, acceptButton, declineButton,
         });
+        ModernUi.StyleDialog(this);
 
         FormClosed += (_, _) => Accepted = DialogResult == DialogResult.OK;
     }

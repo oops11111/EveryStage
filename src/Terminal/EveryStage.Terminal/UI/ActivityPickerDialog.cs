@@ -83,6 +83,7 @@ public sealed class ActivityPickerDialog : Form
             _scenarioCombo.SelectedIndex = preferredIndex >= 0 ? preferredIndex : 0;
 
         Controls.AddRange(new Control[] { scenarioLabel, _scenarioCombo, activityLabel, _activityCombo, _okButton, cancelButton });
+        ModernUi.StyleDialog(this);
     }
 
     private void PopulateActivityCombo()

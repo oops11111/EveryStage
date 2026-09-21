@@ -281,6 +281,7 @@ public sealed class BatchPropertiesDialog : Form
 
         ClientSize = new Size(DialogWidth, y);
         Controls.AddRange(controls.ToArray());
+        ModernUi.StyleDialog(this);
     }
 
     /// <summary>Shared layout for the three always-applicable rows that are a plain "outer checkbox

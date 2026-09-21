@@ -79,5 +79,6 @@ public sealed class EditPairedDevicePermissionsDialog : Form
         {
             infoLabel, _allowCastCheckbox, _allowMonitorCheckbox, monitorDisclaimer, _trustCheckbox, saveButton, cancelButton,
         });
+        ModernUi.StyleDialog(this);
     }
 }

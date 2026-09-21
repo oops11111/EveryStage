@@ -95,6 +95,10 @@ public sealed class FloatingPreviewWindow : Form
 
         Text = "EveryStage";
         FormBorderStyle = FormBorderStyle.SizableToolWindow;
+        AutoScaleMode = AutoScaleMode.Dpi;
+        BackColor = ModernUi.Background;
+        ForeColor = ModernUi.Text;
+        Font = new Font("Segoe UI", 9F);
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
@@ -176,6 +180,13 @@ public sealed class FloatingPreviewWindow : Form
             _seekBackButton, _positionLabel, _seekForwardButton,
             _saveButton,
         });
+        WindowsAppearance.UseDarkTitleBar(this);
+        foreach (var button in Controls.OfType<Button>())
+        {
+            ModernUi.StyleButton(button, primary: ReferenceEquals(button, _saveButton),
+                danger: ReferenceEquals(button, _disconnectButton));
+            button.Padding = Padding.Empty;
+        }
 
         _previousButton.Click += (_, _) => _playback.PreviousManual();
         _nextButton.Click += (_, _) => _playback.NextManual();
@@ -188,7 +199,7 @@ public sealed class FloatingPreviewWindow : Form
         _pinButton.Click += (_, _) =>
         {
             TopMost = !TopMost;
-            _pinButton.BackColor = TopMost ? SystemColors.Highlight : SystemColors.Control;
+            _pinButton.BackColor = TopMost ? ModernUi.Accent : ModernUi.Surface;
         };
         // 10% fixed step — matches this window's existing preference for simple, discrete controls
         // (see _volumeDownButton's own doc comment) over a continuously-adjustable one.

@@ -70,5 +70,6 @@ public sealed class StayDurationDialog : Form
         {
             _overrideEnabledCheckbox, _secondsUpDown, secondsLabel, noteLabel, okButton, cancelButton,
         });
+        ModernUi.StyleDialog(this);
     }
 }

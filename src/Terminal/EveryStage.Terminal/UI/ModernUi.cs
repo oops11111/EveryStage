@@ -87,6 +87,50 @@ internal static class ModernUi
             if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
         };
     }
+
+    public static void StyleDialog(Form dialog)
+    {
+        dialog.AutoScaleMode = AutoScaleMode.Dpi;
+        dialog.BackColor = Background;
+        dialog.ForeColor = Text;
+        dialog.Font = new Font("Segoe UI", 9.5F);
+        WindowsAppearance.UseDarkTitleBar(dialog);
+        StyleDialogChildren(dialog, dialog.AcceptButton as Button);
+    }
+
+    private static void StyleDialogChildren(Control parent, Button? primaryButton)
+    {
+        foreach (Control child in parent.Controls)
+        {
+            child.ForeColor = child.ForeColor is var existing &&
+                (existing == Color.DimGray || existing == Color.DarkRed || existing == Danger)
+                    ? existing : Text;
+            child.BackColor = child switch
+            {
+                Label or CheckBox or RadioButton => Color.Transparent,
+                TextBoxBase or ListBox or ListView or TreeView or NumericUpDown => SurfaceRaised,
+                Panel => Surface,
+                _ => child.BackColor,
+            };
+
+            switch (child)
+            {
+                case Button button:
+                    StyleButton(button, primary: ReferenceEquals(button, primaryButton));
+                    break;
+                case ComboBox comboBox when comboBox.DrawMode == DrawMode.Normal:
+                    StyleComboBox(comboBox);
+                    break;
+                case TextBox textBox:
+                    textBox.BorderStyle = BorderStyle.FixedSingle;
+                    break;
+                case ListBox listBox:
+                    listBox.BorderStyle = BorderStyle.FixedSingle;
+                    break;
+            }
+            StyleDialogChildren(child, primaryButton);
+        }
+    }
 }
 
 public class GradientForm : Form

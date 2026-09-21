@@ -48,6 +48,7 @@ public sealed class CompletionActionDialog : Form
         CancelButton = cancelButton;
 
         Controls.AddRange(new Control[] { promptLabel, _comboBox, okButton, cancelButton });
+        ModernUi.StyleDialog(this);
     }
 
     private sealed record ComboItem(CompletionAction Value, string Label)
