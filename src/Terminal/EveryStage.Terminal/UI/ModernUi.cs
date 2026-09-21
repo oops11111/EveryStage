@@ -33,7 +33,7 @@ internal static class ModernUi
         {
             Text = $"{glyph}  {text}",
             TextAlign = ContentAlignment.MiddleLeft,
-            Bounds = new Rectangle(12, top, 154, 52),
+            Bounds = new Rectangle(10, top, 140, 52),
             Font = new Font("Segoe UI", 11F),
         };
         StyleButton(button);

@@ -148,7 +148,7 @@ public sealed class FilesPanel : UserControl
         {
             Dock = DockStyle.Fill,
             View = View.Tile,
-            TileSize = new Size(220, 188),
+            TileSize = new Size(190, 188),
             LargeImageList = _thumbnails,
             OwnerDraw = true,
             // PLANNING.md §11 "批量选择": Ctrl/Shift+点击 multi-select now works, and both "删除"
@@ -724,6 +724,16 @@ public sealed class FilesPanel : UserControl
         e.Graphics.FillPath(fill, path);
         e.Graphics.DrawPath(border, path);
 
+        var selectionBox = new Rectangle(card.Right - 28, card.Top + 10, 17, 17);
+        using var selectionPen = new Pen(selected ? ModernUi.Accent : Color.FromArgb(120, 157, 185, 218), 2F);
+        e.Graphics.DrawRectangle(selectionPen, selectionBox);
+        if (selected)
+        {
+            using var checkFont = new Font("Segoe UI Symbol", 9F, FontStyle.Bold);
+            TextRenderer.DrawText(e.Graphics, "✓", checkFont, selectionBox, Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+
         var imageRect = new Rectangle(card.Left + 12, card.Top + 12, card.Width - 24, 104);
         using (var imagePath = RoundedCard(imageRect, 10))
         {
@@ -732,6 +742,25 @@ public sealed class FilesPanel : UserControl
             if (e.Item.ImageKey.Length > 0 && _thumbnails.Images[e.Item.ImageKey] is Image image)
                 e.Graphics.DrawImage(image, imageRect);
             e.Graphics.Clip = previous;
+        }
+
+        if (e.Item.Tag is MediaFile { Kind: MediaKind.Video })
+        {
+            var playCircle = new Rectangle(imageRect.Left + imageRect.Width / 2 - 20, imageRect.Top + 32, 40, 40);
+            using var playBrush = new SolidBrush(Color.FromArgb(190, 10, 28, 48));
+            e.Graphics.FillEllipse(playBrush, playCircle);
+            using var playFont = new Font("Segoe UI Symbol", 15F, FontStyle.Bold);
+            TextRenderer.DrawText(e.Graphics, "▶", playFont, playCircle, Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+        using var selectionFill = new SolidBrush(Color.FromArgb(175, 13, 30, 50));
+        e.Graphics.FillRectangle(selectionFill, selectionBox);
+        e.Graphics.DrawRectangle(selectionPen, selectionBox);
+        if (selected)
+        {
+            using var selectedFont = new Font("Segoe UI Symbol", 9F, FontStyle.Bold);
+            TextRenderer.DrawText(e.Graphics, "✓", selectedFont, selectionBox, Color.White,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
 
         string name = e.Item.Tag is MediaFile file ? Path.GetFileName(file.SourcePath) : e.Item.Text;
@@ -746,7 +775,7 @@ public sealed class FilesPanel : UserControl
             try
             {
                 var info = new FileInfo(media.SourcePath);
-                meta = $"{KindLabel(media.Kind)}  ·  {FormatBytes(info.Length)}";
+                meta = $"{info.LastWriteTime:yyyy/MM/dd}  ·  {FormatBytes(info.Length)}";
             }
             catch (Exception) { meta = KindLabel(media.Kind); }
         }

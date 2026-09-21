@@ -77,7 +77,7 @@ public sealed class MainWindow : GradientForm
 
         var nav = new GlassPanel
         {
-            Dock = DockStyle.Left, Width = 178, Padding = new Padding(12), CornerRadius = 0,
+            Dock = DockStyle.Left, Width = 160, Padding = new Padding(10), CornerRadius = 0,
             GlassTint = Color.FromArgb(220, 8, 23, 40),
         };
 
@@ -101,7 +101,7 @@ public sealed class MainWindow : GradientForm
         // A plain checkbox standing in for §8.1's slide-switch visual — see class doc comment.
         _castSwitchCheckbox = new ToggleSwitch
         {
-            Location = new Point(112, 92),
+            Location = new Point(96, 92),
             Checked = stateMachine.CastSwitchOn,
         };
         var switchLabel = new Label
@@ -113,7 +113,7 @@ public sealed class MainWindow : GradientForm
         };
         _castSwitchCheckbox.CheckedChanged += (_, _) => stateMachine.SetCastSwitch(_castSwitchCheckbox.Checked);
 
-        var disconnectButton = new Button { Text = "●  断开输出", Bounds = new Rectangle(16, 136, 146, 40) };
+        var disconnectButton = new Button { Text = "●  断开输出", Bounds = new Rectangle(16, 136, 128, 40) };
         ModernUi.StyleButton(disconnectButton, danger: true);
         disconnectButton.Click += (_, _) => stateMachine.Disconnect();
 
@@ -123,7 +123,7 @@ public sealed class MainWindow : GradientForm
         var settingsButton = ModernUi.NavButton("⚙", "设置", 398);
         var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
 
-        _recallPreviewButton = new Button { Text = "显示预览窗", Bounds = new Rectangle(16, 468, 146, 38) };
+        _recallPreviewButton = new Button { Text = "显示预览窗", Bounds = new Rectangle(16, 468, 128, 38) };
         ModernUi.StyleButton(_recallPreviewButton);
         _recallPreviewButton.Click += (_, _) => PreviewRecallRequested?.Invoke();
 
