@@ -232,7 +232,7 @@ public sealed class MainForm : GradientForm
         // 多显示器场景完全没有UI选择。RefreshMonitorList()（下面）在构造函数末尾和每次回到待机态
         // 时都会重新枚举，跟这一轮刚修过的SettingsPanel显示器列表是同一个"别只枚举一次"教训。
         var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font("Segoe UI Semibold", 22F), AutoSize = true, Location = new Point(24, 28) };
-        var connected = new Label { Text = "●  已连接", ForeColor = ModernUi.Success, AutoSize = true, Location = new Point(402, 42) };
+        var connected = new Label { Text = "●  正在发现", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(390, 42) };
         var targetLabel = new Label { Text = "选择终端", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(24, 80) };
         var monitorLabel = new Label { Text = "显示器", ForeColor = ModernUi.Muted, AutoSize = true, Bounds = new Rectangle(24, 316, 472, 22) };
         _monitorComboBox = new ComboBox
@@ -954,16 +954,30 @@ public sealed class MainForm : GradientForm
         _pairedTerminals.Upsert(new PairedTerminal(
             terminal.DeviceId, terminal.DeviceName, DateTimeOffset.Now, pairingKey, keyFormatVersion));
 
-        _pairedTerminal = terminal;
-        _pairedWithLabel.Text = $"正在向 \"{terminal.DeviceName}\" 投屏...";
-        _standbyPanel.Visible = false;
-        _pairedPanel.Visible = true;
+        try
+        {
+            _liveCastSession?.Dispose();
+            _liveCastSession = new LiveCastSession(_discoveryClient, _identity, terminal, outputIndex);
+            _liveCastSession.Start();
 
-        _liveCastSession?.Dispose();
-        _liveCastSession = new LiveCastSession(_discoveryClient, _identity, terminal, outputIndex);
-        _liveCastSession.Start();
-        _liveCastStatsTimer.Start();
-        RefreshLiveCastStats();
+            _pairedTerminal = terminal;
+            _pairedWithLabel.Text = $"正在向 \"{terminal.DeviceName}\" 投屏...";
+            _standbyPanel.Visible = false;
+            _pairedPanel.Visible = true;
+            _liveCastStatsTimer.Start();
+            RefreshLiveCastStats();
+        }
+        catch (Exception ex)
+        {
+            _liveCastStatsTimer.Stop();
+            _liveCastSession?.Dispose();
+            _liveCastSession = null;
+            _pairedTerminal = null;
+            _pairedPanel.Visible = false;
+            _standbyPanel.Visible = true;
+            MessageBox.Show(this, $"无法开始投屏：\n\n{ex.Message}",
+                "投屏启动失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void RefreshLiveCastStats()

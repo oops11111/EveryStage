@@ -109,9 +109,19 @@ public sealed class FilesPanel : UserControl
         {
             Dock = DockStyle.Top,
             Height = 68,
+            MinimumSize = new Size(0, 68),
             FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = true,
             Padding = new Padding(8, 14, 8, 10),
             BackColor = ModernUi.Background,
+        };
+        toolbar.Layout += (_, _) =>
+        {
+            if (toolbar.Controls.Count == 0) return;
+            int requiredHeight = toolbar.Controls.Cast<Control>().Max(control => control.Bottom + control.Margin.Bottom)
+                + toolbar.Padding.Bottom;
+            requiredHeight = Math.Max(toolbar.MinimumSize.Height, requiredHeight);
+            if (toolbar.Height != requiredHeight) toolbar.Height = requiredHeight;
         };
         toolbar.Controls.Add(MakeFilterButton("全部", null));
         toolbar.Controls.Add(MakeFilterButton("图片", MediaKind.Image));
@@ -212,6 +222,11 @@ public sealed class FilesPanel : UserControl
             BackColor = ModernUi.SurfaceRaised,
             Padding = new Padding(12, 12, 8, 8),
             Visible = false, // no audio files yet — RefreshAudioBar flips this once there are any.
+        };
+        _audioBarPanel.ClientSizeChanged += (_, _) =>
+        {
+            int width = Math.Max(600, _audioBarPanel.ClientSize.Width - 36);
+            foreach (var row in _audioRows) row.Container.Width = width;
         };
 
         // Control.Controls.Add order determines Dock z-order for same-DockStyle siblings: the LAST
@@ -496,8 +511,6 @@ public sealed class FilesPanel : UserControl
                     || string.Equals(file.SourcePath, current.SourcePath, StringComparison.OrdinalIgnoreCase));
             string fileName = item.Tag is MediaFile tagged ? Path.GetFileName(tagged.SourcePath) : item.Text.TrimStart('▶', ' ');
             item.Text = playing ? $"▶ {fileName}" : fileName;
-            item.BackColor = playing ? Color.LightGoldenrodYellow : SystemColors.Window;
-            item.ForeColor = playing ? Color.DarkGoldenrod : SystemColors.WindowText;
             if (playing) item.EnsureVisible();
         }
     }
@@ -558,7 +571,7 @@ public sealed class FilesPanel : UserControl
     {
         var container = new GlassPanel
         {
-            Width = Math.Max(760, _audioBarPanel.ClientSize.Width - 36), Height = 88,
+            Width = Math.Max(600, _audioBarPanel.ClientSize.Width - 36), Height = 88,
             Margin = new Padding(2, 2, 2, 8), CornerRadius = 14,
             GlassTint = Color.FromArgb(210, 18, 39, 64),
         };
@@ -653,6 +666,23 @@ public sealed class FilesPanel : UserControl
             volumeDownButton, volumeLabel, volumeUpButton,
             loopCheckbox, castButton,
         });
+
+        void ArrangeRow()
+        {
+            int width = container.ClientSize.Width;
+            nameLabel.Width = Math.Max(150, width - nameLabel.Left - 132);
+            castButton.Left = width - 116;
+            loopCheckbox.Left = width - 196;
+
+            bool compact = width < 820;
+            volumeDownButton.Visible = !compact;
+            volumeLabel.Visible = !compact;
+            volumeUpButton.Visible = !compact;
+            progressLabel.Left = compact ? width - 310 : 354;
+            progressLine.Width = Math.Max(60, progressLabel.Left - progressLine.Left - 8);
+        }
+        container.Resize += (_, _) => ArrangeRow();
+        ArrangeRow();
 
         return new AudioRow
         {
@@ -756,30 +786,27 @@ public sealed class FilesPanel : UserControl
         var card = e.Bounds;
         card.Inflate(-7, -7);
         bool selected = e.Item.Selected;
+        bool playing = e.Item.Tag is MediaFile candidate && _outputActive && _playback?.CurrentFile is { } current
+            && (ReferenceEquals(candidate, current)
+                || string.Equals(candidate.SourcePath, current.SourcePath, StringComparison.OrdinalIgnoreCase));
         using var path = RoundedCard(card, 14);
-        using var fill = new SolidBrush(selected ? Color.FromArgb(38, 72, 112) : ModernUi.SurfaceRaised);
-        using var border = new Pen(selected ? ModernUi.Accent : ModernUi.Border, selected ? 2F : 1F);
+        using var fill = new SolidBrush(selected || playing ? Color.FromArgb(38, 72, 112) : ModernUi.SurfaceRaised);
+        using var border = new Pen(playing ? ModernUi.Success : selected ? ModernUi.Accent : ModernUi.Border,
+            selected || playing ? 2F : 1F);
         e.Graphics.FillPath(fill, path);
         e.Graphics.DrawPath(border, path);
 
         var selectionBox = new Rectangle(card.Right - 28, card.Top + 10, 17, 17);
         using var selectionPen = new Pen(selected ? ModernUi.Accent : Color.FromArgb(120, 157, 185, 218), 2F);
-        e.Graphics.DrawRectangle(selectionPen, selectionBox);
-        if (selected)
-        {
-            using var checkFont = new Font("Segoe UI Symbol", 9F, FontStyle.Bold);
-            TextRenderer.DrawText(e.Graphics, "✓", checkFont, selectionBox, Color.White,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-        }
 
         var imageRect = new Rectangle(card.Left + 12, card.Top + 12, card.Width - 24, 104);
         using (var imagePath = RoundedCard(imageRect, 10))
         {
-            var previous = e.Graphics.Clip;
+            var state = e.Graphics.Save();
             e.Graphics.SetClip(imagePath);
             if (e.Item.ImageKey.Length > 0 && _thumbnails.Images[e.Item.ImageKey] is Image image)
                 e.Graphics.DrawImage(image, imageRect);
-            e.Graphics.Clip = previous;
+            e.Graphics.Restore(state);
         }
 
         if (e.Item.Tag is MediaFile { Kind: MediaKind.Video })
@@ -802,10 +829,12 @@ public sealed class FilesPanel : UserControl
         }
 
         string name = e.Item.Tag is MediaFile file ? Path.GetFileName(file.SourcePath) : e.Item.Text;
+        if (playing) name = $"▶  {name}";
         var nameRect = new Rectangle(card.Left + 12, imageRect.Bottom + 9, card.Width - 24, 25);
         using var nameFont = new Font("Segoe UI Semibold", 10F);
         TextRenderer.DrawText(e.Graphics, name, nameFont, nameRect,
-            ModernUi.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+            playing ? ModernUi.Success : ModernUi.Text,
+            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
 
         string meta = "";
         if (e.Item.Tag is MediaFile media)

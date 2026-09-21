@@ -35,6 +35,7 @@ internal static class ModernUi
             {
                 Button => Surface,
                 ListBox or ComboBox => SurfaceRaised,
+                Label or CheckBox or RadioButton => Color.Transparent,
                 Panel => Background,
                 _ => Background,
             };
