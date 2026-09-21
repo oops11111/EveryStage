@@ -235,7 +235,12 @@ public sealed class MainForm : GradientForm
         var connected = new Label { Text = "●  已连接", ForeColor = ModernUi.Success, AutoSize = true, Location = new Point(402, 42) };
         var targetLabel = new Label { Text = "选择终端", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(24, 80) };
         var monitorLabel = new Label { Text = "显示器", ForeColor = ModernUi.Muted, AutoSize = true, Bounds = new Rectangle(24, 316, 472, 22) };
-        _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(24, 342, 472, 34) };
+        _monitorComboBox = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(24, 342, 472, 36),
+            DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 30, FlatStyle = FlatStyle.Flat,
+        };
+        _monitorComboBox.DrawItem += DrawMonitorItem;
 
         _startButton = new Button
         {
@@ -1193,6 +1198,20 @@ public sealed class MainForm : GradientForm
                 new Rectangle(card.Right - 48, card.Top + 22, 32, 32), Color.White,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
+    }
+
+    private void DrawMonitorItem(object? sender, DrawItemEventArgs e)
+    {
+        e.DrawBackground();
+        using var background = new SolidBrush(ModernUi.SurfaceRaised);
+        e.Graphics.FillRectangle(background, e.Bounds);
+        string text = e.Index >= 0 && e.Index < _monitorComboBox.Items.Count
+            ? _monitorComboBox.Items[e.Index]?.ToString() ?? ""
+            : _monitorComboBox.Text;
+        var textRect = new Rectangle(e.Bounds.Left + 12, e.Bounds.Top, e.Bounds.Width - 24, e.Bounds.Height);
+        TextRenderer.DrawText(e.Graphics, $"▣  {text}", Font, textRect, ModernUi.Text,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
     }
 
     private static System.Drawing.Drawing2D.GraphicsPath RoundedCard(Rectangle r, int radius)

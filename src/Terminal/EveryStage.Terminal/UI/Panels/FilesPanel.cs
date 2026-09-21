@@ -63,6 +63,7 @@ public sealed class FilesPanel : UserControl
     private readonly Button _removeButton;
     private readonly Button _addToActivityButton;
     private readonly Button _previewButton;
+    private readonly PillButton _outputStatusChip;
     private MediaKind? _activeFilter;
     private bool _outputActive;
 
@@ -142,6 +143,23 @@ public sealed class FilesPanel : UserControl
         ModernUi.StyleButton(_previewButton, primary: true);
         _previewButton.Click += (_, _) => PlayOrPreviewSelected();
         toolbar.Controls.Add(_previewButton);
+
+        _outputStatusChip = new PillButton
+        {
+            Text = "○  待机", AutoSize = true, Height = 38,
+            Margin = new Padding(10, 0, 4, 0), Enabled = false,
+        };
+        toolbar.Controls.Add(_outputStatusChip);
+
+        var moreButton = new PillButton { Text = "⋮", Width = 42, Height = 38, Margin = new Padding(2, 0, 0, 0) };
+        moreButton.Click += (_, _) =>
+        {
+            var menu = new ContextMenuStrip();
+            menu.Items.Add("重新载入文件库", null, (_, _) => Refresh_());
+            menu.Items.Add("打开文件所在位置", null, (_, _) => OpenSelectedLocation());
+            menu.Show(moreButton, new Point(0, moreButton.Height));
+        };
+        toolbar.Controls.Add(moreButton);
 
         _thumbnails = new ImageList { ImageSize = new Size(112, 112), ColorDepth = ColorDepth.Depth32Bit };
         _listView = new ListView
@@ -268,7 +286,27 @@ public sealed class FilesPanel : UserControl
     {
         if (_outputActive == active) return;
         _outputActive = active;
+        _outputStatusChip.Text = active ? "◉  输出中" : "○  待机";
+        _outputStatusChip.Selected = active;
+        _outputStatusChip.Invalidate();
         HighlightCurrentFile();
+    }
+
+    private void OpenSelectedLocation()
+    {
+        if (_listView.SelectedItems.Count == 0 || _listView.SelectedItems[0].Tag is not MediaFile file) return;
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{file.SourcePath}\"")
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"无法打开文件位置：\n\n{ex.Message}", "打开失败",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private Button MakeFilterButton(string label, MediaKind? filter)

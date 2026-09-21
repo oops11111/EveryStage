@@ -149,10 +149,15 @@ internal sealed class AppTitleBar : Panel
         Dock = DockStyle.Top;
         Height = 42;
         BackColor = Color.FromArgb(9, 23, 39);
+        var appIcon = new PictureBox
+        {
+            Dock = DockStyle.Left, Width = 42, Padding = new Padding(12, 9, 4, 9),
+            SizeMode = PictureBoxSizeMode.Zoom, Image = form.Icon?.ToBitmap(), BackColor = BackColor,
+        };
         var title = new Label
         {
-            Text = "▰  EveryStage Caster", Dock = DockStyle.Left, Width = 260,
-            Padding = new Padding(14, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft,
+            Text = "EveryStage Caster", Dock = DockStyle.Left, Width = 220,
+            Padding = new Padding(4, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = ModernUi.Text, Font = new Font("Segoe UI Semibold", 10F),
         };
         var close = ChromeButton("×");
@@ -162,9 +167,11 @@ internal sealed class AppTitleBar : Panel
         close.MouseEnter += (_, _) => close.BackColor = Color.FromArgb(196, 43, 51);
         close.MouseLeave += (_, _) => close.BackColor = BackColor;
         Controls.Add(title);
+        Controls.Add(appIcon);
         Controls.Add(close);
         Controls.Add(minimize);
         title.MouseDown += DragWindow;
+        appIcon.MouseDown += DragWindow;
         MouseDown += DragWindow;
     }
 
