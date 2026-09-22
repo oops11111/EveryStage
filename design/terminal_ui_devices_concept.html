@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>EveryStage 终端机 · 设备页概念图</title>
+<style>
+  :root {
+    /* Colors copied verbatim from src/Terminal/EveryStage.Terminal/UI/ModernUi.cs — this mockup
+       tracks the actual shipped palette, not an approximation of it. */
+    --bg: #0a1422; --rail: #0b192b; --surface: #12253b; --surface-raised: #19304c;
+    --border: #304b6a; --text: #eff5ff; --muted: #9baec9;
+    --accent: #428bff; --danger: #ff494e; --success: #2ad280;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Segoe UI",-apple-system,sans-serif; background:var(--bg); color:var(--text);
+    display:flex; height:100vh; overflow:hidden; }
+  .titlebar { position:absolute; top:0; left:0; right:0; height:36px; display:flex; align-items:center;
+    justify-content:flex-end; gap:18px; padding:0 16px; color:var(--muted); font-size:14px; z-index:10; }
+  .app { display:flex; width:100%; padding-top:36px; }
+
+  .sidebar { width:210px; flex-shrink:0; background:var(--rail); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; padding:20px 16px; }
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom:28px; }
+  .brand-mark { width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#1d4ed8);
+    display:flex; align-items:center; justify-content:center; font-size:16px; }
+  .brand-text div:first-child { font-size:15px; font-weight:600; }
+  .brand-text div:last-child { font-size:11px; color:var(--muted); }
+  .switch-row { display:flex; align-items:center; justify-content:space-between; padding:10px 4px; margin-bottom:12px; }
+  .switch-row span { font-size:13px; }
+  .switch { width:40px; height:22px; border-radius:11px; background:var(--accent); position:relative; flex-shrink:0; }
+  .switch::after { content:''; position:absolute; top:2px; right:2px; width:18px; height:18px; border-radius:50%; background:#fff; }
+  .cut-btn { display:flex; align-items:center; justify-content:center; gap:6px; padding:9px 0; margin-bottom:18px;
+    border-radius:9px; border:1px solid rgba(255,73,78,0.4); color:var(--danger); font-size:13px; font-weight:500; }
+  .nav-btn { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:9px; margin-bottom:4px;
+    color:var(--muted); font-size:14px; cursor:pointer; }
+  .nav-btn .ic { width:18px; text-align:center; }
+  .nav-btn.active { background:var(--accent); color:#fff; }
+  .sidebar-footer { margin-top:auto; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); padding:4px; }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--success); }
+
+  .main { flex:1; min-width:0; padding:22px 26px; overflow-y:auto; display:flex; flex-direction:column; }
+  h2 { font-size:16px; font-weight:600; margin:0 0 4px; }
+  .subtitle { font-size:12.5px; color:var(--muted); margin:0 0 18px; }
+
+  table { width:100%; border-collapse:collapse; border-radius:12px; overflow:hidden; border:1px solid var(--border); }
+  thead th { background:var(--surface-raised); color:var(--muted); text-align:left; font-size:12px; font-weight:600;
+    padding:11px 14px; border-bottom:1px solid var(--border); }
+  tbody td { padding:12px 14px; font-size:13px; border-bottom:1px solid rgba(48,75,106,0.4); }
+  tbody tr:nth-child(odd) td { background:var(--surface); }
+  tbody tr:nth-child(even) td { background:#0f2038; }
+  tbody tr.selected td { background:#264870 !important; }
+  .device-name { display:flex; align-items:center; gap:10px; font-weight:500; }
+  .device-ic { width:28px; height:28px; border-radius:7px; background:var(--surface-raised); display:flex;
+    align-items:center; justify-content:center; font-size:14px; flex-shrink:0; }
+  .badge { display:inline-flex; align-items:center; gap:5px; font-size:12px; padding:3px 10px; border-radius:20px; }
+  .badge.trusted { background:rgba(42,210,128,0.14); color:var(--success); }
+  .badge.manual { background:rgba(251,191,36,0.14); color:#fbbf24; }
+  .yn-yes { color:var(--success); } .yn-no { color:var(--muted); }
+
+  .pending-banner { display:flex; align-items:center; gap:10px; background:rgba(66,139,255,0.12);
+    border:1px solid rgba(66,139,255,0.35); border-radius:10px; padding:12px 14px; margin-bottom:16px; font-size:13px; }
+  .pending-banner .spin { width:14px; height:14px; border-radius:50%; border:2px solid var(--accent);
+    border-top-color:transparent; }
+  .pending-banner .accept { margin-left:auto; background:var(--accent); color:#fff; border:none; border-radius:7px;
+    padding:6px 14px; font-size:12.5px; font-weight:500; }
+
+  .bottom-bar { margin-top:auto; padding-top:16px; display:flex; gap:10px; }
+  .btn { padding:9px 18px; border-radius:8px; font-size:13px; border:1px solid var(--border); background:var(--surface);
+    color:var(--text); }
+  .btn.danger { border-color:rgba(255,73,78,0.45); color:var(--danger); }
+  .btn[disabled] { opacity:0.4; }
+</style>
+</head>
+<body>
+<div class="titlebar">— &nbsp; ▢ &nbsp; ✕</div>
+<div class="app">
+
+  <div class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">🖥️</div>
+      <div class="brand-text"><div>EveryStage</div><div>Terminal</div></div>
+    </div>
+    <div class="switch-row"><span>投屏开关</span><div class="switch"></div></div>
+    <div class="cut-btn">⏻ &nbsp;断</div>
+    <div class="nav-btn"><span class="ic">📁</span>文件</div>
+    <div class="nav-btn"><span class="ic">📋</span>活动</div>
+    <div class="nav-btn active"><span class="ic">🖧</span>设备</div>
+    <div class="nav-btn"><span class="ic">⚙️</span>设置</div>
+    <div class="sidebar-footer"><div class="dot"></div>已连接</div>
+  </div>
+
+  <div class="main">
+    <h2>已配对设备</h2>
+    <div class="subtitle">配对请求会以弹窗形式提醒，无需守在这个页面等待</div>
+
+    <div class="pending-banner">
+      <div class="spin"></div>
+      <span><b>会议室笔记本</b> 请求投屏中…</span>
+      <button class="accept">接受</button>
+    </div>
+
+    <table>
+      <thead>
+        <tr><th>设备名</th><th>信任状态</th><th>允许被投放</th><th>允许被监看</th><th>配对时间</th></tr>
+      </thead>
+      <tbody>
+        <tr class="selected">
+          <td><div class="device-name"><div class="device-ic">💻</div>展厅主机</div></td>
+          <td><span class="badge trusted">● 信任</span></td>
+          <td class="yn-yes">是</td>
+          <td class="yn-yes">是</td>
+          <td>2026-09-18 09:14</td>
+        </tr>
+        <tr>
+          <td><div class="device-name"><div class="device-ic">💻</div>会议室笔记本</div></td>
+          <td><span class="badge manual">● 需手动确认</span></td>
+          <td class="yn-yes">是</td>
+          <td class="yn-no">否</td>
+          <td>2026-09-15 14:02</td>
+        </tr>
+        <tr>
+          <td><div class="device-name"><div class="device-ic">💻</div>前台平板</div></td>
+          <td><span class="badge trusted">● 信任</span></td>
+          <td class="yn-no">否</td>
+          <td class="yn-yes">是</td>
+          <td>2026-08-30 11:47</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="bottom-bar">
+      <button class="btn">编辑权限</button>
+      <button class="btn danger">移除配对</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

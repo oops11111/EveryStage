@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>EveryStage 终端机 · 设置页概念图</title>
+<style>
+  :root {
+    /* Colors copied verbatim from src/Terminal/EveryStage.Terminal/UI/ModernUi.cs — this mockup
+       tracks the actual shipped palette, not an approximation of it. */
+    --bg: #0a1422; --rail: #0b192b; --surface: #12253b; --surface-raised: #19304c;
+    --border: #304b6a; --text: #eff5ff; --muted: #9baec9;
+    --accent: #428bff; --danger: #ff494e; --success: #2ad280;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Segoe UI",-apple-system,sans-serif; background:var(--bg); color:var(--text);
+    display:flex; height:100vh; overflow:hidden; }
+  .titlebar { position:absolute; top:0; left:0; right:0; height:36px; display:flex; align-items:center;
+    justify-content:flex-end; gap:18px; padding:0 16px; color:var(--muted); font-size:14px; z-index:10; }
+  .app { display:flex; width:100%; padding-top:36px; }
+
+  .sidebar { width:210px; flex-shrink:0; background:var(--rail); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; padding:20px 16px; }
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom:28px; }
+  .brand-mark { width:34px; height:34px; border-radius:9px; background:linear-gradient(135deg,var(--accent),#1d4ed8);
+    display:flex; align-items:center; justify-content:center; font-size:16px; }
+  .brand-text div:first-child { font-size:15px; font-weight:600; }
+  .brand-text div:last-child { font-size:11px; color:var(--muted); }
+  .switch-row { display:flex; align-items:center; justify-content:space-between; padding:10px 4px; margin-bottom:12px; }
+  .switch-row span { font-size:13px; }
+  .switch { width:40px; height:22px; border-radius:11px; background:var(--accent); position:relative; flex-shrink:0; }
+  .switch::after { content:''; position:absolute; top:2px; right:2px; width:18px; height:18px; border-radius:50%; background:#fff; }
+  .cut-btn { display:flex; align-items:center; justify-content:center; gap:6px; padding:9px 0; margin-bottom:18px;
+    border-radius:9px; border:1px solid rgba(255,73,78,0.4); color:var(--danger); font-size:13px; font-weight:500; }
+  .nav-btn { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:9px; margin-bottom:4px;
+    color:var(--muted); font-size:14px; cursor:pointer; }
+  .nav-btn .ic { width:18px; text-align:center; }
+  .nav-btn.active { background:var(--accent); color:#fff; }
+  .sidebar-footer { margin-top:auto; display:flex; align-items:center; gap:8px; font-size:12px; color:var(--muted); padding:4px; }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--success); }
+
+  .main { flex:1; min-width:0; padding:22px 26px; overflow-y:auto; display:flex; flex-direction:column; }
+
+  .tabs { display:flex; gap:4px; margin-bottom:20px; border-bottom:1px solid var(--border); padding-bottom:0; }
+  .tab { padding:10px 18px; font-size:13px; border-radius:8px 8px 0 0; color:var(--muted); cursor:pointer; }
+  .tab.active { background:var(--accent); color:#fff; font-weight:500; }
+
+  .field { margin-bottom:22px; max-width:560px; }
+  .field label.row { display:flex; align-items:center; gap:10px; font-size:14px; }
+  .checkbox { width:18px; height:18px; border-radius:5px; border:1.5px solid var(--border); display:inline-flex;
+    align-items:center; justify-content:center; flex-shrink:0; }
+  .checkbox.checked { background:var(--accent); border-color:var(--accent); color:#fff; font-size:12px; }
+  .note { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.6; }
+
+  .select-label { font-size:13px; color:var(--muted); margin-bottom:8px; display:block; }
+  .select-box { display:flex; align-items:center; justify-content:space-between; background:var(--surface-raised);
+    border:1px solid var(--border); border-radius:8px; padding:9px 12px; width:220px; font-size:13px; }
+  .select-box .chev { color:var(--muted); font-size:11px; }
+  .theme-options { display:flex; gap:10px; margin-top:10px; }
+  .theme-swatch { width:70px; border-radius:8px; border:2px solid transparent; overflow:hidden; cursor:pointer; }
+  .theme-swatch.selected { border-color:var(--accent); }
+  .theme-swatch .preview { height:44px; }
+  .theme-swatch .label { font-size:10.5px; text-align:center; padding:4px 0; background:var(--surface); color:var(--muted); }
+  .sw-light .preview { background:#eef1f5; }
+  .sw-dark .preview { background:linear-gradient(135deg,#12253b,#0a1422); }
+  .sw-tech .preview { background:linear-gradient(135deg,#042038,#00131f); border-bottom:2px solid #00d1ff; }
+
+  .bottom-bar { margin-top:auto; padding-top:16px; display:flex; align-items:center; gap:14px; border-top:1px solid var(--border); }
+  .btn-primary { padding:10px 22px; border-radius:8px; font-size:13px; font-weight:500; background:var(--accent); color:#fff; border:none; }
+  .saved { font-size:13px; color:var(--success); }
+</style>
+</head>
+<body>
+<div class="titlebar">— &nbsp; ▢ &nbsp; ✕</div>
+<div class="app">
+
+  <div class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">🖥️</div>
+      <div class="brand-text"><div>EveryStage</div><div>Terminal</div></div>
+    </div>
+    <div class="switch-row"><span>投屏开关</span><div class="switch"></div></div>
+    <div class="cut-btn">⏻ &nbsp;断</div>
+    <div class="nav-btn"><span class="ic">📁</span>文件</div>
+    <div class="nav-btn"><span class="ic">📋</span>活动</div>
+    <div class="nav-btn"><span class="ic">🖧</span>设备</div>
+    <div class="nav-btn active"><span class="ic">⚙️</span>设置</div>
+    <div class="sidebar-footer"><div class="dot"></div>已连接</div>
+  </div>
+
+  <div class="main">
+    <div class="tabs">
+      <div class="tab active">通用</div>
+      <div class="tab">显示</div>
+      <div class="tab">播放行为</div>
+      <div class="tab">网络与设备</div>
+      <div class="tab">诊断</div>
+      <div class="tab">关于</div>
+    </div>
+
+    <div class="field">
+      <label class="row"><div class="checkbox checked">✓</div>终端机启动时，投屏开关默认开启</label>
+      <div class="note">更改后需要重启终端机才能生效 —— 这是启动时的默认值，不会改变当前正在运行的开关状态。</div>
+    </div>
+
+    <div class="field">
+      <span class="select-label">界面主题</span>
+      <div class="select-box">黑色系 <span class="chev">▾</span></div>
+      <div class="theme-options">
+        <div class="theme-swatch"><div class="preview sw-light"></div><div class="label">白色系</div></div>
+        <div class="theme-swatch selected"><div class="preview sw-dark"></div><div class="label">黑色系</div></div>
+        <div class="theme-swatch"><div class="preview sw-tech"></div><div class="label">高科技系</div></div>
+      </div>
+    </div>
+
+    <div class="bottom-bar">
+      <button class="btn-primary">保存设置</button>
+      <span class="saved">已保存。</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>
