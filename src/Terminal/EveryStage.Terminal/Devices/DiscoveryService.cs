@@ -49,6 +49,7 @@ public sealed class DiscoveryService : IDisposable
 
     private Task? _receiveLoop;
     private Task? _beaconLoop;
+    private int _disposed;
 
     /// <summary>Raised (from a background task — marshal to the UI thread if the handler touches
     /// UI) for any pairing request from a device that isn't already trusted.</summary>
@@ -466,6 +467,7 @@ public sealed class DiscoveryService : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _cts.Cancel();
 
         var runningLoops = new List<Task>();
@@ -474,6 +476,18 @@ public sealed class DiscoveryService : IDisposable
         try { Task.WaitAll(runningLoops.ToArray(), TimeSpan.FromSeconds(2)); }
         catch (AggregateException) { }
 
+        if (runningLoops.Count == 0 || runningLoops.All(loop => loop.IsCompleted))
+            DisposeOwnedResources();
+        else
+        {
+            var allLoops = Task.WhenAll(runningLoops);
+            _ = allLoops.ContinueWith(_ => DisposeOwnedResources(),
+                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
+    }
+
+    private void DisposeOwnedResources()
+    {
         _cts.Dispose();
         _socket.Dispose();
     }

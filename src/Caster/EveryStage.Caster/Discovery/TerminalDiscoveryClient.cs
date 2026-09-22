@@ -40,6 +40,7 @@ public sealed class TerminalDiscoveryClient : IDisposable
     private readonly CastStatusSequenceTracker _statusSequences = new();
 
     private Task? _receiveLoop;
+    private int _disposed;
 
     /// <summary>Raised (from a background task — marshal to the UI thread before touching UI) when
     /// a terminal is newly seen, changes name, or is pruned as expired.</summary>
@@ -463,9 +464,24 @@ public sealed class TerminalDiscoveryClient : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _cts.Cancel();
-        try { _receiveLoop?.Wait(TimeSpan.FromSeconds(2)); }
+        var receiveLoop = _receiveLoop;
+        if (receiveLoop == null)
+        {
+            DisposeOwnedResources();
+            return;
+        }
+
+        try { receiveLoop.Wait(TimeSpan.FromSeconds(2)); }
         catch (AggregateException) { }
+        if (receiveLoop.IsCompleted) DisposeOwnedResources();
+        else _ = receiveLoop.ContinueWith(_ => DisposeOwnedResources(),
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private void DisposeOwnedResources()
+    {
         _cts.Dispose();
         _socket.Dispose();
     }
