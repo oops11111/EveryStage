@@ -51,6 +51,7 @@ public sealed class TerminalDiscoveryClient : IDisposable
     /// that filtering is <c>Casting.LiveCastSession</c>'s job. Marshal to the UI thread before
     /// touching UI.</summary>
     public event Action<DiscoveryProtocol.CastStatusMessage>? CastStatusReceived;
+    public event Action<DiscoveryProtocol.CastNackMessage>? CastNackReceived;
 
     // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
     // step one" shape as this project's Terminal-side counterpart, Terminal.Devices.DiscoveryService's
@@ -315,6 +316,9 @@ public sealed class TerminalDiscoveryClient : IDisposable
                 case DiscoveryProtocol.CastStartAckMessage startAck:
                     HandleStartAck(startAck);
                     break;
+                case DiscoveryProtocol.CastNackMessage nack:
+                    HandleCastNack(nack);
+                    break;
                 case DiscoveryProtocol.PongMessage pong:
                     HandlePong(pong);
                     break;
@@ -382,6 +386,16 @@ public sealed class TerminalDiscoveryClient : IDisposable
         if (!_replayGuard.TryAccept(status, DateTimeOffset.UtcNow)) return;
         if (_statusSequences.TryAccept(status.DeviceId, status.SessionId, status.SequenceNumber))
             CastStatusReceived?.Invoke(status);
+    }
+
+    private void HandleCastNack(DiscoveryProtocol.CastNackMessage nack)
+    {
+        var paired = _pairedTerminals.Find(nack.DeviceId);
+        if (paired == null || !PairingSecurity.IsSupportedKey(paired.PairingKey, paired.PairingKeyFormatVersion)
+            || !PairingSecurity.Verify(nack, paired.PairingKey)
+            || !_replayGuard.TryAccept(nack, DateTimeOffset.UtcNow)) return;
+        if (nack.MissingVideoSequences.Length is 0 or > 64) return;
+        CastNackReceived?.Invoke(nack);
     }
 
     /// <summary>Sends directly to an already-known <see cref="IPEndPoint"/> (a ping's own sender

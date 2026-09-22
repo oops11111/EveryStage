@@ -347,6 +347,13 @@ public sealed class LiveCastSession : IDisposable
         StatsUpdated?.Invoke();
     }
 
+    private void OnCastNackReceived(DiscoveryProtocol.CastNackMessage nack)
+    {
+        if (nack.DeviceId != _terminal.DeviceId || nack.MediaSessionId == Guid.Empty) return;
+        if (!IsRunning || _rtpSession == null) return;
+        _ = _rtpSession.RetransmitAsync(nack.MissingVideoSequences);
+    }
+
     private void UpdateCaptureStride(double? packetLossPercent, TimeSpan? roundTrip, string? videoError)
     {
         double loss = packetLossPercent ?? 0;
@@ -388,6 +395,7 @@ public sealed class LiveCastSession : IDisposable
         LastRttMeasuredAt = null;
 
         _discoveryClient.CastStatusReceived += OnCastStatusReceived;
+        _discoveryClient.CastNackReceived += OnCastNackReceived;
 
         Guid mediaSessionId = Guid.NewGuid();
 
@@ -765,6 +773,7 @@ public sealed class LiveCastSession : IDisposable
     private void StopInternal()
     {
         _discoveryClient.CastStatusReceived -= OnCastStatusReceived;
+        _discoveryClient.CastNackReceived -= OnCastNackReceived;
 
         _cts?.Cancel();
         _sendQueue.Writer.TryComplete();

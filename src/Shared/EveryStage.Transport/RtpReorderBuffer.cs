@@ -4,7 +4,8 @@ namespace EveryStage.Transport;
 /// 16-bit sequence wrap naturally, and eventually advances across a confirmed gap.</summary>
 public sealed class RtpReorderBuffer
 {
-    public readonly record struct Delivery(RtpPacket Packet, int PacketsLostBefore);
+    public readonly record struct Delivery(RtpPacket Packet, int PacketsLostBefore,
+        IReadOnlyList<ushort>? MissingSequenceNumbers = null);
 
     private readonly int _maxBufferedPackets;
     private readonly TimeSpan _maxHoldTime;
@@ -99,7 +100,12 @@ public sealed class RtpReorderBuffer
         bool first = true;
         while (_expected.HasValue && _pending.Remove(_expected.Value, out var entry))
         {
-            output.Add(new Delivery(entry.Packet, first ? lostBeforeFirst : 0));
+            IReadOnlyList<ushort>? missing = first && lostBeforeFirst > 0
+                ? Enumerable.Range(0, lostBeforeFirst)
+                    .Select(offset => unchecked((ushort)(_expected!.Value - lostBeforeFirst + offset)))
+                    .ToArray()
+                : null;
+            output.Add(new Delivery(entry.Packet, first ? lostBeforeFirst : 0, missing));
             first = false;
             _expected = unchecked((ushort)(_expected.Value + 1));
         }

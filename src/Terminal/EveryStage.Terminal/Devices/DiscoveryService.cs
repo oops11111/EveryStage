@@ -346,6 +346,21 @@ public sealed class DiscoveryService : IDisposable
         }
     }
 
+    public async Task SendCastNackAsync(IPEndPoint casterEndPoint, Guid mediaSessionId,
+        IReadOnlyList<ushort> missingVideoSequences)
+    {
+        if (_activeCasterDeviceId == null || !PairingSecurity.IsValidKey(_activeCasterKey)
+            || mediaSessionId == Guid.Empty || missingVideoSequences.Count == 0) return;
+        var nack = new DiscoveryProtocol.CastNackMessage
+        {
+            DeviceId = _activeCasterDeviceId.Value,
+            MediaSessionId = mediaSessionId,
+            MissingVideoSequences = missingVideoSequences.Take(64).ToArray(),
+        };
+        PairingSecurity.Sign(nack, _identity.DeviceId, _activeCasterKey!);
+        await SendAsync(nack, casterEndPoint);
+    }
+
     private void HandleCastStatusAck(DiscoveryProtocol.CastStatusAckMessage ack)
     {
         if (_activeCasterDeviceId == null || ack.SenderDeviceId != _activeCasterDeviceId

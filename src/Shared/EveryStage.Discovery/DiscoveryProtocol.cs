@@ -227,6 +227,16 @@ public static class DiscoveryProtocol
         public long SequenceNumber { get; set; }
     }
 
+    /// <summary>Terminal -> Caster request for recently missing video RTP packets. It is deliberately
+    /// bounded by the sender/receiver implementation to keep control datagrams small.</summary>
+    public sealed class CastNackMessage : AuthenticatedMessage
+    {
+        public override string Type => "cast_nack";
+        public Guid DeviceId { get; set; }
+        public Guid MediaSessionId { get; set; }
+        public ushort[] MissingVideoSequences { get; set; } = Array.Empty<ushort>();
+    }
+
     /// <summary>Sent unicast, Caster -> Terminal, purely to measure real network round-trip time —
     /// added alongside <see cref="CastStatusMessage.SentAtUtc"/>'s latency estimate to give a second,
     /// clock-skew-immune number: that estimate reads <c>DateTimeOffset.UtcNow - SentAtUtc</c> across
@@ -315,6 +325,7 @@ public static class DiscoveryProtocol
             "cast_stop" => doc.RootElement.Deserialize<CastStopMessage>(),
             "cast_status" => doc.RootElement.Deserialize<CastStatusMessage>(),
             "cast_status_ack" => doc.RootElement.Deserialize<CastStatusAckMessage>(),
+            "cast_nack" => doc.RootElement.Deserialize<CastNackMessage>(),
             "ping" => doc.RootElement.Deserialize<PingMessage>(),
             "pong" => doc.RootElement.Deserialize<PongMessage>(),
             _ => null,

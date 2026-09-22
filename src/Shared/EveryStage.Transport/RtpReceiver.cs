@@ -76,6 +76,7 @@ public sealed class RtpReceiver : IDisposable
     /// access unit, see <c>RtpSession.SendNalUnitAsync</c>'s caller), so a consumer reassembling an
     /// access unit from multiple NAL units can take the timestamp from any one of them.</summary>
     public event Action<byte[], bool, uint>? NalUnitReceived;
+    public event Action<IReadOnlyList<ushort>>? PacketGapDetected;
 
     /// <param name="expectedPayloadType">When set, a decoded packet whose <see cref="RtpPacket.PayloadType"/>
     /// doesn't match this value is dropped (counted in <see cref="PayloadTypeMismatches"/>) exactly
@@ -162,6 +163,8 @@ public sealed class RtpReceiver : IDisposable
             {
                 try
                 {
+                    if (delivery.MissingSequenceNumbers is { Count: > 0 } missing)
+                        PacketGapDetected?.Invoke(missing);
                     if (delivery.PacketsLostBefore > 0) _depacketizer.Reset();
                     var ordered = delivery.Packet;
                     var nalUnit = _depacketizer.Process(ordered.Payload);

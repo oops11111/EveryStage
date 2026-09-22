@@ -67,6 +67,22 @@ await RunAsync("Authenticated cast-start acknowledgement", () =>
     }
     return Task.FromResult<(bool, string?)>((true, null));
 });
+await RunAsync("NACK protocol authentication and bounded sequence list", () =>
+{
+    string key = PairingSecurity.GenerateKey();
+    var nack = new DiscoveryProtocol.CastNackMessage
+    {
+        DeviceId = Guid.NewGuid(), MediaSessionId = Guid.NewGuid(),
+        MissingVideoSequences = Enumerable.Range(0, 4).Select(i => (ushort)(100 + i)).ToArray(),
+    };
+    PairingSecurity.Sign(nack, Guid.NewGuid(), key);
+    var decoded = DiscoveryProtocol.Decode(DiscoveryProtocol.Encode(nack)) as DiscoveryProtocol.CastNackMessage;
+    if (decoded == null || decoded.MissingVideoSequences.Length != 4 || !PairingSecurity.Verify(decoded, key))
+        return Task.FromResult<(bool, string?)>((false, "NACK fields or authentication were lost."));
+    decoded.MissingVideoSequences[0]++;
+    if (PairingSecurity.Verify(decoded, key)) return Task.FromResult<(bool, string?)>((false, "Tampered NACK was accepted."));
+    return Task.FromResult<(bool, string?)>((true, null));
+});
 await RunAsync("Media protocol capability negotiation", () =>
 {
     var beacon = new DiscoveryProtocol.BeaconMessage { DeviceId = Guid.NewGuid(), DeviceName = "test", MediaAuthenticationVersion = 1 };

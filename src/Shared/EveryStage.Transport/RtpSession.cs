@@ -18,6 +18,10 @@ public sealed class RtpSession : IDisposable
     private readonly uint _ssrc;
     private ushort _sequenceNumber;
     private readonly MediaPacketAuthentication? _authentication;
+    private readonly object _cacheGate = new();
+    private readonly Dictionary<ushort, byte[]> _recentPackets = new();
+    private readonly Queue<ushort> _recentPacketOrder = new();
+    private const int RetransmissionCacheCapacity = 512;
 
     /// <param name="payloadType">RTP payload type number (0-127) — a value both ends must already
     /// agree on; this project has no SDP-style negotiation, see this library's README.</param>
@@ -70,9 +74,41 @@ public sealed class RtpSession : IDisposable
             Payload = payload,
         };
 
-        byte[] datagram = packet.Encode();
-        if (_authentication != null) datagram = _authentication.Protect(datagram);
+        byte[] rawPacket = packet.Encode();
+        CachePacket(packet.SequenceNumber, rawPacket);
+        await SendRawPacketAsync(rawPacket);
+    }
+
+    public async Task<int> RetransmitAsync(IEnumerable<ushort> sequenceNumbers)
+    {
+        int sent = 0;
+        foreach (ushort sequence in sequenceNumbers.Distinct())
+        {
+            byte[]? raw;
+            lock (_cacheGate) _recentPackets.TryGetValue(sequence, out raw);
+            if (raw == null) continue;
+            await SendRawPacketAsync(raw);
+            sent++;
+        }
+        return sent;
+    }
+
+    private async Task SendRawPacketAsync(byte[] rawPacket)
+    {
+        byte[] datagram = _authentication == null ? rawPacket : _authentication.Protect(rawPacket);
         await _socket.SendAsync(datagram, datagram.Length, _remoteEndPoint);
+    }
+
+    private void CachePacket(ushort sequence, byte[] rawPacket)
+    {
+        lock (_cacheGate)
+        {
+            if (_recentPackets.ContainsKey(sequence)) return;
+            _recentPackets[sequence] = rawPacket;
+            _recentPacketOrder.Enqueue(sequence);
+            while (_recentPacketOrder.Count > RetransmissionCacheCapacity)
+                _recentPackets.Remove(_recentPacketOrder.Dequeue());
+        }
     }
 
     public void Dispose()

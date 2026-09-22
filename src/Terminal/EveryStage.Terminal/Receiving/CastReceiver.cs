@@ -54,6 +54,7 @@ namespace EveryStage.Terminal.Receiving;
 /// </summary>
 public sealed class CastReceiver : IDisposable
 {
+    public event Action<IReadOnlyList<ushort>>? VideoPacketsMissing;
     // Same reasoning/value as VideoContentController's identical constant: a fixed 30fps-equivalent
     // budget for "how far ahead of the audio clock to wait" / "how far behind before dropping".
     private static readonly long FrameBudgetTicks = TimeSpan.TicksPerSecond / 30;
@@ -271,6 +272,7 @@ public sealed class CastReceiver : IDisposable
             throw;
         }
         _rtpReceiver.NalUnitReceived += OnNalUnitReceived;
+        _rtpReceiver.PacketGapDetected += missing => VideoPacketsMissing?.Invoke(missing);
 
         if (hasAudio)
         {

@@ -336,6 +336,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                     info.HasAudio, info.AudioSampleRate, info.AudioChannels, DiscoveryProtocol.AudioRtpPort,
                     info.AudioIsAac, info.PayloadType, info.AudioPayloadType,
                     info.MediaSessionId, info.VideoKey, info.AudioKey, info.CasterEndPoint.Address);
+                _castReceiver.VideoPacketsMissing += missing =>
+                    _ = _discovery.SendCastNackAsync(info.CasterEndPoint, info.MediaSessionId, missing);
                 _castReceiver.Start();
             }
             catch (Exception ex)
