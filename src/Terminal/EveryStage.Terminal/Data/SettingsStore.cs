@@ -13,6 +13,7 @@ public sealed class SettingsStore
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     private readonly string _storePath;
+    private bool _loadFailed;
 
     /// <summary>The live settings object. Callers that only read a value (e.g.
     /// <c>PlaybackEngine</c>'s stay-duration fallback) can hold onto this <see cref="SettingsStore"/>
@@ -36,22 +37,28 @@ public sealed class SettingsStore
     /// pattern <c>UI/Panels/SettingsPanel</c> uses) doesn't need a more granular API yet.</summary>
     public void Save(AppSettings settings)
     {
-        Current = settings;
+        ArgumentNullException.ThrowIfNull(settings);
+        if (_loadFailed) throw new IOException("设置文件读取失败，已阻止覆盖原文件；请先修复文件或重启后重试。");
 
         string directory = Path.GetDirectoryName(_storePath)!;
         Directory.CreateDirectory(directory);
 
         string tempPath = _storePath + ".tmp";
-        using (var stream = File.Create(tempPath))
+        try
         {
-            JsonSerializer.Serialize(stream, Current, JsonOptions);
-        }
+            using (var stream = File.Create(tempPath))
+                JsonSerializer.Serialize(stream, settings, JsonOptions);
 
-        if (File.Exists(_storePath))
-            File.Replace(tempPath, _storePath, destinationBackupFileName: null);
-        else
-            File.Move(tempPath, _storePath);
-        SettingsChanged?.Invoke(Current);
+            if (File.Exists(_storePath)) File.Replace(tempPath, _storePath, destinationBackupFileName: null);
+            else File.Move(tempPath, _storePath);
+            Current = settings;
+            SettingsChanged?.Invoke(Current);
+        }
+        catch
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            throw;
+        }
     }
 
     private AppSettings Load()
@@ -77,6 +84,7 @@ public sealed class SettingsStore
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            _loadFailed = true;
             // Different failure mode from JsonException above, and deliberately NOT treated the same
             // way: File.Exists returning true doesn't mean File.OpenRead can actually succeed —
             // another process can hold an exclusive lock (antivirus scan, backup tool), or a

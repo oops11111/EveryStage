@@ -1,6 +1,7 @@
 using EveryStage.Discovery;
 using EveryStage.Transport;
 using EveryStage.Terminal.Data;
+using EveryStage.Terminal.Devices;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
 using EveryStage.Terminal.Logging;
@@ -314,6 +315,30 @@ async Task<(bool, string?)> TestIdleGapTimeout()
         if (File.ReadAllText(scenarioPath) != originalScenario)
             return (false, "Original scenarios overwritten.");
         repository.Save(repository.Load());
+        string settingsPath = Path.Combine(directory, "settings.json");
+        var settings = new SettingsStore(settingsPath);
+        settings.Save(new AppSettings { CastSwitchDefaultOn = false, DefaultStayDurationSeconds = 12 });
+        string originalSettings = File.ReadAllText(settingsPath);
+        SettingsStore failedSettings;
+        using (var locked = new FileStream(settingsPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            failedSettings = new SettingsStore(settingsPath);
+        try { failedSettings.Save(new AppSettings()); return (false, "Settings save allowed after failed load."); }
+        catch (IOException) { }
+        if (File.ReadAllText(settingsPath) != originalSettings)
+            return (false, "Original settings overwritten after failed load.");
+
+        string pairedPath = Path.Combine(directory, "paired.json");
+        var paired = new PairedDeviceStore(pairedPath);
+        var pairedDevice = new PairedDevice { DeviceId = Guid.NewGuid(), DeviceName = "paired" };
+        paired.Upsert(pairedDevice);
+        string originalPaired = File.ReadAllText(pairedPath);
+        PairedDeviceStore failedPaired;
+        using (var locked = new FileStream(pairedPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            failedPaired = new PairedDeviceStore(pairedPath);
+        try { failedPaired.Upsert(new PairedDevice { DeviceId = Guid.NewGuid(), DeviceName = "replacement" }); return (false, "Paired-device save allowed after failed load."); }
+        catch (IOException) { }
+        if (File.ReadAllText(pairedPath) != originalPaired)
+            return (false, "Original paired-device data overwritten after failed load.");
         return (true, null);
     }
     finally { Directory.Delete(directory, recursive: true); }

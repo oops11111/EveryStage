@@ -18,6 +18,8 @@
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\Scenario.cs" Link="Terminal\Scenario.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\AppSettings.cs" Link="Terminal\AppSettings.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\SettingsStore.cs" Link="Terminal\SettingsStore.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Devices\PairedDevice.cs" Link="Terminal\PairedDevice.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Devices\PairedDeviceStore.cs" Link="Terminal\PairedDeviceStore.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\Activity.cs" Link="Terminal\Activity.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\MediaFile.cs" Link="Terminal\MediaFile.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\Enums.cs" Link="Terminal\Enums.cs" />

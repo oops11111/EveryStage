@@ -19,6 +19,7 @@ public sealed class PairedDeviceStore
 
     private readonly string _storePath;
     private List<PairedDevice> _devices;
+    private bool _loadFailed;
 
     public PairedDeviceStore(string? storePathOverride = null)
     {
@@ -34,15 +35,21 @@ public sealed class PairedDeviceStore
 
     public void Upsert(PairedDevice device)
     {
+        if (_loadFailed) throw new IOException("配对设备文件读取失败，已阻止覆盖原文件；请先修复文件或重新配对。");
+        var snapshot = _devices.ToList();
         _devices.RemoveAll(d => d.DeviceId == device.DeviceId);
         _devices.Add(device);
-        Save();
+        try { Save(); }
+        catch { _devices = snapshot; throw; }
     }
 
     public void Remove(Guid deviceId)
     {
+        if (_loadFailed) throw new IOException("配对设备文件读取失败，已阻止覆盖原文件；请先修复文件或重新配对。");
+        var snapshot = _devices.ToList();
         _devices.RemoveAll(d => d.DeviceId == deviceId);
-        Save();
+        try { Save(); }
+        catch { _devices = snapshot; throw; }
     }
 
     private List<PairedDevice> Load()
@@ -63,6 +70,7 @@ public sealed class PairedDeviceStore
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            _loadFailed = true;
             // Different failure mode from JsonException above, and deliberately NOT treated the same
             // way: File.Exists returning true doesn't mean File.OpenRead can actually succeed —
             // another process can hold an exclusive lock (antivirus scan, backup tool), or a
@@ -82,14 +90,18 @@ public sealed class PairedDeviceStore
         Directory.CreateDirectory(directory);
 
         string tempPath = _storePath + ".tmp";
-        using (var stream = File.Create(tempPath))
+        try
         {
-            JsonSerializer.Serialize(stream, _devices, JsonOptions);
-        }
+            using (var stream = File.Create(tempPath))
+                JsonSerializer.Serialize(stream, _devices, JsonOptions);
 
-        if (File.Exists(_storePath))
-            File.Replace(tempPath, _storePath, destinationBackupFileName: null);
-        else
-            File.Move(tempPath, _storePath);
+            if (File.Exists(_storePath)) File.Replace(tempPath, _storePath, destinationBackupFileName: null);
+            else File.Move(tempPath, _storePath);
+        }
+        catch
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            throw;
+        }
     }
 }
