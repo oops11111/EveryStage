@@ -152,6 +152,8 @@ public sealed class LiveCastSession : IDisposable
     // project's README): frequent enough that the displayed number stays reasonably current, far
     // less often than actual media traffic so it can't meaningfully compete with it for bandwidth.
     private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(2);
+    private int _captureStride = 1;
+    private int _captureFrameCounter;
 
     // Set at the start of each OnPcmCaptured call, read/advanced by OnAacAccessUnitEncoded — see
     // that method's own doc comment for why these need to be per-batch state rather than computed
@@ -244,6 +246,8 @@ public sealed class LiveCastSession : IDisposable
     /// field's own doc comment. Expected to stay 0; see <c>Caster.UI.MainForm.RefreshLiveCastStats</c>
     /// for why this is only ever shown once it isn't.</summary>
     public long TerminalPayloadTypeMismatches { get; private set; }
+    public double? TerminalPacketLossPercent { get; private set; }
+    public long TerminalVideoPacketsLost { get; private set; }
 
     /// <summary>UTC time of the last <c>CastStatusMessage</c> received from this session's Terminal
     /// — null if none has arrived yet (could mean "just started, give it a second" or "the Terminal
@@ -335,9 +339,21 @@ public sealed class LiveCastSession : IDisposable
         TerminalAudioBytesReceived = status.AudioBytesReceived;
         TerminalAudioError = status.AudioError;
         TerminalPayloadTypeMismatches = status.PayloadTypeMismatches;
+        TerminalPacketLossPercent = status.EstimatedPacketLossPercent;
+        TerminalVideoPacketsLost = status.VideoPacketsLost;
+        UpdateCaptureStride(status.EstimatedPacketLossPercent, RealRoundTripEstimate, status.VideoError);
         LastStatusReceivedAt = DateTime.UtcNow;
         LastStatusLatencyEstimate = DateTimeOffset.UtcNow - status.SentAtUtc;
         StatsUpdated?.Invoke();
+    }
+
+    private void UpdateCaptureStride(double? packetLossPercent, TimeSpan? roundTrip, string? videoError)
+    {
+        double loss = packetLossPercent ?? 0;
+        double rttMs = roundTrip?.TotalMilliseconds ?? 0;
+        int stride = videoError != null || loss >= 12 || rttMs >= 500 ? 3
+            : loss >= 5 || rttMs >= 200 ? 2 : 1;
+        Volatile.Write(ref _captureStride, stride);
     }
 
     public async Task StartAsync()
@@ -362,6 +378,10 @@ public sealed class LiveCastSession : IDisposable
         TerminalAudioBytesReceived = 0;
         TerminalAudioError = null;
         TerminalPayloadTypeMismatches = 0;
+        TerminalPacketLossPercent = null;
+        TerminalVideoPacketsLost = 0;
+        Volatile.Write(ref _captureStride, 1);
+        _captureFrameCounter = 0;
         LastStatusReceivedAt = null;
         LastStatusLatencyEstimate = null;
         RealRoundTripEstimate = null;
@@ -465,6 +485,8 @@ public sealed class LiveCastSession : IDisposable
                 using (frame)
                 {
                     if (!frame.HasNewImage) continue;
+                    int stride = Volatile.Read(ref _captureStride);
+                    if (++_captureFrameCounter % stride != 0) continue;
 
                     var nv12 = converter.Convert(frame.Texture, frame.Width, frame.Height);
                     // Same reasoning as EncodeSelfTestRunner: the converter reuses one output

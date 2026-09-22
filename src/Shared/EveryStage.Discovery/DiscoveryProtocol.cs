@@ -205,6 +205,8 @@ public static class DiscoveryProtocol
         /// this one is meant to stay invisible in the UI until it actually happens (see
         /// <c>Caster.UI.MainForm.RefreshLiveCastStats</c>'s only-shown-if-nonzero treatment).</summary>
         public long PayloadTypeMismatches { get; set; }
+        public double? EstimatedPacketLossPercent { get; set; }
+        public long VideoPacketsLost { get; set; }
     }
 
     /// <summary>Caster acknowledgment for one status report. A duplicate report receives another

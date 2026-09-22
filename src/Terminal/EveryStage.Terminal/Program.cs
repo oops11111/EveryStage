@@ -474,6 +474,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             AudioBytesReceived = _castReceiver.AudioBytesReceived,
             AudioError = _castReceiver.AudioError,
             PayloadTypeMismatches = _castReceiver.PayloadTypeMismatches,
+            EstimatedPacketLossPercent = _castReceiver.EstimatedPacketLossPercent,
+            VideoPacketsLost = _castReceiver.VideoPacketsLost,
         };
         _ = _discovery.SendCastStatusAsync(casterEndPoint, status);
     }

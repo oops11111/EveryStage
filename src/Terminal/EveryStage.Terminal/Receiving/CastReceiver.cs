@@ -193,6 +193,7 @@ public sealed class CastReceiver : IDisposable
     /// too, not just this Terminal — previously this was purely a local counter with no consumer at
     /// all beyond the two underlying receivers themselves (see EveryStage.Transport's README).</summary>
     public long PayloadTypeMismatches => _rtpReceiver.PayloadTypeMismatches + (_audioRtpReceiver?.PayloadTypeMismatches ?? 0);
+    public long VideoPacketsLost => _rtpReceiver.PacketsLost;
 
     public bool HasAudio { get; private set; }
     public long AudioBytesReceived { get; private set; }
