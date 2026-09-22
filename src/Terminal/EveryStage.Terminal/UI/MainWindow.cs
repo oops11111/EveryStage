@@ -274,6 +274,15 @@ public sealed class MainWindow : GradientForm
 
     private void OnFilePlayRequested(MediaFile file)
     {
+        // PLANNING.md §9.1: turning the cast switch off means local preview, not a silent
+        // rejection. The managed output graph is deliberately not touched in this mode; let
+        // Windows' registered handler play/open the file on the operator display instead.
+        if (_playback != null && !_stateMachine.CastSwitchOn)
+        {
+            OpenLocalPreview(file);
+            return;
+        }
+
         if (_playback != null)
         {
             _playback.RequestPlay(file);
@@ -285,8 +294,15 @@ public sealed class MainWindow : GradientForm
         // local application so operators can still verify the imported file on a single-monitor
         // setup. Once an extended display is attached, the same action automatically returns to
         // EveryStage's managed output path through AttachPlaybackEngine.
+        OpenLocalPreview(file);
+    }
+
+    private void OpenLocalPreview(MediaFile file)
+    {
         try
         {
+            if (!File.Exists(file.SourcePath))
+                throw new FileNotFoundException("文件不存在或已被移动。", file.SourcePath);
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(file.SourcePath) { UseShellExecute = true });
             _statusLabel.Text = $"● 本机预览：{Path.GetFileName(file.SourcePath)}";
         }

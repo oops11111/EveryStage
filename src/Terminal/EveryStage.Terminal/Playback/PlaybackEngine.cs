@@ -18,9 +18,8 @@ namespace EveryStage.Terminal.Playback;
 /// but WinForms' <see cref="System.Windows.Forms.Timer"/> and <see cref="ContentSurface"/> both
 /// need UI-thread access, so treat it as one anyway.
 ///
-/// Deliberately out of scope for this first cut (see this project's README "已知风险/待验证事项"):
-/// rendering a local-only preview when the cast switch is off (that preview surface belongs to the
-/// Phase 4 UI's file/activity panels, which don't exist yet).
+/// When the cast switch is off, <see cref="MainWindow"/> routes a direct file click to the local
+/// Windows file handler; this engine therefore only owns the managed extended-display path.
 ///
 /// What happens after the last file in an activity under NextItem — PLANNING.md never specifies
 /// cross-activity auto-advance — used to be listed here as out of scope too, until the user asked for
@@ -521,12 +520,9 @@ public sealed class PlaybackEngine : IDisposable
         bool casting = _stateMachine.RequestLocalFilePlayback();
         if (!casting)
         {
-            // Cast switch is off: PLANNING.md §9.1 calls for local-preview-only playback here.
-            // That preview lives in the Phase 4 UI's file/activity panels, which don't exist yet —
-            // there is nothing to render to today, so this intentionally no-ops rather than
-            // guessing at a substitute surface. It's no longer a purely SILENT no-op, though (see
-            // this project's README risk #9's "彻底无反馈" complaint) — PlaybackDeclinedByCastSwitch
-            // at least lets the UI acknowledge the click happened, even with nothing to show for it.
+            // Direct file clicks are routed by MainWindow to local preview before reaching this
+            // engine. Activity/device paths can still arrive here with casting disabled, so keep
+            // the event as a defensive acknowledgement rather than touching the output graph.
             PlaybackDeclinedByCastSwitch?.Invoke(file);
             return;
         }
