@@ -66,6 +66,10 @@ public static class TransportSelfTest
         if (mismatchFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, mismatchFailure);
 
+        string? fecFailure = await RunAuthenticatedFecRecoveryCheckAsync();
+        if (fecFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, fecFailure);
+
         string? resilienceFailure = await RunDispatchExceptionResilienceCheckAsync();
         if (resilienceFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, resilienceFailure);
@@ -87,6 +91,78 @@ public static class TransportSelfTest
             return new Result(false, testPayloads.Count, receivedCount, splitterFailure);
 
         return new Result(true, testPayloads.Count, receivedCount, null);
+    }
+
+    /// <summary>Exercises the complete authenticated FEC path over real loopback UDP: seven of
+    /// eight media packets are sent, the third is deliberately omitted, and the receiver must
+    /// recover it from the authenticated parity packet before its jitter-buffer hold expires.</summary>
+    private static async Task<string?> RunAuthenticatedFecRecoveryCheckAsync()
+    {
+        const byte payloadType = 96;
+        const byte fecPayloadType = RtpSession.DefaultFecPayloadType;
+        int port = GetLikelyFreeUdpPort();
+        Guid sessionId = Guid.NewGuid();
+        byte[] key = Enumerable.Range(0, 32).Select(value => (byte)(value * 7 + 3)).ToArray();
+        var receiverAuthentication = new MediaPacketAuthentication(key, sessionId);
+        using var receiver = new RtpReceiver(port, payloadType, receiverAuthentication, IPAddress.Loopback, fecPayloadType);
+
+        var received = new List<byte[]>();
+        var gate = new object();
+        var completed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        receiver.NalUnitReceived += (nal, _, _) =>
+        {
+            lock (gate)
+            {
+                received.Add(nal);
+                if (received.Count == XorFecCodec.BlockSize) completed.TrySetResult();
+            }
+        };
+        receiver.Start();
+
+        var packets = Enumerable.Range(0, XorFecCodec.BlockSize)
+            .Select(index => new RtpPacket
+            {
+                Marker = true, PayloadType = payloadType, SequenceNumber = (ushort)(200 + index),
+                Timestamp = (uint)(9000 + index), Ssrc = 42,
+                Payload = new byte[] { 0x61, (byte)index, 0xA5, (byte)(index ^ 0x5A) },
+            }).ToArray();
+        byte[] parityPayload = XorFecCodec.CreateParity(packets, 200);
+        var parity = new RtpPacket
+        {
+            Marker = false, PayloadType = fecPayloadType, SequenceNumber = 207,
+            Timestamp = 9007, Ssrc = 42, Payload = parityPayload,
+        };
+
+        using var senderAuthentication = new MediaPacketAuthentication(key, sessionId);
+        using var sender = new UdpClient();
+        var endpoint = new IPEndPoint(IPAddress.Loopback, port);
+        for (int index = 0; index < packets.Length; index++)
+        {
+            if (index == 3) continue; // the only loss in this block
+            byte[] protectedPacket = senderAuthentication.Protect(packets[index].Encode());
+            await sender.SendAsync(protectedPacket, protectedPacket.Length, endpoint);
+        }
+        byte[] protectedParity = senderAuthentication.Protect(parity.Encode());
+        await sender.SendAsync(protectedParity, protectedParity.Length, endpoint);
+
+        if (await Task.WhenAny(completed.Task, Task.Delay(TimeSpan.FromSeconds(5))) != completed.Task)
+            return "Authenticated FEC UDP check: timed out before recovering the missing media packet.";
+
+        lock (gate)
+        {
+            if (received.Count != packets.Length)
+                return $"Authenticated FEC UDP check: expected {packets.Length} NAL units, got {received.Count}.";
+            for (int index = 0; index < packets.Length; index++)
+            {
+                byte[] expected = packets[index].Payload.ToArray();
+                if (!received[index].AsSpan().SequenceEqual(expected))
+                    return $"Authenticated FEC UDP check: recovered or delivered NAL #{index} did not match.";
+            }
+        }
+
+        if (receiver.PacketsLost != 0 || receiver.GapEvents != 0)
+            return $"Authenticated FEC UDP check: recovered block was still counted as loss ({receiver.PacketsLost}/{receiver.GapEvents}).";
+        return null;
     }
 
     private static string? RunJitterAndWraparoundCheck()

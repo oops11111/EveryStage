@@ -13,8 +13,9 @@ namespace EveryStage.Transport;
 /// parser and would need extending before trusting arbitrary third-party RTP input.
 ///
 /// PLANNING.md §4.2: "传输：UDP + RTP...不使用 WebRTC 的 NAT穿透部分（内网不需要）" — this is the RTP
-/// framing that transport layer rides on; NACK/FEC loss recovery and congestion control (also named
-/// in §4.2) are NOT implemented here, this is packet framing only. See this library's README.
+/// framing that transport layer rides on; NACK/FEC recovery is implemented by the surrounding
+/// session/receiver classes, while congestion control remains a higher-level concern. See this
+/// library's README.
 /// </summary>
 public readonly struct RtpPacket
 {

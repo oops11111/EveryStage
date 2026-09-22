@@ -17,7 +17,8 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
   `H264RtpPacketizer`分片）和这次新加的 `SendRawPayloadAsync`（音频用，一个payload=一个RTP包，
   不做任何NAL/FU-A分片）现在共享同一套SSRC/序列号状态，`SendNalUnitAsync`内部也改成调用
   `SendRawPayloadAsync`而不是各自重复构造`RtpPacket`
-- `RtpReceiver`：视频接收端，解出RTP包、喂给`H264RtpDepacketizer`，重组出完整NAL单元时触发
+- `RtpReceiver`：视频接收端，解出RTP包、喂给`H264RtpDepacketizer`，重组出完整NAL单元时触发；启用
+  FEC 时还会缓存短窗口内的媒体包，收到认证奇偶包后恢复单个缺失包，再交给同一重排器
   `NalUnitReceived`，带上完成该NAL单元的那个RTP包的Marker位（RFC 6184 §5.3"是不是这个访问单元/
   编码帧的最后一个NAL单元"）——`Caster`的`LiveCastSession`发送时设置它，`Terminal`的
   `CastReceiver`接收时用它判断"这一帧的所有NAL单元到齐了，可以拼成一个Annex-B访问单元喂给解码器
@@ -28,7 +29,8 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
   数据 + FU-A分片）——用一批人造的、形状像NAL单元的随机字节数据（含一个刻意
   超过MTU、会触发FU-A分片的），通过本机回环UDP走一遍
   `RtpSession → UDP → RtpReceiver → H264RtpDepacketizer`，逐字节比对收到的和发出的是否一致。接入
-  `src/Caster/EveryStage.Caster` 的UI（"运行传输自检"按钮），跟真实投屏管线互不影响。
+  `src/Caster/EveryStage.Caster` 的UI（"运行传输自检"按钮），跟真实投屏管线互不影响；另外包含
+  一次真实认证 UDP 丢包场景：八包 FEC 块故意丢一包，验证接收器在重排超时前恢复并保持零丢包计数。
 - `RawTransportSelfTest`（这次新加）：`TransportSelfTest`的音频对应版本，覆盖`RtpSession.
   SendRawPayloadAsync → UDP → RawRtpReceiver`这条之前完全没有自动化验证过的路径（见下面"已知
   风险"第7条）——同样是本机回环、固定随机种子、逐字节比对，额外多验证一件事：在这种"根本不会真的
@@ -52,10 +54,10 @@ streams: H.264 video (with its own NAL-specific framing) and raw PCM audio (with
 2. **`AnnexBNalSplitter` 依赖"emulation prevention"规则成立**：H.264编码器有义务保证NAL单元内部
    不会自然出现连续3个零字节后跟0x01（编码时会插入0x03字节打断），这个扫描器假设这个规则成立，
    没有对边界情况（比如非法/损坏的比特流）做额外防御。
-3. **`H264RtpDepacketizer` 没有处理包乱序/丢包重传**：假设RTP包按序到达；FU-A分片中间丢包会被
-   检测到（整个NAL被丢弃，不会拼出损坏的帧）但不会尝试恢复。真正的丢包恢复(NACK/FEC，PLANNING.md
-   §4.2提到的"WebRTC媒体传输能力"部分)完全没有实现——`TransportSelfTest`走的是本机回环，不会真的
-   丢包，所以这条完全没有被自检覆盖到。
+3. **`H264RtpDepacketizer` 的恢复边界**：`RtpReceiver` 已通过重排器、认证 NACK 和 8 包 XOR
+   FEC 覆盖单包恢复；FU-A 分片在超过恢复窗口、多个包同时丢失或恢复失败时会丢弃损坏的 NAL，
+   不会拼出错误画面。TransportSelfTest 已覆盖真实认证 UDP 单包丢失恢复，但真实双机网络中的
+   丢包率、NACK/FEC恢复率仍需实机测量；完整拥塞控制也尚未完成。
 4. **【部分实现，原为已知缺口】RTP的 PayloadType 数值现在真的会被校验了**：`TransportSelfTest` 和
    `LiveCastSession` 都硬编码了同一个占位值 (96/97，动态负载类型范围内的常见选择)——
    `DiscoveryProtocol.CastStartMessage` 早就携带了`PayloadType`/`AudioPayloadType`字段，但之前
