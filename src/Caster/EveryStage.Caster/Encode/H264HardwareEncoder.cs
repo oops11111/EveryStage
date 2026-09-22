@@ -97,10 +97,20 @@ public sealed class H264HardwareEncoder : IDisposable
         {
             UnlockAsyncProcessing(_encoder);
 
+            // ORDER IS LOAD-BEARING. An MFT works out whether a D3D11 hardware configuration
+            // is available while the media types are being negotiated, so the DXGI device
+            // manager has to be attached BEFORE SetOutputType/SetInputType, not after. Bound
+            // afterwards - as this used to be - the transform negotiates a software
+            // configuration and every frame round-trips through system memory. It compiles, it
+            // runs, and it produces correct output; only CPU load and latency reveal that the
+            // zero-copy path this whole pipeline exists for is not actually being used. Same
+            // fix applied on the decode side in Terminal's H264HardwareDecoder.
+            RequireD3D11Aware(_encoder);
+            BindDeviceManager(_encoder, gpu);
+
             ConfigureOutputType(_encoder, width, height, frameRateNumerator, bitrateBps);
             ConfigureInputType(_encoder, width, height, frameRateNumerator);
             ApplyLowLatencySettings(_encoder);
-            BindDeviceManager(_encoder, gpu);
 
             _outputProvidesOwnSamples = OutputProvidesOwnSamples(_encoder);
             _events = _encoder.QueryInterface<IMFMediaEventGenerator>();
@@ -451,6 +461,22 @@ public sealed class H264HardwareEncoder : IDisposable
         // Vortice.MediaFoundation 3.6.2 does not expose ICodecAPI. The media type still carries
         // bitrate, frame-rate and progressive-mode requirements; codec-specific tuning remains
         // best-effort and is intentionally skipped when the binding cannot represent it.
+    }
+
+    /// <summary>Refuses a transform that cannot accept a DXGI device manager at all, rather
+    /// than sending it MFT_MESSAGE_SET_D3D_MANAGER anyway and hoping. MF_SA_D3D11_AWARE == TRUE
+    /// is the documented precondition for that message.</summary>
+    private static void RequireD3D11Aware(IMFTransform encoder)
+    {
+        using var attributes = encoder.Attributes;
+        uint aware;
+        try { aware = attributes.GetUInt32(MF_SA_D3D11_AWARE); }
+        catch (Exception) { aware = 0u; } // absent reads as MF_E_ATTRIBUTENOTFOUND
+        if (aware == 0u)
+        {
+            throw new NotSupportedException(
+                "The enumerated H.264 encoder MFT does not report MF_SA_D3D11_AWARE, so it cannot accept a DXGI device manager and cannot encode directly from D3D11 textures. Refusing to continue rather than silently encoding through system memory.");
+        }
     }
 
     private static void BindDeviceManager(IMFTransform encoder, D3D11Device gpu)

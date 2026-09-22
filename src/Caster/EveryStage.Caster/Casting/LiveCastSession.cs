@@ -340,7 +340,7 @@ public sealed class LiveCastSession : IDisposable
         StatsUpdated?.Invoke();
     }
 
-    public void Start()
+    public async Task StartAsync()
     {
         if (IsRunning) return;
 
@@ -369,6 +369,8 @@ public sealed class LiveCastSession : IDisposable
 
         _discoveryClient.CastStatusReceived += OnCastStatusReceived;
 
+        Guid mediaSessionId = Guid.NewGuid();
+
         try
         {
             _gpu = new D3D11Device();
@@ -377,7 +379,8 @@ public sealed class LiveCastSession : IDisposable
             Height = _capture.Height;
             _converter = new BgraToNv12Converter(_gpu);
             _encoder = new H264HardwareEncoder(_gpu, Width, Height, frameRateNumerator: 30, bitrateBps: 4_000_000);
-            _rtpSession = new RtpSession(new IPEndPoint(_terminal.Address, DiscoveryProtocol.VideoRtpPort), PayloadType);
+            _rtpSession = new RtpSession(new IPEndPoint(_terminal.Address, DiscoveryProtocol.VideoRtpPort), PayloadType,
+                authentication: new MediaPacketAuthentication(_discoveryClient.DeriveMediaKey(_terminal, mediaSessionId, "video"), mediaSessionId));
         }
         catch (Exception ex)
         {
@@ -399,7 +402,8 @@ public sealed class LiveCastSession : IDisposable
             // input format) is caught by this same try/catch and degrades to video-only, same as an
             // AudioCaptureSource failure always has.
             _audioEncoder = new AacAudioEncoder(_audioCapture.SampleRate, _audioCapture.Channels);
-            _audioRtpSession = new RtpSession(new IPEndPoint(_terminal.Address, DiscoveryProtocol.AudioRtpPort), AudioPayloadType);
+            _audioRtpSession = new RtpSession(new IPEndPoint(_terminal.Address, DiscoveryProtocol.AudioRtpPort), AudioPayloadType,
+                authentication: new MediaPacketAuthentication(_discoveryClient.DeriveMediaKey(_terminal, mediaSessionId, "audio"), mediaSessionId));
             _audioEncoder.AccessUnitEncoded += OnAacAccessUnitEncoded;
             _audioEncoder.EncodingFailed += OnAudioCaptureFailed; // same AudioError surface as a capture failure — see that handler.
             _audioCapture.PcmCaptured += OnPcmCaptured;
@@ -420,14 +424,14 @@ public sealed class LiveCastSession : IDisposable
             _audioRtpSession = null;
         }
 
-        // Best-effort, fire-and-forget, same as every other discovery-protocol send in this repo —
-        // there is no acknowledgment/retry to wait on, and a lost cast_start datagram on an
-        // otherwise-healthy LAN is treated as an acceptable risk rather than a reason to block
-        // pipeline startup (see this project's README).
-        _ = _discoveryClient.SendCastStartAsync(_terminal, _identity, Width, Height, PayloadType, audioInfo);
+        // Do not emit media until the authenticated receiver confirms native initialization.
+        // The session owns cancellation so closing during startup cannot resurrect capture.
+        _cts = new CancellationTokenSource();
+        CancellationToken startupToken = _cts.Token;
+        await _discoveryClient.SendCastStartAsync(_terminal, _identity, Width, Height, PayloadType, audioInfo, mediaSessionId, startupToken);
+        startupToken.ThrowIfCancellationRequested();
 
         _clock.Restart();
-        _cts = new CancellationTokenSource();
         _loopTask = Task.Run(() => RunLoop(_gpu, _capture, _converter, _encoder, _cts.Token));
         _sendLoopTask = Task.Run(() => RunSendLoop(_rtpSession, _cts.Token));
         _pingLoopTask = Task.Run(() => RunPingLoop(_cts.Token));

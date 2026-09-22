@@ -79,5 +79,5 @@ internal static class WellKnownGuids
     // Attribute set (to UINT32 1) on an async MFT's own attribute store before use — same role as
     // EveryStage.Caster.Encode.EncoderGuids.MF_TRANSFORM_ASYNC_UNLOCK, duplicated here rather than
     // shared for the same independent-verification reasoning as every other GUID in this file.
-    public static readonly Guid MF_TRANSFORM_ASYNC_UNLOCK = new("e5666d6b-3422-4eb3-8daf-32ecd6e15d96");
+    public static readonly Guid MF_TRANSFORM_ASYNC_UNLOCK = new("e5666d6b-3422-4eb6-a421-da7db1f8e207");
 }

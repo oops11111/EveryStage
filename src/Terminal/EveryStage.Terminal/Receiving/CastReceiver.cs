@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using EveryStage.Rendering.Audio;
 using EveryStage.Rendering.Decode;
@@ -45,7 +44,7 @@ namespace EveryStage.Terminal.Receiving;
 /// sequential background receive loop (see its doc comment), so calls into this class from that side
 /// are never concurrent with each other. The audio side runs on its own, entirely independent
 /// <c>RawRtpReceiver</c> background loop, and a third thread (<see cref="RunPresentLoop"/>) does the
-/// actual GPU presentation — <see cref="_pendingFrames"/> (a <see cref="ConcurrentQueue{T}"/>) and
+/// actual GPU presentation — <see cref="_pendingFrames"/> (a bounded ownership queue) and
 /// <see cref="_audioSyncOffsetTicks"/> (written at most once under a lock, then only ever read) are
 /// the only state shared between them. All three also independently bump
 /// <see cref="LastPacketReceivedAt"/>, which <c>TerminalApplicationContext.CheckCastLiveness</c>
@@ -73,7 +72,7 @@ public sealed class CastReceiver : IDisposable
     private readonly VideoSurface _surface;
     private readonly H264HardwareDecoder _decoder;
     private readonly RtpReceiver _rtpReceiver;
-    private readonly List<byte[]> _pendingNals = new();
+    private readonly AccessUnitAssembler _accessUnitAssembler = new();
 
     // Bug found and fixed here (self-review, same audit round that found the ObjectDisposedException
     // family — see this project's README): RtpReceiver.Dispose() cancels its token then waits up to
@@ -98,6 +97,8 @@ public sealed class CastReceiver : IDisposable
     // be in flight, which is an acceptable, realistically-bounded cost (single-frame hardware decode
     // latency) in exchange for closing a real, if narrow, use-after-free-shaped race.
     private readonly object _decoderLock = new();
+    private readonly object _audioLifetimeLock = new();
+    private bool _audioStopped;
 
     private readonly RawRtpReceiver? _audioRtpReceiver;
     private readonly AudioPlaybackClock? _audioClock;
@@ -115,7 +116,8 @@ public sealed class CastReceiver : IDisposable
     private readonly RtpTimestampUnwrapper _audioTimestampUnwrapper = new();
     private readonly RtpTimestampUnwrapper _videoTimestampUnwrapper = new();
 
-    private readonly ConcurrentQueue<PendingFrame> _pendingFrames = new();
+    // Three queued frames plus the one currently presenting: latency and native ownership are bounded.
+    private readonly BoundedLatestQueue<PendingFrame> _pendingFrames = new(3, frame => frame.Texture.Dispose());
     private CancellationTokenSource? _presentCts;
     private Thread? _presentThread;
 
@@ -125,6 +127,12 @@ public sealed class CastReceiver : IDisposable
     public int Height { get; }
     public long FramesDecoded { get; private set; }
     public long BytesReceived { get; private set; }
+
+    /// <summary>Access units dropped because the packet carrying their marker bit never
+    /// arrived, detected by the RTP timestamp changing while NAL units were still pending.
+    /// See OnNalUnitReceived for why the marker bit alone is not a sufficient access-unit
+    /// boundary.</summary>
+    public long IncompleteAccessUnitsDropped => _accessUnitAssembler.IncompleteAccessUnitsDropped;
 
     /// <summary>The most recent video decode attempt's error, or null if it succeeded — cleared back
     /// to null on the very next successful <see cref="H264HardwareDecoder.SubmitAccessUnit"/> call,
@@ -217,14 +225,18 @@ public sealed class CastReceiver : IDisposable
 
     public CastReceiver(VideoSurface surface, int width, int height, int listenPort,
         bool hasAudio = false, int audioSampleRate = 0, int audioChannels = 0, int audioListenPort = 0,
-        bool audioIsAac = false, byte? payloadType = null, byte? audioPayloadType = null)
+        bool audioIsAac = false, byte? payloadType = null, byte? audioPayloadType = null,
+        Guid mediaSessionId = default, byte[]? videoKey = null, byte[]? audioKey = null, System.Net.IPAddress? expectedAddress = null)
     {
+        if (mediaSessionId == Guid.Empty || videoKey == null || audioKey == null || expectedAddress == null)
+            throw new ArgumentException("Authenticated media session is required.");
         Width = width;
         Height = height;
 
         _surface = surface;
         _decoder = new H264HardwareDecoder(_surface.Gpu, width, height);
         _decoder.FrameDecoded += OnFrameDecoded;
+        _decoder.DecodingFailed += OnVideoDecodingFailed;
 
         // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
         // step one" shape as EveryStage.Rendering's D3D11Device/SwapChainPresenter/
@@ -247,11 +259,13 @@ public sealed class CastReceiver : IDisposable
             // DiscoveryProtocol.CastStartMessage.PayloadType/AudioPayloadType — this is that
             // field's first real consumer; previously it was received and stored in
             // DiscoveryService.CastStartInfo but never passed any further.
-            _rtpReceiver = new RtpReceiver(listenPort, payloadType);
+            _rtpReceiver = new RtpReceiver(listenPort, payloadType,
+                new MediaPacketAuthentication(videoKey, mediaSessionId), expectedAddress);
         }
         catch
         {
             _decoder.FrameDecoded -= OnFrameDecoded;
+            _decoder.DecodingFailed -= OnVideoDecodingFailed;
             _decoder.Dispose();
             throw;
         }
@@ -277,7 +291,8 @@ public sealed class CastReceiver : IDisposable
                     _audioDecoder.PcmDecoded += OnAacPcmDecoded;
                     _audioDecoder.DecodingFailed += OnAacDecodingFailed;
                 }
-                _audioRtpReceiver = new RawRtpReceiver(audioListenPort, audioPayloadType);
+                _audioRtpReceiver = new RawRtpReceiver(audioListenPort, audioPayloadType,
+                    new MediaPacketAuthentication(audioKey, mediaSessionId), expectedAddress);
                 _audioRtpReceiver.PayloadReceived += OnAudioPayloadReceived;
                 HasAudio = true;
             }
@@ -322,6 +337,17 @@ public sealed class CastReceiver : IDisposable
     }
 
     private void OnAudioPayloadReceived(byte[] payload, uint timestamp)
+    {
+        // Unsubscribing does not cancel a delegate invocation already captured by the receiver.
+        // Keep native audio use and teardown mutually exclusive, including after its stop timeout.
+        lock (_audioLifetimeLock)
+        {
+            if (_audioStopped) return;
+            ProcessAudioPayload(payload, timestamp);
+        }
+    }
+
+    private void ProcessAudioPayload(byte[] payload, uint timestamp)
     {
         LastPacketReceivedAt = DateTime.UtcNow;
         AudioBytesReceived += payload.Length;
@@ -398,6 +424,16 @@ public sealed class CastReceiver : IDisposable
         }
     }
 
+    /// <summary>The H.264 decoder now runs an asynchronous MFT event loop, so a decode failure
+    /// surfaces on that loop's own thread with no caller to throw at - same shape as the audio
+    /// side's OnAacDecodingFailed below. Recorded into the same two fields OnNalUnitReceived
+    /// used to set directly from its own catch block.</summary>
+    private void OnVideoDecodingFailed(Exception ex)
+    {
+        LastError = ex.Message;
+        ConsecutiveVideoDecodeErrors++;
+    }
+
     private void OnAacDecodingFailed(Exception ex)
     {
         AudioError = ex.Message;
@@ -408,11 +444,13 @@ public sealed class CastReceiver : IDisposable
     {
         LastPacketReceivedAt = DateTime.UtcNow;
         BytesReceived += nalUnit.Length;
-        _pendingNals.Add(nalUnit);
-        if (!isLastNalOfAccessUnit) return;
 
-        byte[] accessUnit = BuildAnnexBAccessUnit(_pendingNals);
-        _pendingNals.Clear();
+        // Access-unit assembly lives in EveryStage.Transport.AccessUnitAssembler rather than
+        // here so that the core self-tests can cover it: they run on any .NET runtime, and this
+        // class cannot compile into them because it pulls in the D3D11/Media Foundation decoder.
+        // See that class for why the marker bit alone is not a sufficient access-unit boundary.
+        byte[]? accessUnit = _accessUnitAssembler.Add(nalUnit, isLastNalOfAccessUnit, timestamp);
+        if (accessUnit == null) return;
 
         try
         {
@@ -434,28 +472,6 @@ public sealed class CastReceiver : IDisposable
             LastError = ex.Message;
             ConsecutiveVideoDecodeErrors++;
         }
-    }
-
-    private static byte[] BuildAnnexBAccessUnit(List<byte[]> nalUnits)
-    {
-        // Inverse of AnnexBNalSplitter: prefix each NAL unit with a 4-byte start code and
-        // concatenate. The Caster side stripped these off when packetizing per RFC 6184, so they
-        // must be put back before handing the bytestream to a decoder MFT that expects Annex B.
-        int total = 0;
-        foreach (var nal in nalUnits) total += nal.Length + 4;
-
-        var buffer = new byte[total];
-        int offset = 0;
-        foreach (var nal in nalUnits)
-        {
-            buffer[offset++] = 0;
-            buffer[offset++] = 0;
-            buffer[offset++] = 0;
-            buffer[offset++] = 1;
-            nal.CopyTo(buffer, offset);
-            offset += nal.Length;
-        }
-        return buffer;
     }
 
     private void OnFrameDecoded(ID3D11Texture2D texture, int arraySlice, int width, int height, long presentationTicks)
@@ -504,7 +520,7 @@ public sealed class CastReceiver : IDisposable
         {
             // Drain and dispose whatever's left so cancellation, an early return, or the catch above
             // doesn't leak GPU texture references still sitting in the queue.
-            while (_pendingFrames.TryDequeue(out var leftover)) leftover.Texture.Dispose();
+            _pendingFrames.Dispose();
         }
     }
 
@@ -577,6 +593,7 @@ public sealed class CastReceiver : IDisposable
         lock (_decoderLock)
         {
             _decoder.FrameDecoded -= OnFrameDecoded;
+            _decoder.DecodingFailed -= OnVideoDecodingFailed;
             _decoder.Dispose();
         }
 
@@ -586,17 +603,21 @@ public sealed class CastReceiver : IDisposable
 
         if (_audioRtpReceiver != null) _audioRtpReceiver.PayloadReceived -= OnAudioPayloadReceived;
         _audioRtpReceiver?.Dispose();
-        _audioClock?.Dispose();
-        if (_audioDecoder != null)
+        lock (_audioLifetimeLock)
         {
-            _audioDecoder.PcmDecoded -= OnAacPcmDecoded;
-            _audioDecoder.DecodingFailed -= OnAacDecodingFailed;
+            _audioStopped = true;
+            if (_audioDecoder != null)
+            {
+                _audioDecoder.PcmDecoded -= OnAacPcmDecoded;
+                _audioDecoder.DecodingFailed -= OnAacDecodingFailed;
+            }
+            _audioDecoder?.Dispose();
+            _audioClock?.Dispose();
         }
-        _audioDecoder?.Dispose();
 
         // Anything still queued after the present thread has stopped (e.g. HasAudio was false and
         // frames were never routed through the queue at all — this is then always empty and the
         // loop is a no-op, but it's cheap insurance either way).
-        while (_pendingFrames.TryDequeue(out var leftover)) leftover.Texture.Dispose();
+        _pendingFrames.Dispose();
     }
 }

@@ -24,6 +24,7 @@ public sealed class ScenarioRepository
     };
 
     private readonly string _storePath;
+    private bool _loadFailed;
 
     public ScenarioRepository(string? storePathOverride = null)
     {
@@ -34,14 +35,14 @@ public sealed class ScenarioRepository
 
     public ScenarioStore Load()
     {
-        if (!File.Exists(_storePath))
-            return CreateDefaultStore();
-
+        _loadFailed = false;
         try
         {
             using var stream = File.OpenRead(_storePath);
             return JsonSerializer.Deserialize<ScenarioStore>(stream, JsonOptions) ?? CreateDefaultStore();
         }
+        catch (FileNotFoundException) { return CreateDefaultStore(); }
+        catch (DirectoryNotFoundException) { return CreateDefaultStore(); }
         catch (JsonException)
         {
             // Corrupt store on an unattended device: fail safe to an empty default rather than
@@ -53,6 +54,7 @@ public sealed class ScenarioRepository
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            _loadFailed = true;
             // Different failure mode from JsonException above, and deliberately NOT treated the same
             // way: File.Exists returning true doesn't mean File.OpenRead can actually succeed —
             // another process can hold an exclusive lock (antivirus scan, backup tool), or a
@@ -68,6 +70,8 @@ public sealed class ScenarioRepository
 
     public void Save(ScenarioStore store)
     {
+        if (_loadFailed)
+            throw new IOException("方案读取失败，已禁止保存以保护原数据。请解除文件占用或权限问题后重新加载。");
         var directory = Path.GetDirectoryName(_storePath)!;
         Directory.CreateDirectory(directory);
 

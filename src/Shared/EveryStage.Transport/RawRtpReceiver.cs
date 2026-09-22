@@ -27,6 +27,8 @@ public sealed class RawRtpReceiver : IDisposable
     private Task? _receiveLoop;
 
     private readonly byte? _expectedPayloadType;
+    private readonly MediaPacketAuthentication? _authentication;
+    private readonly IPAddress? _expectedAddress;
     private long _packetsReceived;
     private long _payloadTypeMismatches;
     private long _dispatchExceptions;
@@ -61,10 +63,12 @@ public sealed class RawRtpReceiver : IDisposable
     /// <param name="expectedPayloadType">Same meaning as <see cref="RtpReceiver"/>'s own constructor
     /// parameter of the same name — null (the default) preserves this class's original permissive
     /// behavior.</param>
-    public RawRtpReceiver(int listenPort, byte? expectedPayloadType = null)
+    public RawRtpReceiver(int listenPort, byte? expectedPayloadType = null, MediaPacketAuthentication? authentication = null, IPAddress? expectedAddress = null)
     {
         _socket = new UdpClient(listenPort);
         _expectedPayloadType = expectedPayloadType;
+        _authentication = authentication;
+        _expectedAddress = expectedAddress;
     }
 
     public void Start() => _receiveLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token));
@@ -74,9 +78,16 @@ public sealed class RawRtpReceiver : IDisposable
         while (!token.IsCancellationRequested)
         {
             UdpReceiveResult result;
+            using var receiveTimeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+            receiveTimeout.CancelAfter(TimeSpan.FromMilliseconds(20));
             try
             {
-                result = await _socket.ReceiveAsync(token);
+                result = await _socket.ReceiveAsync(receiveTimeout.Token);
+            }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                Dispatch(_reorderBuffer.FlushExpired(DateTimeOffset.UtcNow));
+                continue;
             }
             catch (OperationCanceledException)
             {
@@ -96,7 +107,10 @@ public sealed class RawRtpReceiver : IDisposable
                 return;
             }
 
-            if (!RtpPacket.TryDecode(result.Buffer, out var packet)) continue; // not one of ours — ignore.
+            if (_expectedAddress != null && !result.RemoteEndPoint.Address.Equals(_expectedAddress)) continue;
+            byte[] data = result.Buffer;
+            if (_authentication != null && !_authentication.TryUnprotect(data, out data)) continue;
+            if (!RtpPacket.TryDecode(data, out var packet)) continue;
 
             if (_expectedPayloadType.HasValue && packet.PayloadType != _expectedPayloadType.Value)
             {
@@ -105,7 +119,13 @@ public sealed class RawRtpReceiver : IDisposable
             }
 
             Interlocked.Increment(ref _packetsReceived);
-            foreach (var delivery in _reorderBuffer.Add(packet, DateTimeOffset.UtcNow))
+            Dispatch(_reorderBuffer.Add(packet, DateTimeOffset.UtcNow));
+        }
+    }
+
+    private void Dispatch(IReadOnlyList<RtpReorderBuffer.Delivery> deliveries)
+    {
+            foreach (var delivery in deliveries)
             {
                 try
                 {
@@ -132,7 +152,6 @@ public sealed class RawRtpReceiver : IDisposable
                     Interlocked.Increment(ref _dispatchExceptions);
                 }
             }
-        }
     }
 
     public void Dispose()
@@ -142,5 +161,8 @@ public sealed class RawRtpReceiver : IDisposable
         catch (AggregateException) { }
         _cts.Dispose();
         _socket.Dispose();
+        if (_receiveLoop == null || _receiveLoop.IsCompleted) _authentication?.Dispose();
+        else _ = _receiveLoop.ContinueWith(_ => _authentication?.Dispose(),
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
     }
 }

@@ -302,6 +302,27 @@ public static class DiscoveryProtocolSelfTest
             ack.Task, maxAttempts: 3, attemptTimeout: TimeSpan.FromMilliseconds(1));
         if (!succeeded || successfulAttempts != 2)
             return $"ACK retry should stop on the second attempt; result={succeeded}, attempts={successfulAttempts}.";
+        foreach (bool cancelled in new[] { false, true })
+        foreach (bool completeDuringSend in new[] { false, true })
+        {
+            var failedAck = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            void FailAck()
+            {
+                if (cancelled) failedAck.TrySetCanceled();
+                else failedAck.TrySetException(new InvalidDataException("Rejected acknowledgement"));
+            }
+            if (!completeDuringSend) FailAck();
+            bool propagated = false;
+            try
+            {
+                await AcknowledgedMessageRetry.SendUntilAcknowledgedAsync(
+                    () => { if (completeDuringSend) FailAck(); return Task.CompletedTask; }, failedAck.Task,
+                    attemptTimeout: TimeSpan.FromMilliseconds(1));
+            }
+            catch (OperationCanceledException) when (cancelled) { propagated = true; }
+            catch (InvalidDataException) when (!cancelled) { propagated = true; }
+            if (!propagated) return "Faulted/cancelled ACK was incorrectly accepted as success.";
+        }
         return null;
     }
 

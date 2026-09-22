@@ -13,6 +13,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\FileLibraryStore.cs" Link="Terminal\FileLibraryStore.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\ScenarioRepository.cs" Link="Terminal\ScenarioRepository.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\Scenario.cs" Link="Terminal\Scenario.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\AppSettings.cs" Link="Terminal\AppSettings.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\SettingsStore.cs" Link="Terminal\SettingsStore.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\Activity.cs" Link="Terminal\Activity.cs" />

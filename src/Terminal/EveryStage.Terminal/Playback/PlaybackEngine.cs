@@ -75,6 +75,7 @@ public sealed class PlaybackEngine : IDisposable
     // scoped to a single Activity's file list, handed in via RequestPlay).
     private readonly ScenarioStore _scenarioStore;
     private readonly ImageContentRenderer _imageRenderer = new();
+    private int _contentLoadVersion;
     private readonly PdfContentRenderer _pdfRenderer = new();
     private readonly PlaybackLogger _playbackLogger = new();
     private VideoContentController? _videoController;
@@ -345,7 +346,7 @@ public sealed class PlaybackEngine : IDisposable
     /// context (and no further page to turn to).</summary>
     public bool NextManual()
     {
-        if (TryTurnDocumentPage(_pdfRenderer.NextPage)) return true;
+        if (TryTurnDocumentPageAsync(1)) return true;
         return TryAdvance(1, PlaybackTrigger.ManualSkip);
     }
 
@@ -354,58 +355,36 @@ public sealed class PlaybackEngine : IDisposable
     /// page to turn back to).</summary>
     public bool PreviousManual()
     {
-        if (TryTurnDocumentPage(_pdfRenderer.PreviousPage)) return true;
+        if (TryTurnDocumentPageAsync(-1)) return true;
         return TryAdvance(-1, PlaybackTrigger.ManualSkip);
     }
 
-    /// <summary>Shared by <see cref="NextManual"/>/<see cref="PreviousManual"/> — attempts one page
-    /// turn via <paramref name="turnPage"/> (<see cref="PdfContentRenderer.NextPage"/> or
-    /// <see cref="PdfContentRenderer.PreviousPage"/>) when the current file is a Document, and
-    /// updates <see cref="OverlayWindow.ContentSurface"/> to match. Returns false (meaning "nothing
-    /// handled here, fall through to TryAdvance") both when the current file isn't a Document and
-    /// when there's no further page to turn to in the requested direction — <see cref="NextManual"/>/
-    /// <see cref="PreviousManual"/>'s own page-before-item precedence relies on both of those cases
-    /// looking identical to the caller.
-    ///
-    /// Bug fixed here: <paramref name="turnPage"/> calls <c>PdfContentRenderer.RenderCurrentPage</c>
-    /// internally, which can throw for a corrupt page within an otherwise-valid PDF (see that
-    /// method's own doc comment on its own dispose-before-render fix) — previously nothing here
-    /// caught that at all, so it propagated as a completely unreported exception out to whatever UI
-    /// button triggered <see cref="NextManual"/>/<see cref="PreviousManual"/>. Routing it through
-    /// <see cref="OnImageOrDocumentFailed"/> matches how a whole-document load failure is already
-    /// reported, and — just as importantly — clears <see cref="OverlayWindow.ContentSurface"/>'s now-
-    /// dangling reference to whatever <see cref="System.Drawing.Bitmap"/> that dispose-before-render
-    /// step already freed (see <see cref="OnImageOrDocumentFailed"/>'s own doc comment on that). On a
-    /// failure this returns true (handled, don't fall through to TryAdvance) — auto-advancing past a
-    /// document that just failed to render its next page would silently abandon it instead of
-    /// reporting the problem, which is not how any other content failure in this class behaves.
-    ///
-    /// Also returns false immediately for an Office document (see <see cref="IsOfficeDocument"/>) —
-    /// confirmed with the user: 翻页 for a PPT/Word/Excel file happens directly in WPS's own real
-    /// window, never through this class, so <paramref name="turnPage"/> (always
-    /// <c>PdfContentRenderer.NextPage</c>/<c>PreviousPage</c>) must never be called for one — it would
-    /// silently operate on whatever unrelated PDF that renderer last loaded, or nothing at all.
-    /// Falling through to false here means <see cref="NextManual"/>/<see cref="PreviousManual"/>
-    /// instead fall through to <see cref="TryAdvance"/>, treating 上一项/下一项 as an ordinary
-    /// playlist-navigate action for an Office document, same as any other non-Document kind.</summary>
-    private bool TryTurnDocumentPage(Func<bool> turnPage)
+    /// <summary>Starts a background PDF page turn before considering playlist navigation.
+    /// Repeated clicks while rendering are handled without skipping the document. Office files
+    /// retain their external WPS navigation. Completion is accepted only for the same playback generation.</summary>
+    private bool TryTurnDocumentPageAsync(int direction)
     {
-        if (_currentFile?.Kind != MediaKind.Document || IsOfficeDocument(_currentFile!)) return false;
+        if (_currentFile?.Kind != MediaKind.Document || IsOfficeDocument(_currentFile)) return false;
+        if (_pdfRenderer.IsTurningPage) return true;
+        int target = _pdfRenderer.CurrentPageIndex + direction;
+        if (target < 0 || target >= _pdfRenderer.PageCount) return false;
+        _ = TurnDocumentPageAsync(direction, _currentFile, _contentLoadVersion);
+        return true;
+    }
 
-        bool turned;
+    private async Task TurnDocumentPageAsync(int direction, MediaFile file, int version)
+    {
         try
         {
-            turned = turnPage();
+            bool turned = await _pdfRenderer.TurnPageAsync(direction);
+            if (turned && version == _contentLoadVersion && ReferenceEquals(file, _currentFile))
+                _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
         }
         catch (Exception ex)
         {
-            OnImageOrDocumentFailed(_currentFile!, ex);
-            return true;
+            if (version == _contentLoadVersion && ReferenceEquals(file, _currentFile))
+                OnImageOrDocumentFailed(file, ex);
         }
-
-        if (!turned) return false;
-        _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
-        return true;
     }
 
     /// <summary>Null unless the current file is a Document with more than one page — the floating
@@ -415,7 +394,7 @@ public sealed class PlaybackEngine : IDisposable
     /// same two buttons do something different without any visible indicator would be confusing.
     /// 1-based for display (<c>CurrentPage</c> starting at 1, not <see cref="IContentRenderer"/>'s
     /// own 0-based <c>CurrentPageIndex</c>). Also null for an Office document — same reasoning as
-    /// <see cref="TryTurnDocumentPage"/>'s own Office check: <see cref="_pdfRenderer"/>'s
+    /// <see cref="TryTurnDocumentPageAsync"/>'s own Office check: <see cref="_pdfRenderer"/>'s
     /// <c>PageCount</c> would otherwise reflect whatever unrelated PDF it last loaded, not this
     /// file.</summary>
     public (int CurrentPage, int PageCount)? DocumentPageInfo =>
@@ -520,6 +499,7 @@ public sealed class PlaybackEngine : IDisposable
 
     private void PlayFile(MediaFile file, PlaybackTrigger trigger)
     {
+        ++_contentLoadVersion;
         _stayDurationTimer?.Stop();
         _stayDurationTimer?.Dispose();
         _stayDurationTimer = null;
@@ -625,30 +605,36 @@ public sealed class PlaybackEngine : IDisposable
 
     private async Task PlayImageAsync(MediaFile file)
     {
+        int version = _contentLoadVersion;
         try
         {
+            _overlay.ContentSurface.SetFrame(null);
             await _imageRenderer.LoadAsync(file.SourcePath);
+            if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile)) return;
             _overlay.ContentSurface.SetFrame(_imageRenderer.CurrentFrame);
             ArmStayDurationTimer(file);
         }
         catch (Exception ex)
         {
-            OnImageOrDocumentFailed(file, ex);
+            if (version == _contentLoadVersion) OnImageOrDocumentFailed(file, ex);
         }
     }
 
     private async Task PlayDocumentAsync(MediaFile file)
     {
+        int version = _contentLoadVersion;
         try
         {
+            _overlay.ContentSurface.SetFrame(null);
             _pdfRenderer.SetTargetSize(_overlay.ContentSurface.ClientSize);
             await _pdfRenderer.LoadAsync(file.SourcePath);
+            if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile)) return;
             _overlay.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
             ArmStayDurationTimer(file);
         }
         catch (Exception ex)
         {
-            OnImageOrDocumentFailed(file, ex);
+            if (version == _contentLoadVersion) OnImageOrDocumentFailed(file, ex);
         }
     }
 
@@ -1224,6 +1210,7 @@ public sealed class PlaybackEngine : IDisposable
     /// <c>OverlayWindow</c> never happens — this call is the only thing that would.</summary>
     public void StopForDeviceCast()
     {
+        ++_contentLoadVersion;
         if (_currentFile != null)
         {
             _playbackLogger.LogPlaybackEnded(_currentFile.Id, "preempted_by_device_cast");
@@ -1316,6 +1303,7 @@ public sealed class PlaybackEngine : IDisposable
 
     public void Dispose()
     {
+        ++_contentLoadVersion;
         _stateMachine.StateChanged -= OnOutputStateChanged;
         _stayDurationTimer?.Dispose();
         StopWaveformTimer();

@@ -65,6 +65,7 @@ public static class DiscoveryProtocol
     /// UI (PLANNING.md §12 "待机态：目标终端机列表") to build its list from.</summary>
     public sealed class BeaconMessage : Message
     {
+        public int MediaAuthenticationVersion { get; set; }
         public override string Type => "beacon";
         public Guid DeviceId { get; set; }
         public string DeviceName { get; set; } = "";
@@ -102,6 +103,8 @@ public static class DiscoveryProtocol
     /// drafted) actually had to negotiate anything end to end.</summary>
     public sealed class CastStartMessage : AuthenticatedMessage
     {
+        public Guid MediaSessionId { get; set; }
+        public int MediaAuthenticationVersion { get; set; }
         public override string Type => "cast_start";
         public Guid DeviceId { get; set; }
         public int Width { get; set; }
@@ -206,6 +209,14 @@ public static class DiscoveryProtocol
 
     /// <summary>Caster acknowledgment for one status report. A duplicate report receives another
     /// ACK so a lost ACK can recover without delivering duplicate status to the application.</summary>
+    public sealed class CastStartAckMessage : AuthenticatedMessage
+    {
+        public override string Type => "cast_start_ack";
+        public Guid MediaSessionId { get; set; }
+        public bool Ready { get; set; }
+        public string? Error { get; set; }
+    }
+
     public sealed class CastStatusAckMessage : AuthenticatedMessage
     {
         public override string Type => "cast_status_ack";
@@ -298,6 +309,7 @@ public static class DiscoveryProtocol
             "pair_request" => doc.RootElement.Deserialize<PairRequestMessage>(),
             "pair_response" => doc.RootElement.Deserialize<PairResponseMessage>(),
             "cast_start" => doc.RootElement.Deserialize<CastStartMessage>(),
+            "cast_start_ack" => doc.RootElement.Deserialize<CastStartAckMessage>(),
             "cast_stop" => doc.RootElement.Deserialize<CastStopMessage>(),
             "cast_status" => doc.RootElement.Deserialize<CastStatusMessage>(),
             "cast_status_ack" => doc.RootElement.Deserialize<CastStatusAckMessage>(),

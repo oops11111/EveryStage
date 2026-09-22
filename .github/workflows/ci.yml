@@ -45,6 +45,9 @@ jobs:
         shell: pwsh
         run: ./scripts/Build-ReleasePackages.ps1
 
+      - name: Run Windows content self-tests
+        run: dotnet run --project src/Tests/EveryStage.WindowsSelfTests/EveryStage.WindowsSelfTests.csproj --no-build --configuration Release
+
       - name: Upload release packages
         uses: actions/upload-artifact@v6
         with:

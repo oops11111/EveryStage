@@ -27,6 +27,7 @@ public sealed class TerminalDiscoveryClient : IDisposable
     private readonly ReplayGuard _replayGuard = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
+    private readonly Dictionary<(Guid Device, Guid Session), TaskCompletionSource<DiscoveryProtocol.CastStartAckMessage>> _pendingStarts = new();
     private readonly Dictionary<Guid, DiscoveredTerminal> _terminals = new();
     private readonly Dictionary<string, TaskCompletionSource<DiscoveryProtocol.PairResponseMessage>> _pendingPairRequests = new();
 
@@ -190,9 +191,20 @@ public sealed class TerminalDiscoveryClient : IDisposable
     /// <see cref="DiscoveryProtocol.CastStartMessage"/> for why this exists instead of the Terminal
     /// inferring a stream's parameters purely from incoming RTP packets. Best-effort, fire-and-forget
     /// like every other send in this class — there's no acknowledgment or retry.</summary>
-    public Task SendCastStartAsync(DiscoveredTerminal terminal, DeviceIdentity myIdentity, int width, int height, byte payloadType, AudioStreamInfo? audio) =>
-        SendControlMessageAsync(terminal, new DiscoveryProtocol.CastStartMessage
+    public byte[] DeriveMediaKey(DiscoveredTerminal terminal, Guid sessionId, string stream)
+    {
+        var paired = _pairedTerminals.Find(terminal.DeviceId);
+        if (paired == null || !PairingSecurity.IsSupportedKey(paired.PairingKey, paired.PairingKeyFormatVersion))
+            throw new InvalidOperationException("请先重新配对终端机。");
+        return PairingSecurity.DeriveMediaKey(paired.PairingKey!, sessionId, stream);
+    }
+
+    public async Task SendCastStartAsync(DiscoveredTerminal terminal, DeviceIdentity myIdentity, int width, int height, byte payloadType, AudioStreamInfo? audio, Guid mediaSessionId, CancellationToken cancellationToken = default)
+    {
+        var request = new DiscoveryProtocol.CastStartMessage
         {
+            MediaSessionId = mediaSessionId,
+            MediaAuthenticationVersion = 1,
             DeviceId = myIdentity.DeviceId,
             Width = width,
             Height = height,
@@ -202,7 +214,26 @@ public sealed class TerminalDiscoveryClient : IDisposable
             AudioChannels = audio?.Channels ?? 0,
             AudioPayloadType = audio?.PayloadType ?? 0,
             AudioIsAac = audio?.IsAac ?? false,
-        });
+        };
+        var paired = _pairedTerminals.Find(terminal.DeviceId);
+        if (paired == null || !PairingSecurity.IsSupportedKey(paired.PairingKey, paired.PairingKeyFormatVersion))
+            throw new InvalidOperationException("请重新配对终端机。");
+        PairingSecurity.Sign(request, myIdentity.DeviceId, paired.PairingKey!);
+        var pending = new TaskCompletionSource<DiscoveryProtocol.CastStartAckMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var key = (terminal.DeviceId, mediaSessionId);
+        lock (_gate) _pendingStarts.Add(key, pending);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _cts.Token);
+        try
+        {
+            bool received = await AcknowledgedMessageRetry.SendUntilAcknowledgedAsync(
+                () => SendRawAsync(request, new IPEndPoint(terminal.Address, DiscoveryProtocol.Port)),
+                pending.Task, maxAttempts: 5, attemptTimeout: TimeSpan.FromSeconds(2), cancellationToken: linked.Token);
+            if (!received) throw new TimeoutException("终端机未确认就绪，请检查终端版本、显示器绑定和网络。");
+            var response = await pending.Task;
+            if (!response.Ready) throw new InvalidOperationException(response.Error ?? "终端机无法开始接收投屏。");
+        }
+        finally { lock (_gate) _pendingStarts.Remove(key); }
+    }
 
     /// <summary>Tells the Terminal the live stream has ended — see
     /// <see cref="DiscoveryProtocol.CastStopMessage"/>.</summary>
@@ -281,6 +312,9 @@ public sealed class TerminalDiscoveryClient : IDisposable
                 case DiscoveryProtocol.CastStatusMessage status:
                     HandleCastStatus(status, remoteEndPoint);
                     break;
+                case DiscoveryProtocol.CastStartAckMessage startAck:
+                    HandleStartAck(startAck);
+                    break;
                 case DiscoveryProtocol.PongMessage pong:
                     HandlePong(pong);
                     break;
@@ -318,6 +352,16 @@ public sealed class TerminalDiscoveryClient : IDisposable
     /// change this Caster's exposure.</summary>
     private void HandlePing(DiscoveryProtocol.PingMessage ping, IPEndPoint remoteEndPoint) =>
         _ = SendRawAsync(new DiscoveryProtocol.PongMessage { RequestId = ping.RequestId }, remoteEndPoint);
+
+    private void HandleStartAck(DiscoveryProtocol.CastStartAckMessage ack)
+    {
+        var paired = _pairedTerminals.Find(ack.SenderDeviceId);
+        if (paired == null || !PairingSecurity.IsSupportedKey(paired.PairingKey, paired.PairingKeyFormatVersion)
+            || !PairingSecurity.Verify(ack, paired.PairingKey)
+            || !_replayGuard.TryAccept(ack, DateTimeOffset.UtcNow)) return;
+        lock (_gate)
+            if (_pendingStarts.TryGetValue((ack.SenderDeviceId, ack.MediaSessionId), out var pending)) pending.TrySetResult(ack);
+    }
 
     private void HandleCastStatus(DiscoveryProtocol.CastStatusMessage status, IPEndPoint remoteEndPoint)
     {
@@ -360,10 +404,12 @@ public sealed class TerminalDiscoveryClient : IDisposable
         bool changed;
         lock (_gate)
         {
-            var updated = new DiscoveredTerminal(beacon.DeviceId, beacon.DeviceName, remoteEndPoint.Address, DateTimeOffset.Now);
+            var updated = new DiscoveredTerminal(beacon.DeviceId, beacon.DeviceName, remoteEndPoint.Address, DateTimeOffset.Now,
+                beacon.MediaAuthenticationVersion);
             changed = !_terminals.TryGetValue(beacon.DeviceId, out var existing)
                 || existing.DeviceName != updated.DeviceName
-                || !existing.Address.Equals(updated.Address);
+                || !existing.Address.Equals(updated.Address)
+                || existing.MediaAuthenticationVersion != updated.MediaAuthenticationVersion;
             _terminals[beacon.DeviceId] = updated;
         }
         if (changed) TerminalListChanged?.Invoke();

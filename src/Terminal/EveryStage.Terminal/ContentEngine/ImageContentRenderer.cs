@@ -13,13 +13,17 @@ namespace EveryStage.Terminal.ContentEngine;
 /// </summary>
 public sealed class ImageContentRenderer : IContentRenderer
 {
+    private int _loadVersion;
+    private bool _disposed;
     public MediaKind SupportedKind => MediaKind.Image;
     public Bitmap? CurrentFrame { get; private set; }
     public int PageCount => 1;
     public int CurrentPageIndex => 0;
 
-    public Task LoadAsync(string path)
+    public async Task LoadAsync(string path)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        int version = ++_loadVersion;
         // Bug fixed here: same shape as PdfContentRenderer.LoadAsync's own fix (see that class's
         // doc comment for the full reasoning) — this used to Dispose() the old CurrentFrame without
         // nulling it out, so a failure below (the file was deleted/moved/corrupted since being
@@ -35,15 +39,28 @@ public sealed class ImageContentRenderer : IContentRenderer
         // Load fully into memory and detach from the file handle: Image.FromFile keeps the file
         // locked open for the image's lifetime otherwise, which would block the file being
         // replaced/deleted from the 文件 panel while it's the currently displayed item.
-        using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read);
-        using var loaded = Image.FromStream(fileStream);
-        CurrentFrame = new Bitmap(loaded);
-
-        return Task.CompletedTask;
+        var frame = await Task.Run(() =>
+        {
+            using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read);
+            using var loaded = Image.FromStream(fileStream);
+            return new Bitmap(loaded);
+        });
+        if (_disposed || version != _loadVersion)
+        {
+            frame.Dispose();
+            return;
+        }
+        CurrentFrame = frame;
     }
 
     public bool NextPage() => false;
     public bool PreviousPage() => false;
 
-    public void Dispose() => CurrentFrame?.Dispose();
+    public void Dispose()
+    {
+        _disposed = true;
+        ++_loadVersion;
+        CurrentFrame?.Dispose();
+        CurrentFrame = null;
+    }
 }

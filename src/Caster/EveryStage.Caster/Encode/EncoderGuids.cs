@@ -55,8 +55,11 @@ internal static class EncoderGuids
     // Attribute set (to UINT32 1) on an async MFT's own attribute store before use, per the
     // Windows 8+ MFT async-unlock requirement — without this, ProcessInput/ProcessOutput on an
     // async MFT fail with MF_E_TRANSFORM_ASYNC_LOCKED.
-    public static readonly Guid MF_TRANSFORM_ASYNC_UNLOCK = new("e5666d6b-3422-4eb3-8daf-32ecd6e15d96");
-    public static readonly Guid MF_TRANSFORM_ASYNC = new("f81f7434-462f-4a4a-8d0c-2be166e2ac9a");
+    public static readonly Guid MF_TRANSFORM_ASYNC_UNLOCK = new("e5666d6b-3422-4eb6-a421-da7db1f8e207");
+    public static readonly Guid MF_TRANSFORM_ASYNC = new("f81a699a-649a-497d-8c73-29f8fed6ad7a");
+    // MF_SA_D3D11_AWARE (mfapi.h). Lives on the MFT itself and must read TRUE before it is legal
+    // to hand the transform a DXGI device manager via MFT_MESSAGE_SET_D3D_MANAGER.
+    public static readonly Guid MF_SA_D3D11_AWARE = new("206b4fc8-fcf9-4c51-afe3-9764369e33a0");
 
     // --- CodecAPI properties (codecapi.h) used for zero-latency low-delay real-time encoding
     // (PLANNING.md §4.2 "禁用B帧，零延迟预设，CBR码率控制，短GOP") ---

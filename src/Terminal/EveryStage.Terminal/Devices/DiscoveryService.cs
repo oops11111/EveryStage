@@ -29,6 +29,8 @@ public sealed class DiscoveryService : IDisposable
     private readonly UdpClient _socket;
     private readonly CancellationTokenSource _cts = new();
     private readonly object _pendingGate = new();
+    private Guid _lastStartMessageId;
+    private TaskCompletionSource<(bool Ready, string? Error)>? _lastStartResult;
     private readonly Dictionary<string, PendingRequest> _pendingRequests = new();
 
     // Same correlation-by-RequestId pattern as _pendingRequests/Caster's own _pendingPairRequests,
@@ -70,7 +72,8 @@ public sealed class DiscoveryService : IDisposable
     public readonly record struct CastStartInfo(
         Guid DeviceId, int Width, int Height, byte PayloadType,
         bool HasAudio, int AudioSampleRate, int AudioChannels, byte AudioPayloadType, bool AudioIsAac,
-        IPEndPoint CasterEndPoint);
+        IPEndPoint CasterEndPoint, Guid MediaSessionId, byte[] VideoKey, byte[] AudioKey,
+        Action<bool, string?> CompleteStart);
 
     // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
     // step one" shape as CastReceiver's own RtpReceiver construction fix (see this project's
@@ -166,7 +169,7 @@ public sealed class DiscoveryService : IDisposable
             // changed at runtime (the 设置 panel's "设备名称" field, via DeviceIdentity.Save()), and
             // a beacon built once up front would keep broadcasting the name this Terminal had at
             // startup forever, silently ignoring the rename.
-            var beacon = new DiscoveryProtocol.BeaconMessage { DeviceId = _identity.DeviceId, DeviceName = _identity.DeviceName };
+            var beacon = new DiscoveryProtocol.BeaconMessage { DeviceId = _identity.DeviceId, DeviceName = _identity.DeviceName, MediaAuthenticationVersion = 1 };
             await SendAsync(beacon, broadcastEndPoint);
             PruneExpiredPendingRequests();
 
@@ -267,6 +270,7 @@ public sealed class DiscoveryService : IDisposable
 
     private void HandleCastStart(DiscoveryProtocol.CastStartMessage msg, IPEndPoint remoteEndPoint)
     {
+        if (msg.MediaAuthenticationVersion != 1 || msg.MediaSessionId == Guid.Empty || msg.DeviceId != msg.SenderDeviceId) return;
         var device = _pairedDevices.Find(msg.SenderDeviceId);
         if (device is not { AllowCast: true })
         {
@@ -277,14 +281,42 @@ public sealed class DiscoveryService : IDisposable
             return;
         }
         if (!PairingSecurity.IsSupportedKey(device.PairingKey, device.PairingKeyFormatVersion)
-            || !PairingSecurity.Verify(msg, device.PairingKey)
-            || !_replayGuard.TryAccept(msg, DateTimeOffset.UtcNow)) return;
+            || !PairingSecurity.Verify(msg, device.PairingKey)) return;
+        if (msg.MessageId == _lastStartMessageId && _lastStartResult != null)
+        {
+            _ = SendStartResultAsync(msg, device.PairingKey!, remoteEndPoint, _lastStartResult.Task);
+            return;
+        }
+        if (!_replayGuard.TryAccept(msg, DateTimeOffset.UtcNow)) return;
+        var result = new TaskCompletionSource<(bool Ready, string? Error)>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _lastStartMessageId = msg.MessageId;
+        _lastStartResult = result;
+        _ = SendStartResultAsync(msg, device.PairingKey!, remoteEndPoint, result.Task);
         _activeCasterDeviceId = msg.SenderDeviceId;
         _activeCasterKey = device.PairingKey;
-        CastStartRequested?.Invoke(new CastStartInfo(
+        if (CastStartRequested == null) { result.TrySetResult((false, "终端接收服务尚未就绪。")); return; }
+        try { CastStartRequested.Invoke(new CastStartInfo(
             msg.DeviceId, msg.Width, msg.Height, msg.PayloadType,
             msg.HasAudio, msg.AudioSampleRate, msg.AudioChannels, msg.AudioPayloadType, msg.AudioIsAac,
-            remoteEndPoint));
+            remoteEndPoint, msg.MediaSessionId,
+            PairingSecurity.DeriveMediaKey(device.PairingKey!, msg.MediaSessionId, "video"),
+            PairingSecurity.DeriveMediaKey(device.PairingKey!, msg.MediaSessionId, "audio"),
+            (ready, error) => result.TrySetResult((ready, error)))); }
+        catch (Exception ex) { result.TrySetResult((false, ex.Message)); }
+    }
+
+    private async Task SendStartResultAsync(DiscoveryProtocol.CastStartMessage request, string key,
+        IPEndPoint endpoint, Task<(bool Ready, string? Error)> completion)
+    {
+        try
+        {
+            var result = await completion.WaitAsync(TimeSpan.FromSeconds(10), _cts.Token);
+            var ack = new DiscoveryProtocol.CastStartAckMessage
+            { MediaSessionId = request.MediaSessionId, Ready = result.Ready, Error = result.Error };
+            PairingSecurity.Sign(ack, _identity.DeviceId, key);
+            await SendAsync(ack, endpoint);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException or ObjectDisposedException or SocketException) { }
     }
 
     /// <summary>Sends a periodic "still alive, here's roughly what's gotten through" status report

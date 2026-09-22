@@ -1,3 +1,4 @@
+using System.Drawing.Drawing2D;
 using EveryStage.Caster.Capture;
 using EveryStage.Caster.Casting;
 using EveryStage.Caster.Discovery;
@@ -195,6 +196,7 @@ public sealed class MainForm : GradientForm
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
         WindowsAppearance.UseDarkTitleBar(this);
+        WindowsAppearance.EnableGlass(this);
 
         // --- 待机态 (PLANNING.md §12) ---
         _terminalListBox = new ListBox
@@ -231,8 +233,8 @@ public sealed class MainForm : GradientForm
         // PLANNING.md §12"选择捕获哪个显示器"——之前ScreenCaptureSource固定捕获outputIndex=0，
         // 多显示器场景完全没有UI选择。RefreshMonitorList()（下面）在构造函数末尾和每次回到待机态
         // 时都会重新枚举，跟这一轮刚修过的SettingsPanel显示器列表是同一个"别只枚举一次"教训。
-        var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font("Segoe UI Semibold", 22F), AutoSize = true, Location = new Point(24, 28) };
-        var connected = new Label { Text = "●  正在发现", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(390, 42) };
+        var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font("Segoe UI Semibold", 16F), AutoSize = true, Location = new Point(24, 30) };
+        var connected = new Label { Text = "●  已连接", ForeColor = ModernUi.Success, AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Bounds = new Rectangle(360, 34, 136, 24) };
         var targetLabel = new Label { Text = "选择终端", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(24, 80) };
         var monitorLabel = new Label { Text = "显示器", ForeColor = ModernUi.Muted, AutoSize = true, Bounds = new Rectangle(24, 316, 472, 22) };
         _monitorComboBox = new ComboBox
@@ -272,30 +274,29 @@ public sealed class MainForm : GradientForm
         RefreshMonitorList();
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
-        _pairedWithLabel = new Label { Bounds = new Rectangle(82, 18, 350, 34), Font = new Font("Segoe UI Semibold", 16F) };
+        // 布局对齐设计图：左侧显示器图标，右侧上「终端名」下「计时」，再下一条质量行。
+        _pairedWithLabel = new Label { Bounds = new Rectangle(120, 22, 344, 30), Font = new Font("Segoe UI Semibold", 15F) };
         _elapsedLabel = new Label
         {
-            Text = "00:00", Bounds = new Rectangle(82, 48, 330, 60),
-            Font = new Font("Segoe UI Semibold", 31F), ForeColor = Color.FromArgb(102, 163, 255),
+            Text = "00:00", Bounds = new Rectangle(118, 48, 340, 60),
+            Font = new Font("Segoe UI Semibold", 34F), ForeColor = Color.FromArgb(102, 163, 255),
         };
         _qualityLabel = new Label
         {
-            Text = "●  正在建立连接…", Bounds = new Rectangle(24, 118, 420, 30),
-            Font = new Font("Segoe UI", 10F), ForeColor = ModernUi.Success,
+            Text = "●  正在建立连接…", Bounds = new Rectangle(28, 124, 430, 30),
+            Font = new Font("Segoe UI", 10.5F), ForeColor = ModernUi.Success,
         };
         var liveCard = new GlassPanel
         {
             Bounds = new Rectangle(24, 82, 472, 166), CornerRadius = 16,
             GlassTint = Color.FromArgb(215, 20, 39, 62),
         };
+        var liveMonitorGlyph = new Panel { Bounds = new Rectangle(24, 40, 72, 60), BackColor = Color.Transparent };
+        liveMonitorGlyph.Paint += (_, pe) => DrawMonitorGlyph(pe.Graphics,
+            new Rectangle(0, 0, liveMonitorGlyph.Width, liveMonitorGlyph.Height), Color.FromArgb(160, 188, 226));
         liveCard.Controls.AddRange(new Control[]
         {
-            new Label
-            {
-                Text = "▣", TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Segoe UI Symbol", 34F), ForeColor = Color.FromArgb(184, 205, 239),
-                Bounds = new Rectangle(20, 24, 54, 72),
-            },
+            liveMonitorGlyph,
             _pairedWithLabel, _elapsedLabel, _qualityLabel,
         });
 
@@ -303,14 +304,15 @@ public sealed class MainForm : GradientForm
         // privacyLabel，投屏过程中完全没有任何持续提醒或计时，这两个都是这次新加的。
         _privacyReminderLabel = new Label
         {
-            Text = "♢  当前正在共享所选显示器",
+            Text = "🛡  当前正在共享所选显示器",
             ForeColor = ModernUi.Warning,
-            Bounds = new Rectangle(20, 14, 430, 34),
+            Font = new Font("Segoe UI Semibold", 11F),
+            Bounds = new Rectangle(20, 18, 430, 28),
         };
         var privacyCard = new GlassPanel
         {
             Bounds = new Rectangle(24, 264, 472, 62), CornerRadius = 14,
-            GlassTint = Color.FromArgb(215, 66, 49, 24),
+            GlassTint = Color.FromArgb(220, 60, 46, 20),
         };
         privacyCard.Controls.Add(_privacyReminderLabel);
 
@@ -323,7 +325,7 @@ public sealed class MainForm : GradientForm
         _stopCastButton.Click += (_, _) => ShowStandby();
         ModernUi.Primary(_stopCastButton, danger: true);
 
-        var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font("Segoe UI Semibold", 22F), AutoSize = true, Location = new Point(24, 28) };
+        var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font("Segoe UI Semibold", 16F), AutoSize = true, Location = new Point(24, 30) };
         var liveState = new Label { Text = "●  正在投屏", ForeColor = ModernUi.Danger, AutoSize = true, Location = new Point(392, 42) };
 
         var diagnosticsNoteLabel = new Label
@@ -430,11 +432,16 @@ public sealed class MainForm : GradientForm
             _stopCastButton, diagnosticsToggle, diagnosticsPanel,
         });
 
+        // Observed WinForms docking: the BACK-most control docks FIRST and claims its edge; the
+        // FRONT-most gets the remainder. Send the title bar to the back so it owns the full top
+        // strip, and bring the fill panels to the front so they fill everything below it.
+        var titleBar = new AppTitleBar(this);
         Controls.Add(_pairedPanel);
         Controls.Add(_standbyPanel);
-        var titleBar = new AppTitleBar(this);
         Controls.Add(titleBar);
-        titleBar.BringToFront();
+        titleBar.SendToBack();
+        _pairedPanel.BringToFront();
+        _standbyPanel.BringToFront();
         ModernUi.StyleTree(this);
         ModernUi.Primary(_startButton);
         ModernUi.Primary(_stopCastButton, danger: true);
@@ -900,6 +907,12 @@ public sealed class MainForm : GradientForm
         // match still guards against it directly rather than trusting that invariant blindly.
         if (_terminalListBox.SelectedItem is not TerminalListEntry { Live: not null } entry) return;
         var terminal = entry.Live!; // non-null per the pattern match above.
+        if (terminal.MediaAuthenticationVersion != 1)
+        {
+            MessageBox.Show(this, "终端机与投屏机的媒体协议版本不兼容，请将两端更新到同一版本后重试。",
+                "需要更新程序", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         // Captured now rather than read again inside ShowPaired — the combo box only ever refreshes
         // from ShowStandby()/construction (not on a timer, unlike _terminalListBox), so there's no
         // real race to guard against here, but reading it once at the point of the user's actual
@@ -919,7 +932,7 @@ public sealed class MainForm : GradientForm
                         "配对失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return;
                 }
-                ShowPaired(terminal, outputIndex, response.PairingKey!, response.PairingKeyFormatVersion);
+                await ShowPairedAsync(terminal, outputIndex, response.PairingKey!, response.PairingKeyFormatVersion);
             }
             else
             {
@@ -945,7 +958,7 @@ public sealed class MainForm : GradientForm
         }
     }
 
-    private void ShowPaired(DiscoveredTerminal terminal, int outputIndex, string pairingKey, int keyFormatVersion)
+    private async Task ShowPairedAsync(DiscoveredTerminal terminal, int outputIndex, string pairingKey, int keyFormatVersion)
     {
         // Remembered here, not just when the standby list was last built — this is the one point
         // where a pairing is actually confirmed successful, which is the right moment to persist it
@@ -958,10 +971,11 @@ public sealed class MainForm : GradientForm
         {
             _liveCastSession?.Dispose();
             _liveCastSession = new LiveCastSession(_discoveryClient, _identity, terminal, outputIndex);
-            _liveCastSession.Start();
+            await _liveCastSession.StartAsync();
+            if (IsDisposed || Disposing) return;
 
             _pairedTerminal = terminal;
-            _pairedWithLabel.Text = $"正在向 \"{terminal.DeviceName}\" 投屏...";
+            _pairedWithLabel.Text = terminal.DeviceName;
             _standbyPanel.Visible = false;
             _pairedPanel.Visible = true;
             _liveCastStatsTimer.Start();
@@ -975,6 +989,7 @@ public sealed class MainForm : GradientForm
             _pairedTerminal = null;
             _pairedPanel.Visible = false;
             _standbyPanel.Visible = true;
+            if (IsDisposed || Disposing) return;
             MessageBox.Show(this, $"无法开始投屏：\n\n{ex.Message}",
                 "投屏启动失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
@@ -1178,40 +1193,71 @@ public sealed class MainForm : GradientForm
         e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         var entry = (TerminalListEntry)_terminalListBox.Items[e.Index];
         bool selected = (e.State & DrawItemState.Selected) != 0;
+        var g = e.Graphics;
         var card = e.Bounds;
-        card.Inflate(-4, -5);
-        using var path = RoundedCard(card, 13);
-        using var fill = new SolidBrush(selected ? Color.FromArgb(39, 72, 112) : ModernUi.SurfaceRaised);
-        using var border = new Pen(selected ? ModernUi.Accent : ModernUi.Border, selected ? 2F : 1F);
-        e.Graphics.FillPath(fill, path);
-        e.Graphics.DrawPath(border, path);
+        card.Inflate(-4, -6);
+        using (var path = RoundedCard(card, 14))
+        using (var fill = new SolidBrush(selected ? Color.FromArgb(26, 48, 82) : Color.FromArgb(22, 34, 54)))
+        using (var border = new Pen(selected ? ModernUi.Accent : Color.FromArgb(44, 62, 90), selected ? 2F : 1F))
+        {
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+        }
 
-        var iconRect = new Rectangle(card.Left + 18, card.Top + 18, 42, 32);
-        using var iconPen = new Pen(Color.FromArgb(174, 198, 235), 3F);
-        e.Graphics.DrawRectangle(iconPen, iconRect);
-        e.Graphics.DrawLine(iconPen, iconRect.Left + 13, iconRect.Bottom + 8, iconRect.Right - 13, iconRect.Bottom + 8);
-        e.Graphics.DrawLine(iconPen, iconRect.Left + 21, iconRect.Bottom, iconRect.Left + 21, iconRect.Bottom + 8);
+        // Monitor icon (matches the design's line-art display).
+        var iconRect = new Rectangle(card.Left + 20, card.Top + (card.Height - 40) / 2, 48, 40);
+        DrawMonitorGlyph(g, iconRect, Color.FromArgb(150, 178, 220));
 
-        using var titleFont = new Font("Segoe UI Semibold", 11F);
-        using var metaFont = new Font("Segoe UI", 9F);
-        TextRenderer.DrawText(e.Graphics, entry.DeviceName, titleFont,
-            new Rectangle(card.Left + 78, card.Top + 13, card.Width - 120, 27), ModernUi.Text,
+        using var titleFont = new Font("Segoe UI Semibold", 12F);
+        using var metaFont = new Font("Segoe UI", 9.5F);
+        int textLeft = iconRect.Right + 18;
+        TextRenderer.DrawText(g, entry.DeviceName, titleFont,
+            new Rectangle(textLeft, card.Top + 16, card.Width - textLeft - 60 + card.Left, 24), ModernUi.Text,
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
         string meta = entry.Live != null ? "在线 · 可投屏" : "离线 · 等待终端上线";
-        TextRenderer.DrawText(e.Graphics, meta, metaFont,
-            new Rectangle(card.Left + 78, card.Top + 40, card.Width - 120, 24),
+        TextRenderer.DrawText(g, meta, metaFont,
+            new Rectangle(textLeft, card.Top + 42, card.Width - textLeft - 60 + card.Left, 22),
             entry.Live != null ? ModernUi.Muted : Color.FromArgb(128, 143, 164),
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
 
-        using var stateBrush = new SolidBrush(entry.Live != null ? ModernUi.Success : Color.FromArgb(91, 108, 130));
-        e.Graphics.FillEllipse(stateBrush, card.Right - 34, card.Top + 31, 12, 12);
+        // Round radio selector on the right (design: filled blue check when selected, empty ring otherwise).
+        var radio = new Rectangle(card.Right - 46, card.Top + (card.Height - 26) / 2, 26, 26);
         if (selected)
         {
-            using var checkFont = new Font("Segoe UI Symbol", 12F, FontStyle.Bold);
-            TextRenderer.DrawText(e.Graphics, "✓", checkFont,
-                new Rectangle(card.Right - 48, card.Top + 22, 32, 32), Color.White,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            using var fillSel = new SolidBrush(ModernUi.Accent);
+            g.FillEllipse(fillSel, radio);
+            using var check = new Pen(Color.White, 2.4F) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLines(check, new[]
+            {
+                new PointF(radio.Left + 7, radio.Top + 13),
+                new PointF(radio.Left + 11, radio.Top + 17),
+                new PointF(radio.Left + 19, radio.Top + 8),
+            });
         }
+        else
+        {
+            using var ring = new Pen(Color.FromArgb(90, 110, 138), 2F);
+            g.DrawEllipse(ring, radio);
+        }
+    }
+
+    private static void DrawMonitorGlyph(Graphics g, Rectangle r, Color color)
+    {
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using var pen = new Pen(color, 2.4F) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
+        var screen = new RectangleF(r.Left, r.Top, r.Width, r.Height * 0.72f);
+        using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+        {
+            float d = 8;
+            path.AddArc(screen.Left, screen.Top, d, d, 180, 90);
+            path.AddArc(screen.Right - d, screen.Top, d, d, 270, 90);
+            path.AddArc(screen.Right - d, screen.Bottom - d, d, d, 0, 90);
+            path.AddArc(screen.Left, screen.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            g.DrawPath(pen, path);
+        }
+        g.DrawLine(pen, r.Left + r.Width / 2, screen.Bottom, r.Left + r.Width / 2, r.Bottom);
+        g.DrawLine(pen, r.Left + r.Width * 0.30f, r.Bottom, r.Left + r.Width * 0.70f, r.Bottom);
     }
 
     private void DrawMonitorItem(object? sender, DrawItemEventArgs e)
@@ -1222,8 +1268,10 @@ public sealed class MainForm : GradientForm
         string text = e.Index >= 0 && e.Index < _monitorComboBox.Items.Count
             ? _monitorComboBox.Items[e.Index]?.ToString() ?? ""
             : _monitorComboBox.Text;
-        var textRect = new Rectangle(e.Bounds.Left + 12, e.Bounds.Top, e.Bounds.Width - 24, e.Bounds.Height);
-        TextRenderer.DrawText(e.Graphics, $"▣  {text}", Font, textRect, ModernUi.Text,
+        var iconRect = new Rectangle(e.Bounds.Left + 10, e.Bounds.Top + (e.Bounds.Height - 16) / 2, 20, 16);
+        DrawMonitorGlyph(e.Graphics, iconRect, Color.FromArgb(150, 178, 220));
+        var textRect = new Rectangle(iconRect.Right + 10, e.Bounds.Top, e.Bounds.Width - iconRect.Right - 14, e.Bounds.Height);
+        TextRenderer.DrawText(e.Graphics, text, Font, textRect, ModernUi.Text,
             TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
     }

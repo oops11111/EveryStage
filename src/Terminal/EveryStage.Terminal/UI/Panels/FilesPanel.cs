@@ -1,3 +1,4 @@
+using System.Drawing.Drawing2D;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.Playback;
@@ -32,14 +33,13 @@ namespace EveryStage.Terminal.UI.Panels;
 /// conflicting existing values across the selection) that this round didn't attempt; see this
 /// project's README "尚未开始".
 ///
-/// PLANNING.md §8.2's audio "横向播放条" (播放/进度/音量/循环/独立投屏) now exists as
-/// <see cref="_audioBarPanel"/> — a persistent row list above <see cref="_listView"/>, unaffected by
-/// the category filter tabs (an audio file also still appears as a generic-icon tile in "全部"/"音频"
-/// like before; this bar is additive, not a replacement — confirmed with the user before building
-/// this, the alternative being to swap the whole grid for a row list whenever "音频" is selected).
-/// See <see cref="RefreshAudioBar"/>/<see cref="AudioRow"/> for the row shape and
-/// <see cref="OnCastFromAudioBar"/> for what "独立投屏" does (also confirmed with the user: exactly
-/// what double-clicking a tile already does — <see cref="FilePlayRequested"/>, no new playback
+/// PLANNING.md §8.2's audio "横向播放条" (播放/进度/音量/循环/独立投屏) exists as a single large
+/// player bar (<see cref="_audioBar"/>, an <see cref="AudioPlayerBar"/>) docked at the bottom of
+/// this panel, matching the design — it binds to whichever audio file is currently playing (or the
+/// first audio file otherwise). An audio file also still appears as a generic tile in "全部"/"音频"
+/// like before; this bar is additive, not a replacement. See <see cref="RefreshAudioBar"/> for how
+/// it is rebound and <see cref="OnCastFromAudioBar"/> for what "独立投屏" does (exactly what
+/// double-clicking a tile already does — <see cref="FilePlayRequested"/>, no new playback
 /// behavior).
 ///
 /// Not implemented (see this project's README "已知风险"/"尚未开始" for the full writeup of why):
@@ -60,6 +60,11 @@ public sealed class FilesPanel : UserControl
     private PlaybackEngine? _playback;
     private readonly ListView _listView;
     private readonly ImageList _thumbnails;
+    private CancellationTokenSource? _thumbnailLoad;
+    private readonly SemaphoreSlim _thumbnailWorker = new(1, 1);
+    private readonly Dictionary<string, Image> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Queue<string> _thumbnailCacheOrder = new();
+    private const int ThumbnailCacheCapacity = 128;
     private readonly Button _removeButton;
     private readonly Button _addToActivityButton;
     private readonly Button _previewButton;
@@ -67,25 +72,18 @@ public sealed class FilesPanel : UserControl
     private MediaKind? _activeFilter;
     private bool _outputActive;
 
-    /// <summary>PLANNING.md §8.2's audio "横向播放条" — see class doc comment. A persistent
-    /// <see cref="FlowLayoutPanel"/> (not the "全部/图片/视频/文档/音频" grid <see cref="_listView"/>
-    /// already uses) rather than a plain <see cref="Panel"/> with manually-tracked row Y offsets: this
-    /// codebase has never needed a scrollable stack of variable-count rows before, and
-    /// <see cref="FlowLayoutPanel"/>'s <c>TopDown</c>/<c>AutoScroll</c> combination gives that for free
-    /// without hand-rolling layout math this sandbox has no way to visually check. Each row is a
-    /// fixed-width <see cref="Panel"/> (see <see cref="AudioRow"/>) rather than stretching to the full
-    /// container width — a real but purely cosmetic gap (rows leave dead space on a wide window) this
-    /// class accepts rather than adding resize-driven relayout for; see <c>ToastStack</c>'s own doc
-    /// comment for why this codebase already avoids leaning on WinForms <c>Anchor</c> for anything
-    /// beyond the simplest cases it can't compile-test.</summary>
-    private readonly FlowLayoutPanel _audioBarPanel;
-    private readonly List<AudioRow> _audioRows = new();
+    /// <summary>PLANNING.md §8.2's audio "横向播放条" — now a single large player bar
+    /// (<see cref="AudioPlayerBar"/>) matching the design, instead of the old per-file
+    /// <c>FlowLayoutPanel</c> of rows. The bar binds to whichever audio file is currently playing
+    /// (or the first one otherwise); all playback data flow (pause/volume/loop/cast) is unchanged —
+    /// see <see cref="AudioPlayerBar"/>'s own doc comment.</summary>
+    private readonly AudioPlayerBar _audioBar;
     private readonly System.Windows.Forms.Timer _audioBarRefreshTimer;
     private readonly Label _emptyStateLabel;
 
     /// <summary>Raised when the user double-clicks a file to play it standalone (no activity
     /// context — see <c>PlaybackEngine.RequestPlay(MediaFile)</c>'s own doc comment on what that
-    /// means for completion actions). Also raised by <see cref="_audioBarPanel"/>'s "投屏播放" button
+    /// means for completion actions). Also raised by <see cref="_audioBar"/>'s "投屏" button
     /// (<see cref="OnCastFromAudioBar"/>) — confirmed with the user that button should mean exactly
     /// this and nothing more.</summary>
     public event Action<MediaFile>? FilePlayRequested;
@@ -171,13 +169,19 @@ public sealed class FilesPanel : UserControl
         };
         toolbar.Controls.Add(moreButton);
 
-        _thumbnails = new ImageList { ImageSize = new Size(112, 112), ColorDepth = ColorDepth.Depth32Bit };
+        // Not assigned to _listView.LargeImageList on purpose: this ListView is fully OwnerDraw and
+        // DrawMediaCard looks thumbnails up directly from _thumbnails.Images[key], so the ListView
+        // never needs to realize an ImageList handle. Assigning it made WinForms realize that handle
+        // on the ListView's own handle creation, which throws "Parameter is not valid" while the
+        // list is still empty (an ImageList with no images yet) — a caught-but-logged ThreadException
+        // that spammed the crash log on every empty-library show. Keeping the ImageList purely as a
+        // keyed bitmap cache for owner-draw avoids that entirely.
+        _thumbnails = new ImageList { ImageSize = new Size(240, 150), ColorDepth = ColorDepth.Depth32Bit };
         _listView = new ListView
         {
             Dock = DockStyle.Fill,
             View = View.Tile,
-            TileSize = new Size(190, 188),
-            LargeImageList = _thumbnails,
+            TileSize = new Size(282, 262),
             OwnerDraw = true,
             // PLANNING.md §11 "批量选择": Ctrl/Shift+点击 multi-select now works, and both "删除"
             // (below) and "加入活动" (OnAddToActivityClick) handle any number of selected items —
@@ -211,32 +215,18 @@ public sealed class FilesPanel : UserControl
         _listView.DragDrop += OnDragDrop;
         _listView.AllowDrop = true;
 
-        _audioBarPanel = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            Height = 124,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            AutoScroll = true,
-            BorderStyle = BorderStyle.None,
-            BackColor = ModernUi.SurfaceRaised,
-            Padding = new Padding(12, 12, 8, 8),
-            Visible = false, // no audio files yet — RefreshAudioBar flips this once there are any.
-        };
-        _audioBarPanel.ClientSizeChanged += (_, _) =>
-        {
-            int width = Math.Max(600, _audioBarPanel.ClientSize.Width - 36);
-            foreach (var row in _audioRows) row.Container.Width = width;
-        };
+        // Single large player bar, docked at the BOTTOM to match the design (full-width bar under
+        // the file grid). A thin spacer keeps it clear of the grid's edge.
+        _audioBar = new AudioPlayerBar(library, fileOpLog, playback) { Dock = DockStyle.Bottom };
+        _audioBar.CastRequested += OnCastFromAudioBar;
+        var audioBarSpacer = new Panel { Dock = DockStyle.Bottom, Height = 12, BackColor = Color.Transparent };
 
         // Control.Controls.Add order determines Dock z-order for same-DockStyle siblings: the LAST
-        // one added ends up frontmost, claiming its edge first (see this class's own construction —
-        // toolbar, added last, already relies on this to land at the very top with _listView filling
-        // whatever's left below it). Adding _audioBarPanel (also Dock.Top) between the two puts it
-        // right below toolbar and above _listView, matching the confirmed "persistent bar above the
-        // grid" layout.
+        // one added claims its edge first. _listView (Fill) is added first so it takes whatever's
+        // left; the audio bar and its spacer claim the bottom edge; toolbar claims the top.
         Controls.Add(_listView);
-        Controls.Add(_audioBarPanel);
+        Controls.Add(_audioBar);
+        Controls.Add(audioBarSpacer);
         Controls.Add(toolbar);
 
         _emptyStateLabel = new Label
@@ -261,7 +251,7 @@ public sealed class FilesPanel : UserControl
         // OverlayWindow._topMostReasserter already sets in this codebase, at a comparable 500ms/2s
         // cadence to FloatingPreviewWindow's own polling.
         _audioBarRefreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
-        _audioBarRefreshTimer.Tick += (_, _) => RefreshAudioRowLiveState();
+        _audioBarRefreshTimer.Tick += (_, _) => _audioBar.RefreshLiveState();
         _audioBarRefreshTimer.Start();
 
         Refresh_();
@@ -271,6 +261,13 @@ public sealed class FilesPanel : UserControl
     {
         if (disposing)
         {
+            _thumbnailLoad?.Cancel();
+            _thumbnailLoad?.Dispose();
+            _thumbnailLoad = null;
+            _thumbnails.Dispose();
+            foreach (var image in _thumbnailCache.Values) image.Dispose();
+            _thumbnailCache.Clear();
+            _thumbnailCacheOrder.Clear();
             if (_playback != null) _playback.FileStarted -= OnFileStarted;
             _audioBarRefreshTimer.Dispose();
         }
@@ -279,12 +276,10 @@ public sealed class FilesPanel : UserControl
 
     /// <summary>PLANNING.md §5's runtime monitor-hot-plug binding — called (at most once) from
     /// <c>MainWindow.AttachPlaybackEngine</c> when a display shows up after this Terminal already
-    /// started with none bound. Every <see cref="_playback"/> read in this class (the audio bar's
-    /// pause/volume buttons and <see cref="_audioBarRefreshTimer"/>'s own tick — see
-    /// <see cref="RefreshAudioRowLiveState"/>) already reads the field fresh each time rather than a
-    /// value captured once at construction. The current-file highlight does subscribe to
-    /// <see cref="PlaybackEngine.FileStarted"/>, so this method also moves that subscription from
-    /// any previous engine to the newly attached one. <see cref="_listView"/>'s own double-click doesn't read <see cref="_playback"/> at all —
+    /// started with none bound. The audio bar reads its playback engine fresh each tick and is also
+    /// re-pointed here via <see cref="AudioPlayerBar.AttachPlaybackEngine"/>. The current-file
+    /// highlight does subscribe to <see cref="PlaybackEngine.FileStarted"/>, so this method also
+    /// moves that subscription from any previous engine to the newly attached one. <see cref="_listView"/>'s own double-click doesn't read <see cref="_playback"/> at all —
     /// it only raises <see cref="FilePlayRequested"/>, which <c>MainWindow</c>'s own subscriber
     /// resolves against ITS <see cref="_playback"/> field, already covered by
     /// <c>MainWindow.AttachPlaybackEngine</c> separately.</summary>
@@ -294,6 +289,7 @@ public sealed class FilesPanel : UserControl
         if (_playback != null) _playback.FileStarted -= OnFileStarted;
         _playback = playback;
         _playback.FileStarted += OnFileStarted;
+        _audioBar.AttachPlaybackEngine(playback);
         HighlightCurrentFile();
     }
 
@@ -384,7 +380,12 @@ public sealed class FilesPanel : UserControl
 
         foreach (var file in files)
         {
-            _library.Remove(file.Id);
+            try { _library.Remove(file.Id); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                MessageBox.Show(this, $"移除未完成：{ex.Message}", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                break;
+            }
             _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
         }
         Refresh_();
@@ -416,9 +417,16 @@ public sealed class FilesPanel : UserControl
             || dialog.SelectedScenario == null || dialog.SelectedActivity == null)
             return;
 
-        foreach (var file in files) dialog.SelectedActivity.Files.Add(file.Clone());
+        var additions = files.Select(file => file.Clone()).ToList();
+        dialog.SelectedActivity.Files.AddRange(additions);
+        try { _scenarioRepository.Save(_scenarioStore); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            foreach (var addition in additions) dialog.SelectedActivity.Files.Remove(addition);
+            MessageBox.Show(this, $"未加入活动：{ex.Message}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         _fileOpLog.LogActivityModified(dialog.SelectedScenario.Id, dialog.SelectedActivity.Id, dialog.SelectedActivity.Name);
-        _scenarioRepository.Save(_scenarioStore);
 
         MessageBox.Show(this,
             files.Count == 1
@@ -432,7 +440,13 @@ public sealed class FilesPanel : UserControl
         var rejected = new List<string>();
         foreach (var path in paths)
         {
-            var imported = _library.Import(path);
+            MediaFile? imported;
+            try { imported = _library.Import(path); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                MessageBox.Show(this, $"导入未完成：{ex.Message}\n此前成功导入的文件已保留。", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                break;
+            }
             if (imported == null) rejected.Add(Path.GetFileName(path));
             else _fileOpLog.LogFileImported(imported.Id, imported.SourcePath);
         }
@@ -451,6 +465,9 @@ public sealed class FilesPanel : UserControl
     /// with <see cref="Control.Refresh"/>, which does something unrelated (repaint).</summary>
     public void Refresh_()
     {
+        _thumbnailLoad?.Cancel();
+        _thumbnailLoad?.Dispose();
+        _thumbnailLoad = new CancellationTokenSource();
         _thumbnails.Images.Clear();
         _listView.Items.Clear();
 
@@ -466,11 +483,6 @@ public sealed class FilesPanel : UserControl
             // frames as an always-on, unattended device — repeated small leaks like this are exactly
             // the shape of thing that eventually exhausts the process's GDI object quota on a machine
             // that's never restarted.
-            using (var thumbnail = BuildThumbnail(file))
-            {
-                _thumbnails.Images.Add(key, thumbnail);
-            }
-
             var item = new ListViewItem(Path.GetFileName(file.SourcePath), key) { Tag = file };
             _listView.Items.Add(item);
         }
@@ -479,6 +491,74 @@ public sealed class FilesPanel : UserControl
         HighlightCurrentFile();
         _emptyStateLabel.Visible = _listView.Items.Count == 0;
         PositionEmptyState();
+        if (IsHandleCreated) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        if (_thumbnailLoad != null) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
+    }
+
+    private async Task LoadThumbnailsAsync(CancellationToken token)
+    {
+        var files = _listView.Items.Cast<ListViewItem>().Select(item => (MediaFile)item.Tag!).ToArray();
+        try
+        {
+            foreach (var file in files)
+            {
+                token.ThrowIfCancellationRequested();
+                await _thumbnailWorker.WaitAsync(token);
+                Image thumbnail;
+                string? cacheKey = null;
+                try
+                {
+                    cacheKey = await Task.Run(() => ThumbnailCacheKey(file), token);
+                    token.ThrowIfCancellationRequested();
+                    if (cacheKey != null && _thumbnailCache.TryGetValue(cacheKey, out var cached))
+                        thumbnail = (Image)cached.Clone();
+                    else
+                        thumbnail = await Task.Run(() => BuildThumbnail(file), token);
+                }
+                finally { _thumbnailWorker.Release(); }
+                using (thumbnail)
+                {
+                    if (token.IsCancellationRequested || IsDisposed || Disposing) return;
+                    if (cacheKey != null && !_thumbnailCache.ContainsKey(cacheKey))
+                    {
+                        while (_thumbnailCache.Count >= ThumbnailCacheCapacity)
+                        {
+                            string oldest = _thumbnailCacheOrder.Dequeue();
+                            _thumbnailCache.Remove(oldest, out var evicted);
+                            evicted?.Dispose();
+                        }
+                        _thumbnailCache.Add(cacheKey, (Image)thumbnail.Clone());
+                        _thumbnailCacheOrder.Enqueue(cacheKey);
+                    }
+                    string key = file.Id.ToString();
+                    if (!_thumbnails.Images.ContainsKey(key)) _thumbnails.Images.Add(key, thumbnail);
+                    _listView.Invalidate();
+                }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceError("Thumbnail loading failed: {0}", ex);
+        }
+    }
+
+    private static string? ThumbnailCacheKey(MediaFile file)
+    {
+        try
+        {
+            var info = new FileInfo(file.SourcePath);
+            return info.Exists ? $"{file.Kind}|{info.FullName}|{info.LastWriteTimeUtc.Ticks}|{info.Length}" : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return null;
+        }
     }
 
     private void PositionEmptyState()
@@ -515,342 +595,258 @@ public sealed class FilesPanel : UserControl
         }
     }
 
-    /// <summary>One row of <see cref="_audioBarPanel"/> — see that field's own doc comment for the
-    /// container shape. Plain <see cref="Button"/>s/<see cref="Label"/>s/<see cref="CheckBox"/> at
-    /// fixed <see cref="Control.Bounds"/>, the same "reuse already-proven control types over anything
-    /// new" convention every other dialog in this project already follows (see e.g.
-    /// <c>FloatingPreviewWindow._volumeDownButton</c>'s own doc comment).</summary>
-    private sealed class AudioRow
-    {
-        public required MediaFile File { get; init; }
-        public required Panel Container { get; init; }
-        public required Button PlayPauseButton { get; init; }
-        public required Label ProgressLabel { get; init; }
-        public required Button VolumeDownButton { get; init; }
-        public required Label VolumeLabel { get; init; }
-        public required Button VolumeUpButton { get; init; }
-        public required CheckBox LoopCheckbox { get; init; }
-    }
-
-    /// <summary>Rebuilds every row of <see cref="_audioBarPanel"/> from <see cref="_library"/>'s
-    /// current audio files — called from <see cref="Refresh_()"/> (import/remove/filter-tab-click), so
-    /// this only needs to run on the same cadence that already rebuilds <see cref="_listView"/>, not on
-    /// every <see cref="_audioBarRefreshTimer"/> tick (see <see cref="RefreshAudioRowLiveState"/> for
-    /// the lightweight per-tick update that runs instead). Hides the whole bar
-    /// (<see cref="_audioBarPanel"/><c>.Visible = false</c>) when there are no audio files at all,
-    /// rather than leaving an empty bordered box permanently on screen.
-    ///
-    /// Explicitly <see cref="Control.Dispose()"/>s each old row's <see cref="AudioRow.Container"/>
-    /// before clearing — <see cref="Control.ControlCollection.Clear"/> alone only detaches child
-    /// controls from their parent, it does not dispose them, which would otherwise leak a native
-    /// window handle per row (multiplied by every button/label/checkbox inside it, since disposing a
-    /// container disposes its children too) on every filter-tab click/import/removal — same repeated-
-    /// small-leak concern this class's own <see cref="Refresh_()"/> already documents for
-    /// <see cref="ImageList"/> thumbnails, just for HWNDs instead of GDI+ bitmaps.</summary>
+    /// <summary>Rebinds the single <see cref="AudioPlayerBar"/> to the current audio files — called
+    /// from <see cref="Refresh_()"/> on the same cadence that rebuilds <see cref="_listView"/>. The
+    /// bar hides itself when there are no audio files (see <see cref="AudioPlayerBar.SetAudioFiles"/>).</summary>
     private void RefreshAudioBar()
     {
-        foreach (var row in _audioRows) row.Container.Dispose();
-        _audioBarPanel.Controls.Clear();
-        _audioRows.Clear();
-
-        var audioFiles = _library.Files.Where(f => f.Kind == MediaKind.Audio).ToList();
-        _audioBarPanel.Visible = audioFiles.Count > 0;
-        if (!_audioBarPanel.Visible) return;
-
-        foreach (var file in audioFiles)
-        {
-            var row = BuildAudioRow(file);
-            _audioRows.Add(row);
-            _audioBarPanel.Controls.Add(row.Container);
-        }
-
-        RefreshAudioRowLiveState();
+        _audioBar.SetAudioFiles(_library.Files.Where(f => f.Kind == MediaKind.Audio).ToList());
     }
 
-    private AudioRow BuildAudioRow(MediaFile file)
-    {
-        var container = new GlassPanel
-        {
-            Width = Math.Max(600, _audioBarPanel.ClientSize.Width - 36), Height = 88,
-            Margin = new Padding(2, 2, 2, 8), CornerRadius = 14,
-            GlassTint = Color.FromArgb(210, 18, 39, 64),
-        };
-
-        var artwork = new Label
-        {
-            Text = "♫", TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI Symbol", 24F), ForeColor = Color.White,
-            BackColor = Color.FromArgb(35, 78, 124), Bounds = new Rectangle(12, 12, 64, 64),
-        };
-
-        var nameLabel = new Label
-        {
-            Text = Path.GetFileName(file.SourcePath),
-            AutoEllipsis = true,
-            Font = new Font("Segoe UI Semibold", 11F), ForeColor = ModernUi.Text,
-            Bounds = new Rectangle(92, 12, 300, 26),
-        };
-
-        // Pause is meaningful only while THIS row is the one PlaybackEngine.CurrentFile actually
-        // is — there is exactly one live standalone-audio slot (PlaybackEngine._audioController), not
-        // one per library entry, so every other row's pause/volume controls stay disabled/blank (see
-        // RefreshAudioRowLiveState). Starting playback at all is "投屏播放"'s job, not this button's
-        // — same division FloatingPreviewWindow's own "暂停" button already has with a fresh
-        // RequestPlay/double-click (it can't start a new file either, only pause/resume whatever's
-        // already current).
-        var playPauseButton = new Button { Text = "▶", Enabled = false, Bounds = new Rectangle(92, 46, 40, 34) };
-        ModernUi.StyleButton(playPauseButton, primary: true);
-        playPauseButton.Click += (_, _) =>
-        {
-            if (_playback == null || !ReferenceEquals(_playback.CurrentFile, file)) return;
-            if (_playback.IsPaused) _playback.Resume(); else _playback.Pause();
-            RefreshAudioRowLiveState();
-        };
-
-        var progressLine = new Panel { BackColor = Color.FromArgb(60, 91, 126), Bounds = new Rectangle(144, 62, 205, 3) };
-        var progressLabel = new Label { ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(354, 48, 104, 30) };
-
-        // Same fixed-step convention as FloatingPreviewWindow._volumeDownButton/_volumeUpButton
-        // (10% per click) — PlaybackEngine.AudioVolume is a single engine-wide value, so these are
-        // only enabled while this row is the currently-playing one, same reasoning as playPauseButton
-        // above.
-        var volumeDownButton = new Button { Text = "－", Enabled = false, Bounds = new Rectangle(470, 48, 32, 30) };
-        ModernUi.StyleButton(volumeDownButton);
-        volumeDownButton.Click += (_, _) =>
-        {
-            if (_playback == null || !ReferenceEquals(_playback.CurrentFile, file)) return;
-            _playback.AudioVolume -= 0.1f;
-            RefreshAudioRowLiveState();
-        };
-        var volumeLabel = new Label { ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(504, 48, 58, 30) };
-        var volumeUpButton = new Button { Text = "＋", Enabled = false, Bounds = new Rectangle(564, 48, 32, 30) };
-        ModernUi.StyleButton(volumeUpButton);
-        volumeUpButton.Click += (_, _) =>
-        {
-            if (_playback == null || !ReferenceEquals(_playback.CurrentFile, file)) return;
-            _playback.AudioVolume += 0.1f;
-            RefreshAudioRowLiveState();
-        };
-
-        // Unlike the controls above, meaningful regardless of whether this row is currently playing —
-        // MediaFile.OnCompletion is a persisted per-file property, not live playback state. The first
-        // editing entry point this field has ever had for a LIBRARY entry (as opposed to an activity's
-        // own copy, which ActivitiesPanel.OnEditCompletionAction already covers) — see
-        // FileLibraryStore.Save's own doc comment on why that method needed to become public for this.
-        // A 2-state checkbox can only represent 2 of CompletionAction's 3 values; unchecking always
-        // sets MediaFile.OnCompletion back to its own default (NextItem) rather than trying to restore
-        // some other previous value (HoldOnLastFrame) this checkbox has no way to represent anyway —
-        // no real loss, since nothing before this checkbox ever let a library entry's OnCompletion be
-        // set to anything but its default in the first place.
-        var loopCheckbox = new CheckBox { Text = "循环", ForeColor = ModernUi.Muted, Checked = file.OnCompletion == CompletionAction.Loop, Bounds = new Rectangle(610, 52, 62, 24) };
-        loopCheckbox.CheckedChanged += (_, _) =>
-        {
-            var newValue = loopCheckbox.Checked ? CompletionAction.Loop : CompletionAction.NextItem;
-            if (newValue == file.OnCompletion) return;
-            string oldValue = file.OnCompletion.ToString();
-            file.OnCompletion = newValue;
-            _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.OnCompletion), oldValue, newValue.ToString());
-            _library.Save();
-        };
-
-        // "独立投屏" — confirmed with the user to mean exactly what double-clicking a tile in
-        // _listView already does, nothing new: raise the same FilePlayRequested event MainWindow
-        // already wires to PlaybackEngine.RequestPlay(MediaFile).
-        var castButton = new Button { Text = "▱  投屏", Bounds = new Rectangle(container.Width - 116, 24, 96, 44), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-        ModernUi.StyleButton(castButton, primary: true);
-        castButton.Click += (_, _) => OnCastFromAudioBar(file);
-
-        container.Controls.AddRange(new Control[]
-        {
-            artwork, nameLabel, playPauseButton, progressLine, progressLabel,
-            volumeDownButton, volumeLabel, volumeUpButton,
-            loopCheckbox, castButton,
-        });
-
-        void ArrangeRow()
-        {
-            int width = container.ClientSize.Width;
-            nameLabel.Width = Math.Max(150, width - nameLabel.Left - 132);
-            castButton.Left = width - 116;
-            loopCheckbox.Left = width - 196;
-
-            bool compact = width < 820;
-            volumeDownButton.Visible = !compact;
-            volumeLabel.Visible = !compact;
-            volumeUpButton.Visible = !compact;
-            progressLabel.Left = compact ? width - 310 : 354;
-            progressLine.Width = Math.Max(60, progressLabel.Left - progressLine.Left - 8);
-        }
-        container.Resize += (_, _) => ArrangeRow();
-        ArrangeRow();
-
-        return new AudioRow
-        {
-            File = file,
-            Container = container,
-            PlayPauseButton = playPauseButton,
-            ProgressLabel = progressLabel,
-            VolumeDownButton = volumeDownButton,
-            VolumeLabel = volumeLabel,
-            VolumeUpButton = volumeUpButton,
-            LoopCheckbox = loopCheckbox,
-        };
-    }
-
-    /// <summary><see cref="_audioBarRefreshTimer"/>'s own per-tick update — lightweight compared to
-    /// <see cref="RefreshAudioBar"/>: only touches the small set of controls that reflect LIVE
-    /// playback state (play/pause text, volume, position), never rebuilds the row list itself. Exactly
-    /// one row (if any) can be <see cref="PlaybackEngine.CurrentFile"/> at a time — reference equality,
-    /// not <see cref="MediaFile.Id"/>, since this compares the exact same library <see cref="MediaFile"/>
-    /// instance <see cref="PlaybackEngine"/> was handed (<c>FilePlayRequested</c> never clones it, see
-    /// class doc comment) — every other row gets its live-state controls disabled/blanked rather than
-    /// left showing stale values from whenever it last was the current file.</summary>
-    private void RefreshAudioRowLiveState()
-    {
-        MediaFile? currentFile = _playback?.CurrentFile;
-        foreach (var row in _audioRows)
-        {
-            bool isCurrent = currentFile != null && ReferenceEquals(currentFile, row.File);
-            row.PlayPauseButton.Enabled = isCurrent;
-            row.PlayPauseButton.Text = isCurrent && !_playback!.IsPaused ? "Ⅱ" : "▶";
-            row.VolumeDownButton.Enabled = isCurrent;
-            row.VolumeUpButton.Enabled = isCurrent;
-            row.VolumeLabel.Text = isCurrent ? $"{(int)Math.Round(_playback!.AudioVolume * 100)}%" : "";
-            row.ProgressLabel.Text = isCurrent ? FormatPosition(_playback!.AudioPosition, _playback!.AudioDuration) : "";
-        }
-    }
-
-    /// <summary>"独立投屏" — see <see cref="BuildAudioRow"/>'s own doc comment on why this is
-    /// deliberately just <see cref="FilePlayRequested"/> and nothing more. Refreshes live row state
-    /// immediately afterward rather than waiting for <see cref="_audioBarRefreshTimer"/>'s next tick —
-    /// <c>MainWindow</c>'s subscriber calls <c>PlaybackEngine.RequestPlay</c> synchronously within this
-    /// same event invocation (nothing here is fire-and-forget), so by the time
-    /// <see cref="FilePlayRequested"/> returns, playback has already actually started; same "avoid a
-    /// visible up-to-500ms lag" reasoning as <c>FloatingPreviewWindow</c>'s own seek/volume button
-    /// handlers refreshing immediately rather than waiting for their own poll.</summary>
+    /// <summary>"独立投屏" — unchanged behavior: raise the same <see cref="FilePlayRequested"/> event
+    /// <c>MainWindow</c> already wires to <c>PlaybackEngine.RequestPlay(MediaFile)</c>, then refresh
+    /// the bar's live state immediately (the subscriber calls RequestPlay synchronously).</summary>
     private void OnCastFromAudioBar(MediaFile file)
     {
         FilePlayRequested?.Invoke(file);
-        RefreshAudioRowLiveState();
-    }
-
-    /// <summary>"0:15" or, when <paramref name="duration"/> is known, "0:15 / 3:42" — copied from
-    /// <c>FloatingPreviewWindow.FormatPosition</c> rather than shared: same small-pure-helper
-    /// duplication convention this project already uses for e.g. each
-    /// <c>ContentEngine.AudioContentController</c>/<c>VideoContentController</c>'s own independently-
-    /// verifiable fade math.</summary>
-    private static string FormatPosition(TimeSpan position, TimeSpan? duration)
-    {
-        string Format(TimeSpan t) => $"{(int)t.TotalMinutes}:{t.Seconds:D2}";
-        return duration.HasValue ? $"{Format(position)} / {Format(duration.Value)}" : Format(position);
+        _audioBar.RefreshLiveState();
     }
 
     private static Image BuildThumbnail(MediaFile file)
     {
+        const int tw = 240, th = 150;
+        if (file.Kind == MediaKind.Document && new[] { ".docx", ".pptx", ".xlsx" }.Contains(Path.GetExtension(file.SourcePath), StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var embedded = EveryStage.Terminal.ContentEngine.OfficeThumbnailReader.Read(file.SourcePath, new Size(tw, th));
+                if (embedded != null)
+                {
+                    var thumbnail = new Bitmap(tw, th);
+                    try
+                    {
+                        using var graphics = Graphics.FromImage(thumbnail);
+                        graphics.Clear(Color.FromArgb(20, 37, 58));
+                        graphics.DrawImageUnscaled(embedded, (tw - embedded.Width) / 2, (th - embedded.Height) / 2);
+                        return thumbnail;
+                    }
+                    catch { thumbnail.Dispose(); throw; }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or OutOfMemoryException)
+            {
+                return BuildKindTile("文档预览不可用", Color.FromArgb(120, 40, 46), Color.FromArgb(186, 55, 65));
+            }
+        }
+        if (file.Kind == MediaKind.Document && string.Equals(Path.GetExtension(file.SourcePath), ".pdf", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                using var page = EveryStage.Terminal.ContentEngine.PdfContentRenderer.CreateThumbnail(file.SourcePath, new Size(tw, th));
+                var thumbnail = new Bitmap(tw, th);
+                try
+                {
+                    using var graphics = Graphics.FromImage(thumbnail);
+                    graphics.Clear(Color.FromArgb(20, 37, 58));
+                    graphics.DrawImageUnscaled(page, (tw - page.Width) / 2, (th - page.Height) / 2);
+                    return thumbnail;
+                }
+                catch { thumbnail.Dispose(); throw; }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or OutOfMemoryException
+                or PdfiumViewer.PdfException or DllNotFoundException)
+            {
+                return BuildKindTile("PDF 预览不可用", Color.FromArgb(120, 40, 46), Color.FromArgb(186, 55, 65));
+            }
+        }
         if (file.Kind == MediaKind.Image)
         {
             try
             {
                 using var stream = File.OpenRead(file.SourcePath);
                 using var loaded = Image.FromStream(stream);
-                var thumbnail = new Bitmap(112, 112);
+                var thumbnail = new Bitmap(tw, th);
                 using var graphics = Graphics.FromImage(thumbnail);
                 graphics.Clear(Color.FromArgb(20, 37, 58));
                 graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                float scale = Math.Min(112f / loaded.Width, 112f / loaded.Height);
+                // Cover-fill so the design's edge-to-edge thumbnail look holds for any aspect ratio.
+                float scale = Math.Max((float)tw / loaded.Width, (float)th / loaded.Height);
                 int width = Math.Max(1, (int)(loaded.Width * scale));
                 int height = Math.Max(1, (int)(loaded.Height * scale));
-                graphics.DrawImage(loaded, (112 - width) / 2, (112 - height) / 2, width, height);
+                graphics.DrawImage(loaded, (tw - width) / 2, (th - height) / 2, width, height);
                 return thumbnail;
             }
-            catch (Exception ex) when (ex is IOException or OutOfMemoryException or ArgumentException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OutOfMemoryException or ArgumentException)
             {
-                // Missing/moved/corrupt file since it was imported — show a warning icon rather
+                // Missing/moved/corrupt file since it was imported — show a warning tile rather
                 // than let a bad file crash the whole library view.
-                return BuildKindTile("!", "文件不可用", Color.FromArgb(186, 55, 65));
+                return BuildKindTile("文件不可用", Color.FromArgb(120, 40, 46), Color.FromArgb(186, 55, 65));
             }
         }
 
+        // Non-image kinds: a clean tinted tile; the colored type badge is drawn over it by
+        // DrawMediaCard (so the tile itself no longer carries a letter/caption).
         return file.Kind switch
         {
-            MediaKind.Video => BuildKindTile("▶", "视频", Color.FromArgb(105, 74, 220)),
-            MediaKind.Document => BuildKindTile(DocumentBadge(file.SourcePath), "文档", Color.FromArgb(44, 113, 218)),
-            MediaKind.Audio => BuildKindTile("♫", "音频", Color.FromArgb(34, 154, 130)),
-            _ => BuildKindTile("•", "文件", ModernUi.Accent),
+            MediaKind.Video => BuildKindTile(null, Color.FromArgb(28, 24, 54), Color.FromArgb(40, 34, 78)),
+            MediaKind.Document => BuildKindTile(null, Color.FromArgb(30, 44, 70), Color.FromArgb(24, 36, 58)),
+            MediaKind.Audio => BuildKindTile(null, Color.FromArgb(20, 44, 42), Color.FromArgb(18, 38, 40)),
+            _ => BuildKindTile(null, Color.FromArgb(24, 42, 66), Color.FromArgb(20, 37, 58)),
         };
     }
 
     private void DrawMediaCard(object? sender, DrawListViewItemEventArgs e)
     {
-        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        var g = e.Graphics;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         var card = e.Bounds;
-        card.Inflate(-7, -7);
+        card.Inflate(-8, -8);
         bool selected = e.Item.Selected;
-        bool playing = e.Item.Tag is MediaFile candidate && _outputActive && _playback?.CurrentFile is { } current
-            && (ReferenceEquals(candidate, current)
-                || string.Equals(candidate.SourcePath, current.SourcePath, StringComparison.OrdinalIgnoreCase));
-        using var path = RoundedCard(card, 14);
-        using var fill = new SolidBrush(selected || playing ? Color.FromArgb(38, 72, 112) : ModernUi.SurfaceRaised);
-        using var border = new Pen(playing ? ModernUi.Success : selected ? ModernUi.Accent : ModernUi.Border,
-            selected || playing ? 2F : 1F);
-        e.Graphics.FillPath(fill, path);
-        e.Graphics.DrawPath(border, path);
+        var media = e.Item.Tag as MediaFile;
+        bool playing = media != null && _outputActive && _playback?.CurrentFile is { } current
+            && (ReferenceEquals(media, current)
+                || string.Equals(media.SourcePath, current.SourcePath, StringComparison.OrdinalIgnoreCase));
 
-        var selectionBox = new Rectangle(card.Right - 28, card.Top + 10, 17, 17);
-        using var selectionPen = new Pen(selected ? ModernUi.Accent : Color.FromArgb(120, 157, 185, 218), 2F);
-
-        var imageRect = new Rectangle(card.Left + 12, card.Top + 12, card.Width - 24, 104);
-        using (var imagePath = RoundedCard(imageRect, 10))
+        // Card background — design uses a flat raised surface with a blue ring when selected.
+        using (var path = RoundedCard(card, 16))
+        using (var fill = new SolidBrush(selected || playing ? Color.FromArgb(24, 46, 78) : ModernUi.SurfaceRaised))
+        using (var border = new Pen(playing ? ModernUi.Success : selected ? ModernUi.Accent : Color.FromArgb(38, 60, 90),
+                   selected || playing ? 2F : 1F))
         {
-            var state = e.Graphics.Save();
-            e.Graphics.SetClip(imagePath);
+            g.FillPath(fill, path);
+            g.DrawPath(border, path);
+        }
+
+        int pad = 12;
+        var imageRect = new Rectangle(card.Left + pad, card.Top + pad, card.Width - pad * 2, 150);
+        using (var imagePath = RoundedCard(imageRect, 12))
+        {
+            var state = g.Save();
+            g.SetClip(imagePath);
+            using (var imgBg = new SolidBrush(Color.FromArgb(20, 37, 58)))
+                g.FillRectangle(imgBg, imageRect);
             if (e.Item.ImageKey.Length > 0 && _thumbnails.Images[e.Item.ImageKey] is Image image)
-                e.Graphics.DrawImage(image, imageRect);
-            e.Graphics.Restore(state);
+            {
+                // Cover-fill the image area (crop to fill), matching the design's edge-to-edge thumbnails.
+                float scale = Math.Max((float)imageRect.Width / image.Width, (float)imageRect.Height / image.Height);
+                int dw = (int)(image.Width * scale), dh = (int)(image.Height * scale);
+                g.DrawImage(image, imageRect.Left + (imageRect.Width - dw) / 2, imageRect.Top + (imageRect.Height - dh) / 2, dw, dh);
+            }
+            g.Restore(state);
         }
 
-        if (e.Item.Tag is MediaFile { Kind: MediaKind.Video })
+        // Video play badge, centered.
+        if (media is { Kind: MediaKind.Video })
         {
-            var playCircle = new Rectangle(imageRect.Left + imageRect.Width / 2 - 20, imageRect.Top + 32, 40, 40);
-            using var playBrush = new SolidBrush(Color.FromArgb(190, 10, 28, 48));
-            e.Graphics.FillEllipse(playBrush, playCircle);
-            using var playFont = new Font("Segoe UI Symbol", 15F, FontStyle.Bold);
-            TextRenderer.DrawText(e.Graphics, "▶", playFont, playCircle, Color.White,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            var playCircle = new Rectangle(imageRect.Left + imageRect.Width / 2 - 24, imageRect.Top + imageRect.Height / 2 - 24, 48, 48);
+            using var playBrush = new SolidBrush(Color.FromArgb(150, 8, 20, 38));
+            g.FillEllipse(playBrush, playCircle);
+            using var triBrush = new SolidBrush(Color.White);
+            var tri = new[]
+            {
+                new PointF(playCircle.Left + 19, playCircle.Top + 14),
+                new PointF(playCircle.Left + 19, playCircle.Top + 34),
+                new PointF(playCircle.Left + 34, playCircle.Top + 24),
+            };
+            g.FillPolygon(triBrush, tri);
         }
-        using var selectionFill = new SolidBrush(Color.FromArgb(175, 13, 30, 50));
-        e.Graphics.FillRectangle(selectionFill, selectionBox);
-        e.Graphics.DrawRectangle(selectionPen, selectionBox);
-        if (selected)
+
+        // Colored type badge in the image's bottom-left (P / W / X / PDF / image / ♫).
+        if (media != null)
+            DrawTypeBadge(g, new Rectangle(imageRect.Left + 12, imageRect.Bottom - 46, 34, 34), media);
+
+        // Selection checkbox — always visible top-right, filled when selected (design shows the ☑).
+        var box = new Rectangle(imageRect.Right - 30, imageRect.Top + 10, 20, 20);
+        using (var boxPath = RoundedCard(box, 5))
         {
-            using var selectedFont = new Font("Segoe UI Symbol", 9F, FontStyle.Bold);
-            TextRenderer.DrawText(e.Graphics, "✓", selectedFont, selectionBox, Color.White,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            using var boxFill = new SolidBrush(selected ? ModernUi.Accent : Color.FromArgb(150, 10, 24, 42));
+            using var boxPen = new Pen(selected ? ModernUi.Accent : Color.FromArgb(150, 180, 205, 235), 1.6F);
+            g.FillPath(boxFill, boxPath);
+            g.DrawPath(boxPen, boxPath);
+            if (selected)
+            {
+                using var check = new Pen(Color.White, 2F) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+                g.DrawLines(check, new[]
+                {
+                    new PointF(box.Left + 5, box.Top + 10),
+                    new PointF(box.Left + 9, box.Top + 14),
+                    new PointF(box.Left + 15, box.Top + 6),
+                });
+            }
         }
 
-        string name = e.Item.Tag is MediaFile file ? Path.GetFileName(file.SourcePath) : e.Item.Text;
-        if (playing) name = $"▶  {name}";
-        var nameRect = new Rectangle(card.Left + 12, imageRect.Bottom + 9, card.Width - 24, 25);
-        using var nameFont = new Font("Segoe UI Semibold", 10F);
-        TextRenderer.DrawText(e.Graphics, name, nameFont, nameRect,
-            playing ? ModernUi.Success : ModernUi.Text,
-            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+        // File name.
+        string name = media != null ? Path.GetFileName(media.SourcePath) : e.Item.Text;
+        var nameRect = new Rectangle(card.Left + pad, imageRect.Bottom + 12, card.Width - pad * 2, 24);
+        using (var nameFont = new Font("Segoe UI Semibold", 11F))
+            TextRenderer.DrawText(g, name, nameFont, nameRect,
+                playing ? ModernUi.Success : ModernUi.Text,
+                TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
 
+        // Meta line (date · size) with a trailing ⋯ affordance on the right.
         string meta = "";
-        if (e.Item.Tag is MediaFile media)
+        if (media != null)
         {
             try
             {
                 var info = new FileInfo(media.SourcePath);
-                meta = $"{info.LastWriteTime:yyyy/MM/dd}  ·  {FormatBytes(info.Length)}";
+                meta = $"{info.LastWriteTime:yyyy/MM/dd}    {FormatBytes(info.Length)}";
             }
             catch (Exception) { meta = KindLabel(media.Kind); }
         }
-        var metaRect = new Rectangle(card.Left + 12, nameRect.Bottom, card.Width - 24, 20);
-        using var metaFont = new Font("Segoe UI", 8.5F);
-        TextRenderer.DrawText(e.Graphics, meta, metaFont, metaRect,
-            ModernUi.Muted, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+        var metaRect = new Rectangle(card.Left + pad, nameRect.Bottom + 2, card.Width - pad * 2 - 24, 20);
+        using (var metaFont = new Font("Segoe UI", 9F))
+            TextRenderer.DrawText(g, meta, metaFont, metaRect,
+                ModernUi.Muted, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
+
+        var moreRect = new Rectangle(card.Right - pad - 22, nameRect.Bottom + 2, 22, 20);
+        using (var moreFont = new Font("Segoe UI", 11F, FontStyle.Bold))
+            TextRenderer.DrawText(g, "⋯", moreFont, moreRect, ModernUi.Muted,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
+
+    /// <summary>Colored rounded type badge (P/W/X/PDF/图片/♫) drawn in a media card's thumbnail
+    /// corner, matching the design's app-color chips. Colors mirror <see cref="BuildKindTile"/>.</summary>
+    private static void DrawTypeBadge(Graphics g, Rectangle r, MediaFile file)
+    {
+        (string text, Color color) = file.Kind switch
+        {
+            MediaKind.Video => ("▶", Color.FromArgb(124, 58, 237)),
+            MediaKind.Audio => ("♫", Color.FromArgb(20, 160, 130)),
+            MediaKind.Image => ("", Color.FromArgb(37, 99, 235)),
+            MediaKind.Document => (DocumentBadge(file.SourcePath), DocumentColor(file.SourcePath)),
+            _ => ("•", ModernUi.Accent),
+        };
+        using var path = RoundedCard(r, 8);
+        using var fill = new SolidBrush(color);
+        g.FillPath(fill, path);
+        if (file.Kind == MediaKind.Image)
+        {
+            // A small "mountain + sun" image glyph rather than a letter.
+            using var pen = new Pen(Color.White, 2F) { LineJoin = LineJoin.Round };
+            g.DrawEllipse(pen, r.Left + 8, r.Top + 8, 5, 5);
+            using var tri = new SolidBrush(Color.White);
+            g.FillPolygon(tri, new[]
+            {
+                new PointF(r.Left + 7, r.Bottom - 8),
+                new PointF(r.Left + 14, r.Top + 16),
+                new PointF(r.Left + 21, r.Bottom - 8),
+            });
+            return;
+        }
+        using var badgeFont = new Font("Segoe UI Semibold", text.Length > 1 ? 9F : 13F, FontStyle.Bold);
+        TextRenderer.DrawText(g, text, badgeFont, r, Color.White,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+    }
+
+    private static Color DocumentColor(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+    {
+        ".pdf" => Color.FromArgb(219, 68, 55),
+        ".ppt" or ".pptx" => Color.FromArgb(211, 71, 39),
+        ".xls" or ".xlsx" => Color.FromArgb(33, 160, 96),
+        ".doc" or ".docx" => Color.FromArgb(41, 105, 214),
+        _ => Color.FromArgb(44, 113, 218),
+    };
 
     private static System.Drawing.Drawing2D.GraphicsPath RoundedCard(Rectangle r, int radius)
     {
@@ -896,21 +892,23 @@ public sealed class FilesPanel : UserControl
         _ => "DOC",
     };
 
-    private static Bitmap BuildKindTile(string badge, string caption, Color accent)
+    /// <summary>A clean 240×150 gradient tile for non-image kinds (and the missing-file case). The
+    /// colored type badge is drawn separately over the tile by <see cref="DrawMediaCard"/>; only the
+    /// missing-file case passes a caption so the operator can see why a tile is blank.</summary>
+    private static Bitmap BuildKindTile(string? caption, Color top, Color bottom)
     {
-        var bitmap = new Bitmap(112, 112);
+        var bitmap = new Bitmap(240, 150);
         using var graphics = Graphics.FromImage(bitmap);
-        graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        graphics.Clear(Color.FromArgb(20, 37, 58));
-        using var accentBrush = new SolidBrush(accent);
-        using var badgeBrush = new SolidBrush(Color.White);
-        using var captionBrush = new SolidBrush(Color.FromArgb(180, 199, 224));
-        using var badgeFont = new Font("Segoe UI Semibold", badge.Length > 2 ? 17F : 28F, FontStyle.Bold);
-        using var captionFont = new Font("Segoe UI", 9F);
-        using var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-        graphics.FillEllipse(accentBrush, 25, 14, 62, 62);
-        graphics.DrawString(badge, badgeFont, badgeBrush, new RectangleF(25, 14, 62, 62), centered);
-        graphics.DrawString(caption, captionFont, captionBrush, new RectangleF(4, 84, 104, 22), centered);
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var bg = new LinearGradientBrush(new Rectangle(0, 0, 240, 150), top, bottom, 60F))
+            graphics.FillRectangle(bg, 0, 0, 240, 150);
+        if (caption != null)
+        {
+            using var captionBrush = new SolidBrush(Color.FromArgb(210, 225, 240));
+            using var captionFont = new Font("Segoe UI", 11F);
+            using var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+            graphics.DrawString(caption, captionFont, captionBrush, new RectangleF(0, 0, 240, 150), centered);
+        }
         return bitmap;
     }
 }

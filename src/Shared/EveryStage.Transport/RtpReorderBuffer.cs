@@ -63,11 +63,21 @@ public sealed class RtpReorderBuffer
         return output;
     }
 
+    public IReadOnlyList<Delivery> FlushExpired(DateTimeOffset now)
+    {
+        var output = new List<Delivery>();
+        FlushExpired(now, output);
+        return output;
+    }
+
     private void FlushExpired(DateTimeOffset now, List<Delivery> output)
     {
-        if (_expected == null || _pending.Count == 0) return;
-        DateTimeOffset oldest = _pending.Values.Min(x => x.ArrivedAt);
-        if (now - oldest >= _maxHoldTime) AdvanceToNearest(output);
+        while (_expected != null && _pending.Count > 0)
+        {
+            DateTimeOffset oldest = _pending.Values.Min(x => x.ArrivedAt);
+            if (now - oldest < _maxHoldTime) break;
+            AdvanceToNearest(output);
+        }
     }
 
     private void AdvanceToNearest(List<Delivery> output)

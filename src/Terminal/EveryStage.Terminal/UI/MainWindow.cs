@@ -67,28 +67,31 @@ public sealed class MainWindow : GradientForm
         _scenarioRepository = scenarioRepository;
 
         Text = "EveryStage Terminal";
-        ClientSize = new Size(1050, 680);
-        MinimumSize = new Size(900, 600);
+        NormalWindowAspectRatio = new Size(4, 3);
+        ClientSize = new Size(1024, 768);
+        MinimumSize = new Size(800, 600);
         BackColor = ModernUi.Background;
         Font = new Font("Segoe UI", 10F);
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.None;
         WindowsAppearance.UseDarkTitleBar(this);
+        WindowsAppearance.EnableGlass(this);
 
         var nav = new GlassPanel
         {
-            Dock = DockStyle.Left, Width = 160, Padding = new Padding(10), CornerRadius = 0, AutoScroll = true,
+            Dock = DockStyle.Left, Width = 168, Padding = new Padding(10), CornerRadius = 0, AutoScroll = true,
             GlassTint = Color.FromArgb(220, 8, 23, 40),
         };
 
+        var brandMark = new BrandMark { Bounds = new Rectangle(18, 24, 34, 34) };
         var brand = new Label
         {
-            Text = "▰  EveryStage",
+            Text = "EveryStage",
             ForeColor = Color.White,
             Font = new Font("Segoe UI Semibold", 15F),
             AutoSize = true,
-            Location = new Point(18, 22),
+            Location = new Point(18, 64),
         };
         var product = new Label
         {
@@ -96,13 +99,13 @@ public sealed class MainWindow : GradientForm
             ForeColor = ModernUi.Muted,
             Font = new Font("Segoe UI", 10F),
             AutoSize = true,
-            Location = new Point(51, 54),
+            Location = new Point(20, 92),
         };
 
         // A plain checkbox standing in for §8.1's slide-switch visual — see class doc comment.
         _castSwitchCheckbox = new ToggleSwitch
         {
-            Location = new Point(96, 92),
+            Location = new Point(112, 150),
             Checked = stateMachine.CastSwitchOn,
         };
         var switchLabel = new Label
@@ -110,21 +113,26 @@ public sealed class MainWindow : GradientForm
             Text = "投屏开关",
             ForeColor = ModernUi.Text,
             AutoSize = true,
-            Location = new Point(18, 97),
+            Location = new Point(18, 155),
         };
         _castSwitchCheckbox.CheckedChanged += (_, _) => stateMachine.SetCastSwitch(_castSwitchCheckbox.Checked);
 
-        var disconnectButton = new Button { Text = "●  断开输出", Bounds = new Rectangle(16, 136, 128, 40) };
+        var disconnectButton = new Button { Text = "⚠  断", Bounds = new Rectangle(16, 190, 132, 44) };
         ModernUi.StyleButton(disconnectButton, danger: true);
+        disconnectButton.FlatAppearance.BorderColor = ModernUi.Danger;
+        disconnectButton.FlatAppearance.BorderSize = 1;
+        disconnectButton.ForeColor = ModernUi.Danger;
+        disconnectButton.BackColor = Color.FromArgb(40, 60, 22, 28);
+        disconnectButton.Font = new Font("Segoe UI Semibold", 12F);
         disconnectButton.Click += (_, _) => stateMachine.Disconnect();
 
-        var filesButton = ModernUi.NavButton("▣", "文件", 218);
-        var activitiesButton = ModernUi.NavButton("▤", "活动", 278);
-        var devicesButton = ModernUi.NavButton("▱", "设备", 338);
-        var settingsButton = ModernUi.NavButton("⚙", "设置", 398);
+        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 262);
+        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 320);
+        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 378);
+        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 436);
         var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
 
-        _recallPreviewButton = new Button { Text = "显示预览窗", Bounds = new Rectangle(16, 468, 128, 38) };
+        _recallPreviewButton = new Button { Text = "显示预览窗", Bounds = new Rectangle(16, 506, 132, 38) };
         ModernUi.StyleButton(_recallPreviewButton);
         _recallPreviewButton.Click += (_, _) => PreviewRecallRequested?.Invoke();
 
@@ -139,7 +147,7 @@ public sealed class MainWindow : GradientForm
 
         nav.Controls.AddRange(new Control[]
         {
-            brand, product, switchLabel, _castSwitchCheckbox, disconnectButton,
+            brandMark, brand, product, switchLabel, _castSwitchCheckbox, disconnectButton,
             filesButton, activitiesButton, devicesButton, settingsButton,
             _recallPreviewButton, _statusLabel,
         });
@@ -173,11 +181,29 @@ public sealed class MainWindow : GradientForm
         devicesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, devicesButton); ShowPanel(_devicesPanel); };
         settingsButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, settingsButton); ShowPanel(_settingsPanel); };
 
-        Controls.Add(_contentHost);
-        Controls.Add(nav);
+        // Foolproof docking: wrap nav (Left) + content (Fill) in a single Fill "body" container that
+        // sits BELOW a Top-docked title bar. With the form holding only these two children — a Top
+        // strip and a Fill body — there is no z-order ambiguity: the title bar owns the top 42px and
+        // the body fills everything under it. (Previously nav/content were direct form children and
+        // fought the title bar for the top edge, so the title bar overlapped the nav logo and the
+        // filter toolbar.)
+        var body = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        // Same observed docking rule: the BACK-most control docks first and claims its edge. The nav
+        // must own the full left rail, so send it to the back; the content fills the remainder to
+        // its right (brought to front). Getting this backwards let the content slide under the nav
+        // and hid the first filter pill.
+        body.Controls.Add(nav);
+        body.Controls.Add(_contentHost);
+        nav.SendToBack();
+        _contentHost.BringToFront();
         var titleBar = new AppTitleBar(this, "Terminal");
+        Controls.Add(body);
         Controls.Add(titleBar);
-        titleBar.BringToFront();
+        // Observed WinForms docking: the BACK-most control docks FIRST and claims its edge; the
+        // FRONT-most gets the innermost remainder. So the title bar (top strip) must be sent to the
+        // back to own the full top edge, and the body brought to front to fill everything below it.
+        titleBar.SendToBack();
+        body.BringToFront();
 
         // PLANNING.md §11 "异常提示"："右下角Toast通知栈" — added to Controls last (and pinned via
         // its own OnParentChanged/SizeChanged handling, see ToastStack's doc comment) so it renders

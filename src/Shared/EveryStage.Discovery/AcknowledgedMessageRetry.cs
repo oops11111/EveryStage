@@ -24,15 +24,24 @@ public static class AcknowledgedMessageRetry
         {
             cancellationToken.ThrowIfCancellationRequested();
             await sendAsync();
-            if (acknowledgement.IsCompleted) return true;
+            if (acknowledgement.IsCompleted)
+            {
+                await acknowledgement;
+                return true;
+            }
 
             var timeoutTask = Task.Delay(delay, cancellationToken);
             if (await Task.WhenAny(acknowledgement, timeoutTask) == acknowledgement)
+            {
+                await acknowledgement;
                 return true;
+            }
             await timeoutTask;
         }
 
-        return acknowledgement.IsCompleted;
+        if (!acknowledgement.IsCompleted) return false;
+        await acknowledgement;
+        return true;
     }
 }
 

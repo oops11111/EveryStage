@@ -22,6 +22,7 @@ public sealed class FileLibraryStore
 
     private readonly string _storePath;
     private List<MediaFile> _files;
+    private bool _loadFailed;
 
     public FileLibraryStore(string? storePathOverride = null)
     {
@@ -58,30 +59,35 @@ public sealed class FileLibraryStore
     /// isn't recognized.</summary>
     public MediaFile? Import(string sourcePath)
     {
+        EnsureWritable();
         var kind = InferKind(sourcePath);
         if (kind == null) return null;
 
         var file = new MediaFile { SourcePath = sourcePath, Kind = kind.Value };
         _files.Add(file);
-        Save();
+        try { Save(); }
+        catch { _files.Remove(file); throw; }
         return file;
     }
 
     public void Remove(Guid id)
     {
+        EnsureWritable();
+        var previous = _files.ToList();
         _files.RemoveAll(f => f.Id == id);
-        Save();
+        try { Save(); }
+        catch { _files = previous; throw; }
     }
 
     private List<MediaFile> Load()
     {
-        if (!File.Exists(_storePath)) return new List<MediaFile>();
-
         try
         {
             using var stream = File.OpenRead(_storePath);
             return JsonSerializer.Deserialize<List<MediaFile>>(stream, JsonOptions) ?? new List<MediaFile>();
         }
+        catch (FileNotFoundException) { return new List<MediaFile>(); }
+        catch (DirectoryNotFoundException) { return new List<MediaFile>(); }
         catch (JsonException)
         {
             // Same fail-safe as ScenarioRepository/PairedDeviceStore: an unattended device must not
@@ -91,6 +97,7 @@ public sealed class FileLibraryStore
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            _loadFailed = true;
             // Different failure mode from JsonException above, and deliberately handled without
             // touching the file: File.Exists returning true above doesn't mean File.OpenRead can
             // actually succeed — another process (antivirus scan, backup tool) can hold an exclusive
@@ -115,6 +122,7 @@ public sealed class FileLibraryStore
     /// operating on an externally-owned <see cref="ScenarioStore"/>.</summary>
     public void Save()
     {
+        EnsureWritable();
         string directory = Path.GetDirectoryName(_storePath)!;
         Directory.CreateDirectory(directory);
 
@@ -128,5 +136,11 @@ public sealed class FileLibraryStore
             File.Replace(tempPath, _storePath, destinationBackupFileName: null);
         else
             File.Move(tempPath, _storePath);
+    }
+
+    private void EnsureWritable()
+    {
+        if (_loadFailed)
+            throw new IOException("文件库读取失败，已禁止保存以保护原数据。请解除文件占用或权限问题后重启程序。");
     }
 }

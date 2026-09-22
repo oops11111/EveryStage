@@ -158,6 +158,8 @@ internal class GlassPanel : Panel
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        base.OnPaintBackground(e);
+        if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
         using var path = Rounded(ClientRectangle, LogicalToDeviceUnits(CornerRadius));
         using var fill = new LinearGradientBrush(ClientRectangle,
             Color.FromArgb(Math.Min(255, GlassTint.A + 25), GlassTint), GlassTint, 112F);
@@ -208,15 +210,21 @@ internal sealed class AppTitleBar : Panel
             ForeColor = ModernUi.Text, Font = new Font("Segoe UI Semibold", 10F),
         };
         var close = ChromeButton("×");
+        var maximize = ChromeButton("□");
         var minimize = ChromeButton("—");
         close.Click += (_, _) => _form.Close();
+        maximize.Click += (_, _) => _form.WindowState = _form.WindowState == FormWindowState.Maximized
+            ? FormWindowState.Normal : FormWindowState.Maximized;
         minimize.Click += (_, _) => _form.WindowState = FormWindowState.Minimized;
         close.MouseEnter += (_, _) => close.BackColor = Color.FromArgb(196, 43, 51);
         close.MouseLeave += (_, _) => close.BackColor = BackColor;
         Controls.Add(title);
         Controls.Add(appIcon);
-        Controls.Add(close);
+        // Dock=Right stacks so that the LAST-added control ends up right-most. Windows order left→
+        // right is minimize, maximize, close (close at the far right), so add in that same order.
         Controls.Add(minimize);
+        Controls.Add(maximize);
+        Controls.Add(close);
         title.MouseDown += DragWindow;
         appIcon.MouseDown += DragWindow;
         MouseDown += DragWindow;

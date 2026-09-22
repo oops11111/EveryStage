@@ -261,6 +261,8 @@ public sealed class FloatingPreviewWindow : Form
         {
             _settingsStore.SettingsChanged -= OnSettingsChanged;
             _refreshTimer.Dispose();
+            _thumbnail.Image?.Dispose();
+            _thumbnail.Image = null;
         }
         base.Dispose(disposing);
     }
@@ -280,13 +282,27 @@ public sealed class FloatingPreviewWindow : Form
         Hide();
     }
 
+    private void ReplacePreview(Bitmap? source)
+    {
+        // Own the preview bitmap: the renderer may replace/dispose its frame between timer ticks.
+        Image? next = null;
+        if (source != null)
+        {
+            float scale = Math.Min(204f / source.Width, 114f / source.Height);
+            next = new Bitmap(source, new Size(Math.Max(1, (int)(source.Width * scale)), Math.Max(1, (int)(source.Height * scale))));
+        }
+        Image? previous = _thumbnail.Image;
+        _thumbnail.Image = next;
+        previous?.Dispose();
+    }
+
     private void RefreshFromEngine()
     {
         MediaFile? file = _playback.CurrentFile;
         if (file == null)
         {
             _fileLabel.Text = "(无内容 / 音频类文件预览尚未支持)";
-            _thumbnail.Image = null;
+            ReplacePreview(null);
             _pauseButton.Enabled = false;
             _pageLabel.Text = "";
             _volumeDownButton.Enabled = false;
@@ -300,7 +316,7 @@ public sealed class FloatingPreviewWindow : Form
         }
 
         _fileLabel.Text = $"{Path.GetFileName(file.SourcePath)}\n[{file.Kind}]";
-        _thumbnail.Image = _playback.CurrentThumbnail; // null for video/Office document — see PlaybackEngine.CurrentThumbnail.
+        ReplacePreview(_playback.CurrentThumbnail);
 
         bool isStandaloneAudio = file.Kind == MediaKind.Audio && !file.IsBackgroundAudio;
         bool isOfficeDocument = file.Kind == MediaKind.Document && WpsDocumentController.IsOfficeDocument(file.SourcePath);

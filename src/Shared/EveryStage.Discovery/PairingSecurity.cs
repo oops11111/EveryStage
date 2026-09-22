@@ -10,6 +10,13 @@ public static class PairingSecurity
 
     public static string GenerateKey() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(KeySizeBytes));
 
+    public static byte[] DeriveMediaKey(string pairingKey, Guid sessionId, string stream)
+    {
+        if (!IsValidKey(pairingKey) || sessionId == Guid.Empty) throw new ArgumentException("Valid pairing and session required.");
+        return HMACSHA256.HashData(Convert.FromBase64String(pairingKey),
+            Encoding.UTF8.GetBytes($"EveryStage/media/v1/{sessionId:D}/{stream}"));
+    }
+
     public static bool IsValidKey(string? key)
     {
         if (string.IsNullOrWhiteSpace(key)) return false;

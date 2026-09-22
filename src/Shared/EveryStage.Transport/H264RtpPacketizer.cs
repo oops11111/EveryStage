@@ -29,6 +29,14 @@ public static class H264RtpPacketizer
     /// depends on the actual network path).</param>
     public static IEnumerable<Payload> Packetize(ReadOnlyMemory<byte> nalUnit, bool isLastNalOfAccessUnit, int maxPayloadSize)
     {
+        if (nalUnit.Length == 0)
+            // An empty NAL unit is not representable in this payload format - there is no header
+            // byte to carry its type - and H264RtpDepacketizer drops a zero-length payload on
+            // arrival anyway, so emitting one would only burn a sequence number. AnnexBNalSplitter
+            // should never produce one; this guards a future caller rather than fixing an observed
+            // input.
+            yield break;
+
         if (nalUnit.Length <= maxPayloadSize)
         {
             // Single NAL Unit packet (RFC 6184 §5.6): the NAL unit goes out unmodified as the

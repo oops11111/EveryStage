@@ -14,8 +14,24 @@ public sealed class H264RtpDepacketizer
 {
     private const byte NalTypeFuA = 28;
 
+    // RFC 6184 section 5.2 packet type ranges: 1-23 are Single NAL Unit packets (the payload IS
+    // the NAL unit), 24-27 are aggregation packets (STAP-A/STAP-B/MTAP16/MTAP24), 28-29 are
+    // fragmentation units (FU-A/FU-B), and 0 plus 30-31 are reserved or undefined.
+    private const byte NalTypeSingleNalMin = 1;
+    private const byte NalTypeSingleNalMax = 23;
+
     private MemoryStream? _fragmentBuffer;
     private byte _fragmentedNalHeader;
+    private long _unsupportedPacketTypes;
+    private long _malformedFragments;
+
+    /// <summary>Packets discarded because their RTP payload format type is one this depacketizer
+    /// does not implement (aggregation packets, FU-B, reserved types). A bare counter with no
+    /// logging, matching how RtpReceiver exposes GapEvents/PayloadTypeMismatches.</summary>
+    public long UnsupportedPacketTypes => Interlocked.Read(ref _unsupportedPacketTypes);
+
+    /// <summary>FU-A packets too short to contain even their own 2-byte header.</summary>
+    public long MalformedFragments => Interlocked.Read(ref _malformedFragments);
 
     public void Reset()
     {
@@ -32,14 +48,38 @@ public sealed class H264RtpDepacketizer
         if (rtpPayload.Length == 0) return null;
 
         byte nalType = (byte)(rtpPayload.Span[0] & 0x1F);
-        return nalType == NalTypeFuA
-            ? ProcessFragment(rtpPayload)
-            : rtpPayload.ToArray(); // Single NAL Unit packet: payload IS the complete NAL unit.
+        if (nalType == NalTypeFuA) return ProcessFragment(rtpPayload);
+        if (nalType >= NalTypeSingleNalMin && nalType <= NalTypeSingleNalMax)
+            return rtpPayload.ToArray(); // Single NAL Unit packet: payload IS the complete NAL unit.
+
+        // Aggregation packets (24-27), FU-B (29) and the reserved types (0, 30, 31). This project's
+        // H264RtpPacketizer never emits any of them, but a conforming sender may - STAP-A carrying
+        // SPS/PPS in a single packet is the most common such optimization. Their first byte is an
+        // aggregation or fragmentation header, NOT a NAL unit header, so the previous "anything that
+        // is not FU-A must already be a complete NAL unit" fallthrough handed the decoder a
+        // fabricated NAL unit built out of a header it had misread. RFC 6184 section 5.2 requires a
+        // receiver to discard packet types it does not support. Reset() too: arriving mid-
+        // fragmentation, such a packet means the peer is not speaking the format this class assumed,
+        // which makes the half-built NAL unit suspect as well.
+        Interlocked.Increment(ref _unsupportedPacketTypes);
+        Reset();
+        return null;
     }
 
     private byte[]? ProcessFragment(ReadOnlyMemory<byte> payload)
     {
-        if (payload.Length < 2) return null; // malformed — needs at least the 2-byte FU indicator+header.
+        if (payload.Length < 2)
+        {
+            // Malformed: an FU-A needs at least its 2-byte FU indicator+header. Discarding the
+            // in-progress NAL unit is the point here - this used to just return null and leave
+            // _fragmentBuffer intact, so the following middle/end fragments concatenated straight
+            // across the hole and emitted a silently corrupt NAL unit. RtpReceiver's loss path
+            // (Reset() when PacketsLostBefore > 0) never covers this case, because a truncated
+            // packet is a packet that *arrived*: the reorder buffer sees no sequence-number gap.
+            Interlocked.Increment(ref _malformedFragments);
+            Reset();
+            return null;
+        }
 
         byte fuIndicator = payload.Span[0];
         byte fuHeader = payload.Span[1];

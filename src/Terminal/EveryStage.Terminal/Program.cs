@@ -317,7 +317,11 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // UI thread.
         _uiContext.Post(_ =>
         {
-            if (_overlay == null || _videoSurface == null) return; // no extended display bound — nothing to show a cast on.
+            if (_overlay == null || _videoSurface == null)
+            {
+                info.CompleteStart(false, "终端机未绑定扩展显示器。");
+                return;
+            }
 
             // Stop any local video playback FIRST — it shares _videoSurface's D3D11 device/swap
             // chain with the CastReceiver about to be constructed, and the two must never present
@@ -330,10 +334,11 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                 _castReceiver = new CastReceiver(
                     _videoSurface, info.Width, info.Height, DiscoveryProtocol.VideoRtpPort,
                     info.HasAudio, info.AudioSampleRate, info.AudioChannels, DiscoveryProtocol.AudioRtpPort,
-                    info.AudioIsAac, info.PayloadType, info.AudioPayloadType);
+                    info.AudioIsAac, info.PayloadType, info.AudioPayloadType,
+                    info.MediaSessionId, info.VideoKey, info.AudioKey, info.CasterEndPoint.Address);
                 _castReceiver.Start();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
                 // Same "don't crash, don't pretend it worked" reasoning as everywhere else in this
                 // repo lacking a dedicated cast-session log yet — leaves the Terminal at Idle rather
@@ -343,7 +348,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                 // LiveCastSession's audio-is-best-effort handling on the Caster side; this catch is
                 // for video-side failures only, which do end the whole cast (there's no cast without
                 // video).
+                _castReceiver?.Dispose();
                 _castReceiver = null;
+                info.CompleteStart(false, ex.Message);
                 return;
             }
 
@@ -353,6 +360,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _castStatusTimer.Start();
             _overlay.ShowVideoSurface();
             _stateMachine.AcceptDeviceCastRequest();
+            info.CompleteStart(true, null);
         }, null);
     }
 

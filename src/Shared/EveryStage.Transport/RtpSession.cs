@@ -17,16 +17,18 @@ public sealed class RtpSession : IDisposable
     private readonly int _maxPayloadSize;
     private readonly uint _ssrc;
     private ushort _sequenceNumber;
+    private readonly MediaPacketAuthentication? _authentication;
 
     /// <param name="payloadType">RTP payload type number (0-127) — a value both ends must already
     /// agree on; this project has no SDP-style negotiation, see this library's README.</param>
     /// <param name="maxPayloadSize">Passed straight through to <see cref="H264RtpPacketizer"/> —
     /// see its own doc comment on picking this for the actual network path.</param>
-    public RtpSession(IPEndPoint remoteEndPoint, byte payloadType, int maxPayloadSize = 1400)
+    public RtpSession(IPEndPoint remoteEndPoint, byte payloadType, int maxPayloadSize = 1400, MediaPacketAuthentication? authentication = null)
     {
         _remoteEndPoint = remoteEndPoint;
         _payloadType = payloadType;
-        _maxPayloadSize = maxPayloadSize;
+        _maxPayloadSize = authentication == null ? maxPayloadSize : maxPayloadSize - 56;
+        _authentication = authentication;
         _socket = new UdpClient();
 
         // RFC 3550 §5.1: SSRC and the initial sequence number SHOULD be chosen randomly per
@@ -69,8 +71,13 @@ public sealed class RtpSession : IDisposable
         };
 
         byte[] datagram = packet.Encode();
+        if (_authentication != null) datagram = _authentication.Protect(datagram);
         await _socket.SendAsync(datagram, datagram.Length, _remoteEndPoint);
     }
 
-    public void Dispose() => _socket.Dispose();
+    public void Dispose()
+    {
+        _socket.Dispose();
+        _authentication?.Dispose();
+    }
 }
