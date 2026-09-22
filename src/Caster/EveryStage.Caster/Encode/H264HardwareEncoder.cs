@@ -24,10 +24,10 @@ namespace EveryStage.Caster.Encode;
 /// MFT_MESSAGE_TYPE/MediaEventType enum member names) this session has lower confidence in than
 /// the raw-GUID-literal risk pattern used everywhere else.
 ///
-/// Pipeline this class expects to sit in: ScreenCaptureSource (BGRA texture) -> BgraToNv12Converter
-/// (NV12 texture) -> this class (NV12 in, Annex-B H.264 access units out) -> AnnexBNalSplitter +
-/// H264RtpPacketizer (EveryStage.Transport) -> RtpSession. Nothing wires that whole chain together
-/// yet.
+/// Pipeline: ScreenCaptureSource (BGRA texture) -> BgraToNv12Converter (NV12 texture) -> this
+/// class (NV12 in, Annex-B H.264 access units out) -> AnnexBNalSplitter + H264RtpPacketizer
+/// (EveryStage.Transport) -> RtpSession. LiveCastSession wires this chain for production casting;
+/// the remaining uncertainty is hardware-specific runtime validation, not missing ownership.
 /// </summary>
 public sealed class H264HardwareEncoder : IDisposable
 {
