@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>EveryStage 终端机 · 活动页概念图</title>
+<style>
+  :root {
+    --bg: #0b0e16; --sidebar: #0e1220; --card: #141a2a; --card-hover: #1a2136;
+    --border: rgba(255,255,255,0.08); --border-accent: rgba(59,130,246,0.45);
+    --accent: #2f7dfa; --accent-soft: rgba(47,125,250,0.16);
+    --text: rgba(255,255,255,0.92); --text-muted: rgba(255,255,255,0.5);
+    --danger: #ef4444; --success: #22c55e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; font-family: "Segoe UI", -apple-system, sans-serif; background: var(--bg);
+    color: var(--text); display:flex; height:100vh; overflow:hidden;
+  }
+  .titlebar { position:absolute; top:0; left:0; right:0; height:36px; display:flex; align-items:center;
+    justify-content:flex-end; gap:18px; padding:0 16px; color: var(--text-muted); font-size:14px; z-index:10; }
+  .app { display:flex; width:100%; padding-top:36px; }
+
+  .sidebar { width:210px; flex-shrink:0; background: var(--sidebar); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; padding:20px 16px; }
+  .brand { display:flex; align-items:center; gap:10px; margin-bottom:28px; }
+  .brand-mark { width:34px; height:34px; border-radius:9px; background: linear-gradient(135deg,#3b82f6,#1d4ed8);
+    display:flex; align-items:center; justify-content:center; font-size:16px; }
+  .brand-text div:first-child { font-size:15px; font-weight:600; }
+  .brand-text div:last-child { font-size:11px; color: var(--text-muted); }
+
+  .switch-row { display:flex; align-items:center; justify-content:space-between; padding:10px 4px; margin-bottom:12px; }
+  .switch-row span { font-size:13px; }
+  .switch { width:40px; height:22px; border-radius:11px; background: var(--accent); position:relative; flex-shrink:0; }
+  .switch::after { content:''; position:absolute; top:2px; right:2px; width:18px; height:18px; border-radius:50%; background:#fff; }
+
+  .cut-btn { display:flex; align-items:center; justify-content:center; gap:6px; padding:9px 0; margin-bottom:18px;
+    border-radius:9px; border:1px solid rgba(239,68,68,0.4); color: var(--danger); font-size:13px; font-weight:500; }
+
+  .nav-btn { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:9px; margin-bottom:4px;
+    color: var(--text-muted); font-size:14px; cursor:pointer; }
+  .nav-btn .ic { width:18px; text-align:center; }
+  .nav-btn.active { background: var(--accent); color:#fff; }
+
+  .sidebar-footer { margin-top:auto; display:flex; align-items:center; gap:8px; font-size:12px; color: var(--text-muted); padding:4px; }
+  .dot { width:7px; height:7px; border-radius:50%; background: var(--success); }
+
+  .main { flex:1; min-width:0; padding:22px 26px; overflow-y:auto; }
+
+  .scenario-bar { display:flex; align-items:center; gap:10px; margin-bottom:16px; }
+  .scenario-select { display:flex; align-items:center; gap:8px; background: var(--card); border:1px solid var(--border);
+    border-radius:9px; padding:9px 14px; font-size:14px; font-weight:500; }
+  .scenario-select .chev { color: var(--text-muted); font-size:11px; }
+  .toolbtn { background: var(--card); border:1px solid var(--border); border-radius:8px; padding:8px 12px;
+    font-size:12.5px; color: var(--text); cursor:pointer; white-space:nowrap; }
+  .toolbtn.danger { color: var(--danger); border-color: rgba(239,68,68,0.35); }
+  .spacer { flex:1; }
+
+  .activity-toolbar { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:20px; padding:12px; background: rgba(255,255,255,0.02);
+    border:1px solid var(--border); border-radius:10px; }
+  .activity-toolbar .toolbtn.primary { background: var(--accent); border-color: var(--accent); font-weight:500; }
+  .activity-toolbar .toolbtn[disabled] { opacity:0.35; }
+
+  .activity-card { border-radius:14px; padding:16px 18px; margin-bottom:14px; border:1px solid var(--border); background: var(--card); }
+  .activity-card.active { border-color: var(--border-accent); background: linear-gradient(180deg, rgba(47,125,250,0.10), rgba(47,125,250,0.03)); }
+
+  .act-head { display:flex; align-items:center; gap:12px; }
+  .num { width:26px; height:26px; border-radius:50%; background: rgba(255,255,255,0.06); display:flex; align-items:center;
+    justify-content:center; font-size:12px; font-weight:600; flex-shrink:0; color: var(--text-muted); }
+  .num.active { background: var(--accent); color:#fff; }
+  .act-name { font-size:14.5px; font-weight:500; }
+  .act-meta { font-size:11.5px; color: var(--text-muted); }
+  .mode-tag { font-size:11px; padding:3px 10px; border-radius:20px; background: rgba(255,255,255,0.06); color: var(--text-muted); }
+  .mode-tag.auto { background: var(--accent-soft); color:#93c1fd; }
+  .now-playing { display:flex; align-items:center; gap:5px; font-size:11px; color: var(--success); margin-left:auto; }
+  .now-playing .pulse { width:6px; height:6px; border-radius:50%; background: var(--success); }
+  .act-actions { margin-left:auto; display:flex; gap:6px; color: var(--text-muted); font-size:13px; }
+  .act-actions span { width:26px; height:26px; border-radius:6px; display:flex; align-items:center; justify-content:center; }
+  .act-actions span:hover { background: rgba(255,255,255,0.06); }
+
+  .file-row { display:flex; gap:10px; margin-top:14px; padding-left:38px; flex-wrap:wrap; }
+  .file-chip { display:flex; align-items:center; gap:8px; background: rgba(255,255,255,0.04); border:1px solid var(--border);
+    border-radius:9px; padding:6px 10px 6px 6px; }
+  .file-chip.current { border-color: var(--border-accent); background: var(--accent-soft); }
+  .file-chip .ic { width:26px; height:26px; border-radius:6px; display:flex; align-items:center; justify-content:center;
+    font-size:12px; font-weight:700; color:#fff; flex-shrink:0; }
+  .file-chip .ic.p { background:#d24726; } .file-chip .ic.i { background:#3b82f6; }
+  .file-chip .ic.v { background:#8b5cf6; } .file-chip .ic.w { background:#2563eb; }
+  .file-chip .ic.a { background:#f59e0b; }
+  .file-chip .name { font-size:12px; }
+  .file-chip .dur { font-size:10px; color: var(--text-muted); }
+
+  .empty-hint { text-align:center; padding:60px 0; color: var(--text-muted); font-size:13px; }
+</style>
+</head>
+<body>
+
+<div class="titlebar">— &nbsp; ▢ &nbsp; ✕</div>
+<div class="app">
+
+  <div class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">🖥️</div>
+      <div class="brand-text"><div>EveryStage</div><div>Terminal</div></div>
+    </div>
+
+    <div class="switch-row"><span>投屏开关</span><div class="switch"></div></div>
+    <div class="cut-btn">⏻ &nbsp;断</div>
+
+    <div class="nav-btn"><span class="ic">📁</span>文件</div>
+    <div class="nav-btn active"><span class="ic">📋</span>活动</div>
+    <div class="nav-btn"><span class="ic">🖧</span>设备</div>
+    <div class="nav-btn"><span class="ic">⚙️</span>设置</div>
+
+    <div class="sidebar-footer"><div class="dot"></div>已连接</div>
+  </div>
+
+  <div class="main">
+
+    <div class="scenario-bar">
+      <div class="scenario-select">📂 周一晨会方案 <span class="chev">▾</span></div>
+      <div class="toolbtn">新建方案</div>
+      <div class="toolbtn">另存为...</div>
+      <div class="toolbtn danger">删除方案</div>
+      <div class="spacer"></div>
+      <div class="toolbtn">新建活动</div>
+      <div class="toolbtn">重命名活动</div>
+      <div class="toolbtn danger">删除活动</div>
+    </div>
+
+    <div class="activity-toolbar">
+      <div class="toolbtn primary">添加文件...</div>
+      <div class="toolbtn">播放方式...</div>
+      <div class="toolbtn">音频属性...</div>
+      <div class="toolbtn">淡入淡出...</div>
+      <div class="toolbtn">停留时长...</div>
+      <div class="toolbtn">完成后动作...</div>
+      <div class="toolbtn">统一设置属性...</div>
+      <div class="toolbtn danger">移除文件</div>
+      <div class="toolbtn">↑ 上移</div>
+      <div class="toolbtn">↓ 下移</div>
+    </div>
+
+    <div class="activity-card active">
+      <div class="act-head">
+        <div class="num active">1</div>
+        <div>
+          <div class="act-name">开场介绍</div>
+          <div class="act-meta">3 个文件 · 顺序自动播放</div>
+        </div>
+        <span class="mode-tag auto">顺序自动</span>
+        <div class="now-playing"><div class="pulse"></div>正在播放</div>
+      </div>
+      <div class="file-row">
+        <div class="file-chip current">
+          <div class="ic p">P</div>
+          <div><div class="name">季度汇报.pptx</div><div class="dur">停留 8s</div></div>
+        </div>
+        <div class="file-chip">
+          <div class="ic i">I</div>
+          <div><div class="name">产品图01.jpg</div><div class="dur">停留 5s</div></div>
+        </div>
+        <div class="file-chip">
+          <div class="ic i">I</div>
+          <div><div class="name">产品图02.jpg</div><div class="dur">停留 5s</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="activity-card">
+      <div class="act-head">
+        <div class="num">2</div>
+        <div>
+          <div class="act-name">产品展示</div>
+          <div class="act-meta">2 个文件 · 手动点选</div>
+        </div>
+        <span class="mode-tag">手动点选</span>
+        <div class="act-actions"><span>▾</span></div>
+      </div>
+      <div class="file-row">
+        <div class="file-chip">
+          <div class="ic v">V</div>
+          <div><div class="name">宣传片.mp4</div><div class="dur">02:14</div></div>
+        </div>
+        <div class="file-chip">
+          <div class="ic a">A</div>
+          <div><div class="name">背景音乐.mp3</div><div class="dur">循环</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="activity-card">
+      <div class="act-head">
+        <div class="num">3</div>
+        <div>
+          <div class="act-name">合同签署</div>
+          <div class="act-meta">1 个文件 · 手动点选</div>
+        </div>
+        <span class="mode-tag">手动点选</span>
+        <div class="act-actions"><span>▾</span></div>
+      </div>
+      <div class="file-row">
+        <div class="file-chip">
+          <div class="ic w">W</div>
+          <div><div class="name">合同模板.docx</div><div class="dur">手动翻页</div></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>
