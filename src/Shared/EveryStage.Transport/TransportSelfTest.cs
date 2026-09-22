@@ -70,6 +70,10 @@ public static class TransportSelfTest
         if (fecFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, fecFailure);
 
+        string? nackFailure = await RunAuthenticatedNackRetransmissionCheckAsync();
+        if (nackFailure != null)
+            return new Result(false, testPayloads.Count, receivedCount, nackFailure);
+
         string? resilienceFailure = await RunDispatchExceptionResilienceCheckAsync();
         if (resilienceFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, resilienceFailure);
@@ -163,6 +167,52 @@ public static class TransportSelfTest
         if (receiver.PacketsLost != 0 || receiver.GapEvents != 0)
             return $"Authenticated FEC UDP check: recovered block was still counted as loss ({receiver.PacketsLost}/{receiver.GapEvents}).";
         return null;
+    }
+
+    /// <summary>Verifies the sender-side NACK cache through real UDP: a relay drops the first
+    /// authenticated packet, the test requests that sequence again, and the relay forwards the
+    /// retransmission to a receiver which must deliver the original NAL exactly once.</summary>
+    private static async Task<string?> RunAuthenticatedNackRetransmissionCheckAsync()
+    {
+        const byte payloadType = 96;
+        int receiverPort = GetLikelyFreeUdpPort();
+        // Use the same key/session for both sides, but keep the sender's authentication object owned
+        // by RtpSession so RetransmitAsync exercises its fresh-envelope path.
+        byte[] key = Enumerable.Range(0, 32).Select(value => (byte)(value * 11 + 5)).ToArray();
+        Guid sessionId = Guid.NewGuid();
+        using var receiverAuth = new MediaPacketAuthentication(key, sessionId);
+        using var receiver = new RtpReceiver(receiverPort, payloadType, receiverAuth, IPAddress.Loopback);
+        var delivered = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+        receiver.NalUnitReceived += (nal, _, _) => delivered.TrySetResult(nal);
+        receiver.Start();
+
+        using var relay = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        var relayEndpoint = (IPEndPoint)relay.Client.LocalEndPoint!;
+        var receiverEndpoint = new IPEndPoint(IPAddress.Loopback, receiverPort);
+        using var senderAuth = new MediaPacketAuthentication(key, sessionId);
+        using var sender = new RtpSession(relayEndpoint, payloadType, authentication: senderAuth);
+        var payload = new byte[] { 0x65, 0x10, 0x22, 0x33, 0x44 };
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await sender.SendNalUnitAsync(payload, 1234, isLastNalOfAccessUnit: true);
+        UdpReceiveResult first = await relay.ReceiveAsync(timeout.Token);
+        using var inspector = new MediaPacketAuthentication(key, sessionId);
+        if (!inspector.TryUnprotect(first.Buffer, out var firstRaw) || !RtpPacket.TryDecode(firstRaw, out var firstPacket))
+            return "Authenticated NACK UDP check: the intentionally dropped packet could not be decoded.";
+
+        int retransmitted = await sender.RetransmitAsync(new[] { firstPacket.SequenceNumber });
+        if (retransmitted != 1)
+            return $"Authenticated NACK UDP check: expected one cached retransmission, got {retransmitted}.";
+        UdpReceiveResult retry = await relay.ReceiveAsync(timeout.Token);
+        await relay.SendAsync(retry.Buffer, retry.Buffer.Length, receiverEndpoint);
+
+        if (await Task.WhenAny(delivered.Task, Task.Delay(TimeSpan.FromSeconds(5))) != delivered.Task)
+            return "Authenticated NACK UDP check: receiver did not deliver the retransmitted NAL.";
+        if (!delivered.Task.Result.AsSpan().SequenceEqual(payload))
+            return "Authenticated NACK UDP check: retransmitted NAL bytes did not match the original.";
+        return receiver.PacketsLost == 0 && receiver.GapEvents == 0
+            ? null
+            : $"Authenticated NACK UDP check: retransmission was counted as loss ({receiver.PacketsLost}/{receiver.GapEvents}).";
     }
 
     private static string? RunJitterAndWraparoundCheck()
