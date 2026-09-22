@@ -76,7 +76,8 @@ public static class XorFecCodec
             ushort sequence = unchecked((ushort)(baseSequence + i));
             if (!received.TryGetValue(sequence, out var packet)) continue;
             int length = BinaryPrimitives.ReadUInt16BigEndian(parityPayload.AsSpan(lengthsOffset + i * 2, 2));
-            if (packet.Payload.Length != length) return false;
+            if (packet.PayloadType != parityPayload[10] || packet.Ssrc != BinaryPrimitives.ReadUInt32BigEndian(parityPayload.AsSpan(11, 4))
+                || packet.Payload.Length != length) return false;
             for (int p = 0; p < length; p++) payload[p] ^= packet.Payload.Span[p];
         }
         int recoveredLength = BinaryPrimitives.ReadUInt16BigEndian(parityPayload.AsSpan(lengthsOffset + missingIndex * 2, 2));

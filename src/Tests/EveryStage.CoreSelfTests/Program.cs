@@ -99,6 +99,15 @@ await RunAsync("XOR FEC single-packet recovery", () =>
     received.Remove(402);
     if (XorFecCodec.TryRecover(parity, received, out _))
         return Task.FromResult<(bool, string?)>((false, "FEC incorrectly recovered with multiple missing packets."));
+    received[400] = new RtpPacket
+    {
+        PayloadType = 96, Ssrc = 999, SequenceNumber = 400, Timestamp = packets[0].Timestamp,
+        Marker = packets[0].Marker, Payload = packets[0].Payload,
+    };
+    received[402] = packets[2];
+    received.Remove(403);
+    if (XorFecCodec.TryRecover(parity, received, out _))
+        return Task.FromResult<(bool, string?)>((false, "FEC accepted a packet from a different SSRC."));
     var mtuPackets = packets.Select((packet, index) => new RtpPacket
     {
         PayloadType = packet.PayloadType, Ssrc = packet.Ssrc,
