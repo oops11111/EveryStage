@@ -28,6 +28,8 @@ static async Task RunTests()
         using (var source = File.OpenRead(first)) source.CopyTo(entry);
         using (var officePreview = OfficeThumbnailReader.Read(officePath, new Size(240, 150)))
             Require(officePreview?.Size == new Size(240, 120), "Office embedded preview missing or distorted.");
+        Require(ShellThumbnailReader.Read(Path.Combine(directory, "missing.mp4"), new Size(240, 150)) == null,
+            "Missing video unexpectedly produced a thumbnail.");
         using (File.Open(officePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
         using var renderer = new ImageContentRenderer();
         await renderer.LoadAsync(first);

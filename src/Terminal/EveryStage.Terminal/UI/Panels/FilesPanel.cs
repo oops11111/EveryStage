@@ -684,6 +684,33 @@ public sealed class FilesPanel : UserControl
             }
         }
 
+        if (file.Kind == MediaKind.Video)
+        {
+            try
+            {
+                using var shellPreview = EveryStage.Terminal.ContentEngine.ShellThumbnailReader.Read(file.SourcePath, new Size(tw, th));
+                if (shellPreview != null)
+                {
+                    var thumbnail = new Bitmap(tw, th);
+                    try
+                    {
+                        using var graphics = Graphics.FromImage(thumbnail);
+                        graphics.Clear(Color.FromArgb(20, 37, 58));
+                        float scale = Math.Max((float)tw / shellPreview.Width, (float)th / shellPreview.Height);
+                        int width = Math.Max(1, (int)(shellPreview.Width * scale));
+                        int height = Math.Max(1, (int)(shellPreview.Height * scale));
+                        graphics.DrawImage(shellPreview, (tw - width) / 2, (th - height) / 2, width, height);
+                        return thumbnail;
+                    }
+                    catch { thumbnail.Dispose(); throw; }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.Runtime.InteropServices.ExternalException)
+            {
+                return BuildKindTile("视频预览不可用", Color.FromArgb(120, 40, 46), Color.FromArgb(186, 55, 65));
+            }
+        }
+
         // Non-image kinds: a clean tinted tile; the colored type badge is drawn over it by
         // DrawMediaCard (so the tile itself no longer carries a letter/caption).
         return file.Kind switch
