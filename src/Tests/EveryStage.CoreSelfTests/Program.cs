@@ -83,6 +83,32 @@ await RunAsync("NACK protocol authentication and bounded sequence list", () =>
     if (PairingSecurity.Verify(decoded, key)) return Task.FromResult<(bool, string?)>((false, "Tampered NACK was accepted."));
     return Task.FromResult<(bool, string?)>((true, null));
 });
+await RunAsync("XOR FEC single-packet recovery", () =>
+{
+    var packets = Enumerable.Range(0, XorFecCodec.BlockSize)
+        .Select(i => new RtpPacket { PayloadType = 96, Ssrc = 7, SequenceNumber = (ushort)(400 + i),
+            Timestamp = (uint)(900 + i), Marker = i == 7,
+            Payload = Enumerable.Range(0, 20 + i).Select(value => (byte)(value + i)).ToArray() }).ToArray();
+    byte[] parity = XorFecCodec.CreateParity(packets, 400);
+    var received = packets.Select((packet, index) => (packet, index))
+        .Where(entry => entry.index != 3)
+        .ToDictionary(entry => (ushort)(400 + entry.index), entry => entry.packet);
+    if (!XorFecCodec.TryRecover(parity, received, out var recovered)
+        || recovered.SequenceNumber != 403 || !packets[3].Payload.Span.SequenceEqual(recovered.Payload.Span))
+        return Task.FromResult<(bool, string?)>((false, "FEC did not recover the single missing packet."));
+    received.Remove(402);
+    if (XorFecCodec.TryRecover(parity, received, out _))
+        return Task.FromResult<(bool, string?)>((false, "FEC incorrectly recovered with multiple missing packets."));
+    var mtuPackets = packets.Select((packet, index) => new RtpPacket
+    {
+        PayloadType = packet.PayloadType, Ssrc = packet.Ssrc,
+        SequenceNumber = packet.SequenceNumber, Timestamp = packet.Timestamp,
+        Marker = index == XorFecCodec.BlockSize - 1, Payload = new byte[1268]
+    }).ToArray();
+    if (XorFecCodec.CreateParity(mtuPackets, 400).Length + RtpPacket.FixedHeaderSize + 56 > 1400)
+        return Task.FromResult<(bool, string?)>((false, "FEC parity exceeded the RTP MTU budget."));
+    return Task.FromResult<(bool, string?)>((true, null));
+});
 await RunAsync("Media protocol capability negotiation", () =>
 {
     var beacon = new DiscoveryProtocol.BeaconMessage { DeviceId = Guid.NewGuid(), DeviceName = "test", MediaAuthenticationVersion = 1 };

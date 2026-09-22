@@ -408,7 +408,8 @@ public sealed class LiveCastSession : IDisposable
             _converter = new BgraToNv12Converter(_gpu);
             _encoder = new H264HardwareEncoder(_gpu, Width, Height, frameRateNumerator: 30, bitrateBps: 4_000_000);
             _rtpSession = new RtpSession(new IPEndPoint(_terminal.Address, DiscoveryProtocol.VideoRtpPort), PayloadType,
-                authentication: new MediaPacketAuthentication(_discoveryClient.DeriveMediaKey(_terminal, mediaSessionId, "video"), mediaSessionId));
+                authentication: new MediaPacketAuthentication(_discoveryClient.DeriveMediaKey(_terminal, mediaSessionId, "video"), mediaSessionId),
+                fecPayloadType: RtpSession.DefaultFecPayloadType);
         }
         catch (Exception ex)
         {

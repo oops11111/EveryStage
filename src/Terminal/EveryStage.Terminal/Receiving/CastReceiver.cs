@@ -262,7 +262,7 @@ public sealed class CastReceiver : IDisposable
             // field's first real consumer; previously it was received and stored in
             // DiscoveryService.CastStartInfo but never passed any further.
             _rtpReceiver = new RtpReceiver(listenPort, payloadType,
-                new MediaPacketAuthentication(videoKey, mediaSessionId), expectedAddress);
+                new MediaPacketAuthentication(videoKey, mediaSessionId), expectedAddress, RtpSession.DefaultFecPayloadType);
         }
         catch
         {

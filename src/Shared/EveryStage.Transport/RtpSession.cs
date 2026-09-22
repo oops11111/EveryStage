@@ -22,17 +22,28 @@ public sealed class RtpSession : IDisposable
     private readonly Dictionary<ushort, byte[]> _recentPackets = new();
     private readonly Queue<ushort> _recentPacketOrder = new();
     private const int RetransmissionCacheCapacity = 512;
+    private readonly byte? _fecPayloadType;
+    private readonly List<RtpPacket> _fecBlock = new();
+    public const byte DefaultFecPayloadType = 126;
 
     /// <param name="payloadType">RTP payload type number (0-127) — a value both ends must already
     /// agree on; this project has no SDP-style negotiation, see this library's README.</param>
     /// <param name="maxPayloadSize">Passed straight through to <see cref="H264RtpPacketizer"/> —
     /// see its own doc comment on picking this for the actual network path.</param>
-    public RtpSession(IPEndPoint remoteEndPoint, byte payloadType, int maxPayloadSize = 1400, MediaPacketAuthentication? authentication = null)
+    public RtpSession(IPEndPoint remoteEndPoint, byte payloadType, int maxPayloadSize = 1400,
+        MediaPacketAuthentication? authentication = null, byte? fecPayloadType = null)
     {
         _remoteEndPoint = remoteEndPoint;
         _payloadType = payloadType;
-        _maxPayloadSize = authentication == null ? maxPayloadSize : maxPayloadSize - 56;
+        int mediaBudget = authentication == null ? maxPayloadSize : maxPayloadSize - 56;
+        // The parity packet carries metadata and a full RTP header; leave room for those as well
+        // as the optional authentication envelope so the complete datagram stays within the
+        // requested 1400-byte path budget.
+        _maxPayloadSize = fecPayloadType.HasValue
+            ? Math.Min(mediaBudget, maxPayloadSize - RtpPacket.FixedHeaderSize - XorFecCodec.MetadataSize)
+            : mediaBudget;
         _authentication = authentication;
+        _fecPayloadType = fecPayloadType;
         _socket = new UdpClient();
 
         // RFC 3550 §5.1: SSRC and the initial sequence number SHOULD be chosen randomly per
@@ -77,6 +88,22 @@ public sealed class RtpSession : IDisposable
         byte[] rawPacket = packet.Encode();
         CachePacket(packet.SequenceNumber, rawPacket);
         await SendRawPacketAsync(rawPacket);
+        if (_fecPayloadType.HasValue)
+        {
+            _fecBlock.Add(packet);
+            if (_fecBlock.Count == XorFecCodec.BlockSize)
+            {
+                byte[] parityPayload = XorFecCodec.CreateParity(_fecBlock,
+                    unchecked((ushort)(packet.SequenceNumber - (XorFecCodec.BlockSize - 1))));
+                var parity = new RtpPacket
+                {
+                    Marker = false, PayloadType = _fecPayloadType.Value, SequenceNumber = packet.SequenceNumber,
+                    Timestamp = packet.Timestamp, Ssrc = packet.Ssrc, Payload = parityPayload,
+                };
+                await SendRawPacketAsync(parity.Encode());
+                _fecBlock.Clear();
+            }
+        }
     }
 
     public async Task<int> RetransmitAsync(IEnumerable<ushort> sequenceNumbers)

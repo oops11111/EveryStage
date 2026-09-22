@@ -23,6 +23,8 @@ public sealed class RtpReceiver : IDisposable
     private readonly byte? _expectedPayloadType;
     private readonly MediaPacketAuthentication? _authentication;
     private readonly IPAddress? _expectedAddress;
+    private readonly byte? _fecPayloadType;
+    private readonly Dictionary<ushort, RtpPacket> _recentPackets = new();
     private long _packetsReceived;
     private long _payloadTypeMismatches;
     private long _dispatchExceptions;
@@ -85,12 +87,14 @@ public sealed class RtpReceiver : IDisposable
     /// <c>CastStartMessage.PayloadType</c> field now has a real consumer. Null (the default)
     /// preserves this class's original behavior: accept any successfully-decoded packet regardless
     /// of its PayloadType.</param>
-    public RtpReceiver(int listenPort, byte? expectedPayloadType = null, MediaPacketAuthentication? authentication = null, IPAddress? expectedAddress = null)
+    public RtpReceiver(int listenPort, byte? expectedPayloadType = null, MediaPacketAuthentication? authentication = null,
+        IPAddress? expectedAddress = null, byte? fecPayloadType = null)
     {
         _socket = new UdpClient(listenPort);
         _expectedPayloadType = expectedPayloadType;
         _authentication = authentication;
         _expectedAddress = expectedAddress;
+        _fecPayloadType = fecPayloadType;
     }
 
     public void Start() => _receiveLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token));
@@ -143,6 +147,12 @@ public sealed class RtpReceiver : IDisposable
             if (_authentication != null && !_authentication.TryUnprotect(data, out data)) continue;
             if (!RtpPacket.TryDecode(data, out var packet)) continue;
 
+            if (_fecPayloadType.HasValue && packet.PayloadType == _fecPayloadType.Value)
+            {
+                if (XorFecCodec.TryRecover(packet.Payload.ToArray(), _recentPackets, out var recovered))
+                    HandlePacket(recovered);
+                continue;
+            }
             if (_expectedPayloadType.HasValue && packet.PayloadType != _expectedPayloadType.Value)
             {
                 // Same "not one of ours" treatment as a failed decode above — excluded before
@@ -152,6 +162,18 @@ public sealed class RtpReceiver : IDisposable
                 continue;
             }
 
+            _recentPackets[packet.SequenceNumber] = packet;
+            while (_recentPackets.Count > 64) _recentPackets.Remove(_recentPackets.Keys.First());
+            Interlocked.Increment(ref _packetsReceived);
+            Dispatch(_reorderBuffer.Add(packet, DateTimeOffset.UtcNow));
+        }
+    }
+
+    private void HandlePacket(RtpPacket packet)
+    {
+        if (!_expectedPayloadType.HasValue || packet.PayloadType == _expectedPayloadType.Value)
+        {
+            _recentPackets[packet.SequenceNumber] = packet;
             Interlocked.Increment(ref _packetsReceived);
             Dispatch(_reorderBuffer.Add(packet, DateTimeOffset.UtcNow));
         }
