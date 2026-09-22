@@ -45,6 +45,8 @@ public sealed class SettingsPanel : UserControl
         var tabs = new TabControl
         {
             Dock = DockStyle.Fill,
+            BackColor = ModernUi.Background,
+            ForeColor = ModernUi.Text,
             DrawMode = TabDrawMode.OwnerDrawFixed,
             ItemSize = new Size(112, 34),
             SizeMode = TabSizeMode.Fixed,
@@ -175,13 +177,19 @@ public sealed class SettingsPanel : UserControl
         RefreshDiagnostics();
 
         tabs.TabPages.AddRange(new[] { generalTab, displayTab, playbackTab, networkTab, diagnosticsTab, aboutTab });
+        foreach (TabPage page in tabs.TabPages)
+        {
+            page.BackColor = ModernUi.Background;
+            page.ForeColor = ModernUi.Text;
+            page.Padding = new Padding(2);
+        }
 
         var saveSettingsButton = new Button { Text = "保存设置", Dock = DockStyle.Left, Width = 120, Height = 32 };
         ModernUi.StyleButton(saveSettingsButton, primary: true);
         saveSettingsButton.Click += OnSaveSettingsClick;
         _savedLabel = new Label { ForeColor = Color.SeaGreen, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0) };
 
-        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 40 };
+        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 46, BackColor = ModernUi.Background };
         bottomBar.Controls.Add(_savedLabel);
         bottomBar.Controls.Add(saveSettingsButton);
 

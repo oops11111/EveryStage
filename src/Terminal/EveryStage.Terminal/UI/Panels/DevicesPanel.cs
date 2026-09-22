@@ -26,11 +26,39 @@ public sealed class DevicesPanel : UserControl
         _connectionLog = connectionLog;
         Dock = DockStyle.Fill;
 
+        var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
+        var title = new Label
+        {
+            Text = "已配对设备", AutoSize = true, Location = new Point(0, 0),
+            Font = new Font("Segoe UI Semibold", 14F), ForeColor = ModernUi.Text,
+        };
+        var subtitle = new Label
+        {
+            Text = "配对请求会以弹窗提醒，确认后会出现在此列表中。",
+            AutoSize = true, Location = new Point(0, 25),
+            Font = new Font("Segoe UI", 8.5F), ForeColor = ModernUi.Muted,
+        };
+        header.Controls.AddRange(new Control[] { title, subtitle });
+
+        var requestHint = new GlassPanel
+        {
+            Dock = DockStyle.Top, Height = 42, CornerRadius = 10,
+            Padding = new Padding(12, 0, 12, 0), GlassTint = Color.FromArgb(125, 16, 47, 82),
+        };
+        var requestLabel = new Label
+        {
+            Dock = DockStyle.Fill,
+            Text = "⌁  新的配对请求会在这里对应显示，并由确认弹窗完成授权。",
+            ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleLeft,
+        };
+        requestHint.Controls.Add(requestLabel);
+
         _listView = new ListView
         {
             Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true,
             OwnerDraw = true, BorderStyle = BorderStyle.None, GridLines = false,
-            BackColor = ModernUi.Surface, ForeColor = ModernUi.Text, HeaderStyle = ColumnHeaderStyle.Nonclickable,
+            BackColor = ModernUi.Background, ForeColor = ModernUi.Text, HeaderStyle = ColumnHeaderStyle.Nonclickable,
+            Font = new Font("Segoe UI", 9F),
         };
         _listView.Columns.Add("设备名", 160);
         _listView.Columns.Add("信任状态", 100);
@@ -88,6 +116,8 @@ public sealed class DevicesPanel : UserControl
 
         Controls.Add(_listView);
         Controls.Add(buttonBar);
+        Controls.Add(requestHint);
+        Controls.Add(header);
 
         Refresh_();
     }

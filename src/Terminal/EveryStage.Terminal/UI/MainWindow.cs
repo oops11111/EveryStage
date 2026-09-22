@@ -83,12 +83,28 @@ public sealed class MainWindow : GradientForm
             GlassTint = Color.FromArgb(178, 8, 23, 40),
         };
 
-        var brandMark = new BrandMark { Bounds = new Rectangle(14, 16, 28, 28) };
+        var brandMark = new BrandMark { Bounds = new Rectangle(14, 14, 28, 28) };
+        var brand = new Label
+        {
+            Text = "EveryStage",
+            ForeColor = ModernUi.Text,
+            Font = new Font("Segoe UI Semibold", 11F),
+            AutoSize = true,
+            Location = new Point(52, 12),
+        };
+        var product = new Label
+        {
+            Text = "Terminal",
+            ForeColor = ModernUi.Muted,
+            Font = new Font("Segoe UI", 8.5F),
+            AutoSize = true,
+            Location = new Point(52, 28),
+        };
 
         // A plain checkbox standing in for §8.1's slide-switch visual — see class doc comment.
         _castSwitchCheckbox = new ToggleSwitch
         {
-            Location = new Point(14, 54),
+            Location = new Point(118, 62),
             Checked = stateMachine.CastSwitchOn,
         };
         var switchLabel = new Label
@@ -96,12 +112,12 @@ public sealed class MainWindow : GradientForm
             Text = "投屏开关",
             ForeColor = ModernUi.Text,
             AutoSize = false,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Bounds = new Rectangle(8, 84, 64, 20),
+            TextAlign = ContentAlignment.MiddleLeft,
+            Bounds = new Rectangle(14, 62, 96, 20),
         };
         _castSwitchCheckbox.CheckedChanged += (_, _) => stateMachine.SetCastSwitch(_castSwitchCheckbox.Checked);
 
-        var disconnectButton = new Button { Text = "断", Bounds = new Rectangle(12, 112, 56, 44) };
+        var disconnectButton = new Button { Text = "⏻  断", Bounds = new Rectangle(14, 94, 140, 32) };
         ModernUi.StyleButton(disconnectButton, danger: true);
         disconnectButton.FlatAppearance.BorderColor = ModernUi.Danger;
         disconnectButton.FlatAppearance.BorderSize = 1;
@@ -110,13 +126,13 @@ public sealed class MainWindow : GradientForm
         disconnectButton.Font = new Font("Segoe UI Semibold", 10F);
         disconnectButton.Click += (_, _) => stateMachine.Disconnect();
 
-        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 180);
-        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 234);
-        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 288);
-        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 342);
+        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 142);
+        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 188);
+        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 234);
+        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 280);
         var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
 
-        _recallPreviewButton = new Button { Text = "预览", Bounds = new Rectangle(12, 410, 56, 36) };
+        _recallPreviewButton = new Button { Text = "显示预览窗", Bounds = new Rectangle(14, 338, 140, 34) };
         ModernUi.StyleButton(_recallPreviewButton);
         _recallPreviewButton.Click += (_, _) => PreviewRecallRequested?.Invoke();
 
@@ -124,14 +140,14 @@ public sealed class MainWindow : GradientForm
         {
             ForeColor = ModernUi.Success,
             AutoSize = false,
-            Bounds = new Rectangle(8, 650, 64, 40),
-            TextAlign = ContentAlignment.MiddleCenter,
+            Bounds = new Rectangle(14, 570, 140, 40),
+            TextAlign = ContentAlignment.MiddleLeft,
             Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
         };
 
         nav.Controls.AddRange(new Control[]
         {
-            brandMark, switchLabel, _castSwitchCheckbox, disconnectButton,
+            brandMark, brand, product, switchLabel, _castSwitchCheckbox, disconnectButton,
             filesButton, activitiesButton, devicesButton, settingsButton,
             _recallPreviewButton, _statusLabel,
         });
@@ -175,7 +191,7 @@ public sealed class MainWindow : GradientForm
             ColumnCount = 3,
             RowCount = 1,
         };
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80F));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 168F));
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 14F));
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         body.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
