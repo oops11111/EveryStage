@@ -9,6 +9,12 @@
 - 媒体生成工具：未发现 ffmpeg
 - 显卡/驱动信息：当前执行账户读取 `Win32_VideoController` 被拒绝
 
+## Release 启动冒烟
+
+- Terminal Release：进程正常启动，窗口标题为 `EveryStage Terminal`，进程响应正常，随后正常退出。
+- Caster Release：进程正常启动，窗口标题为 `EveryStage Caster`，进程响应正常，随后正常退出。
+- 该冒烟只证明程序入口、依赖加载和基础窗口创建成功，不替代玻璃材质、DPI、GPU、音视频和跨机器验收。
+
 ## WPS 编辑保存与退出验收
 
 使用 `WpsComInteropSpike --self-test-dir` 自动执行创建、编辑、保存、关闭、重新打开、内容校验和退出。
@@ -26,4 +32,3 @@
 - 1080p 与 4K H.264 测试视频，用于零拷贝渲染和 60 分钟浸泡测试。
 - 至少一台 1080p/4K 显示器，以及不同 GPU/驱动机器，用于热插拔与全屏测试。
 - 第二台安装 EveryStage 的 Windows 机器和可控弱网环境，用于断网、重连和长时间投屏。
-
