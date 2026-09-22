@@ -19,9 +19,8 @@ namespace EveryStage.Terminal.UI;
 /// its fields are and aren't (PLANNING.md only names the five category labels, not any field
 /// within them).
 ///
-/// The 投屏开关 here is a plain <see cref="CheckBox"/>, not the slide-switch visual PLANNING.md §8.1
-/// calls for ("滑动开关，非按钮") — that's a Phase 5 visual-design concern (themes, Acrylic/Mica,
-/// consistent control styling), out of scope for getting the underlying behavior wired up correctly.
+/// The 投屏开关 is rendered by the shared <see cref="ToggleSwitch"/> control and keeps the
+/// underlying state-machine behavior in the same place as the prototype interaction.
 ///
 /// Also hosts <see cref="ToastStack"/> (PLANNING.md §11's "右下角Toast通知栈"), pinned on top of
 /// whichever panel is currently showing — its only producer today is
@@ -68,7 +67,7 @@ public sealed class MainWindow : GradientForm
 
         Text = "EveryStage Terminal";
         NormalWindowAspectRatio = new Size(4, 3);
-        ClientSize = new Size(1024, 768);
+        ClientSize = new Size(960, 720);
         MinimumSize = new Size(800, 600);
         BackColor = ModernUi.Background;
         Font = new Font("Segoe UI", 10F);
@@ -80,82 +79,67 @@ public sealed class MainWindow : GradientForm
 
         var nav = new GlassPanel
         {
-            Dock = DockStyle.Left, Width = 168, Padding = new Padding(10), CornerRadius = 0, AutoScroll = true,
-            GlassTint = Color.FromArgb(220, 8, 23, 40),
+            Dock = DockStyle.Fill, Padding = new Padding(0), CornerRadius = 14, AutoScroll = false,
+            GlassTint = Color.FromArgb(178, 8, 23, 40),
         };
 
-        var brandMark = new BrandMark { Bounds = new Rectangle(18, 24, 34, 34) };
-        var brand = new Label
-        {
-            Text = "EveryStage",
-            ForeColor = Color.White,
-            Font = new Font("Segoe UI Semibold", 15F),
-            AutoSize = true,
-            Location = new Point(18, 64),
-        };
-        var product = new Label
-        {
-            Text = "Terminal",
-            ForeColor = ModernUi.Muted,
-            Font = new Font("Segoe UI", 10F),
-            AutoSize = true,
-            Location = new Point(20, 92),
-        };
+        var brandMark = new BrandMark { Bounds = new Rectangle(14, 16, 28, 28) };
 
         // A plain checkbox standing in for §8.1's slide-switch visual — see class doc comment.
         _castSwitchCheckbox = new ToggleSwitch
         {
-            Location = new Point(112, 150),
+            Location = new Point(14, 54),
             Checked = stateMachine.CastSwitchOn,
         };
         var switchLabel = new Label
         {
             Text = "投屏开关",
             ForeColor = ModernUi.Text,
-            AutoSize = true,
-            Location = new Point(18, 155),
+            AutoSize = false,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Bounds = new Rectangle(8, 84, 64, 20),
         };
         _castSwitchCheckbox.CheckedChanged += (_, _) => stateMachine.SetCastSwitch(_castSwitchCheckbox.Checked);
 
-        var disconnectButton = new Button { Text = "⚠  断", Bounds = new Rectangle(16, 190, 132, 44) };
+        var disconnectButton = new Button { Text = "断", Bounds = new Rectangle(12, 112, 56, 44) };
         ModernUi.StyleButton(disconnectButton, danger: true);
         disconnectButton.FlatAppearance.BorderColor = ModernUi.Danger;
         disconnectButton.FlatAppearance.BorderSize = 1;
         disconnectButton.ForeColor = ModernUi.Danger;
         disconnectButton.BackColor = Color.FromArgb(40, 60, 22, 28);
-        disconnectButton.Font = new Font("Segoe UI Semibold", 12F);
+        disconnectButton.Font = new Font("Segoe UI Semibold", 10F);
         disconnectButton.Click += (_, _) => stateMachine.Disconnect();
 
-        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 262);
-        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 320);
-        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 378);
-        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 436);
+        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 180);
+        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 234);
+        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 288);
+        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 342);
         var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
 
-        _recallPreviewButton = new Button { Text = "显示预览窗", Bounds = new Rectangle(16, 506, 132, 38) };
+        _recallPreviewButton = new Button { Text = "预览", Bounds = new Rectangle(12, 410, 56, 36) };
         ModernUi.StyleButton(_recallPreviewButton);
         _recallPreviewButton.Click += (_, _) => PreviewRecallRequested?.Invoke();
 
         _statusLabel = new Label
         {
             ForeColor = ModernUi.Success,
-            AutoSize = true,
-            Location = new Point(18, 590),
-            MaximumSize = new Size(126, 0),
+            AutoSize = false,
+            Bounds = new Rectangle(8, 650, 64, 40),
+            TextAlign = ContentAlignment.MiddleCenter,
             Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
         };
 
         nav.Controls.AddRange(new Control[]
         {
-            brandMark, brand, product, switchLabel, _castSwitchCheckbox, disconnectButton,
+            brandMark, switchLabel, _castSwitchCheckbox, disconnectButton,
             filesButton, activitiesButton, devicesButton, settingsButton,
             _recallPreviewButton, _statusLabel,
         });
 
         _contentHost = new GlassPanel
         {
-            Dock = DockStyle.Fill, Padding = new Padding(28), CornerRadius = 22,
-            GlassTint = Color.FromArgb(190, 15, 35, 58),
+            Dock = DockStyle.Fill, Padding = new Padding(16), CornerRadius = 14,
+            GlassTint = Color.FromArgb(160, 15, 35, 58),
         };
 
         // One shared instance rather than a separate `new FileOperationLogger()` per panel: both
@@ -181,21 +165,23 @@ public sealed class MainWindow : GradientForm
         devicesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, devicesButton); ShowPanel(_devicesPanel); };
         settingsButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, settingsButton); ShowPanel(_settingsPanel); };
 
-        // Foolproof docking: wrap nav (Left) + content (Fill) in a single Fill "body" container that
-        // sits BELOW a Top-docked title bar. With the form holding only these two children — a Top
-        // strip and a Fill body — there is no z-order ambiguity: the title bar owns the top 42px and
-        // the body fills everything under it. (Previously nav/content were direct form children and
-        // fought the title bar for the top edge, so the title bar overlapped the nav logo and the
-        // filter toolbar.)
-        var body = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
-        // Same observed docking rule: the BACK-most control docks first and claims its edge. The nav
-        // must own the full left rail, so send it to the back; the content fills the remainder to
-        // its right (brought to front). Getting this backwards let the content slide under the nav
-        // and hid the first filter pill.
-        body.Controls.Add(nav);
-        body.Controls.Add(_contentHost);
-        nav.SendToBack();
-        _contentHost.BringToFront();
+        // Keep the prototype's 24px outer margin and 14px rail/content gap explicit. A table layout
+        // is more stable than competing Left/Fill docking children when DPI scaling is enabled.
+        var body = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.Transparent,
+            Padding = new Padding(24),
+            ColumnCount = 3,
+            RowCount = 1,
+        };
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80F));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 14F));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        body.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        body.Controls.Add(nav, 0, 0);
+        body.Controls.Add(new Panel { BackColor = Color.Transparent }, 1, 0);
+        body.Controls.Add(_contentHost, 2, 0);
         var titleBar = new AppTitleBar(this, "Terminal");
         Controls.Add(body);
         Controls.Add(titleBar);

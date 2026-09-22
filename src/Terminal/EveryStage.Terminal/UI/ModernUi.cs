@@ -30,7 +30,7 @@ internal static class ModernUi
 
     public static NavItem NavButton(NavIcon icon, string text, int top)
     {
-        return new NavItem(icon, text) { Bounds = new Rectangle(10, top, 142, 46) };
+        return new NavItem(icon, text) { Bounds = new Rectangle(12, top, 56, 46) };
     }
 
     public static void SetNavActive(IEnumerable<NavItem> buttons, NavItem active)
@@ -518,14 +518,25 @@ internal sealed class NavItem : Control
 
         Color fg = Selected ? Color.White : ModernUi.Muted;
         int iconSize = LogicalToDeviceUnits(20);
-        int iconLeft = rect.Left + LogicalToDeviceUnits(14);
-        var iconRect = new Rectangle(iconLeft, rect.Top + (rect.Height - iconSize) / 2, iconSize, iconSize);
-        VectorIcons.Draw(g, _icon, iconRect, fg);
-
-        var textRect = new Rectangle(iconRect.Right + LogicalToDeviceUnits(12), rect.Top,
-            rect.Right - iconRect.Right - LogicalToDeviceUnits(12), rect.Height);
-        TextRenderer.DrawText(g, _label, Font, textRect, fg,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        if (Width <= LogicalToDeviceUnits(80))
+        {
+            var iconRect = new Rectangle(rect.Left + (rect.Width - iconSize) / 2, rect.Top + LogicalToDeviceUnits(5), iconSize, iconSize);
+            VectorIcons.Draw(g, _icon, iconRect, fg);
+            using var compactFont = new Font(Font.FontFamily, 8.5F, Font.Style);
+            var textRect = new Rectangle(rect.Left, iconRect.Bottom + LogicalToDeviceUnits(1), rect.Width, rect.Bottom - iconRect.Bottom);
+            TextRenderer.DrawText(g, _label, compactFont, textRect, fg,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
+        else
+        {
+            int iconLeft = rect.Left + LogicalToDeviceUnits(14);
+            var iconRect = new Rectangle(iconLeft, rect.Top + (rect.Height - iconSize) / 2, iconSize, iconSize);
+            VectorIcons.Draw(g, _icon, iconRect, fg);
+            var textRect = new Rectangle(iconRect.Right + LogicalToDeviceUnits(12), rect.Top,
+                rect.Right - iconRect.Right - LogicalToDeviceUnits(12), rect.Height);
+            TextRenderer.DrawText(g, _label, Font, textRect, fg,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        }
     }
 
     private static GraphicsPath RoundedRect(Rectangle r, int radius)
