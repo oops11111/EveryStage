@@ -27,6 +27,7 @@
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Playback\PlaybackQueueNavigator.cs" Link="Terminal\PlaybackQueueNavigator.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Logging\LogPaths.cs" Link="Terminal\LogPaths.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Logging\LogExporter.cs" Link="Terminal\LogExporter.cs" />
+    <Compile Include="..\..\Caster\EveryStage.Caster\Casting\CaptureRateController.cs" Link="Caster\CaptureRateController.cs" />
   </ItemGroup>
 
 </Project>

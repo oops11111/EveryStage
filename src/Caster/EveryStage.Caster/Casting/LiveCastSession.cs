@@ -152,7 +152,7 @@ public sealed class LiveCastSession : IDisposable
     // project's README): frequent enough that the displayed number stays reasonably current, far
     // less often than actual media traffic so it can't meaningfully compete with it for bandwidth.
     private static readonly TimeSpan PingInterval = TimeSpan.FromSeconds(2);
-    private int _captureStride = 1;
+    private readonly CaptureRateController _captureRateController = new();
     private int _captureFrameCounter;
 
     // Set at the start of each OnPcmCaptured call, read/advanced by OnAacAccessUnitEncoded — see
@@ -341,7 +341,9 @@ public sealed class LiveCastSession : IDisposable
         TerminalPayloadTypeMismatches = status.PayloadTypeMismatches;
         TerminalPacketLossPercent = status.EstimatedPacketLossPercent;
         TerminalVideoPacketsLost = status.VideoPacketsLost;
-        UpdateCaptureStride(status.EstimatedPacketLossPercent, RealRoundTripEstimate, status.VideoError);
+        _captureRateController.Update(status.EstimatedPacketLossPercent, RealRoundTripEstimate,
+            status.VideoError, Volatile.Read(ref _queuedAccessUnitCount), MaxQueuedAccessUnits,
+            _encoder?.FramesDroppedForBackpressure ?? 0);
         LastStatusReceivedAt = DateTime.UtcNow;
         LastStatusLatencyEstimate = DateTimeOffset.UtcNow - status.SentAtUtc;
         StatsUpdated?.Invoke();
@@ -352,15 +354,6 @@ public sealed class LiveCastSession : IDisposable
         if (nack.DeviceId != _terminal.DeviceId || nack.MediaSessionId == Guid.Empty) return;
         if (!IsRunning || _rtpSession == null) return;
         _ = _rtpSession.RetransmitAsync(nack.MissingVideoSequences);
-    }
-
-    private void UpdateCaptureStride(double? packetLossPercent, TimeSpan? roundTrip, string? videoError)
-    {
-        double loss = packetLossPercent ?? 0;
-        double rttMs = roundTrip?.TotalMilliseconds ?? 0;
-        int stride = videoError != null || loss >= 12 || rttMs >= 500 ? 3
-            : loss >= 5 || rttMs >= 200 ? 2 : 1;
-        Volatile.Write(ref _captureStride, stride);
     }
 
     public async Task StartAsync()
@@ -387,7 +380,7 @@ public sealed class LiveCastSession : IDisposable
         TerminalPayloadTypeMismatches = 0;
         TerminalPacketLossPercent = null;
         TerminalVideoPacketsLost = 0;
-        Volatile.Write(ref _captureStride, 1);
+        _captureRateController.Reset();
         _captureFrameCounter = 0;
         LastStatusReceivedAt = null;
         LastStatusLatencyEstimate = null;
@@ -494,7 +487,7 @@ public sealed class LiveCastSession : IDisposable
                 using (frame)
                 {
                     if (!frame.HasNewImage) continue;
-                    int stride = Volatile.Read(ref _captureStride);
+                    int stride = _captureRateController.CurrentStride;
                     if (++_captureFrameCounter % stride != 0) continue;
 
                     var nv12 = converter.Convert(frame.Texture, frame.Width, frame.Height);

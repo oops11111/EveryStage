@@ -128,6 +128,27 @@ await RunAsync("Media protocol capability negotiation", () =>
     var legacy = DiscoveryProtocol.Decode(System.Text.Encoding.UTF8.GetBytes(json.ToJsonString())) as DiscoveryProtocol.BeaconMessage;
     return Task.FromResult<(bool, string?)>((legacy?.MediaAuthenticationVersion == 0, "Legacy beacon was not recognized as unsupported."));
 });
+await RunAsync("Adaptive capture congestion policy", () =>
+{
+    var policy = new EveryStage.Caster.Casting.CaptureRateController();
+    if (policy.CurrentStride != 1) return Task.FromResult<(bool, string?)>((false, "Policy did not start at full cadence."));
+    policy.Update(6, TimeSpan.FromMilliseconds(50), null, 0, 60, 0);
+    if (policy.CurrentStride != 2) return Task.FromResult<(bool, string?)>((false, "Moderate pressure did not reduce capture cadence."));
+    policy.Update(0, TimeSpan.Zero, null, 50, 60, 0);
+    if (policy.CurrentStride != 3) return Task.FromResult<(bool, string?)>((false, "Queue pressure did not trigger severe throttling."));
+    policy.Update(0, TimeSpan.Zero, null, 0, 60, 0);
+    policy.Update(0, TimeSpan.Zero, null, 0, 60, 0);
+    if (policy.CurrentStride != 3) return Task.FromResult<(bool, string?)>((false, "Policy recovered before hysteresis threshold."));
+    policy.Update(0, TimeSpan.Zero, null, 0, 60, 0);
+    if (policy.CurrentStride != 2) return Task.FromResult<(bool, string?)>((false, "Policy did not recover one step after three healthy reports."));
+    policy.Update(0, TimeSpan.Zero, null, 0, 60, 0);
+    policy.Update(0, TimeSpan.Zero, null, 0, 60, 0);
+    policy.Update(0, TimeSpan.Zero, null, 0, 60, 0);
+    if (policy.CurrentStride != 1) return Task.FromResult<(bool, string?)>((false, "Policy did not return to full cadence after sustained health."));
+    policy.Update(0, TimeSpan.Zero, null, 0, 60, 1);
+    if (policy.CurrentStride != 3) return Task.FromResult<(bool, string?)>((false, "New encoder backpressure was not treated as severe pressure."));
+    return Task.FromResult<(bool, string?)>((true, null));
+});
 
 async Task<(bool, string?)> TestAuthenticatedDelivery()
 {
