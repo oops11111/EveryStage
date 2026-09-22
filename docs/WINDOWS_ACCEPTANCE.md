@@ -15,6 +15,13 @@
 - Caster Release：进程正常启动，窗口标题为 `EveryStage Caster`，进程响应正常，随后正常退出。
 - 该冒烟只证明程序入口、依赖加载和基础窗口创建成功，不替代玻璃材质、DPI、GPU、音视频和跨机器验收。
 
+## WPS COM 回归（2026-09-22）
+
+- Writer：`KWPS.Application` 创建、静默属性、编辑、保存、重开和退出通过。
+- Spreadsheet：`KET.Application` 创建、静默属性、编辑、保存、重开和退出通过。
+- Presentation：`KWPP.Application` 创建、编辑、保存、重开和退出通过；该版本对 `Visible=false` 与 `ScreenUpdating` 返回 `E_FAIL`/不提供属性，按兼容性差异处理。
+- 三项测试结束后未残留 `wps`、`et`、`wpp` 进程。
+
 ## WPS 编辑保存与退出验收
 
 使用 `WpsComInteropSpike --self-test-dir` 自动执行创建、编辑、保存、关闭、重新打开、内容校验和退出。
