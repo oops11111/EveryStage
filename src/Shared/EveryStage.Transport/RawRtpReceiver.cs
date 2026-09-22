@@ -29,6 +29,7 @@ public sealed class RawRtpReceiver : IDisposable
     private readonly byte? _expectedPayloadType;
     private readonly MediaPacketAuthentication? _authentication;
     private readonly IPAddress? _expectedAddress;
+    private int _disposed;
     private long _packetsReceived;
     private long _payloadTypeMismatches;
     private long _dispatchExceptions;
@@ -156,13 +157,26 @@ public sealed class RawRtpReceiver : IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _cts.Cancel();
-        try { _receiveLoop?.Wait(TimeSpan.FromSeconds(2)); }
+        var receiveLoop = _receiveLoop;
+        if (receiveLoop == null)
+        {
+            DisposeOwnedResources();
+            return;
+        }
+
+        try { receiveLoop.Wait(TimeSpan.FromSeconds(2)); }
         catch (AggregateException) { }
-        _cts.Dispose();
-        _socket.Dispose();
-        if (_receiveLoop == null || _receiveLoop.IsCompleted) _authentication?.Dispose();
-        else _ = _receiveLoop.ContinueWith(_ => _authentication?.Dispose(),
+        if (receiveLoop.IsCompleted) DisposeOwnedResources();
+        else _ = receiveLoop.ContinueWith(_ => DisposeOwnedResources(),
             CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+    }
+
+    private void DisposeOwnedResources()
+    {
+        _socket.Dispose();
+        _cts.Dispose();
+        _authentication?.Dispose();
     }
 }
