@@ -163,8 +163,7 @@ public sealed class RtpReceiver : IDisposable
                 continue;
             }
 
-            _recentPackets[packet.SequenceNumber] = packet;
-            while (_recentPackets.Count > 64) _recentPackets.Remove(_recentPackets.Keys.First());
+            CacheRecentPacket(packet);
             Interlocked.Increment(ref _packetsReceived);
             Dispatch(_reorderBuffer.Add(packet, DateTimeOffset.UtcNow));
         }
@@ -174,10 +173,16 @@ public sealed class RtpReceiver : IDisposable
     {
         if (!_expectedPayloadType.HasValue || packet.PayloadType == _expectedPayloadType.Value)
         {
-            _recentPackets[packet.SequenceNumber] = packet;
+            CacheRecentPacket(packet);
             Interlocked.Increment(ref _packetsReceived);
             Dispatch(_reorderBuffer.Add(packet, DateTimeOffset.UtcNow));
         }
+    }
+
+    private void CacheRecentPacket(RtpPacket packet)
+    {
+        _recentPackets[packet.SequenceNumber] = packet;
+        while (_recentPackets.Count > 64) _recentPackets.Remove(_recentPackets.Keys.First());
     }
 
     private void Dispatch(IReadOnlyList<RtpReorderBuffer.Delivery> deliveries)
