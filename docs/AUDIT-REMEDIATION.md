@@ -7,6 +7,8 @@
 - 实时视频待显示队列限制为 3 帧（另有 1 帧正在显示）；积压丢弃旧帧并释放纹理，显示线程失败后拒绝新帧。队列容量、顺序、关闭与晚到帧恰好释放一次的回归测试通过；真实 GPU 压力测试待验收。
 - 文件库、方案读取失败后禁止覆盖保存：核心自测真实独占文件锁。
 - 设置与已配对设备存储也已禁止读取失败后用默认值覆盖原文件，并在保存失败时回滚内存变更；独占文件锁回归测试通过。
+- 投屏机已配对终端存储 `PairedTerminalStore` 补齐与终端 `PairedDeviceStore` 一致的三重保护：读取失败（瞬时文件锁）后置 `_loadFailed` 禁止写回覆盖、保存失败回滚内存快照、临时文件 `Flush(flushToDisk)` 落盘后再原子替换（对应审计 2026-09-27 追加的 A-23 数据丢失、B-18 落盘、C-26 自检缺口）。`PairedTerminalStoreSelfTest` 新增「用降级加载后的同一实例 Upsert 必须被拒绝、磁盘原数据不丢」断言——实测：修复后自检 PASS；临时移除 `_loadFailed` 复现 A-23 后该断言 FAIL（证明非重言式）；恢复后 PASS。Caster 项目 `dotnet build` 0 警告 0 错误。
+- 设备身份 `DeviceIdentity.WriteAtomic`（B-18 另一半）：弃用无法落盘的 `File.WriteAllText`，改经 `FileStream` 写入后 `Flush(flushToDisk: true)` 再原子替换，并补临时文件失败清理——补齐它此前只对齐「原子重命名」、漏掉「落盘」的那一半。`DeviceIdentitySelfTest`（创建/重载/改名保存重载/损坏回退/锁定回退全链）实测 PASS，确认 FileStream 写 → ReadAllText 读往返正常；Discovery/Terminal/Caster 三项 `dotnet build` 均 0 警告 0 错误。仍待真机的仅断电落盘窗口本身（机制与四个 Data store 同法）。
 - RTP 缺包后无后续流量时释放缓存：真实 UDP 回环测试。
 - 媒体包认证与会话隔离：每次投屏独立会话，音视频分离派生密钥；认证、重放及 UDP 收发测试。真实双机投屏待验收。
 - 图片后台解码：真实图片解码、快速切换、坏文件、文件释放、加载中关闭测试。

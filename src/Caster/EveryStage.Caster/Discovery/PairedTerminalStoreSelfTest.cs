@@ -105,11 +105,12 @@ public static class PairedTerminalStoreSelfTest
             // throwing IOException out of its constructor.
             store2.Upsert(terminalB); // re-save valid content (terminalB is still what store2 holds in memory).
             long validFileLength = new FileInfo(storePath).Length;
+            PairedTerminalStore storeLoadedWhileLocked;
             using (new FileStream(storePath, FileMode.Open, FileAccess.Read, FileShare.None))
             {
-                var storeWhileLocked = new PairedTerminalStore(storePath);
-                if (storeWhileLocked.All.Count != 0)
-                    return new Result(false, $"A store loaded while the file is locked should fail safe to empty (this run's own file lock, not the file's own content, is what should trigger the fallback), but All.Count was {storeWhileLocked.All.Count}.");
+                storeLoadedWhileLocked = new PairedTerminalStore(storePath);
+                if (storeLoadedWhileLocked.All.Count != 0)
+                    return new Result(false, $"A store loaded while the file is locked should fail safe to empty (this run's own file lock, not the file's own content, is what should trigger the fallback), but All.Count was {storeLoadedWhileLocked.All.Count}.");
             }
 
             // Lock released — the ORIGINAL valid content must still be there, untouched and
@@ -118,9 +119,28 @@ public static class PairedTerminalStoreSelfTest
             // for THIS load attempt, but only one of them is allowed to have touched the file on disk.
             if (new FileInfo(storePath).Length != validFileLength)
                 return new Result(false, "The file's on-disk content changed as a side effect of loading it while locked — it should have been left completely untouched.");
+
+            // Write-after-degraded-load: the ONE assertion that actually catches the missing
+            // _loadFailed write-back guard. The instance above loaded empty only because the file was
+            // momentarily locked — but it is the SAME instance the real Caster process keeps using for
+            // the rest of its run once the lock is gone. Its first Upsert must NOT quietly Save that
+            // degraded (empty-plus-one) state over the real on-disk list; it must refuse (throw),
+            // leaving the file's real content intact. Without the guard, this Upsert silently overwrites
+            // and permanently destroys terminalB — which the earlier "reload with a fresh instance"
+            // checks never exercised, because they never wrote through the degraded instance itself.
+            bool refusedDegradedWriteBack = false;
+            try
+            {
+                storeLoadedWhileLocked.Upsert(new PairedTerminal(
+                    Guid.NewGuid(), "自检-TerminalC", DateTimeOffset.UtcNow, PairingSecurity.GenerateKey(), PairingSecurity.CurrentKeyFormatVersion));
+            }
+            catch (IOException) { refusedDegradedWriteBack = true; }
+            if (!refusedDegradedWriteBack)
+                return new Result(false, "A store that loaded empty because the file was momentarily locked must refuse to Save (Upsert should throw) rather than overwrite the real on-disk list with its degraded state — the _loadFailed write-back guard is missing.");
+
             var storeAfterUnlock = new PairedTerminalStore(storePath);
             if (storeAfterUnlock.All.Count != 1 || storeAfterUnlock.Find(terminalB.DeviceId) == null)
-                return new Result(false, "After the lock was released, the original valid content should still load back correctly — the locked-read attempt must not have corrupted or discarded it.");
+                return new Result(false, "After the lock was released, the original valid content should still load back correctly — the locked-read attempt (and the refused degraded write-back above) must not have corrupted or discarded it.");
 
             return new Result(true, null);
         }

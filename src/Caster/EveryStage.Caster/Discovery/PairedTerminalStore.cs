@@ -26,6 +26,7 @@ public sealed class PairedTerminalStore
 
     private readonly string _storePath;
     private List<PairedTerminal> _terminals;
+    private bool _loadFailed;
 
     public PairedTerminalStore(string? storePathOverride = null)
     {
@@ -41,15 +42,25 @@ public sealed class PairedTerminalStore
 
     public void Upsert(PairedTerminal terminal)
     {
+        // Guard mirrors Terminal's PairedDeviceStore: after a failed load (a transient lock the
+        // constructor already degraded to an empty list over, not a genuinely empty file), refuse to
+        // Save rather than let this empty-plus-one in-memory state atomically overwrite — and destroy
+        // — the real on-disk paired-terminal list. See PairedDeviceStore.Upsert's own guard.
+        if (_loadFailed) throw new IOException("配对记录读取失败，已阻止覆盖原文件；请先修复文件或重新配对。");
+        var snapshot = _terminals.ToList();
         _terminals.RemoveAll(t => t.DeviceId == terminal.DeviceId);
         _terminals.Add(terminal);
-        Save();
+        try { Save(); }
+        catch { _terminals = snapshot; throw; }
     }
 
     public void Remove(Guid deviceId)
     {
+        if (_loadFailed) throw new IOException("配对记录读取失败，已阻止覆盖原文件；请先修复文件或重新配对。");
+        var snapshot = _terminals.ToList();
         _terminals.RemoveAll(t => t.DeviceId == deviceId);
-        Save();
+        try { Save(); }
+        catch { _terminals = snapshot; throw; }
     }
 
     private List<PairedTerminal> Load()
@@ -71,6 +82,7 @@ public sealed class PairedTerminalStore
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            _loadFailed = true;
             // Different failure mode from JsonException above, and deliberately NOT treated the same
             // way: File.Exists returning true doesn't mean File.OpenRead can actually succeed —
             // another process can hold an exclusive lock (antivirus scan, backup tool), or a
@@ -90,14 +102,28 @@ public sealed class PairedTerminalStore
         Directory.CreateDirectory(directory);
 
         string tempPath = _storePath + ".tmp";
-        using (var stream = File.Create(tempPath))
+        try
         {
-            JsonSerializer.Serialize(stream, _terminals, JsonOptions);
-        }
+            using (var stream = File.Create(tempPath))
+            {
+                JsonSerializer.Serialize(stream, _terminals, JsonOptions);
+                // Flushed all the way to the device, not just out of the .NET buffer — same reason as
+                // Terminal's PairedDeviceStore.Save (and the four Data stores): File.Replace's rename is
+                // a journalled NTFS metadata operation, but the temp file's DATA blocks are not
+                // journalled with it, so a power loss in the window where the rename is durable and the
+                // contents are not would atomically replace a good file with a truncated/zero-length one.
+                stream.Flush(flushToDisk: true);
+            }
 
-        if (File.Exists(_storePath))
-            File.Replace(tempPath, _storePath, destinationBackupFileName: null);
-        else
-            File.Move(tempPath, _storePath);
+            if (File.Exists(_storePath))
+                File.Replace(tempPath, _storePath, destinationBackupFileName: null);
+            else
+                File.Move(tempPath, _storePath);
+        }
+        catch
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            throw;
+        }
     }
 }

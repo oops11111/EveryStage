@@ -94,16 +94,33 @@ public sealed class DeviceIdentity
     /// truncated or empty. <see cref="LoadOrCreate"/> would then either hit its <c>JsonException</c>
     /// branch or successfully parse a near-empty object, and in both cases mint a brand-new identity
     /// on the very next boot, permanently losing every peer's trust relationship with this device's
-    /// old one. Matching the atomic-write convention every other store in this codebase already uses
-    /// removes that risk the same way it already removes it for them.</summary>
+    /// old one. Matching the atomic-write convention every other store in this codebase already uses —
+    /// temp file, <c>Flush(flushToDisk: true)</c>, THEN atomic <see cref="File.Replace"/>/<see cref="File.Move"/>
+    /// — removes that risk the same way it already removes it for them. (The flush is the half a first
+    /// pass here missed: <c>File.WriteAllText</c> exposes no stream to flush, and temp+rename alone
+    /// still leaves the same power-loss window <c>PairedDeviceStore</c>/the four Data stores close with
+    /// their own explicit <c>FlushFileBuffers</c> — so this now writes through a <see cref="FileStream"/>
+    /// instead, purely to get a handle to flush.)</summary>
     private static void WriteAtomic(string path, DeviceIdentity identity)
     {
         string tempPath = path + ".tmp";
-        File.WriteAllText(tempPath, JsonSerializer.Serialize(identity));
+        try
+        {
+            using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                JsonSerializer.Serialize(stream, identity);
+                stream.Flush(flushToDisk: true);
+            }
 
-        if (File.Exists(path))
-            File.Replace(tempPath, path, destinationBackupFileName: null);
-        else
-            File.Move(tempPath, path);
+            if (File.Exists(path))
+                File.Replace(tempPath, path, destinationBackupFileName: null);
+            else
+                File.Move(tempPath, path);
+        }
+        catch
+        {
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            throw;
+        }
     }
 }
