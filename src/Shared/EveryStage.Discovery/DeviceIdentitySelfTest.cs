@@ -79,10 +79,11 @@ public static class DeviceIdentitySelfTest
             identity4.DeviceName = "自检-锁定测试";
             identity4.Save();
             long validLength = new FileInfo(identityPath).Length;
+            DeviceIdentity identityLoadedWhileLocked;
             using (new FileStream(identityPath, FileMode.Open, FileAccess.Read, FileShare.None))
             {
-                var identityWhileLocked = DeviceIdentity.LoadOrCreate("selftest", identityPath);
-                if (identityWhileLocked.DeviceId == identity4.DeviceId)
+                identityLoadedWhileLocked = DeviceIdentity.LoadOrCreate("selftest", identityPath);
+                if (identityLoadedWhileLocked.DeviceId == identity4.DeviceId)
                     return new Result(false, "LoadOrCreate while the file is locked should mint a transient identity with a DIFFERENT DeviceId, not somehow read the locked file's real content.");
             }
 
@@ -93,9 +94,23 @@ public static class DeviceIdentitySelfTest
             if (new FileInfo(identityPath).Length != validLength)
                 return new Result(false, "The identity file's on-disk content changed as a side effect of loading it while locked — it should have been left completely untouched.");
 
+            // Write-after-degraded-load: the transient identity minted above (a fresh random DeviceId,
+            // only because the file was momentarily locked) is the SAME instance the running Terminal
+            // keeps. If the operator renames the device during this session, Save() must REFUSE rather
+            // than overwrite the real identity file with this throwaway DeviceId — persisting it would
+            // break every peer's trust in this device. Without the _loadDegraded guard this Save
+            // silently destroys identity4. (The lock is already released here, so only the guard — not
+            // the file lock — is what must stop the write.)
+            identityLoadedWhileLocked.DeviceName = "自检-降级改名";
+            bool refusedDegradedSave = false;
+            try { identityLoadedWhileLocked.Save(); }
+            catch (IOException) { refusedDegradedSave = true; }
+            if (!refusedDegradedSave)
+                return new Result(false, "A transient identity minted because the file was locked must refuse to Save (should throw) rather than overwrite the real identity file with its throwaway DeviceId — the degraded-load write guard is missing.");
+
             var identityAfterUnlock = DeviceIdentity.LoadOrCreate("selftest", identityPath);
             if (identityAfterUnlock.DeviceId != identity4.DeviceId || identityAfterUnlock.DeviceName != "自检-锁定测试")
-                return new Result(false, "After the lock was released, the original identity should still load back correctly — the locked-read attempt must not have discarded it.");
+                return new Result(false, "After the lock was released, the original identity should still load back correctly — the locked-read attempt (and the refused degraded Save above) must not have discarded it.");
 
             return new Result(true, null);
         }

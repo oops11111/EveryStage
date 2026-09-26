@@ -294,7 +294,14 @@ public sealed class AudioContentController : IDisposable
                 return;
             }
 
-            while (!token.IsCancellationRequested && audioClock.PositionTicks < chunk.Value.TimestampTicks - AheadBudgetTicks)
+            // Pace against playback: wait until the clock is within AheadBudgetTicks of this chunk's
+            // position IN THE FILE. chunk.TimestampTicks is file-absolute (MF SetCurrentPosition does
+            // not rebase sample timestamps to 0 after a seek), but audioClock.PositionTicks is this
+            // clock instance's own counter from 0 — so the file position is _seekBaseTicks + PositionTicks
+            // (same conversion CurrentPosition and the fade update use). Subtracting _seekBaseTicks here
+            // puts both sides on the clock's own base; omitting it (the audit's B-17) made a seek to T
+            // wait for ~T of playback that never comes — hanging playback or dumping a long silence.
+            while (!token.IsCancellationRequested && audioClock.PositionTicks < chunk.Value.TimestampTicks - _seekBaseTicks - AheadBudgetTicks)
                 Thread.Sleep(5);
 
             if (token.IsCancellationRequested) return;

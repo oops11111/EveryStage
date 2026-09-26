@@ -93,13 +93,33 @@ public sealed class VideoDecodeSource : IDisposable
         }
     }
 
-    /// <summary>Returns null once the video stream reports end-of-stream.</summary>
+    // A null sample WITHOUT EndOfStream is a documented, normal mid-stream event (MF_SOURCE_READERF_
+    // STREAMTICK — a gap/discontinuity — or a mid-stream media-type change), NOT end of playback. The
+    // old "sample == null => return null" treated it as EOS and truncated content (audit A-9), which
+    // the consumer then logs as a normal completion. Loop past an empty read to the next real sample
+    // instead, bounded so a pathological source that never yields a sample and never signals EOS can't
+    // spin this decode thread forever (that case still degrades to "stream ended"). Returns null only on
+    // genuine EndOfStream or on exhausting the retry budget.
+    private const int MaxEmptyReadRetries = 128;
+
+    private IMFSample? ReadNextNonEmptySample(SourceReaderIndex stream, out long timestamp)
+    {
+        for (int attempt = 0; attempt < MaxEmptyReadRetries; attempt++)
+        {
+            var sample = _reader.ReadSample(stream, SourceReaderControlFlag.None, out _, out var streamFlags, out timestamp);
+            if ((streamFlags & SourceReaderFlag.EndOfStream) != 0) return null;
+            if (sample != null) return sample;
+        }
+        timestamp = 0;
+        return null;
+    }
+
+    /// <summary>Returns null once the video stream reports end-of-stream (a mid-stream empty read is
+    /// retried past rather than mistaken for EOS — see <see cref="ReadNextNonEmptySample"/>).</summary>
     public DecodedVideoFrame? ReadNextVideoFrame()
     {
-        var sample = _reader.ReadSample(SourceReaderIndex.FirstVideoStream, SourceReaderControlFlag.None,
-            out _, out var streamFlags, out var timestamp);
-
-        if ((streamFlags & SourceReaderFlag.EndOfStream) != 0 || sample == null)
+        var sample = ReadNextNonEmptySample(SourceReaderIndex.FirstVideoStream, out var timestamp);
+        if (sample == null)
             return null;
 
         using (sample)
@@ -142,13 +162,12 @@ public sealed class VideoDecodeSource : IDisposable
         throw new InvalidOperationException("Unable to extract a UInt64 value from the Variant returned by GetPresentationAttribute.");
     }
 
-    /// <summary>Returns null once the audio stream reports end-of-stream.</summary>
+    /// <summary>Returns null once the audio stream reports end-of-stream (a mid-stream empty read is
+    /// retried past rather than mistaken for EOS — see <see cref="ReadNextNonEmptySample"/>).</summary>
     public DecodedAudioChunk? ReadNextAudioChunk()
     {
-        var sample = _reader.ReadSample(SourceReaderIndex.FirstAudioStream, SourceReaderControlFlag.None,
-            out _, out var streamFlags, out var timestamp);
-
-        if ((streamFlags & SourceReaderFlag.EndOfStream) != 0 || sample == null)
+        var sample = ReadNextNonEmptySample(SourceReaderIndex.FirstAudioStream, out var timestamp);
+        if (sample == null)
             return null;
 
         using (sample)

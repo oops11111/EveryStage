@@ -163,15 +163,34 @@ public sealed class AudioDecodeSource : IDisposable
         }
     }
 
-    /// <summary>Returns null once the audio stream reports end-of-stream. Same PCM-off-as-CPU-memory
-    /// reasoning as <see cref="VideoDecodeSource.ReadNextAudioChunk"/> — audio was never part of the
-    /// zero-copy path either decode source exists to validate.</summary>
+    // A null sample WITHOUT EndOfStream is a documented, normal mid-stream event (MF_SOURCE_READERF_
+    // STREAMTICK — a gap/discontinuity — or a mid-stream media-type change), NOT end of playback. The
+    // old "sample == null => return null" treated it as EOS and truncated content (audit A-9), which
+    // the consumer then logs as a normal completion. Loop past an empty read to the next real sample
+    // instead, bounded so a pathological source that never yields a sample and never signals EOS can't
+    // spin this decode thread forever. Returns null only on genuine EndOfStream or on exhausting the budget.
+    private const int MaxEmptyReadRetries = 128;
+
+    private IMFSample? ReadNextNonEmptySample(out long timestamp)
+    {
+        for (int attempt = 0; attempt < MaxEmptyReadRetries; attempt++)
+        {
+            var sample = _reader.ReadSample(SourceReaderIndex.FirstAudioStream, SourceReaderControlFlag.None, out _, out var streamFlags, out timestamp);
+            if ((streamFlags & SourceReaderFlag.EndOfStream) != 0) return null;
+            if (sample != null) return sample;
+        }
+        timestamp = 0;
+        return null;
+    }
+
+    /// <summary>Returns null once the audio stream reports end-of-stream (a mid-stream empty read is
+    /// retried past rather than mistaken for EOS — see <see cref="ReadNextNonEmptySample"/>). Same
+    /// PCM-off-as-CPU-memory reasoning as <see cref="VideoDecodeSource.ReadNextAudioChunk"/> — audio was
+    /// never part of the zero-copy path either decode source exists to validate.</summary>
     public DecodedAudioChunk? ReadNextChunk()
     {
-        var sample = _reader.ReadSample(SourceReaderIndex.FirstAudioStream, SourceReaderControlFlag.None,
-            out _, out var streamFlags, out var timestamp);
-
-        if ((streamFlags & SourceReaderFlag.EndOfStream) != 0 || sample == null)
+        var sample = ReadNextNonEmptySample(out var timestamp);
+        if (sample == null)
             return null;
 
         using (sample)

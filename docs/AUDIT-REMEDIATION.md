@@ -9,6 +9,7 @@
 - 设置与已配对设备存储也已禁止读取失败后用默认值覆盖原文件，并在保存失败时回滚内存变更；独占文件锁回归测试通过。
 - 投屏机已配对终端存储 `PairedTerminalStore` 补齐与终端 `PairedDeviceStore` 一致的三重保护：读取失败（瞬时文件锁）后置 `_loadFailed` 禁止写回覆盖、保存失败回滚内存快照、临时文件 `Flush(flushToDisk)` 落盘后再原子替换（对应审计 2026-09-27 追加的 A-23 数据丢失、B-18 落盘、C-26 自检缺口）。`PairedTerminalStoreSelfTest` 新增「用降级加载后的同一实例 Upsert 必须被拒绝、磁盘原数据不丢」断言——实测：修复后自检 PASS；临时移除 `_loadFailed` 复现 A-23 后该断言 FAIL（证明非重言式）；恢复后 PASS。Caster 项目 `dotnet build` 0 警告 0 错误。
 - 设备身份 `DeviceIdentity.WriteAtomic`（B-18 另一半）：弃用无法落盘的 `File.WriteAllText`，改经 `FileStream` 写入后 `Flush(flushToDisk: true)` 再原子替换，并补临时文件失败清理——补齐它此前只对齐「原子重命名」、漏掉「落盘」的那一半。`DeviceIdentitySelfTest`（创建/重载/改名保存重载/损坏回退/锁定回退全链）实测 PASS，确认 FileStream 写 → ReadAllText 读往返正常；Discovery/Terminal/Caster 三项 `dotnet build` 均 0 警告 0 错误。仍待真机的仅断电落盘窗口本身（机制与四个 Data store 同法）。
+- 设备身份降级写保护（A-23 附带）：`DeviceIdentity` 读失败（瞬时锁）返回的临时身份新增 `_loadDegraded` 标记，`Save()` 遇标记即抛 `IOException` 拒绝覆盖——堵住「瞬时锁降级后、操作员同会话改名 `Save()` 用随机 DeviceId 覆盖真身份→所有对端信任失效」。`DeviceIdentitySelfTest` 新增对称断言（对降级实例改名 `Save()` 须被拒绝、原文件不丢）；实测修复后 PASS，临时移除标记复现后该断言 FAIL，恢复后 PASS。
 - RTP 缺包后无后续流量时释放缓存：真实 UDP 回环测试。
 - 媒体包认证与会话隔离：每次投屏独立会话，音视频分离派生密钥；认证、重放及 UDP 收发测试。真实双机投屏待验收。
 - 图片后台解码：真实图片解码、快速切换、坏文件、文件释放、加载中关闭测试。
@@ -16,6 +17,9 @@
 
 ## 已实现但尚未完成验收
 
+- 本地文件解码 `ReadSample` 空样本不再当流结束（审计 A-9）：`VideoDecodeSource`（视频/音频两处）与 `AudioDecodeSource` 改为遇 `sample==null` 且未置 `EndOfStream` 时有界重试到下一个真实样本（`MaxEmptyReadRetries=128` 防病态源死循环），仅真正 `EndOfStream` 才返回 null——修掉「开头一次 STREAMTICK 就把整段判为播完、且日志记为正常完成」。Rendering/Terminal/Caster 编译 0 错误、CoreSelfTests 全通过；真机需一个含流内不连续（VBR MP3/转封装 MP4）的文件验证不再截断。
+- 音频拖动进度配速用错时间基（审计 B-17）：`AudioContentController` 配速等待改为 `PositionTicks < chunk.TimestampTicks - _seekBaseTicks - AheadBudgetTicks`，与 `CurrentPosition`/淡变换算一致——修掉 seek 到 T 后播放挂起/长静音+读数错位。编译通过；真机需拖动音频进度条验证即时续播、读数正确。
+- 音频接管结算窗口竞态（审计 B-19）：`AudioTakeoverService` 引入 `_takeoverGeneration`，`TakeoverAsync` 结算延迟后校验代次、`Restore` 递增使在途接管失效——修掉「起投 300ms 内断开→静音在 Restore 之后发生、会话卡静音至下一周期」。编译通过；真机需起投后立即断开验证不留卡静音。
 - 音频回调与音频资源释放互斥，停止后的晚到回调直接返回，避免接收线程停止超时后访问已释放资源。严格构建通过；真实音频设备阻塞及快速重连测试待验收。
 - Terminal 默认 960×720、最小 800×600；普通窗口拖拽和工作区适配保持 4:3，小屏优先降低最小尺寸以完整显示。最大化保持铺满屏幕。100%/125%/150%/200% DPI、小屏与双方向尺寸计算回归通过；实际拖拽、跨屏与恢复窗口仍待实机验收。
 - Terminal 已按当前页面设计统一为 168px 玻璃侧栏、品牌区、图标+文字横向导航、24px 外边距与 14px 内容间距；活动/设备/设置页面同步采用深色卡片、表格和标签页样式，代码和 Windows 内容自测通过，Windows 10 实机视觉仍待验收。

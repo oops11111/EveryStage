@@ -26,15 +26,28 @@ public sealed class AudioTakeoverService : IDisposable
     // session the user (or some other app) muted independently before we got involved.
     private readonly HashSet<int> _mutedProcessIds = new();
 
+    // Bumped by each TakeoverAsync start AND by each Restore. TakeoverAsync captures its own value
+    // before the settle delay and re-checks it after: if a Restore (or a newer takeover) ran during
+    // that ~300ms window, the captured generation is stale and the fallback mute is skipped. Without
+    // this, a cast that STOPS within the settle window would run Restore() (unmuting the still-empty
+    // set) and only afterwards have TakeoverAsync's delayed continuation mute sessions — leaving them
+    // stuck muted, with no matching Restore, until the next cast cycle (audit B-19). All callers run on
+    // the UI thread (Program.OnOutputStateChanged; TakeoverAsync's continuation resumes on the captured
+    // WinForms SynchronizationContext), so a plain field needs no synchronization.
+    private int _takeoverGeneration;
+
     public async Task TakeoverAsync(TimeSpan? settleDelay = null)
     {
+        int generation = ++_takeoverGeneration;
         SendMediaPlayPauseKey();
         await Task.Delay(settleDelay ?? TimeSpan.FromMilliseconds(300));
+        if (generation != _takeoverGeneration) return; // a Restore (or newer takeover) ran during the settle delay — don't mute after the fact.
         MuteStillActiveSessions();
     }
 
     public void Restore()
     {
+        _takeoverGeneration++; // invalidate any in-flight TakeoverAsync still in its settle delay.
         UnmuteSessionsWeMuted();
         SendMediaPlayPauseKey();
     }

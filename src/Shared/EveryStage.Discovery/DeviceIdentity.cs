@@ -24,6 +24,15 @@ public sealed class DeviceIdentity
     [JsonIgnore]
     private string? _persistedPath;
 
+    // True only for the transient identity LoadOrCreate returns when the real file couldn't be READ
+    // (a momentary exclusive lock — AV/backup — not a genuinely absent/corrupt file). Such an identity
+    // carries a fresh random DeviceId that must NEVER be persisted over the real one: an operator
+    // renaming the device during that same session would otherwise bake today's transient read failure
+    // into a permanent new identity, breaking every peer's trust in this device. Save() refuses when
+    // this is set — same shape as PairedDeviceStore/PairedTerminalStore's _loadFailed write-back guard.
+    [JsonIgnore]
+    private bool _loadDegraded;
+
     /// <param name="fileNameStem">Distinguishes Terminal's identity file from Caster's under the
     /// shared ProgramData\EveryStage\ folder, e.g. "terminal" -> terminal-identity.json.</param>
     public static DeviceIdentity LoadOrCreate(string fileNameStem, string? pathOverride = null)
@@ -59,8 +68,11 @@ public sealed class DeviceIdentity
                 // with, rather than crashing the whole process at startup — the actual bug this catch
                 // exists to fix), but skip persisting it: a later restart, once whatever is locking
                 // the file lets go, still gets a chance to read the real one back correctly, instead
-                // of today's transient failure getting baked into tomorrow's identity too.
-                return new DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = Environment.MachineName, _persistedPath = path };
+                // of today's transient failure getting baked into tomorrow's identity too. The
+                // _loadDegraded flag set below extends that past LoadOrCreate's own no-write — it makes
+                // Save() refuse as well, so an operator renaming the device during this same degraded
+                // session can't persist this throwaway DeviceId over the real file either.
+                return new DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = Environment.MachineName, _persistedPath = path, _loadDegraded = true };
             }
         }
 
@@ -78,6 +90,8 @@ public sealed class DeviceIdentity
     {
         if (_persistedPath == null)
             throw new InvalidOperationException("DeviceIdentity.Save() requires an instance obtained via LoadOrCreate.");
+        if (_loadDegraded)
+            throw new IOException("设备身份文件读取失败，已阻止用降级身份覆盖原文件；请重启终端机后重试。");
         WriteAtomic(_persistedPath, this);
     }
 
