@@ -20,6 +20,8 @@
 - 本地文件解码 `ReadSample` 空样本不再当流结束（审计 A-9）：`VideoDecodeSource`（视频/音频两处）与 `AudioDecodeSource` 改为遇 `sample==null` 且未置 `EndOfStream` 时有界重试到下一个真实样本（`MaxEmptyReadRetries=128` 防病态源死循环），仅真正 `EndOfStream` 才返回 null——修掉「开头一次 STREAMTICK 就把整段判为播完、且日志记为正常完成」。Rendering/Terminal/Caster 编译 0 错误、CoreSelfTests 全通过；真机需一个含流内不连续（VBR MP3/转封装 MP4）的文件验证不再截断。
 - 音频拖动进度配速用错时间基（审计 B-17）：`AudioContentController` 配速等待改为 `PositionTicks < chunk.TimestampTicks - _seekBaseTicks - AheadBudgetTicks`，与 `CurrentPosition`/淡变换算一致——修掉 seek 到 T 后播放挂起/长静音+读数错位。编译通过；真机需拖动音频进度条验证即时续播、读数正确。
 - 音频接管结算窗口竞态（审计 B-19）：`AudioTakeoverService` 引入 `_takeoverGeneration`，`TakeoverAsync` 结算延迟后校验代次、`Restore` 递增使在途接管失效——修掉「起投 300ms 内断开→静音在 Restore 之后发生、会话卡静音至下一周期」。编译通过；真机需起投后立即断开验证不留卡静音。
+- UI 保存失败一致性（审计 C-25）：`SettingsPanel`（保存设置、保存设备名）、`MainWindow`（Toast 两条移除路径）、`DevicesPanel`（移除配对、编辑权限）六处保存/Upsert/Remove 全部对齐 `FilesPanel` 写法——包 `try/catch(IOException/UnauthorizedAccessException)` + 贴切 MessageBox + 失败回滚内存改动（设备名/权限/活动移除）+ 成功后再记日志。修掉「终端上保存失败只落 CrashLogger、无弹框（部分假成功）」。Terminal 编译 0 错误、CoreSelfTests 全通过；真机需构造保存失败（只读/占满 ProgramData）验证提示与回滚。
+- 采集纹理错误路径泄漏（审计 C-24）：`ScreenCaptureSource.AcquireNextFrame` 的 `CopyResource` 包 try/catch，抛出即 `copy.Dispose()` 后重抛——修掉「逐帧路径上 CreateTexture2D 成功但 CopyResource 抛出时全屏纹理泄漏」。Caster 编译 0 错误；错误路径本身待真机诱发验证。
 - 音频回调与音频资源释放互斥，停止后的晚到回调直接返回，避免接收线程停止超时后访问已释放资源。严格构建通过；真实音频设备阻塞及快速重连测试待验收。
 - Terminal 默认 960×720、最小 800×600；普通窗口拖拽和工作区适配保持 4:3，小屏优先降低最小尺寸以完整显示。最大化保持铺满屏幕。100%/125%/150%/200% DPI、小屏与双方向尺寸计算回归通过；实际拖拽、跨屏与恢复窗口仍待实机验收。
 - Terminal 已按当前页面设计统一为 168px 玻璃侧栏、品牌区、图标+文字横向导航、24px 外边距与 14px 内容间距；活动/设备/设置页面同步采用深色卡片、表格和标签页样式，代码和 Windows 内容自测通过，Windows 10 实机视觉仍待验收。

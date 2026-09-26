@@ -144,7 +144,19 @@ public sealed class ScreenCaptureSource : IDisposable
             textureDesc.MiscFlags = ResourceOptionFlags.None;
 
             var copy = _gpu.Device.CreateTexture2D(textureDesc);
-            _gpu.ImmediateContext.CopyResource(copy, sourceTexture);
+            try
+            {
+                _gpu.ImmediateContext.CopyResource(copy, sourceTexture);
+            }
+            catch
+            {
+                // CopyResource threw after CreateTexture2D already succeeded — dispose the copy here or
+                // it leaks a full-frame GPU texture on every failed acquire (this runs once per captured
+                // frame, so a persistent failure would exhaust GPU memory), since it never reaches the
+                // CapturedFrame the caller would otherwise Dispose (audit C-24).
+                copy.Dispose();
+                throw;
+            }
 
             return new CapturedFrame(copy, Width, Height, frameInfo.LastPresentTime != 0);
         }
