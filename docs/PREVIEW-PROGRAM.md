@@ -108,6 +108,12 @@ Program.cs：只有绑定了扩展屏才创建 OverlayWindow / VideoSurface / Pl
 | .mkv .avi | **未验证**：Windows 自带组件无法生成样本，需真实文件真机验证；失败时显示内部错误卡片 |
 | .webp | 已移出白名单 |
 
+### CI 覆盖范围
+
+GitHub 托管 Windows 机器没有 GPU 视频处理能力和音频输出设备。自检会先探测这两项：缺少的能力对应的格式与场景标为 SKIP 并注明原因，其余照常执行（图片、错误卡片、投屏开关、投到屏幕、停止输出、设备来投互斥、显式外部打开；Program 相关用例改用图片投送）。**视频/音频播放本身只能在有显卡和声卡的机器上验证**——修改播放代码后须在本地运行 WindowsSelfTests。可用环境变量 `ES_SELFTEST_NO_VIDEO=1` / `ES_SELFTEST_NO_AUDIO=1` 在本地模拟 CI 环境。
+
+模拟 CI 时发现并修复：无可用显卡时双击视频，异常会越过错误卡片直接抛到 UI 线程（`PlayFile` 在 `try` 之外访问了视频控制器）。
+
 ## 6. 残余风险与后续
 
 1. Preview 与 Program 各自解码（两套 D3D11 设备/解码器/音频时钟）；后续可让 Program 复用 Preview 已解码帧。

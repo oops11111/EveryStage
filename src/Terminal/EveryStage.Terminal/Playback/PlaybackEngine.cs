@@ -755,15 +755,18 @@ public sealed class PlaybackEngine : IDisposable
 
             case MediaKind.Video:
                 _output.ShowVideoSurface();
-                // -= before += every time: avoids stacking subscriptions across plays.
-                VideoController.PlaybackCompleted -= OnVideoCompleted;
-                VideoController.PlaybackCompleted += OnVideoCompleted;
-                VideoController.PlaybackFailed -= OnVideoFailed;
-                VideoController.PlaybackFailed += OnVideoFailed;
-                VideoController.FirstFramePresented -= OnVideoFirstFrame;
-                VideoController.FirstFramePresented += OnVideoFirstFrame;
                 try
                 {
+                    // Everything that touches VideoController stays inside the try: the getter throws when
+                    // this channel has no video surface (no usable GPU video processing), and that must end
+                    // in Fail() — an error card — not an exception escaping to the UI thread.
+                    // -= before += every time: avoids stacking subscriptions across plays.
+                    VideoController.PlaybackCompleted -= OnVideoCompleted;
+                    VideoController.PlaybackCompleted += OnVideoCompleted;
+                    VideoController.PlaybackFailed -= OnVideoFailed;
+                    VideoController.PlaybackFailed += OnVideoFailed;
+                    VideoController.FirstFramePresented -= OnVideoFirstFrame;
+                    VideoController.FirstFramePresented += OnVideoFirstFrame;
                     VideoController.Volume = _pendingAudioVolume;
                     VideoController.Muted = _muted;
                     // Local media keeps its aspect ratio (Fit/Fill); device cast mirroring on the shared

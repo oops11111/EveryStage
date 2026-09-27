@@ -50,8 +50,14 @@ internal static class PreviewProgramTests
             form.PerformLayout();
             Require(Math.Abs(previewSurface.Viewport.Width / (double)previewSurface.Viewport.Height - 4.0 / 3.0) < 0.02, "Preview viewport is not 4:3.");
 
-            using var previewVideo = new VideoSurface(previewSurface.VideoHost.Handle, Math.Max(1, previewSurface.VideoHost.Width), Math.Max(1, previewSurface.VideoHost.Height));
-            previewSurface.VideoHostResized += (w, h) => previewVideo.Resize(w, h);
+            // Hosted CI runners have no GPU video processor and no audio endpoint. Probe both, run what the
+            // machine supports and report the rest as SKIP (the app itself degrades the same way: no video
+            // surface → video shows an error card; images/documents/audio still preview).
+            using var previewVideo = SimulateNoVideo ? null : TryCreateVideoSurface(previewSurface.VideoHost.Handle, Math.Max(1, previewSurface.VideoHost.Width), Math.Max(1, previewSurface.VideoHost.Height));
+            bool hasVideo = previewVideo != null;
+            bool hasAudio = !SimulateNoAudio && CanOpenAudioOutput();
+            if (previewVideo != null) previewSurface.VideoHostResized += (w, h) => previewVideo.Resize(w, h);
+            Console.WriteLine($"INFO: GPU video processing {(hasVideo ? "available" : "UNAVAILABLE")}, audio output device {(hasAudio ? "available" : "UNAVAILABLE")}");
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
             var scenarios = new ScenarioStore();
             using var preview = new PlaybackEngine(PlaybackChannel.Preview, previewSurface, previewVideo, settings, scenarios, null, logs)
@@ -66,6 +72,11 @@ internal static class PreviewProgramTests
             {
                 if (note != null) { matrix.Add($"{Path.GetExtension(name),-6} 未验证：{note}"); continue; }
                 var file = Media(Path.Combine(media, name));
+                if (MissingCapability(name, file.Kind, hasVideo, hasAudio) is { } missing)
+                {
+                    matrix.Add($"{Path.GetExtension(name),-6} SKIP：{missing}");
+                    continue;
+                }
                 preview.RequestPlay(file);
                 bool ok = WaitFor(() => preview.State is PlaybackChannelState.Playing or PlaybackChannelState.Paused or PlaybackChannelState.Failed, 8000)
                           && preview.State != PlaybackChannelState.Failed;
@@ -105,6 +116,8 @@ internal static class PreviewProgramTests
             // ── 3. Video: A/V sync, silent video, pause / seek / loop ─────────────────────────────
             var av = Media(Path.Combine(media, "av.mp4"));
             var sw = Stopwatch.StartNew();
+            if (hasVideo && hasAudio)
+            {
             preview.RequestPlay(av);
             Require(WaitFor(() => preview.IsCompleted, 12000), "Video with audio never completed.");
             double wall = sw.Elapsed.TotalSeconds;
@@ -113,7 +126,12 @@ internal static class PreviewProgramTests
             Require(presented >= 75 && dropped <= 8, $"A/V pacing poor: presented {presented}, dropped {dropped} of 90.");
             Require(wall is > 2.6 and < 5.0, $"3 s video with audio took {wall:F2} s (clock not driving playback).");
             Console.WriteLine($"PASS: MP4 with audio stays in sync (presented {presented}/90, dropped {dropped}, {wall:F2}s for 3.0s)");
+            TestTransport(preview, av, "video");
+            }
+            else Console.WriteLine("SKIP: A/V sync and video transport (needs GPU video processing and an audio device)");
 
+            if (hasVideo)
+            {
             var silent = Media(Path.Combine(media, "silent.mp4"));
             sw.Restart();
             preview.RequestPlay(silent);
@@ -121,8 +139,11 @@ internal static class PreviewProgramTests
             Require(!preview.CurrentVideoHasAudio && preview.VideoFrameStats.Presented >= 75, "Silent MP4 did not play all frames.");
             Require(sw.Elapsed.TotalSeconds is > 2.6 and < 5.0, $"Silent 3 s video took {sw.Elapsed.TotalSeconds:F2} s.");
             Console.WriteLine("PASS: MP4 without an audio track plays (wall-clock paced)");
+            }
+            else Console.WriteLine("SKIP: silent video playback (needs GPU video processing)");
 
-            TestTransport(preview, av, "video");
+            if (hasAudio)
+            {
             TestTransport(preview, Media(Path.Combine(media, "tone.mp3")), "audio");
 
             // Audio completion must mean "finished playing", not "finished decoding" (decode runs ~1 s ahead;
@@ -132,6 +153,8 @@ internal static class PreviewProgramTests
             Require(WaitFor(() => preview.IsCompleted, 10000), "3 s WAV never completed.");
             Require(sw.Elapsed.TotalSeconds >= 2.8, $"Audio reported completion after {sw.Elapsed.TotalSeconds:F2} s of a 3.0 s file (tail cut off).");
             Console.WriteLine($"PASS: audio completes only after the tail has played ({sw.Elapsed.TotalSeconds:F2}s for 3.0s)");
+            }
+            else Console.WriteLine("SKIP: audio transport and completion timing (needs an audio output device)");
 
             // ── 4. Broken / missing file: internal error details, no external app, next file plays ─
             preview.RequestPlay(Media(Path.Combine(media, "broken.mp4")));
@@ -151,7 +174,10 @@ internal static class PreviewProgramTests
             var machine = new OutputStateMachine();
             using var overlay = new OverlayWindow(new MonitorInfo("SELFTEST", new Rectangle(0, 0, 320, 240), false));
             _ = overlay.Handle; // never shown
-            using var programVideo = new VideoSurface(overlay.VideoHost.Handle, 320, 240);
+            using var programVideo = SimulateNoVideo ? null : TryCreateVideoSurface(overlay.VideoHost.Handle, 320, 240);
+            // What goes on air: the A/V clip when the machine can play it, otherwise a still image (the
+            // Program/Take/cast-switch/device-cast logic under test is the same for both).
+            var onAir = hasVideo && hasAudio ? av : Media(Path.Combine(media, "photo.jpg"));
             using var program = new PlaybackEngine(PlaybackChannel.Program, overlay, programVideo, settings, scenarios, machine, logs)
             {
                 AudioVolume = 0f,
@@ -160,13 +186,13 @@ internal static class PreviewProgramTests
             int localStarting = 0;
             program.LocalPlaybackStarting += () => localStarting++;
 
-            preview.RequestPlay(av);
-            Require(WaitFor(() => preview.State == PlaybackChannelState.Playing, 5000), "Preview video did not start.");
+            preview.RequestPlay(onAir);
+            Require(WaitFor(() => preview.State == PlaybackChannelState.Playing, 5000), "Preview content did not start.");
 
             machine.SetCastSwitch(false);
             bool declined = false;
             program.PlaybackDeclinedByCastSwitch += _ => declined = true;
-            program.RequestPlay(av);
+            program.RequestPlay(onAir);
             Require(declined && program.State == PlaybackChannelState.Idle && machine.State == OutputState.Idle, "Cast switch off did not block Program.");
             Require(preview.State == PlaybackChannelState.Playing, "Cast switch off affected Preview.");
             Console.WriteLine("PASS: cast switch off blocks Program only; Preview keeps playing");
@@ -180,11 +206,12 @@ internal static class PreviewProgramTests
             Require(program.Position >= snapshot.Position - TimeSpan.FromMilliseconds(400), $"Take restarted instead of continuing ({program.Position} < {snapshot.Position}).");
             Console.WriteLine($"PASS: Take continues Preview content on Program at {snapshot.Position.TotalSeconds:F2}s");
 
-            preview.Pause();
+            preview.Pause(); // pauses video; a still image without a stay timer simply stays up
             var heldAt = preview.Position;
+            var heldState = preview.State;
             machine.SetCastSwitch(false); // switch off while live cuts local Program output
             Require(WaitFor(() => program.State == PlaybackChannelState.Idle, 3000) && machine.State == OutputState.Idle, "Switching off did not stop Program.");
-            Require(ReferenceEquals(preview.CurrentFile, av) && preview.State == PlaybackChannelState.Paused
+            Require(ReferenceEquals(preview.CurrentFile, onAir) && preview.State == heldState
                     && Math.Abs((preview.Position - heldAt).TotalMilliseconds) < 150, "Stopping Program disturbed Preview's content or position.");
             Console.WriteLine("PASS: stopping Program (cast switch off) keeps Preview content and position");
 
@@ -194,7 +221,7 @@ internal static class PreviewProgramTests
             program.StopForDeviceCast();          // what Program.cs does before accepting a device cast
             machine.AcceptDeviceCastRequest();
             Require(machine.Source == ProgramSource.DeviceCast && program.State == PlaybackChannelState.Idle, "Device cast did not replace local Program output.");
-            Require(ReferenceEquals(preview.CurrentFile, av), "Device cast cleared the Preview.");
+            Require(ReferenceEquals(preview.CurrentFile, onAir), "Device cast cleared the Preview.");
             machine.SetCastSwitch(false);
             Require(machine.State == OutputState.Active, "Cast switch cut a device cast (it only governs local output).");
             machine.SetCastSwitch(true);
@@ -218,6 +245,37 @@ internal static class PreviewProgramTests
             ExternalOpener.TestHook = null;
         }
     }
+
+    // Let the CI degradation path be exercised on a machine that does have a GPU and a sound card.
+    private static bool SimulateNoVideo => Environment.GetEnvironmentVariable("ES_SELFTEST_NO_VIDEO") == "1";
+    private static bool SimulateNoAudio => Environment.GetEnvironmentVariable("ES_SELFTEST_NO_AUDIO") == "1";
+
+    private static VideoSurface? TryCreateVideoSurface(IntPtr hwnd, int width, int height)
+    {
+        try { return new VideoSurface(hwnd, width, height); }
+        catch (Exception) { return null; } // no D3D11 video processing (e.g. hosted CI runner)
+    }
+
+    private static bool CanOpenAudioOutput()
+    {
+        try
+        {
+            using var clock = new EveryStage.Rendering.Audio.AudioPlaybackClock(48000, 2);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false; // no audio endpoint
+        }
+    }
+
+    private static string? MissingCapability(string name, MediaKind kind, bool hasVideo, bool hasAudio) => kind switch
+    {
+        MediaKind.Video when !hasVideo => "本机无 GPU 视频处理能力（如托管 CI 机器），需在有显卡的机器上验证",
+        MediaKind.Video when !hasAudio && !name.StartsWith("silent", StringComparison.OrdinalIgnoreCase) => "本机无音频输出设备，带音轨视频需在有声卡的机器上验证",
+        MediaKind.Audio when !hasAudio => "本机无音频输出设备，需在有声卡的机器上验证",
+        _ => null,
+    };
 
     private static void TestTransport(PlaybackEngine preview, MediaFile file, string label)
     {
