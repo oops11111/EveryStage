@@ -28,6 +28,7 @@ namespace EveryStage.Terminal.UI;
 internal sealed class SharedPreviewDock : Panel
 {
     private const int CardGap = 8;
+    private const int MinProgressWidth = 90;
     private const int ButtonHeight = 30;
     private const int SourceCardHeight = 46;
     private const string IconFont = "Segoe MDL2 Assets";
@@ -123,7 +124,8 @@ internal sealed class SharedPreviewDock : Panel
 
         // Transport: one row, the progress track takes the remaining width.
         var transport = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, RowCount = 1, ColumnCount = 12, Margin = Padding.Empty, Padding = new Padding(0, 6, 0, 0) };
-        foreach (var width in new[] { 34, 34, 34, 34, 92, -1, 22, 64, 34, 50, 92, 82 })
+        int[] columnWidths = { 34, 34, 34, 34, 92, -1, 22, 64, 34, 50, 92, 82 };
+        foreach (var width in columnWidths)
             transport.ColumnStyles.Add(width < 0 ? new ColumnStyle(SizeType.Percent, 100) : new ColumnStyle(SizeType.Absolute, width + 4));
 
         _previousButton = IconButton("\uE892", "上一项 / 上一页");
@@ -145,6 +147,29 @@ internal sealed class SharedPreviewDock : Panel
         for (int i = 0; i < cells.Length; i++) transport.Controls.Add(cells[i], i, 0);
         layout.Controls.Add(transport, 0, 2);
 
+        // The fixed-width columns take ~616px, which left the progress track only a few pixels wide at
+        // the default window size. While the track would be shorter than MinProgressWidth, drop the
+        // least essential columns in order: the volume icon + slider, then the timecode, then the
+        // 适应/填充 button (video only). Default size drops just the volume; 800×600 drops all three.
+        int[][] droppable = { new[] { 6, 7 }, new[] { 4 }, new[] { 9 } };
+        int dropped = 0;
+        transport.Resize += (_, _) =>
+        {
+            int available = transport.ClientSize.Width - transport.Padding.Horizontal;
+            int fixedWidth = columnWidths.Where(w => w > 0).Sum(w => w + 4);
+            int drop = 0;
+            while (drop < droppable.Length && available - fixedWidth < MinProgressWidth)
+                fixedWidth -= droppable[drop++].Sum(column => columnWidths[column] + 4);
+            if (drop == dropped) return;
+            dropped = drop;
+            for (int group = 0; group < droppable.Length; group++)
+                foreach (int column in droppable[group])
+                {
+                    bool show = group >= drop;
+                    transport.ColumnStyles[column].Width = show ? columnWidths[column] + 4 : 0;
+                    cells[column].Visible = show;
+                }
+        };
 
         // 「信号源窗口」: what is on the extended display right now.
         var sourcesHeader = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty, Padding = new Padding(2, 2, 0, 0) };
