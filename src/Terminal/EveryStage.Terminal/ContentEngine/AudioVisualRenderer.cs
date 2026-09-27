@@ -62,4 +62,46 @@ internal static class AudioVisualRenderer
 
         return bitmap;
     }
+
+    /// <summary>A cover image (aspect-fitted in the upper area) or a document glyph when there is none,
+    /// with a title and a caption line underneath — the Preview card for content that can only really
+    /// open on the extended display (Office documents in WPS).</summary>
+    public static Bitmap CreateCoverCard(Size size, Image? cover, string title, string caption)
+    {
+        int width = Math.Max(1, size.Width);
+        int height = Math.Max(1, size.Height);
+        var bitmap = new Bitmap(width, height);
+        using var g = Graphics.FromImage(bitmap);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+        using (var background = new SolidBrush(Color.FromArgb(255, 24, 24, 28)))
+            g.FillRectangle(background, 0, 0, width, height);
+
+        int textBand = Math.Max(48, height / 4);
+        var coverArea = new Rectangle(width / 12, height / 12, width - width / 6, Math.Max(1, height - textBand - height / 12 - 8));
+        if (cover != null && cover.Width > 0 && cover.Height > 0)
+        {
+            float scale = Math.Min(coverArea.Width / (float)cover.Width, coverArea.Height / (float)cover.Height);
+            int w = Math.Max(1, (int)(cover.Width * scale)), h = Math.Max(1, (int)(cover.Height * scale));
+            g.DrawImage(cover, coverArea.X + (coverArea.Width - w) / 2, coverArea.Y + (coverArea.Height - h) / 2, w, h);
+        }
+        else
+        {
+            int glyph = Math.Min(coverArea.Width, coverArea.Height) / 2;
+            var page = new Rectangle(coverArea.X + (coverArea.Width - glyph * 3 / 4) / 2, coverArea.Y + (coverArea.Height - glyph) / 2, glyph * 3 / 4, glyph);
+            using var pageBrush = new SolidBrush(Color.FromArgb(255, 60, 66, 80));
+            g.FillRectangle(pageBrush, page);
+        }
+
+        using var titleFont = new Font("Segoe UI Semibold", Math.Max(10f, height / 22f));
+        using var captionFont = new Font("Segoe UI", Math.Max(8.5f, height / 30f));
+        using var titleBrush = new SolidBrush(Color.FromArgb(255, 225, 228, 235));
+        using var captionBrush = new SolidBrush(Color.FromArgb(255, 150, 160, 178));
+        using var centered = new StringFormat { Alignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap };
+        float titleY = height - textBand + 4;
+        g.DrawString(title, titleFont, titleBrush, new RectangleF(8, titleY, width - 16, titleFont.GetHeight(g) + 4), centered);
+        g.DrawString(caption, captionFont, captionBrush, new RectangleF(8, titleY + titleFont.GetHeight(g) + 6, width - 16, captionFont.GetHeight(g) + 4), centered);
+        return bitmap;
+    }
 }

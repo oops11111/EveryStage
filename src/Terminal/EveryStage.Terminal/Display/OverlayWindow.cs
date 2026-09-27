@@ -11,7 +11,7 @@ namespace EveryStage.Terminal.Display;
 /// attached to <see cref="Handle"/> (see the Phase 0 demo's SwapChainPresenter) stays valid across
 /// every toggle instead of paying swap-chain setup cost on each "投".
 /// </summary>
-public sealed class OverlayWindow : Form
+public sealed class OverlayWindow : Form, IPlaybackOutput
 {
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
@@ -82,6 +82,13 @@ public sealed class OverlayWindow : Form
         VideoHost.Visible = true;
         VideoHost.BringToFront();
     }
+
+    // IPlaybackOutput — the Program channel draws here.
+    public void Post(Action action) => BeginInvoke(action);
+    public bool CanHostExternalDocumentWindow => true;
+    public System.Drawing.Rectangle ExternalDocumentBounds => Monitor.Bounds;
+    public void YieldToExternalWindow() => HideOverlay();
+    public void ReclaimFromExternalWindow() => ShowOverlay();
 
     /// <summary>Rebinds this (already-created) overlay to a different physical monitor, e.g. after
     /// a display-configuration change is detected. Does not hide/show — caller decides that.</summary>

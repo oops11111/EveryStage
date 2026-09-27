@@ -48,7 +48,11 @@ public sealed class FileLibraryStore
     /// here.</summary>
     public static MediaKind? InferKind(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
-        ".jpg" or ".jpeg" or ".png" or ".bmp" or ".gif" or ".tif" or ".tiff" or ".webp" => MediaKind.Image,
+        // .webp is deliberately NOT accepted: images decode through GDI+ (ImageContentRenderer), which
+        // has no WebP codec, so a WebP import could never preview. Existing library entries keep their
+        // stored kind and show a clear "unsupported format" card. (Follow-up: decode WebP via WIC.)
+        // GIF shows its first frame and TIFF its first page (labelled in Preview).
+        ".jpg" or ".jpeg" or ".png" or ".bmp" or ".gif" or ".tif" or ".tiff" => MediaKind.Image,
         ".mp4" or ".mkv" or ".mov" or ".avi" or ".wmv" or ".m4v" => MediaKind.Video,
         ".pdf" or ".doc" or ".docx" or ".xls" or ".xlsx" or ".ppt" or ".pptx" => MediaKind.Document,
         ".mp3" or ".wav" or ".flac" or ".aac" or ".m4a" or ".wma" => MediaKind.Audio,

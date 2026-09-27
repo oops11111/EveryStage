@@ -81,11 +81,39 @@ public sealed class AudioContentController : IDisposable
     // same only when this is 0 (immediately after Play(), never after a TrySeekTo()).
     private long _seekBaseTicks;
 
+    // Decode-to-target: MF audio seeks can land before the requested time (FLAC seek points, WMA
+    // packets), so decoded audio before the last requested start is trimmed away. See PcmTrim.
+    private long _seekTargetTicks;
+
     // Survives across Play() calls (unlike _audioClock, which gets torn down and rebuilt every
     // time) precisely so adjusting volume once stays in effect for whatever file plays next within
     // this controller's lifetime, not just the currently-playing one — matches how a real player's
     // volume control behaves, rather than silently resetting to full volume every track.
     private float _volume = 1f;
+
+    // Preview mutes itself while Program is live so preview audio never reaches the venue; the fade
+    // multiplier is remembered so toggling mute or volume mid-fade lands on the right level.
+    private bool _muted;
+    private bool _paused;
+    private double _fadeMultiplier = 1.0;
+
+    /// <summary>Silences output without affecting timing or position.</summary>
+    public bool Muted
+    {
+        get => _muted;
+        set { _muted = value; ApplyVolume(); }
+    }
+
+    public bool IsPaused => _paused;
+
+    private float EffectiveVolume => _muted ? 0f : (float)(_volume * _fadeMultiplier);
+
+    private void ApplyVolume()
+    {
+        var clock = _audioClock;
+        if (clock == null) return;
+        try { clock.Volume = EffectiveVolume; } catch (Exception) { }
+    }
 
     /// <summary>Playback volume, 0.0 (silent) to 1.0 (full) — clamped on write. Applied immediately
     /// to <see cref="_audioClock"/> if something is currently playing, and to whatever
@@ -97,7 +125,7 @@ public sealed class AudioContentController : IDisposable
         set
         {
             _volume = Math.Clamp(value, 0f, 1f);
-            if (_audioClock != null) _audioClock.Volume = _volume;
+            ApplyVolume();
         }
     }
 
@@ -135,7 +163,7 @@ public sealed class AudioContentController : IDisposable
     /// span at the start, AND — best-effort, see <see cref="AudioDecodeSource.TryGetDuration"/>'s
     /// own doc comment — ramps back down to 0 over the same span at the end. See
     /// <see cref="ComputeFadeMultiplier"/> for where both ramps are actually computed.</summary>
-    public void Play(string path, TimeSpan? fadeDuration = null)
+    public void Play(string path, TimeSpan? fadeDuration = null, TimeSpan startAt = default, bool startPaused = false)
     {
         Stop();
 
@@ -145,8 +173,12 @@ public sealed class AudioContentController : IDisposable
         // A zero-or-negative fade has nothing to ramp over, so it's treated as "no fade in/out"
         // rather than risking a divide-by-zero in ComputeFadeMultiplier.
         _totalDuration = source.TryGetDuration();
-        _seekBaseTicks = 0;
-        audioClock.Volume = _fadeDuration.HasValue ? 0f : _volume; // see _volume's own doc comment — a fresh clock otherwise starts at full volume regardless of what was set for the previous file.
+        // Take (Preview -> Program) starts the Program copy where Preview was.
+        _seekBaseTicks = startAt > TimeSpan.Zero && source.TrySeek(startAt) ? startAt.Ticks : 0;
+        _seekTargetTicks = _seekBaseTicks;
+        _paused = startPaused;
+        _fadeMultiplier = _fadeDuration.HasValue ? ComputeFadeMultiplier(_seekBaseTicks) : 1.0;
+        audioClock.Volume = EffectiveVolume; // see _volume's own doc comment — a fresh clock otherwise starts at full volume regardless of what was set for the previous file.
         _source = source;
         _audioClock = audioClock;
 
@@ -193,12 +225,14 @@ public sealed class AudioContentController : IDisposable
         StopPlaybackThreadAndClock();
 
         _seekBaseTicks = position.Ticks;
+        _seekTargetTicks = position.Ticks;
         var audioClock = new AudioPlaybackClock(_source.AudioSampleRate, _source.AudioChannels);
         // Computed up front (rather than left at some default and corrected on the next loop
         // iteration, tens of milliseconds later) so a seek landing inside the fade-in/fade-out
         // window doesn't produce a brief, audible full-volume blip before the first real chunk
         // corrects it.
-        audioClock.Volume = (float)(_volume * ComputeFadeMultiplier(_seekBaseTicks));
+        _fadeMultiplier = _fadeDuration.HasValue ? ComputeFadeMultiplier(_seekBaseTicks) : 1.0;
+        audioClock.Volume = EffectiveVolume;
         _audioClock = audioClock;
 
         StartPlaybackThread(_source, audioClock);
@@ -216,11 +250,11 @@ public sealed class AudioContentController : IDisposable
     /// that position stops advancing the moment WASAPI is paused — so the loop naturally blocks in
     /// its existing wait spin the same way it would if playback were simply running slow, not
     /// stopped. No-op if nothing is currently playing (<see cref="_audioClock"/> null).</summary>
-    public void Pause() => _audioClock?.Pause();
+    public void Pause() { _paused = true; _audioClock?.Pause(); }
 
     /// <summary>Resumes playback paused by <see cref="Pause"/> from the exact position it left off —
     /// see that method's own doc comment. No-op if nothing is currently playing.</summary>
-    public void Resume() => _audioClock?.Resume();
+    public void Resume() { _paused = false; _audioClock?.Resume(); }
 
     public void Stop()
     {
@@ -228,6 +262,8 @@ public sealed class AudioContentController : IDisposable
         _source?.Dispose();
         _source = null;
         _seekBaseTicks = 0;
+        _seekTargetTicks = 0;
+        _paused = false;
     }
 
     /// <summary>Shared teardown between <see cref="Stop"/> and <see cref="TrySeekTo"/> — the latter
@@ -255,7 +291,11 @@ public sealed class AudioContentController : IDisposable
         var cts = new CancellationTokenSource();
         _playbackCts = cts;
 
-        audioClock.Start();
+        // While paused (Play(startPaused) or a seek during pause) the fresh clock is NOT started: starting
+        // and immediately pausing races NAudio's playback thread, which calls IAudioClient::Start on its own
+        // thread and can do so after our Stop — audio then plays on while reported "paused". Resume()
+        // starts it (WasapiOut.Play covers both "never started" and "paused").
+        if (!_paused) audioClock.Start();
         _playbackThread = new Thread(() => RunPlaybackLoop(source, audioClock, cts.Token))
         {
             IsBackground = true,
@@ -287,12 +327,22 @@ public sealed class AudioContentController : IDisposable
     {
         while (!token.IsCancellationRequested)
         {
-            var chunk = source.ReadNextChunk();
-            if (chunk == null)
+            var decoded = source.ReadNextChunk();
+            if (decoded == null)
             {
+                // Decoding runs up to AheadBudgetTicks ahead of the speaker, so end-of-stream is NOT the
+                // end of playback. Reporting completion here fired ~1 s early: sequential playback then
+                // started the next item and cut the last second of every track. Wait for the device to
+                // drain what is queued (indefinitely while paused, abandoned on Stop/seek).
+                while (!token.IsCancellationRequested && audioClock.BufferedDurationTicks > 0)
+                    Thread.Sleep(10);
+                if (token.IsCancellationRequested) return;
                 PlaybackCompleted?.Invoke();
                 return;
             }
+            var trimmed = PcmTrim.ToTarget(decoded.Value.Pcm, decoded.Value.TimestampTicks, _seekTargetTicks, source.AudioSampleRate, source.AudioChannels);
+            if (trimmed == null) continue; // entirely before the seek target
+            var chunk = (DecodedAudioChunk?)new DecodedAudioChunk(trimmed.Value.Pcm, trimmed.Value.TimestampTicks);
 
             // Pace against playback: wait until the clock is within AheadBudgetTicks of this chunk's
             // position IN THE FILE. chunk.TimestampTicks is file-absolute (MF SetCurrentPosition does
@@ -307,7 +357,10 @@ public sealed class AudioContentController : IDisposable
             if (token.IsCancellationRequested) return;
 
             if (_fadeDuration.HasValue)
-                audioClock.Volume = (float)(_volume * ComputeFadeMultiplier(_seekBaseTicks + audioClock.PositionTicks));
+            {
+                _fadeMultiplier = ComputeFadeMultiplier(_seekBaseTicks + audioClock.PositionTicks);
+                audioClock.Volume = EffectiveVolume;
+            }
 
             audioClock.Enqueue(chunk.Value.Pcm);
             LevelChanged?.Invoke(ComputePeakLevel(chunk.Value.Pcm));

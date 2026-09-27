@@ -4,6 +4,20 @@ using Vortice.Mathematics;
 
 namespace EveryStage.Rendering;
 
+/// <summary>How a decoded frame is mapped onto the output surface.</summary>
+public enum VideoScaleMode
+{
+    /// <summary>Fill the whole output, ignoring aspect ratio (the original behavior; still what device
+    /// cast mirroring uses).</summary>
+    Stretch,
+    /// <summary>Keep the frame's aspect ratio and fit it entirely inside the output; the remaining
+    /// bars show the video processor's (black) background.</summary>
+    Fit,
+    /// <summary>Keep the frame's aspect ratio and cover the whole output, cropping the overflow
+    /// equally from both sides.</summary>
+    Fill,
+}
+
 /// <summary>
 /// Presents decoded NV12 DXVA output textures straight to the window's swap chain using the
 /// GPU video processor (ID3D11VideoProcessor), i.e. no ID3D11DeviceContext.Map / CPU readback and
@@ -28,6 +42,9 @@ public sealed class SwapChainPresenter : IDisposable
     private ID3D11VideoProcessorEnumerator? _enumerator;
     private ID3D11VideoProcessor? _processor;
     private int _inputWidth, _inputHeight, _outputWidth, _outputHeight;
+
+    /// <summary>Applied on every <see cref="PresentFrame"/>; safe to change between frames.</summary>
+    public VideoScaleMode ScaleMode { get; set; } = VideoScaleMode.Stretch;
 
     public SwapChainPresenter(D3D11Device gpu, IntPtr hwnd, int width, int height)
     {
@@ -124,8 +141,9 @@ public sealed class SwapChainPresenter : IDisposable
             InputSurface = inputView,
         };
 
-        _videoContext.VideoProcessorSetStreamSourceRect(_processor!, 0, true, new RectI(0, 0, frameWidth, frameHeight));
-        _videoContext.VideoProcessorSetStreamDestRect(_processor!, 0, true, new RectI(0, 0, _outputWidth, _outputHeight));
+        var (sourceRect, destRect) = ComputeRects(ScaleMode, frameWidth, frameHeight, _outputWidth, _outputHeight);
+        _videoContext.VideoProcessorSetStreamSourceRect(_processor!, 0, true, sourceRect);
+        _videoContext.VideoProcessorSetStreamDestRect(_processor!, 0, true, destRect);
         _videoContext.VideoProcessorBlt(_processor!, _outputView!, 0, 1, new[] { stream });
 
         // Result checked, not discarded. Vortice returns the HRESULT rather than throwing, so the
@@ -136,6 +154,31 @@ public sealed class SwapChainPresenter : IDisposable
         // so the success-category DXGI_STATUS_OCCLUDED (window minimised or covered, entirely normal)
         // still passes through untouched.
         _swapChain.Present(vsync ? 1u : 0u, PresentFlags.None).CheckError();
+    }
+
+    /// <summary>Source/destination rectangles for <paramref name="mode"/>. Pure and public so the
+    /// aspect-ratio math is testable without a GPU.</summary>
+    public static (RectI Source, RectI Dest) ComputeRects(VideoScaleMode mode, int frameWidth, int frameHeight, int outputWidth, int outputHeight)
+    {
+        var fullSource = new RectI(0, 0, frameWidth, frameHeight);
+        var fullDest = new RectI(0, 0, outputWidth, outputHeight);
+        if (mode == VideoScaleMode.Stretch || frameWidth <= 0 || frameHeight <= 0 || outputWidth <= 0 || outputHeight <= 0)
+            return (fullSource, fullDest);
+
+        double scaleFit = Math.Min(outputWidth / (double)frameWidth, outputHeight / (double)frameHeight);
+        if (mode == VideoScaleMode.Fit)
+        {
+            int w = Math.Clamp((int)Math.Round(frameWidth * scaleFit), 1, outputWidth);
+            int h = Math.Clamp((int)Math.Round(frameHeight * scaleFit), 1, outputHeight);
+            int x = (outputWidth - w) / 2, y = (outputHeight - h) / 2;
+            return (fullSource, new RectI(x, y, w, h));
+        }
+
+        double scaleFill = Math.Max(outputWidth / (double)frameWidth, outputHeight / (double)frameHeight);
+        int visibleW = Math.Clamp((int)Math.Round(outputWidth / scaleFill), 1, frameWidth);
+        int visibleH = Math.Clamp((int)Math.Round(outputHeight / scaleFill), 1, frameHeight);
+        int sx = (frameWidth - visibleW) / 2, sy = (frameHeight - visibleH) / 2;
+        return (new RectI(sx, sy, visibleW, visibleH), fullDest);
     }
 
     private void EnsureProcessor(int frameWidth, int frameHeight)

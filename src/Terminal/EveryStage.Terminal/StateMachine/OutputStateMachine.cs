@@ -1,5 +1,14 @@
 namespace EveryStage.Terminal.StateMachine;
 
+/// <summary>What is currently on the extended display. Local media and device casts are mutually
+/// exclusive (PLANNING §9).</summary>
+public enum ProgramSource
+{
+    None,
+    LocalMedia,
+    DeviceCast,
+}
+
 public enum OutputState { Idle, Active }
 
 /// <summary>
@@ -36,6 +45,11 @@ public sealed class OutputStateMachine
 
     public OutputState State { get; private set; } = OutputState.Idle;
 
+    /// <summary>What is on the extended display while <see cref="State"/> is Active — local media or a
+    /// device cast (mutually exclusive); <see cref="ProgramSource.None"/> when Idle.
+    /// Updated even when already Active, e.g. local content preempting a device cast.</summary>
+    public ProgramSource Source { get; private set; } = ProgramSource.None;
+
     /// <summary>投屏开关. Defaults to on — PLANNING.md doesn't specify a default; adjust here if
     /// product wants the Terminal to start with local-file casting disabled until a user opts in.</summary>
     public bool CastSwitchOn { get; private set; } = true;
@@ -51,6 +65,16 @@ public sealed class OutputStateMachine
             CastSwitchOn = on;
         }
         RaiseCastSwitchChanged(on);
+
+        // The switch governs local Program output only: turning it off takes local media off the
+        // extended display (Preview is a separate channel and keeps its content). A device cast is
+        // governed by the casting device and its pairing permission, so it is left running.
+        if (!on)
+        {
+            bool cutLocal;
+            lock (_gate) cutLocal = State == OutputState.Active && Source == ProgramSource.LocalMedia;
+            if (cutLocal) Disconnect();
+        }
     }
 
     /// <summary>Local file click. Returns true if this call actually started (or was already
@@ -60,11 +84,11 @@ public sealed class OutputStateMachine
     {
         bool switchOn;
         lock (_gate) { switchOn = CastSwitchOn; }
-        return switchOn && TransitionToActive();
+        return switchOn && TransitionToActive(ProgramSource.LocalMedia);
     }
 
     /// <summary>Device cast request. Always allowed, independent of the cast switch (§9.1).</summary>
-    public bool AcceptDeviceCastRequest() => TransitionToActive();
+    public bool AcceptDeviceCastRequest() => TransitionToActive(ProgramSource.DeviceCast);
 
     /// <summary>"断". No-op if already idle. Never changes <see cref="CastSwitchOn"/>.</summary>
     public void Disconnect()
@@ -73,14 +97,16 @@ public sealed class OutputStateMachine
         {
             if (State == OutputState.Idle) return;
             State = OutputState.Idle;
+            Source = ProgramSource.None;
         }
         RaiseStateChanged(OutputState.Idle);
     }
 
-    private bool TransitionToActive()
+    private bool TransitionToActive(ProgramSource source)
     {
         lock (_gate)
         {
+            Source = source;
             if (State == OutputState.Active) return true;
             State = OutputState.Active;
         }

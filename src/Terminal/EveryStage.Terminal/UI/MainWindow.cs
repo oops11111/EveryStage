@@ -1,6 +1,7 @@
 using EveryStage.Discovery;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Devices;
+using EveryStage.Terminal.Display;
 using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
@@ -46,6 +47,11 @@ public sealed class MainWindow : GradientForm
     private readonly Panel _contentHost;
     private readonly Panel _panelHost;
     private readonly SharedPreviewDock _previewDock;
+
+    // Preview channel: always exists, renders into the dock's monitor, independent of the extended
+    // display and the cast switch. _playback (above) is the Program channel.
+    private readonly PlaybackEngine _preview;
+    private readonly VideoSurface? _previewVideoSurface;
     private readonly ToastStack _toastStack;
     private readonly Label _statusLabel;
     private readonly System.Windows.Forms.Timer _declinedMessageTimer;
@@ -172,7 +178,19 @@ public sealed class MainWindow : GradientForm
         contentLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
         contentLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 214F));
         _panelHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
-        _previewDock = new SharedPreviewDock(stateMachine, playback) { Margin = new Padding(0, 10, 0, 0) };
+        _previewDock = new SharedPreviewDock(stateMachine) { Margin = new Padding(0, 10, 0, 0) };
+        _previewVideoSurface = TryCreateVideoSurface(_previewDock.PreviewSurface);
+        _previewDock.PreviewSurface.VideoHostResized += (w, h) =>
+        {
+            try { _previewVideoSurface?.Resize(w, h); } catch (Exception) { } // a lost device surfaces on the next present
+        };
+        _preview = new PlaybackEngine(PlaybackChannel.Preview, _previewDock.PreviewSurface, _previewVideoSurface,
+            settingsStore, scenarioStore, stateMachine: null);
+        _previewDock.BindPreview(_preview);
+        _previewDock.AttachProgram(playback);
+        _previewDock.TakeRequested += TakePreviewToProgram;
+        _previewDock.StopProgramRequested += StopProgramOutput;
+        _previewDock.RemoveFromLibraryRequested += RemoveFailedPreviewFileFromLibrary;
         contentLayout.Controls.Add(_panelHost, 0, 0);
         contentLayout.Controls.Add(_previewDock, 0, 1);
         _contentHost.Controls.Add(contentLayout);
@@ -197,13 +215,16 @@ public sealed class MainWindow : GradientForm
         // instance (and therefore one lock) removes that risk entirely rather than just accepting it.
         _fileOpLog = new FileOperationLogger();
 
-        _filesPanel = new FilesPanel(library, _fileOpLog, scenarioStore, scenarioRepository, _playback);
+        _filesPanel = new FilesPanel(library, _fileOpLog, scenarioStore, scenarioRepository, _preview);
         _filesPanel.FilePlayRequested += OnFilePlayRequested;
-        _filesPanel.PlaybackStopRequested += _stateMachine.Disconnect;
+        _filesPanel.TakeRequested += TakeFileToProgram;
+        _filesPanel.PlaybackStopRequested += () => _preview.Stop();
+        _filesPanel.StopProgramRequested += StopProgramOutput;
+        _filesPanel.IsProgramLive = () => _stateMachine.State == OutputState.Active;
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);
         _activitiesPanel = new ActivitiesPanel(
-            scenarioStore, scenarioRepository, library, _playback, _fileOpLog, stateMachine);
+            scenarioStore, scenarioRepository, library, _preview, _fileOpLog, stateMachine);
         _settingsPanel = new SettingsPanel(settingsStore, identity);
         foreach (Control page in new Control[] { _filesPanel, _devicesPanel, _activitiesPanel, _settingsPanel })
             _panelPalettes[page] = ModernUi.Palette;
@@ -315,9 +336,8 @@ public sealed class MainWindow : GradientForm
         _playback = playback;
         _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
         _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
-        _activitiesPanel.AttachPlaybackEngine(playback);
-        _filesPanel.AttachPlaybackEngine(playback);
-        _previewDock.AttachPlaybackEngine(playback);
+        // Files/Activities/audio bar operate the Preview engine; only the dock needs to know Program.
+        _previewDock.AttachProgram(playback);
         UpdateStatusLabel();
     }
 
@@ -343,61 +363,98 @@ public sealed class MainWindow : GradientForm
         foreach (Control hosted in _panelHost.Controls) _panelPalettes[hosted] = ModernUi.Palette;
     }
 
-    private void OnStateChanged(OutputState state) => UpdateStatusLabel();
-
-    private void OnFilePlayRequested(MediaFile file)
+    private void OnStateChanged(OutputState state)
     {
-        // PLANNING.md §9.1: turning the cast switch off means local preview, not a silent
-        // rejection. The managed output graph is deliberately not touched in this mode; let
-        // Windows' registered handler play/open the file on the operator display instead.
-        if (_playback != null && !_stateMachine.CastSwitchOn)
-        {
-            OpenLocalPreview(file);
-            return;
-        }
-
-        if (_playback != null)
-        {
-            _playback.RequestPlay(file);
-            return;
-        }
-
-        // A dedicated output display is not available, so the D3D-backed output graph cannot be
-        // created. Do not silently ignore the click: open the media through Windows' registered
-        // local application so operators can still verify the imported file on a single-monitor
-        // setup. Once an extended display is attached, the same action automatically returns to
-        // EveryStage's managed output path through AttachPlaybackEngine.
-        OpenLocalPreview(file);
+        // Program on air (local media or a device cast) → Preview goes silent so monitor audio can
+        // never leak into the venue; it comes back when Program stops.
+        _preview.Muted = state == OutputState.Active;
+        UpdateStatusLabel();
     }
 
-    private void OpenLocalPreview(MediaFile file)
+    /// <summary>Double-click / 播放·预览 / 在本地预览: load and play in the Preview monitor. Always internal —
+    /// no extended display or cast switch involved, and never Windows' default application (that is
+    /// only the explicit "使用系统默认程序打开" command, see <see cref="ExternalOpener"/>).</summary>
+    private void OnFilePlayRequested(MediaFile file) => _preview.RequestPlay(file, PlaybackTrigger.ManualSkip);
+
+    private static VideoSurface? TryCreateVideoSurface(PreviewSurface surface)
     {
         try
         {
-            if (!File.Exists(file.SourcePath))
-                throw new FileNotFoundException("文件不存在或已被移动。", file.SourcePath);
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(file.SourcePath) { UseShellExecute = true });
-            _statusLabel.Text = $"● 本机预览：{Path.GetFileName(file.SourcePath)}";
+            return new VideoSurface(surface.VideoHost.Handle, Math.Max(1, surface.VideoHost.ClientSize.Width), Math.Max(1, surface.VideoHost.ClientSize.Height));
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            MessageBox.Show(this, $"无法使用系统默认程序预览该文件：\n\n{ex.Message}",
-                "本机预览失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            // No usable D3D11 device: images/documents/audio still preview; video shows an error card.
+            return null;
         }
+    }
+
+    /// <summary>"投到屏幕" on a file: show it in Preview and put it on the extended display.</summary>
+    private void TakeFileToProgram(MediaFile file)
+    {
+        if (!ReferenceEquals(_preview.CurrentFile, file)) _preview.RequestPlay(file, PlaybackTrigger.ManualSkip);
+        TakeSnapshot(new PlaybackEngine.Snapshot(file, null, -1, TimeSpan.Zero, false));
+    }
+
+    /// <summary>"投到屏幕" in the dock: continue the Preview content (file, activity position and play
+    /// position) on Program, then hold Preview on that frame/position so it can be re-taken.</summary>
+    private void TakePreviewToProgram()
+    {
+        if (_preview.State is PlaybackChannelState.Loading or PlaybackChannelState.Failed || _preview.CaptureSnapshot() is not { } snapshot)
+        {
+            _toastStack.Show("预览中没有可以投到屏幕的内容。先在文件或活动里双击一个文件预览。", ToastSeverity.Warning);
+            return;
+        }
+        if (TakeSnapshot(snapshot) && _preview.CanPause) _preview.Pause();
+    }
+
+    private bool TakeSnapshot(PlaybackEngine.Snapshot snapshot)
+    {
+        if (_playback == null)
+        {
+            _toastStack.Show("未连接扩展屏，无法投到屏幕。连接扩展显示器后即可投出；本地预览不受影响。", ToastSeverity.Warning);
+            return false;
+        }
+        if (_stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.DeviceCast
+            && MessageBox.Show(this, "扩展屏正在输出设备来投的画面。\n切换为本地内容会结束这次设备投屏，是否继续？", "投到屏幕",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return false;
+        if (!_stateMachine.CastSwitchOn)
+        {
+            if (MessageBox.Show(this, "投屏开关已关闭（可在托盘菜单中切换）。\n是否开启投屏开关并投到屏幕？", "投到屏幕",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return false;
+            _stateMachine.SetCastSwitch(true);
+        }
+        return _playback.RequestPlay(snapshot);
+    }
+
+    /// <summary>"停止输出": take the extended display off air. Preview keeps its content and position.</summary>
+    private void StopProgramOutput() => _stateMachine.Disconnect();
+
+    private void RemoveFailedPreviewFileFromLibrary(MediaFile file)
+    {
+        var libraryEntry = _library.Files.FirstOrDefault(f => f.Id == file.Id);
+        if (libraryEntry == null)
+        {
+            _toastStack.Show("该文件不在文件库中（可能来自活动），请在活动页中移除。", ToastSeverity.Warning);
+            return;
+        }
+        if (RemoveFileFromLibrary(libraryEntry)) _preview.Stop();
     }
 
     private void OnSettingsChanged(AppSettings settings) => ApplyTheme(settings.Theme);
 
     private void UpdateStatusLabel()
     {
-        if (_playback == null)
-        {
-            _statusLabel.Text = "● 本机预览模式 · 未连接扩展屏"; // 单行：状态卡只有一行高（多行会被截掉第二行）。
-            _filesPanel.SetOutputActive(false);
-            return;
-        }
+        // 单行：状态卡只有一行高（多行会被截掉第二行）。
         bool active = _stateMachine.State == OutputState.Active;
-        _statusLabel.Text = active ? "● 输出中" : "○ 待机中";
+        if (_playback == null)
+            _statusLabel.Text = active ? "● 输出中 · 设备来投" : "● 仅本地预览 · 未连接扩展屏";
+        else if (active)
+            _statusLabel.Text = _stateMachine.Source == ProgramSource.DeviceCast ? "● 输出中 · 设备来投" : "● 输出中 · 本地媒体";
+        else
+            _statusLabel.Text = _stateMachine.CastSwitchOn ? "○ 待机中 · 可投到屏幕" : "○ 待机中 · 投屏开关已关闭";
         _filesPanel.SetOutputActive(active);
     }
 
@@ -466,16 +523,17 @@ public sealed class MainWindow : GradientForm
 
     /// <summary>Same operation as <c>FilesPanel.OnRemoveClick</c> (library removal + log + grid
     /// refresh), reached from a Toast instead of that panel's own "移除" button.</summary>
-    private void RemoveFileFromLibrary(MediaFile file)
+    private bool RemoveFileFromLibrary(MediaFile file)
     {
         try { _library.Remove(file.Id); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             MessageBox.Show(this, $"移除未保存：{ex.Message}", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
+            return false;
         }
         _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
         _filesPanel.Refresh_();
+        return true;
     }
 
     protected override void Dispose(bool disposing)
@@ -491,6 +549,9 @@ public sealed class MainWindow : GradientForm
                 _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
             }
             _declinedMessageTimer.Dispose();
+            // Preview engine first (it joins its playback threads), then the surface it presents through.
+            _preview.Dispose();
+            _previewVideoSurface?.Dispose();
 
             // ShowPanel() only ever keeps the *currently active* panel inside _contentHost.Controls
             // (Clear() detaches the rest without disposing them) — the inactive three would

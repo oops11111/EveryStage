@@ -72,6 +72,13 @@ public sealed class VideoSurface : IDisposable
         }
     }
 
+    /// <summary>Fit/Fill/Stretch for local media; device cast mirroring keeps the default Stretch.</summary>
+    public VideoScaleMode ScaleMode
+    {
+        get { lock (_lock) return Presenter.ScaleMode; }
+        set { lock (_lock) Presenter.ScaleMode = value; }
+    }
+
     public void Resize(int width, int height)
     {
         lock (_lock) Presenter.Resize(width, height);

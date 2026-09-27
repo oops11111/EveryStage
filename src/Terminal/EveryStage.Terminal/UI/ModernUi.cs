@@ -567,11 +567,14 @@ internal sealed class RoundedActionButton : Button
         var bounds = ClientRectangle;
         bounds.Inflate(-1, -1);
         using var path = Rounded(bounds, Math.Min(8, bounds.Height / 2));
-        using var fill = new SolidBrush(BackColor);
+        // Disabled: fade the fill toward the surface and drop the accent/danger border, so a primary or
+        // danger button that can't be used right now doesn't look exactly like one that can.
+        Color fillColor = Enabled ? BackColor : Blend(BackColor, ModernUi.Surface, 0.7);
+        using var fill = new SolidBrush(fillColor);
         e.Graphics.FillPath(fill, path);
         if (FlatAppearance.BorderSize > 0)
         {
-            using var border = new Pen(FlatAppearance.BorderColor, FlatAppearance.BorderSize);
+            using var border = new Pen(Enabled ? FlatAppearance.BorderColor : ModernUi.Border, FlatAppearance.BorderSize);
             e.Graphics.DrawPath(border, path);
         }
         TextRenderer.DrawText(e.Graphics, Text, Font, bounds,
@@ -579,6 +582,12 @@ internal sealed class RoundedActionButton : Button
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(bounds, -5, -5));
     }
+
+    private static Color Blend(Color from, Color to, double amount) => Color.FromArgb(
+        from.A,
+        (int)(from.R + (to.R - from.R) * amount),
+        (int)(from.G + (to.G - from.G) * amount),
+        (int)(from.B + (to.B - from.B) * amount));
 
     private static GraphicsPath Rounded(Rectangle r, int radius)
     {

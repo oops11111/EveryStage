@@ -83,6 +83,7 @@ static async Task RunTests()
         using (File.Open(pdfPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
         Console.WriteLine("PASS: native PDF rendering, async page boundaries, replacement during paging, disposal during paging/load, file release");
         TestAudioLayout(directory);
+        PreviewProgramTests.Run(directory);
     }
     finally { Directory.Delete(directory, true); }
 }
@@ -172,7 +173,7 @@ static void TestAudioLayout(string directory)
                 Require(file.Id == audio.Id, "Keyboard played a different file.");
                 playRequests++;
             };
-            type.GetEvent("CastRequested")!.AddEventHandler(bar, onPlay);
+            type.GetEvent("PlayRequested")!.AddEventHandler(bar, onPlay);
             var keyHandler = type.GetMethod("OnKeyDown", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
             var space = new KeyEventArgs(Keys.Space);
             keyHandler.Invoke(bar, new object[] { space });
@@ -185,7 +186,7 @@ static void TestAudioLayout(string directory)
                 "Keyboard loop setting was not persisted.");
             keyHandler.Invoke(bar, new object[] { new KeyEventArgs(Keys.L) });
             Require(audio.OnCompletion == EveryStage.Terminal.Data.CompletionAction.NextItem, "Keyboard could not disable looping.");
-            type.GetEvent("CastRequested")!.RemoveEventHandler(bar, onPlay);
+            type.GetEvent("PlayRequested")!.RemoveEventHandler(bar, onPlay);
         }
         catch (Exception ex) { failure = ex; }
     });

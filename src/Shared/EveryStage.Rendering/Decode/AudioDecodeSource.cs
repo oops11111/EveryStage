@@ -10,14 +10,12 @@ namespace EveryStage.Rendering.Decode;
 /// as a "video" stream). Kept as an entirely separate class rather than adding an "audio-only" mode
 /// to <see cref="VideoDecodeSource"/>: that class's constructor takes a <see cref="EveryStage.Rendering.D3D11Device"/>
 /// and sets <c>MF_SOURCE_READER_D3D_MANAGER</c>/<c>MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS</c> purely
-/// for the video stream's DXVA hardware decode — none of that is needed or meaningful here, so this
-/// class's constructor takes no GPU device at all, which a bolted-on flag couldn't express as
-/// cleanly as a separate type.
+/// for the video stream's DXVA hardware decode — none of that is needed or meaningful here.
 ///
-/// Reuses <see cref="EveryStage.Rendering.Decode.DecodedAudioChunk"/> (same shape
-/// <see cref="VideoDecodeSource"/> already defines) rather than declaring a duplicate record — the
-/// two decode sources happen to produce identically-shaped chunks, and <see cref="EveryStage.Terminal.Playback.PlaybackEngine"/>'s
-/// eventual consumer doesn't care which decode source a given chunk came from.
+/// Duration and seeking go through <see cref="MediaReaderInfo"/>'s strongly-typed calls. They used
+/// to go through <c>dynamic</c> with guessed member shapes that turned out not to exist on the
+/// installed Vortice version, so both silently failed every time: seeking never moved and the total
+/// duration was never known (no progress readout, no fade-out).
 /// </summary>
 public sealed class AudioDecodeSource : IDisposable
 {
@@ -25,47 +23,58 @@ public sealed class AudioDecodeSource : IDisposable
     public int AudioChannels { get; }
     public int AudioSampleRate { get; }
 
+    /// <summary>Native (compressed) format name, e.g. "MP3" / "AAC"; null if unreadable.</summary>
+    public string? AudioCodec { get; }
+
     public AudioDecodeSource(string filePathOrUrl)
     {
         MediaFactory.MFStartup().CheckError();
 
-        // Bug fixed here (same shape as H264HardwareDecoder/H264HardwareEncoder's own constructor
-        // fixes, see either's doc comment): MFStartup() above already succeeded by the time
-        // execution reaches this line — but if anything below throws, this constructor never
-        // finishes, so no AudioDecodeSource instance ever exists for its owner to later Dispose()
-        // and hit the MFShutdown() call below. Without this try/catch, a bad/corrupt/unsupported
-        // audio file (a real, not hypothetical, condition — this class exists specifically to open
-        // arbitrary user-supplied files) would leak one MFStartup() reference count every time.
+        // MFStartup() above already succeeded; if anything below throws, no instance exists for the
+        // caller to Dispose(), so release the reader and balance MFStartup here (same shape as every
+        // other MF-backed constructor in this repo).
         try
         {
-            // No attributes are actually needed for a pure audio read (no D3D hardware transform to
-            // enable) — constructing a (currently empty) attributes object mirrors
-            // MFCreateSourceReaderFromURL's call shape in VideoDecodeSource rather than guessing whether
-            // Vortice's binding accepts a null IMFAttributes here, matching this project's convention of
-            // not introducing a new unverified parameter shape when an already-used one is available.
-            var attributes = MediaFactory.MFCreateAttributes(0);
-            using (attributes)
+            try
             {
+                using var attributes = MediaFactory.MFCreateAttributes(0);
                 _reader = MediaFactory.MFCreateSourceReaderFromURL(filePathOrUrl, attributes);
             }
-
-            var audioType = MediaFactory.MFCreateMediaType();
-            using (audioType)
+            catch (Exception ex)
             {
-                audioType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
-                audioType.Set(MF_MT_SUBTYPE, MFAudioFormat_PCM);
-                _reader.SetCurrentMediaType(SourceReaderIndex.FirstAudioStream, audioType);
+                throw new MediaOpenException(MediaFailureStage.Open, "无法打开音频文件：" + ex.Message, ex);
             }
 
-            using var actualAudioType = _reader.GetCurrentMediaType(SourceReaderIndex.FirstAudioStream);
-            AudioChannels = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioNumChannels);
-            AudioSampleRate = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioSamplesPerSecond);
+            AudioCodec = MediaReaderInfo.TryDescribeNativeFormat(_reader, SourceReaderIndex.FirstAudioStream);
+
+            try
+            {
+                using var audioType = MediaFactory.MFCreateMediaType();
+                audioType.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+                audioType.Set(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+                // AudioPlaybackClock and ComputePeakLevel both assume 16-bit PCM. Request it
+                // explicitly and verify the negotiated result instead of assuming (audit C-6: a
+                // decoder defaulting to 24/32-bit would otherwise play as noise with no error).
+                audioType.Set(MediaTypeAttributeKeys.AudioBitsPerSample, 16u);
+                _reader.SetCurrentMediaType(SourceReaderIndex.FirstAudioStream, audioType);
+
+                using var actualAudioType = _reader.GetCurrentMediaType(SourceReaderIndex.FirstAudioStream);
+                uint bits = actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioBitsPerSample);
+                if (bits != 16) throw new NotSupportedException($"解码器输出 {bits} 位 PCM，播放链路需要 16 位");
+                AudioChannels = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioNumChannels);
+                AudioSampleRate = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioSamplesPerSecond);
+            }
+            catch (Exception ex)
+            {
+                string message = AudioCodec == null
+                    ? "文件中没有可解码的音频流：" + ex.Message
+                    : $"音频编码 {AudioCodec} 无法解码（系统缺少对应解码器或编码不受支持）：" + ex.Message;
+                throw new MediaOpenException(MediaFailureStage.AudioFormat, message, ex, audioCodec: AudioCodec);
+            }
 
             _reader.SetStreamSelection(SourceReaderIndex.FirstAudioStream, true);
-            // Deliberately never calls SetStreamSelection for the video stream sentinel — leaving it
-            // unselected (the IMFSourceReader default for a stream this class never asks about) means
-            // ReadSample is never called against it and this class never has to handle a video sample it
-            // has no surface to present.
+            // Deliberately never selects the video stream sentinel — leaving it unselected means
+            // ReadSample is never called against it (embedded cover art, etc.).
         }
         catch
         {
@@ -75,93 +84,12 @@ public sealed class AudioDecodeSource : IDisposable
         }
     }
 
-    /// <summary>Best-effort file duration, for <c>PlaybackEngine</c>'s fade-out (this project's
-    /// README — <c>MediaFile.FadeDuration</c>/<c>VolumeFollowsFade</c>'s fade-out half). UNVERIFIED
-    /// more thoroughly than any other Media Foundation call in this class: every other call here
-    /// goes through a strongly-typed Vortice.MediaFoundation member already exercised successfully
-    /// elsewhere in this same file (<c>_reader.GetCurrentMediaType</c>,
-    /// <see cref="IMFAttributes.Get{T}"/>), but this sandbox has never had
-    /// <c>IMFSourceReader::GetPresentationAttribute</c> — or its C# binding's exact shape — to check
-    /// against anything, not even a raw GUID diff against Windows SDK headers the way
-    /// <see cref="WellKnownGuids"/>'s other constants at least allow. To keep a wrong guess here
-    /// from being a BUILD-BREAKING mistake (unlike a wrong runtime value, which the rest of this
-    /// codebase can already degrade around), the entire call — the method name itself, not just the
-    /// PROPVARIANT-equivalent result's value extraction — goes through <c>dynamic</c>, the same
-    /// late-bound escape hatch <c>Poc.WpsComInteropSpike</c> already uses for its own
-    /// never-verified-against-a-real-install COM surface. A <c>dynamic</c> member access that
-    /// doesn't actually exist on the underlying type throws
-    /// <see cref="Microsoft.CSharp.RuntimeBinder.RuntimeBinderException"/> at the call site, at
-    /// runtime — caught below like everything else this method can fail on — instead of the whole
-    /// project refusing to build over one guessed member name. Returns null on ANY failure (wrong
-    /// method name, wrong parameter shape, wrong Variant accessor, or a genuine "this source
-    /// doesn't know its own duration") — every caller already treats null as "no fade-out for this
-    /// file".</summary>
-    public TimeSpan? TryGetDuration()
-    {
-        try
-        {
-            dynamic reader = _reader;
-            dynamic variant = reader.GetPresentationAttribute(MF_SOURCE_READER_MEDIASOURCE, MF_PD_DURATION);
-            long ticks = ExtractDurationTicks(variant);
-            // MF_PD_DURATION (mfidl.h) is documented as 100ns units — the exact same unit
-            // TimeSpan.Ticks uses — so a successful read needs no unit conversion beyond the
-            // accessor guess above and this final widen-to-long.
-            return ticks > 0 ? TimeSpan.FromTicks(ticks) : null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
+    /// <summary>File duration, or null if the container doesn't report one. Every caller treats null
+    /// as "unknown duration" (no fade-out, position shown without a total).</summary>
+    public TimeSpan? TryGetDuration() => MediaReaderInfo.TryGetDuration(_reader);
 
-    /// <summary>Vortice.MediaFoundation's exact PROPVARIANT-wrapper shape for a VT_UI8 result has
-    /// never been checked against a real installed package in this sandbox (see
-    /// <see cref="TryGetDuration"/>'s own doc comment) — tries several plausible accessor shapes in
-    /// turn, via <c>dynamic</c> so a wrong guess throws (caught, tries the next one) instead of
-    /// failing to compile. Each candidate matches a shape seen across different .NET COM/PROPVARIANT
-    /// wrapper APIs; throws if none of them work, which <see cref="TryGetDuration"/>'s own
-    /// catch-all then turns into a null return the same as any other failure.</summary>
-    private static long ExtractDurationTicks(dynamic variant)
-    {
-        try { return checked((long)variant.Value); } catch { }
-        try { return checked((long)variant.UInt64); } catch { }
-        try { return checked((long)(ulong)variant); } catch { }
-        throw new InvalidOperationException("Unable to extract a UInt64 value from the Variant returned by GetPresentationAttribute.");
-    }
-
-    /// <summary>Best-effort seek, for <c>ContentEngine.AudioContentController.TrySeekTo</c> (PLANNING.md
-    /// §8.2's audio play-bar "进度"). The SECOND-least-verified Media Foundation call in this
-    /// codebase, right after <see cref="TryGetDuration"/> and for the identical reason — this
-    /// sandbox has never had <c>IMFSourceReader::SetCurrentPosition</c>, or its C# binding's exact
-    /// shape, to check against anything. Worse than <see cref="TryGetDuration"/> in one respect: that
-    /// call only needed to READ an out-parameter value of unknown shape, but this one needs to WRITE
-    /// one — construct some value that a completely unverified parameter type will accept as a valid
-    /// VT_I8 PROPVARIANT — so there's a second independent guess here (does passing a raw
-    /// <see cref="long"/> tick count work at all, or does the real parameter type demand an actual
-    /// Variant/PropVariant wrapper this class has no confirmed way to construct?). Same mitigation as
-    /// <see cref="TryGetDuration"/>: the entire call goes through <c>dynamic</c>, so a wrong guess —
-    /// wrong method name, wrong parameter count/order, or an argument type <c>dynamic</c> can't
-    /// convert to whatever the real parameter type is — throws
-    /// <see cref="Microsoft.CSharp.RuntimeBinder.RuntimeBinderException"/> at runtime instead of
-    /// failing to compile, caught below and turned into a plain <c>false</c> return. Callers already
-    /// treat that as "seek did nothing for this file", the same graceful degradation
-    /// <see cref="TryGetDuration"/> already established for duration.</summary>
-    public bool TrySeek(TimeSpan position)
-    {
-        try
-        {
-            dynamic reader = _reader;
-            // Guid.Empty (GUID_NULL) selects IMFSourceReader's default time format — 100ns units,
-            // the same unit TimeSpan.Ticks uses, so position.Ticks needs no conversion if this
-            // guess about the parameter shape happens to be right.
-            reader.SetCurrentPosition(Guid.Empty, position.Ticks);
-            return true;
-        }
-        catch
-        {
-            return false;
-        }
-    }
+    /// <summary>Repositions the reader for <c>AudioContentController.TrySeekTo</c>.</summary>
+    public bool TrySeek(TimeSpan position) => MediaReaderInfo.TrySeek(_reader, position);
 
     // A null sample WITHOUT EndOfStream is a documented, normal mid-stream event (MF_SOURCE_READERF_
     // STREAMTICK — a gap/discontinuity — or a mid-stream media-type change), NOT end of playback. The
@@ -184,9 +112,7 @@ public sealed class AudioDecodeSource : IDisposable
     }
 
     /// <summary>Returns null once the audio stream reports end-of-stream (a mid-stream empty read is
-    /// retried past rather than mistaken for EOS — see <see cref="ReadNextNonEmptySample"/>). Same
-    /// PCM-off-as-CPU-memory reasoning as <see cref="VideoDecodeSource.ReadNextAudioChunk"/> — audio was
-    /// never part of the zero-copy path either decode source exists to validate.</summary>
+    /// retried past rather than mistaken for EOS — see <see cref="ReadNextNonEmptySample"/>).</summary>
     public DecodedAudioChunk? ReadNextChunk()
     {
         var sample = ReadNextNonEmptySample(out var timestamp);
@@ -196,8 +122,6 @@ public sealed class AudioDecodeSource : IDisposable
         using (sample)
         using (var buffer = sample.ConvertToContiguousBuffer())
         {
-            // NOTE: same unverified Lock() signature caveat as VideoDecodeSource.ReadNextAudioChunk
-            // — see that method's doc comment, not repeated per-callsite elsewhere in this repo.
             buffer.Lock(out var data, out _, out var currentLength);
             var pcm = new byte[currentLength];
             System.Runtime.InteropServices.Marshal.Copy(data, pcm, 0, currentLength);

@@ -45,6 +45,10 @@ internal sealed class AudioPlayerBar : GlassPanel
     /// <c>FilePlayRequested</c> event so playback behavior is byte-for-byte the same as before.</summary>
     public event Action<MediaFile>? CastRequested;
 
+    /// <summary>Raised by the round play button when the bound file isn't loaded yet: play it in the
+    /// Preview monitor with EveryStage's own audio controller (never an external player).</summary>
+    public event Action<MediaFile>? PlayRequested;
+
     public AudioPlayerBar(FileLibraryStore library, FileOperationLogger fileOpLog, PlaybackEngine? playback)
     {
         _library = library;
@@ -336,7 +340,7 @@ internal sealed class AudioPlayerBar : GlassPanel
             }
             else
             {
-                CastRequested?.Invoke(_boundFile);
+                PlayRequested?.Invoke(_boundFile);
                 RefreshLiveState();
             }
             return;

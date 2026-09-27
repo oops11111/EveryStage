@@ -96,7 +96,17 @@ public sealed class FilesPanel : UserControl
     /// this and nothing more.</summary>
     public event Action<MediaFile>? FilePlayRequested;
 
+    /// <summary>"停止预览": stop the Preview monitor (Program is unaffected).</summary>
     public event Action? PlaybackStopRequested;
+
+    /// <summary>"投到屏幕": put this file on the extended display (via Preview → Program).</summary>
+    public event Action<MediaFile>? TakeRequested;
+
+    /// <summary>"停止输出": take the extended display off air (Preview is unaffected).</summary>
+    public event Action? StopProgramRequested;
+
+    /// <summary>Whether Program is currently on air — enables the context menu's "停止输出".</summary>
+    public Func<bool>? IsProgramLive { get; set; }
 
     public FilesPanel(
         FileLibraryStore library, FileOperationLogger fileOpLog, ScenarioStore scenarioStore,
@@ -107,7 +117,11 @@ public sealed class FilesPanel : UserControl
         _scenarioStore = scenarioStore;
         _scenarioRepository = scenarioRepository;
         _playback = playback;
-        if (_playback != null) _playback.FileStarted += OnFileStarted;
+        if (_playback != null)
+        {
+            _playback.FileStarted += OnFileStarted;
+            _playback.StateChanged += OnPreviewStateChanged;
+        }
         Dock = DockStyle.Fill;
         AllowDrop = true;
         BackColor = ModernUi.Background;
@@ -249,6 +263,11 @@ public sealed class FilesPanel : UserControl
         // Audio remains a distinct horizontal playback zone, separate from the visual-media cards.
         _audioBar = new AudioPlayerBar(library, fileOpLog, playback) { Dock = DockStyle.Bottom };
         _audioBar.CastRequested += OnCastFromAudioBar;
+        _audioBar.PlayRequested += file =>
+        {
+            FilePlayRequested?.Invoke(file); // internal Preview playback — never an external player
+            _audioBar.RefreshLiveState();
+        };
         var audioBarSpacer = new Panel { Dock = DockStyle.Bottom, Height = 12, BackColor = Color.Transparent };
         _audioHeading = new Label
         {
@@ -310,7 +329,11 @@ public sealed class FilesPanel : UserControl
             _thumbnailCache.Clear();
             _thumbnailCacheOrder.Clear();
             _fileContextMenu.Dispose();
-            if (_playback != null) _playback.FileStarted -= OnFileStarted;
+            if (_playback != null)
+            {
+                _playback.FileStarted -= OnFileStarted;
+                _playback.StateChanged -= OnPreviewStateChanged;
+            }
             _audioBarRefreshTimer.Dispose();
         }
         base.Dispose(disposing);
@@ -371,14 +394,28 @@ public sealed class FilesPanel : UserControl
             ForeColor = ModernUi.Text,
             Renderer = new ToolStripProfessionalRenderer(new FileMenuColorTable()),
         };
+        // Everything above the last separator stays inside EveryStage (Preview / Program). The only
+        // hand-off to Windows is the explicit last item — never a side effect of playing.
+        menu.Items.Add("在本地预览", null, (_, _) => { if (_contextFile != null) FilePlayRequested?.Invoke(_contextFile); });
+        menu.Items.Add("投到屏幕", null, (_, _) => { if (_contextFile != null) TakeRequested?.Invoke(_contextFile); });
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("循环播放", null, (_, _) => SetCompletionAndPlay(CompletionAction.Loop));
         menu.Items.Add("顺序播放", null, (_, _) => StartSequentialPlayback());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("停止播放", null, (_, _) => PlaybackStopRequested?.Invoke());
+        menu.Items.Add("停止预览", null, (_, _) => PlaybackStopRequested?.Invoke());
+        var stopOutputItem = new ToolStripMenuItem("停止输出", null, (_, _) => StopProgramRequested?.Invoke());
+        menu.Items.Add(stopOutputItem);
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("删除文件", null, (_, _) => OnRemoveClick(this, EventArgs.Empty));
+        menu.Items.Add("加入活动...", null, OnAddToActivityClick);
+        menu.Items.Add("从文件库移除", null, (_, _) => OnRemoveClick(this, EventArgs.Empty));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("使用系统默认程序打开", null, (_, _) =>
+        {
+            if (_contextFile != null) ExternalOpener.OpenWithDefaultApp(FindForm(), _contextFile.SourcePath);
+        });
         menu.Opening += (_, _) =>
         {
+            stopOutputItem.Enabled = IsProgramLive?.Invoke() == true;
             menu.BackColor = ModernUi.Surface;
             menu.ForeColor = ModernUi.Text;
             foreach (ToolStripItem item in menu.Items)
@@ -800,9 +837,16 @@ public sealed class FilesPanel : UserControl
     /// <summary>Links the floating preview's current output back to the library without changing
     /// the operator's multi-selection. Activity files are clones, so source path is the stable link
     /// when reference identity does not match a library entry.</summary>
+    private void OnPreviewStateChanged(PlaybackChannelState state)
+    {
+        HighlightCurrentFile();
+        _listView.Invalidate();
+    }
+
     private void HighlightCurrentFile()
     {
-        MediaFile? current = _outputActive ? _playback?.CurrentFile : null;
+        // Follows what is loaded in the Preview monitor (independent of whether Program is on air).
+        MediaFile? current = _playback is { State: not PlaybackChannelState.Idle } preview ? preview.CurrentFile : null;
         foreach (ListViewItem item in _listView.Items)
         {
             bool playing = item.Tag is MediaFile file && current != null
@@ -829,7 +873,7 @@ public sealed class FilesPanel : UserControl
     /// the bar's live state immediately (the subscriber calls RequestPlay synchronously).</summary>
     private void OnCastFromAudioBar(MediaFile file)
     {
-        FilePlayRequested?.Invoke(file);
+        TakeRequested?.Invoke(file);
         _audioBar.RefreshLiveState();
     }
 
@@ -951,7 +995,7 @@ public sealed class FilesPanel : UserControl
         card.Inflate(-8, -8);
         bool selected = e.Item.Selected;
         var media = e.Item.Tag as MediaFile;
-        bool playing = media != null && _outputActive && _playback?.CurrentFile is { } current
+        bool playing = media != null && _playback is { State: not PlaybackChannelState.Idle, CurrentFile: { } current }
             && (ReferenceEquals(media, current)
                 || string.Equals(media.SourcePath, current.SourcePath, StringComparison.OrdinalIgnoreCase));
 

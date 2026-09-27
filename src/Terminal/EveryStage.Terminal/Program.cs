@@ -246,7 +246,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             // playback and a live device cast — see VideoSurface's doc comment for why this can't be
             // two independent ones anymore.
             _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
-            _playback = new PlaybackEngine(_stateMachine, _overlay, _videoSurface, _settingsStore, _store);
+            _playback = new PlaybackEngine(PlaybackChannel.Program, _overlay, _videoSurface, _settingsStore, _store, _stateMachine);
             _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
             _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine, _settingsStore);
             return true;
@@ -321,6 +321,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             // chain with the CastReceiver about to be constructed, and the two must never present
             // concurrently (see VideoSurface's doc comment). This does not touch OutputStateMachine.
             _playback?.StopForDeviceCast();
+            // Device mirroring keeps its original full-output (Stretch) presentation; local media sets
+            // its own Fit/Fill each time it plays.
+            _videoSurface.ScaleMode = EveryStage.Rendering.VideoScaleMode.Stretch;
 
             StopCasting();
             try

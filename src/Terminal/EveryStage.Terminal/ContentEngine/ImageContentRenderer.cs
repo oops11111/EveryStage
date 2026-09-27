@@ -17,6 +17,13 @@ public sealed class ImageContentRenderer : IContentRenderer
     private bool _disposed;
     public MediaKind SupportedKind => MediaKind.Image;
     public Bitmap? CurrentFrame { get; private set; }
+
+    /// <summary>Frames (animated GIF) or pages (multi-page TIFF) in the loaded file. Only the first is
+    /// shown; <see cref="FirstFrameOnlyNote"/> says so for the UI.</summary>
+    public int SourceFrameCount { get; private set; } = 1;
+
+    /// <summary>"仅显示首帧" / "仅显示首页" when the file has more than one frame/page, else null.</summary>
+    public string? FirstFrameOnlyNote { get; private set; }
     public int PageCount => 1;
     public int CurrentPageIndex => 0;
 
@@ -39,11 +46,26 @@ public sealed class ImageContentRenderer : IContentRenderer
         // Load fully into memory and detach from the file handle: Image.FromFile keeps the file
         // locked open for the image's lifetime otherwise, which would block the file being
         // replaced/deleted from the 文件 panel while it's the currently displayed item.
-        var frame = await Task.Run(() =>
+        SourceFrameCount = 1;
+        FirstFrameOnlyNote = null;
+        var (frame, count, note) = await Task.Run(() =>
         {
             using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read);
             using var loaded = Image.FromStream(fileStream);
-            return new Bitmap(loaded);
+            // GDI+ exposes GIF animation frames under the Time dimension and TIFF pages under Page;
+            // new Bitmap(loaded) copies only the active (first) one.
+            int frames = 1;
+            string? label = null;
+            foreach (var dimension in loaded.FrameDimensionsList)
+            {
+                int n = loaded.GetFrameCount(new System.Drawing.Imaging.FrameDimension(dimension));
+                if (n > frames)
+                {
+                    frames = n;
+                    label = dimension == System.Drawing.Imaging.FrameDimension.Page.Guid ? "仅显示首页" : "仅显示首帧";
+                }
+            }
+            return (new Bitmap(loaded), frames, label);
         });
         if (_disposed || version != _loadVersion)
         {
@@ -51,6 +73,8 @@ public sealed class ImageContentRenderer : IContentRenderer
             return;
         }
         CurrentFrame = frame;
+        SourceFrameCount = count;
+        FirstFrameOnlyNote = note;
     }
 
     public bool NextPage() => false;
