@@ -20,9 +20,14 @@ namespace EveryStage.Terminal.UI;
 ///
 /// When the Preview engine fails, an error card covers the monitor with the file name, failure stage,
 /// container and codecs, a suggestion, and 重试 / 跳过 / 从文件库移除 / 用系统程序打开.
+///
+/// As in the reference mockups, the two areas are two separate rounded cards stacked with a gap —
+/// 「本地预览 / 播控窗口」 (heading, monitor, transport) above 「信号源窗口」 (heading, source cards) —
+/// so this control itself is only a transparent container for them.
 /// </summary>
-internal sealed class SharedPreviewDock : GlassPanel
+internal sealed class SharedPreviewDock : Panel
 {
+    private const int CardGap = 8;
     private const int ButtonHeight = 30;
     private const int SourceCardHeight = 46;
     private const string IconFont = "Segoe MDL2 Assets";
@@ -70,22 +75,36 @@ internal sealed class SharedPreviewDock : GlassPanel
     {
         _stateMachine = stateMachine;
         Dock = DockStyle.Fill;
-        Padding = new Padding(10, 7, 10, 7);
-        CornerRadius = 10;
-        GlassTint = Color.FromArgb(190, 12, 29, 49);
+        Padding = Padding.Empty;
+        BackColor = Color.Transparent;
+
+        // Two cards: the preview card fills; the 信号源窗口 card has a fixed height at the bottom.
+        var previewCard = new GlassPanel
+        {
+            Dock = DockStyle.Fill, Padding = new Padding(10, 7, 10, 7), CornerRadius = 10,
+            GlassTint = Color.FromArgb(190, 12, 29, 49),
+        };
+        var sourcesCard = new GlassPanel
+        {
+            Dock = DockStyle.Bottom, Padding = new Padding(10, 5, 10, 7), CornerRadius = 10,
+            GlassTint = Color.FromArgb(190, 12, 29, 49),
+        };
+        var cardGap = new Panel { Dock = DockStyle.Bottom, Height = CardGap, BackColor = Color.Transparent };
 
         // Row heights come from the real fonts/control sizes, and every cell has a zero margin
         // (TableLayoutPanel's default 3px cell margins used to clip the buttons and cards).
         var titleFont = new Font("Segoe UI Semibold", 10.5F);
         var smallFont = new Font("Segoe UI", 9F);
         int titleHeight = TextRenderer.MeasureText("本地预览 Ag", titleFont).Height;
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 1, RowCount = 5, Padding = Padding.Empty, Margin = Padding.Empty };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 1, RowCount = 3, Padding = Padding.Empty, Margin = Padding.Empty };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, titleHeight + 10));      // heading
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));                    // monitor
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, ButtonHeight + 12));     // transport
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, titleHeight + 6));       // 信号源窗口 heading
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, SourceCardHeight + 2));  // source cards
-        ChromeHeight = Padding.Vertical + (titleHeight + 10) + (ButtonHeight + 12) + (titleHeight + 6) + (SourceCardHeight + 2);
+        var sourcesLayout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 1, RowCount = 2, Padding = Padding.Empty, Margin = Padding.Empty };
+        sourcesLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, titleHeight + 6));      // 信号源窗口 heading
+        sourcesLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, SourceCardHeight + 2)); // source cards
+        sourcesCard.Height = sourcesCard.Padding.Vertical + (titleHeight + 6) + (SourceCardHeight + 2);
+        ChromeHeight = previewCard.Padding.Vertical + (titleHeight + 10) + (ButtonHeight + 12) + CardGap + sourcesCard.Height;
 
         // Heading: 「本地预览 / 播控窗口 ● 预览状态 …… 输出状态」.
         var heading = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
@@ -126,19 +145,26 @@ internal sealed class SharedPreviewDock : GlassPanel
         for (int i = 0; i < cells.Length; i++) transport.Controls.Add(cells[i], i, 0);
         layout.Controls.Add(transport, 0, 2);
 
+
         // 「信号源窗口」: what is on the extended display right now.
         var sourcesHeader = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty, Padding = new Padding(2, 2, 0, 0) };
         sourcesHeader.Controls.Add(new Label { Text = "信号源窗口", AutoSize = true, ForeColor = ModernUi.Text, Font = titleFont, Margin = new Padding(0, 0, 12, 0) });
         sourcesHeader.Controls.Add(new Label { Text = "扩展屏同一时间只输出一个来源（本地媒体与设备来投互斥）", AutoSize = true, ForeColor = ModernUi.Muted, Font = smallFont, Margin = new Padding(0, 3, 0, 0) });
-        layout.Controls.Add(sourcesHeader, 0, 3);
+        sourcesLayout.Controls.Add(sourcesHeader, 0, 0);
 
         var sources = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty, Padding = Padding.Empty };
         _localCard = new SourceCardView("本地预览 / 播控窗口");
         _deviceCard = new SourceCardView("设备投屏窗口");
         sources.Controls.Add(_localCard.Card);
         sources.Controls.Add(_deviceCard.Card);
-        layout.Controls.Add(sources, 0, 4);
-        Controls.Add(layout);
+        sourcesLayout.Controls.Add(sources, 0, 1);
+
+        previewCard.Controls.Add(layout);
+        sourcesCard.Controls.Add(sourcesLayout);
+        // Dock order: the last-added Bottom control sits lowest, so the sources card goes in last.
+        Controls.Add(previewCard);
+        Controls.Add(cardGap);
+        Controls.Add(sourcesCard);
 
         _errorCard = new ErrorCard();
         _errorCard.Retry += () => _preview?.RetryCurrentFile();
