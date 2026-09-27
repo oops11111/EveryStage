@@ -1,3 +1,4 @@
+using System.Drawing.Drawing2D;
 using EveryStage.Terminal.Devices;
 using EveryStage.Terminal.Logging;
 
@@ -8,14 +9,20 @@ namespace EveryStage.Terminal.UI.Panels;
 /// paired-device list and a presentation area for pairing requests. Pairing-request display is
 /// deliberately fed through this control's public methods so UI event wiring can be added without
 /// changing the discovery or authorization flow.
+///
+/// Laid out in the design prototype's visual system (the reference mockups have no 设备 page): the
+/// same page heading as the other pages, a 配对请求 card, and the paired devices as a card list where
+/// each row carries its own 编辑权限 / 移除配对 actions — previously a five-column table whose two
+/// buttons at the bottom only worked after selecting a row.
 /// </summary>
 public sealed class DevicesPanel : UserControl
 {
     private readonly PairedDeviceStore _pairedDevices;
     private readonly DeviceConnectionLogger _connectionLog;
-    private readonly ListView _listView;
-    private readonly Button _removeButton;
-    private readonly Button _editPermissionsButton;
+    private readonly FlowLayoutPanel _deviceRows;
+    private readonly Label _deviceCount;
+    private readonly Label _emptyState;
+    private readonly GlassPanel _requestCard;
     private readonly Label _requestLabel;
     private PairingRequest? _displayedPairingRequest;
 
@@ -25,134 +32,92 @@ public sealed class DevicesPanel : UserControl
         _connectionLog = connectionLog;
         Dock = DockStyle.Fill;
 
-        var header = new Panel { Dock = DockStyle.Top, Height = 52, BackColor = Color.Transparent };
-        var title = new Label
+        // --- 页头（与文件/活动/设置页同款）---
+        var heading = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.Transparent, Padding = new Padding(4, 0, 0, 0) };
+        heading.Controls.Add(new Label
         {
-            Text = "已配对设备", AutoSize = true, Location = new Point(0, 0),
-            Font = new Font("Segoe UI Semibold", 14F), ForeColor = ModernUi.Text,
-        };
-        var subtitle = new Label
+            Text = "管理已配对设备、信任状态与远程操作权限", Dock = DockStyle.Fill,
+            ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 8.5F), TextAlign = ContentAlignment.MiddleLeft,
+        });
+        heading.Controls.Add(new Label
         {
-            Text = "管理已配对设备、信任状态与远程操作权限。",
-            AutoSize = true, Location = new Point(0, 27),
-            Font = new Font("Segoe UI", 8.5F), ForeColor = ModernUi.Muted,
-        };
-        header.Controls.AddRange(new Control[] { title, subtitle });
+            Text = "设备", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
+            Font = new Font("Segoe UI Semibold", 13F), TextAlign = ContentAlignment.MiddleLeft,
+        });
 
-        var requestSection = new Panel
-        {
-            Dock = DockStyle.Top, Height = 104, Padding = new Padding(0, 8, 0, 8),
-            BackColor = Color.Transparent,
-        };
+        // --- 配对请求 ---
+        var requestSection = new Panel { Dock = DockStyle.Top, Height = 104, Padding = new Padding(0, 6, 0, 10), BackColor = Color.Transparent };
         var requestTitle = new Label
         {
-            Dock = DockStyle.Top, Height = 26, Text = "配对请求",
-            Font = new Font("Segoe UI Semibold", 10F), ForeColor = ModernUi.Text,
+            Dock = DockStyle.Top, Height = 28, Text = "配对请求", TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font("Segoe UI Semibold", 11F), ForeColor = ModernUi.Text,
         };
-        var requestCard = new GlassPanel
+        _requestCard = new GlassPanel
         {
-            Dock = DockStyle.Fill, CornerRadius = 10,
-            Padding = new Padding(12, 0, 12, 0), GlassTint = ModernUi.Surface,
+            Dock = DockStyle.Fill, CornerRadius = 12, Padding = new Padding(16, 0, 16, 0), GlassTint = ModernUi.Palette.GlassTint,
         };
         _requestLabel = new Label
         {
-            Dock = DockStyle.Fill, Text = "暂无请求",
-            ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleLeft,
+            Dock = DockStyle.Fill, Text = IdleRequestText,
+            ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
         };
-        requestCard.Controls.Add(_requestLabel);
-        requestSection.Controls.Add(requestCard);
+        _requestCard.Controls.Add(_requestLabel);
+        requestSection.Controls.Add(_requestCard);
         requestSection.Controls.Add(requestTitle);
 
-        _listView = new ListView
+        // --- 已配对设备：卡片标题行 + 设备行列表 ---
+        var listCard = new GlassPanel
         {
-            Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true,
-            OwnerDraw = true, BorderStyle = BorderStyle.None, GridLines = false,
-            BackColor = ModernUi.Background, ForeColor = ModernUi.Text, HeaderStyle = ColumnHeaderStyle.Nonclickable,
-            Font = new Font("Segoe UI", 9F),
-            SmallImageList = new ImageList { ImageSize = new Size(1, 42), ColorDepth = ColorDepth.Depth32Bit },
+            Dock = DockStyle.Fill, CornerRadius = 12, Padding = new Padding(12, 6, 10, 10), GlassTint = ModernUi.Palette.GlassTint,
         };
-        _listView.SmallImageList.Images.Add(new Bitmap(1, 42));
-        _listView.Columns.Add("设备名", 210);
-        _listView.Columns.Add("信任状态", 140);
-        _listView.Columns.Add("允许被投放", 140);
-        _listView.Columns.Add("允许被监看", 140);
-        _listView.Columns.Add("配对时间", 180);
-        _listView.SizeChanged += (_, _) => ResizeColumns();
-        _listView.DrawItem += (_, e) =>
+        var listHeader = new FlowLayoutPanel
         {
-            var rowBounds = new Rectangle(e.Bounds.Left, e.Bounds.Top, e.Bounds.Width, 42);
-            Color backgroundColor = e.Item?.Selected == true ? ModernUi.Accent
-                : e.ItemIndex % 2 == 0 ? ModernUi.Surface : ModernUi.SurfaceRaised;
-            using var background = new SolidBrush(backgroundColor);
-            e.Graphics.FillRectangle(background, rowBounds);
+            Dock = DockStyle.Top, Height = 40, WrapContents = false, Margin = Padding.Empty, BackColor = Color.Transparent,
         };
-        _listView.DrawColumnHeader += (_, e) =>
+        listHeader.Controls.Add(new Label
         {
-            using var background = new SolidBrush(ModernUi.SurfaceRaised);
-            using var border = new Pen(ModernUi.Border);
-            using var headerFont = new Font("Segoe UI Semibold", 9.5F);
-            e.Graphics.FillRectangle(background, e.Bounds);
-            e.Graphics.DrawLine(border, e.Bounds.Left, e.Bounds.Bottom - 1, e.Bounds.Right, e.Bounds.Bottom - 1);
-            TextRenderer.DrawText(e.Graphics, e.Header?.Text ?? string.Empty,
-                headerFont, new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, e.Bounds.Width - 14, e.Bounds.Height),
-                ModernUi.Muted, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-        };
-        _listView.DrawItem += (_, e) => e.DrawDefault = false;
-        _listView.DrawSubItem += (_, e) =>
+            Text = "已配对设备", AutoSize = true, ForeColor = ModernUi.Text,
+            Font = new Font("Segoe UI Semibold", 11F), Margin = new Padding(0, 9, 8, 0),
+        });
+        _deviceCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(0, 12, 0, 0) };
+        listHeader.Controls.Add(_deviceCount);
+        _deviceRows = new FlowLayoutPanel
         {
-            var rowBounds = new Rectangle(e.Bounds.Left, e.Bounds.Top, e.Bounds.Width, 42);
-            TextRenderer.DrawText(e.Graphics, e.SubItem?.Text ?? string.Empty, _listView.Font,
-                new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, e.Bounds.Width - 14, rowBounds.Height),
-                ModernUi.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            Padding = new Padding(0, 2, 0, 0), BackColor = Color.Transparent,
         };
-        _listView.SelectedIndexChanged += (_, _) =>
+        _deviceRows.Resize += (_, _) => LayoutRows();
+        _emptyState = new Label
         {
-            _removeButton!.Enabled = _listView.SelectedItems.Count > 0;
-            _editPermissionsButton!.Enabled = _listView.SelectedItems.Count > 0;
+            Text = "还没有已配对的设备\r\n其他设备发现本机并通过配对确认后，会出现在这里",
+            Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = ModernUi.Muted,
+            BackColor = Color.Transparent, Visible = false,
         };
+        listCard.Controls.Add(_deviceRows);
+        listCard.Controls.Add(_emptyState);
+        listCard.Controls.Add(listHeader);
 
-        // Until now the only way to change a paired device's trust/permission flags after the
-        // initial pairing dialog was to remove the pairing entirely and force a brand-new request —
-        // see this project's README "已知风险" for why that was a real gap, not a deliberate
-        // decision. A separate button from _removeButton rather than folding into it: removing a
-        // pairing and editing its permissions are different operations with different consequences
-        // (the former forgets the device, the latter doesn't), and conflating them into one button
-        // would make one of the two harder to find. Both live in one explicitly-positioned bottom
-        // panel (side by side) rather than each being its own DockStyle.Bottom control — this repo
-        // otherwise favors absolute Bounds over stacking multiple same-edge-docked controls, whose
-        // relative order depends on Controls collection order in a way that's easy to get backwards.
-        _editPermissionsButton = new Button { Text = "编辑权限", Bounds = new Rectangle(8, 4, 140, 32), Enabled = false };
-        ModernUi.StyleButton(_editPermissionsButton);
-        _editPermissionsButton.Click += OnEditPermissionsClick;
-
-        _removeButton = new Button { Text = "移除配对", Bounds = new Rectangle(156, 4, 140, 32), Enabled = false };
-        ModernUi.StyleButton(_removeButton, danger: true);
-        _removeButton.Click += OnRemoveClick;
-
-        var buttonBar = new Panel { Dock = DockStyle.Bottom, Height = 40 };
-        buttonBar.Controls.AddRange(new Control[] { _editPermissionsButton, _removeButton });
-
-        Controls.Add(_listView);
-        Controls.Add(buttonBar);
+        // Dock order: the last Top control added sits highest, so heading goes in last.
+        Controls.Add(listCard);
         Controls.Add(requestSection);
-        Controls.Add(header);
+        Controls.Add(heading);
 
         Refresh_();
     }
 
-    private void ResizeColumns()
+    private const string IdleRequestText = "○  暂无请求 · 其他设备请求配对时会显示在这里";
+
+    /// <summary>Gives every row the list's width; the scrollbar's width is always reserved so its
+    /// appearing can't change the width and re-trigger this.</summary>
+    private void LayoutRows()
     {
-        if (_listView.Columns.Count != 5 || _listView.ClientSize.Width < 5) return;
-        int available = Math.Max(430, _listView.ClientSize.Width - 4);
-        int[] weights = [24, 17, 18, 18, 23];
-        int used = 0;
-        for (int i = 0; i < weights.Length; i++)
-        {
-            int width = i == weights.Length - 1 ? available - used : available * weights[i] / 100;
-            width = Math.Max(i == 0 ? 105 : 90, width);
-            _listView.Columns[i].Width = width;
-            used += width;
-        }
+        int width = Math.Max(LogicalToDeviceUnits(320),
+            _deviceRows.Width - SystemInformation.VerticalScrollBarWidth - _deviceRows.Padding.Horizontal - 2);
+        _deviceRows.SuspendLayout();
+        foreach (Control row in _deviceRows.Controls) row.Size = new Size(width, LogicalToDeviceUnits(72));
+        _deviceRows.ResumeLayout();
+        // Same stale-AutoScroll-range issue as ActivitiesPanel.LayoutRows: lay out again after resizing.
+        _deviceRows.PerformLayout();
     }
 
     /// <summary>Display a pairing request in the request area. Call on the UI thread.</summary>
@@ -160,8 +125,10 @@ public sealed class DevicesPanel : UserControl
     {
         ArgumentNullException.ThrowIfNull(request);
         _displayedPairingRequest = request;
-        _requestLabel.Text = $"{request.DeviceName}  ·  {request.RemoteAddress}  ·  等待确认";
-        _requestLabel.ForeColor = ModernUi.Text;
+        _requestLabel.Text = $"●  {request.DeviceName}  ·  {request.RemoteAddress}  ·  等待确认";
+        _requestLabel.ForeColor = ModernUi.Warning;
+        _requestCard.GlassTint = ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Accent, 0.14f);
+        _requestCard.Invalidate();
     }
 
     /// <summary>Clear the displayed request when it is resolved. A stale request cannot clear a newer one.</summary>
@@ -169,14 +136,21 @@ public sealed class DevicesPanel : UserControl
     {
         if (_displayedPairingRequest?.RequestId != requestId) return;
         _displayedPairingRequest = null;
-        _requestLabel.Text = "暂无请求";
+        _requestLabel.Text = IdleRequestText;
         _requestLabel.ForeColor = ModernUi.Muted;
+        _requestCard.GlassTint = ModernUi.Palette.GlassTint;
+        _requestCard.Invalidate();
     }
 
-    private void OnRemoveClick(object? sender, EventArgs e)
-    {
-        if (_listView.SelectedItems.Count == 0 || _listView.SelectedItems[0].Tag is not PairedDevice device) return;
+    // Until the permissions editor existed, the only way to change a paired device's trust/permission
+    // flags after the initial pairing dialog was to remove the pairing entirely and force a brand-new
+    // request — see this project's README "已知风险" for why that was a real gap, not a deliberate
+    // decision. Editing and removing stay two separate actions (now on every row): removing a pairing
+    // and editing its permissions are different operations with different consequences (the former
+    // forgets the device, the latter doesn't), and conflating them would make one harder to find.
 
+    private void RemoveDevice(PairedDevice device)
+    {
         var confirm = MessageBox.Show(this, $"确定要移除与 \"{device.DeviceName}\" 的配对吗？",
             "移除配对", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (confirm != DialogResult.Yes) return;
@@ -194,10 +168,8 @@ public sealed class DevicesPanel : UserControl
         Refresh_();
     }
 
-    private void OnEditPermissionsClick(object? sender, EventArgs e)
+    private void EditPermissions(PairedDevice device)
     {
-        if (_listView.SelectedItems.Count == 0 || _listView.SelectedItems[0].Tag is not PairedDevice device) return;
-
         using var dialog = new EditPairedDevicePermissionsDialog(device);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
@@ -228,15 +200,183 @@ public sealed class DevicesPanel : UserControl
     /// accepted while this panel wasn't the active one, etc.).</summary>
     public void Refresh_()
     {
-        _listView.Items.Clear();
-        foreach (var device in _pairedDevices.All)
+        _deviceRows.SuspendLayout();
+        var oldRows = _deviceRows.Controls.Cast<Control>().ToList();
+        _deviceRows.Controls.Clear();
+        foreach (var row in oldRows) row.Dispose();
+        var devices = _pairedDevices.All.ToList();
+        foreach (var device in devices)
+            _deviceRows.Controls.Add(new DeviceRow(device, EditPermissions, RemoveDevice));
+        _deviceRows.ResumeLayout(true);
+        LayoutRows();
+
+        _deviceCount.Text = $"共 {devices.Count} 台";
+        _emptyState.Visible = devices.Count == 0;
+        _deviceRows.Visible = devices.Count > 0;
+    }
+
+    /// <summary>
+    /// One paired device, owner-drawn like the 活动 page's rows: device icon · name · trust status ·
+    /// permission tags · pairing time, with 编辑权限 / 移除配对 on the right. Colours are read from
+    /// <see cref="ModernUi"/> at paint time, so theme switches need no rebuild. The two actions are
+    /// deferred with BeginInvoke because both end in <see cref="Refresh_"/>, which disposes this row.
+    /// </summary>
+    private sealed class DeviceRow : Control
+    {
+        private static readonly Font NameFont = new("Segoe UI Semibold", 10.5F);
+        private static readonly Font BodyFont = new("Segoe UI", 9F);
+        private static readonly Font TagFont = new("Segoe UI", 8.5F);
+
+        private readonly PairedDevice _device;
+        private readonly Action<PairedDevice> _edit;
+        private readonly Action<PairedDevice> _remove;
+        private Rectangle _editButton, _removeButton;
+        private Point _hover = new(-1, -1);
+
+        public DeviceRow(PairedDevice device, Action<PairedDevice> edit, Action<PairedDevice> remove)
         {
-            var item = new ListViewItem(device.DeviceName) { Tag = device };
-            item.SubItems.Add(device.TrustMode == TrustMode.Trusted ? "信任" : "需手动确认");
-            item.SubItems.Add(device.AllowCast ? "是" : "否");
-            item.SubItems.Add(device.AllowMonitor ? "是" : "否");
-            item.SubItems.Add(device.PairedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm"));
-            _listView.Items.Add(item);
+            _device = device;
+            _edit = edit;
+            _remove = remove;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor | ControlStyles.Selectable, true);
+            BackColor = Color.Transparent;
+            Margin = new Padding(0, 0, 0, 10);
+            TabStop = true;
+            AccessibleName = device.DeviceName;
+            // The table this replaced was keyboard-reachable; keep that: Tab to a row, then Enter/Delete.
+            AccessibleDescription = "Enter 编辑权限，Delete 移除配对";
+        }
+
+        private int S(int value) => LogicalToDeviceUnits(value);
+
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
+        protected override bool IsInputKey(Keys keyData) =>
+            (keyData & Keys.KeyCode) is Keys.Enter or Keys.Delete || base.IsInputKey(keyData);
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.Modifiers != Keys.None || Parent is not { } owner) return;
+            if (e.KeyCode == Keys.Enter) owner.BeginInvoke(() => _edit(_device));
+            else if (e.KeyCode == Keys.Delete) owner.BeginInvoke(() => _remove(_device));
+            else return;
+            e.Handled = true;
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            Focus();
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            _hover = e.Location;
+            Cursor = _editButton.Contains(e.Location) || _removeButton.Contains(e.Location) ? Cursors.Hand : Cursors.Default;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            _hover = new Point(-1, -1);
+            Invalidate();
+        }
+
+        protected override void OnMouseClick(MouseEventArgs e)
+        {
+            base.OnMouseClick(e);
+            if (e.Button != MouseButtons.Left) return;
+            var owner = Parent;
+            if (_editButton.Contains(e.Location)) owner?.BeginInvoke(() => _edit(_device));
+            else if (_removeButton.Contains(e.Location)) owner?.BeginInvoke(() => _remove(_device));
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            int w = Width, h = Height, cy = h / 2;
+
+            using (var path = ActivityRowView.RoundedBox(new Rectangle(0, 0, w - 1, h - 1), S(12)))
+            {
+                using var fill = new SolidBrush(ModernUi.Background);
+                g.FillPath(fill, path);
+                using var border = new Pen(ModernUi.Border);
+                g.DrawPath(border, path);
+            }
+
+            // Device icon tile.
+            var tile = new Rectangle(S(14), cy - S(22), S(44), S(44));
+            using (var path = ActivityRowView.RoundedBox(tile, S(10)))
+            using (var fill = new SolidBrush(ActivityRowView.Blend(ModernUi.Background, ModernUi.Text, 0.06f)))
+                g.FillPath(fill, path);
+            VectorIcons.Draw(g, NavIcon.Devices, Rectangle.Inflate(tile, -S(11), -S(11)), ModernUi.Muted);
+
+            // Actions on the right: 移除配对 (danger) right-most, 编辑权限 to its left.
+            _removeButton = new Rectangle(w - S(14) - S(92), cy - S(16), S(92), S(32));
+            _editButton = new Rectangle(_removeButton.Left - S(8) - S(92), cy - S(16), S(92), S(32));
+            DrawButton(g, _editButton, "编辑权限", danger: false);
+            DrawButton(g, _removeButton, "移除配对", danger: true);
+
+            // Name, then status line: trust dot + permission tags + pairing time.
+            int textLeft = tile.Right + S(14), textRight = _editButton.Left - S(12);
+            TextRenderer.DrawText(g, _device.DeviceName, NameFont,
+                Rectangle.FromLTRB(textLeft, cy - S(24), textRight, cy - S(2)), ModernUi.Text,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+            bool trusted = _device.TrustMode == TrustMode.Trusted;
+            int x = textLeft, lineTop = cy + S(2), lineHeight = S(22);
+            var dot = new Rectangle(x, lineTop + (lineHeight - S(8)) / 2, S(8), S(8));
+            using (var dotBrush = new SolidBrush(trusted ? ModernUi.Success : ModernUi.Warning)) g.FillEllipse(dotBrush, dot);
+            x = dot.Right + S(6);
+            string trust = trusted ? "信任" : "需手动确认";
+            int trustWidth = TextRenderer.MeasureText(trust, BodyFont).Width;
+            TextRenderer.DrawText(g, trust, BodyFont, new Rectangle(x, lineTop, trustWidth, lineHeight),
+                trusted ? ModernUi.Success : ModernUi.Warning, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            x += trustWidth + S(8);
+
+            foreach (var (text, on) in new[] { ("可投放", _device.AllowCast), ("可监看", _device.AllowMonitor) })
+            {
+                string label = on ? text : "不" + text;
+                int tagWidth = TextRenderer.MeasureText(label, TagFont).Width + S(14);
+                if (x + tagWidth > textRight) break;
+                var tag = new Rectangle(x, lineTop + S(1), tagWidth, lineHeight - S(2));
+                using (var path = ActivityRowView.RoundedBox(tag, S(6)))
+                {
+                    using var fill = new SolidBrush(on ? ActivityRowView.Blend(ModernUi.Background, ModernUi.Accent, 0.16f)
+                        : ActivityRowView.Blend(ModernUi.Background, ModernUi.Text, 0.05f));
+                    g.FillPath(fill, path);
+                }
+                TextRenderer.DrawText(g, label, TagFont, tag, on ? ModernUi.Text : ModernUi.Muted,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+                x += tagWidth + S(6);
+            }
+
+            string paired = $"配对于 {_device.PairedAt.LocalDateTime:yyyy-MM-dd HH:mm}";
+            if (x + S(8) + TextRenderer.MeasureText(paired, BodyFont).Width <= textRight)
+                TextRenderer.DrawText(g, paired, BodyFont, Rectangle.FromLTRB(x + S(4), lineTop, textRight, lineTop + lineHeight),
+                    ModernUi.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+
+            if (Focused && ShowFocusCues)
+                ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(ClientRectangle, -3, -3), ModernUi.Text, ModernUi.Background);
+        }
+
+        private void DrawButton(Graphics g, Rectangle r, string text, bool danger)
+        {
+            bool hot = r.Contains(_hover);
+            using var path = ActivityRowView.RoundedBox(r, S(8));
+            using (var fill = new SolidBrush(hot
+                ? ActivityRowView.Blend(ModernUi.Surface, danger ? ModernUi.Danger : ModernUi.Text, danger ? 0.18f : 0.08f)
+                : ModernUi.Surface))
+                g.FillPath(fill, path);
+            using (var pen = new Pen(danger ? ModernUi.Danger : ModernUi.Border)) g.DrawPath(pen, path);
+            TextRenderer.DrawText(g, text, BodyFont, r, danger && hot ? ModernUi.Danger : ModernUi.Text,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
     }
 }

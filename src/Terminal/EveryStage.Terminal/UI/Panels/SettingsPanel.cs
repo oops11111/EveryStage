@@ -43,34 +43,14 @@ public sealed class SettingsPanel : UserControl
         _identity = identity;
         Dock = DockStyle.Fill;
 
-        var tabs = new TabControl
+        // Page host only. The native tab header could not fit six tabs at the default window size (it
+        // fell back to scroll arrows) and its 3D frame can't be re-coloured (a white outline on the dark
+        // themes), so the tabs are PillButtons in the tab bar built below, like the 文件 page filters.
+        var tabs = new HeaderlessTabControl
         {
             Dock = DockStyle.Fill,
             BackColor = ModernUi.Background,
             ForeColor = ModernUi.Text,
-            DrawMode = TabDrawMode.OwnerDrawFixed,
-            ItemSize = new Size(112, 34),
-            SizeMode = TabSizeMode.Fixed,
-        };
-        tabs.DrawItem += (_, e) =>
-        {
-            bool selected = e.Index == tabs.SelectedIndex;
-            var bounds = tabs.GetTabRect(e.Index);
-            bounds.Inflate(-3, -2);
-            using var path = new GraphicsPath();
-            int radius = Math.Min(9, bounds.Height / 2);
-            path.AddArc(bounds.Left, bounds.Top, radius * 2, radius * 2, 180, 90);
-            path.AddArc(bounds.Right - radius * 2, bounds.Top, radius * 2, radius * 2, 270, 90);
-            path.AddArc(bounds.Right - radius * 2, bounds.Bottom - radius * 2, radius * 2, radius * 2, 0, 90);
-            path.AddArc(bounds.Left, bounds.Bottom - radius * 2, radius * 2, radius * 2, 90, 90);
-            path.CloseFigure();
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            using var background = new SolidBrush(selected ? ModernUi.Accent : ModernUi.SurfaceRaised);
-            e.Graphics.FillPath(background, path);
-            TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, tabs.Font, bounds,
-                selected ? Color.White : ModernUi.Muted,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-            e.Graphics.SmoothingMode = SmoothingMode.Default;
         };
 
         var settings = _settingsStore.Current;
@@ -126,7 +106,7 @@ public sealed class SettingsPanel : UserControl
         };
         var generalTab = new TabPage("通用");
 
-        // 生效标识（对齐效果图）：右上角图例 + 界面主题行「即时生效」徽标。颜色按真实语义：
+        // 生效标识（对齐效果图）：页签条右侧图例（见下方 tabBar）+ 界面主题行「即时生效」徽标。颜色按真实语义：
         // 蓝=即时、琥珀=保存后、灰=重启后（本页勾选项的“重启后生效”已在 generalNote 说明）。
         var amberEffect = Color.FromArgb(243, 178, 76);
         Label EffectDot(string text, Color dot, int x, int y) => new()
@@ -134,15 +114,11 @@ public sealed class SettingsPanel : UserControl
             Text = "●  " + text, ForeColor = dot, AutoSize = true, BackColor = Color.Transparent,
             Font = new Font("Segoe UI", 8.5F), Location = new Point(x, y),
         };
-        var legendInstant = EffectDot("即时生效", ModernUi.Accent, 336, 17);
-        var legendSave = EffectDot("保存后生效", amberEffect, 416, 17);
-        var legendRestart = EffectDot("重启后生效", ModernUi.Muted, 506, 17);
         var themeEffectBadge = EffectDot("即时生效", ModernUi.Accent, 470, 85);
 
         generalTab.Controls.AddRange(new Control[]
         {
-            _castSwitchDefaultCheckbox, generalNote, themeLabel, themeCards, _themeComboBox,
-            legendInstant, legendSave, legendRestart, themeEffectBadge,
+            _castSwitchDefaultCheckbox, generalNote, themeLabel, themeCards, _themeComboBox, themeEffectBadge,
         });
 
         // --- 显示 ---
@@ -240,21 +216,118 @@ public sealed class SettingsPanel : UserControl
             page.BackColor = ModernUi.Background;
             page.ForeColor = ModernUi.Text;
             page.Padding = new Padding(2);
+            // The heading + tab bar leave less height than the old native tab header did; scroll, don't clip.
+            page.AutoScroll = true;
         }
 
-        var saveSettingsButton = new Button { Text = "保存设置", Dock = DockStyle.Left, Width = 120, Height = 32 };
+        // Right-aligned rounded button with the save result beside it (reference); it used to be docked
+        // left and stretched to the bar's full height, which drew a square block.
+        var saveSettingsButton = new RoundedActionButton { Text = "保存设置", Width = 120, Height = 34, Margin = new Padding(0, 7, 0, 0) };
         ModernUi.StyleButton(saveSettingsButton, primary: true);
         saveSettingsButton.Click += OnSaveSettingsClick;
-        _savedLabel = new Label { ForeColor = ModernUi.Success, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0) };
+        _savedLabel = new Label { ForeColor = ModernUi.Success, AutoSize = true, Margin = new Padding(12, 16, 6, 0) };
 
-        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 47, BackColor = ModernUi.Background };
+        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 50, BackColor = ModernUi.Background };
         var bottomDivider = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = ModernUi.Border };
-        bottomBar.Controls.Add(_savedLabel);
-        bottomBar.Controls.Add(saveSettingsButton);
+        var saveRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
+            Margin = Padding.Empty, BackColor = Color.Transparent,
+        };
+        saveRow.Controls.Add(_savedLabel);   // RightToLeft: first added is right-most.
+        saveRow.Controls.Add(saveSettingsButton);
+        bottomBar.Controls.Add(saveRow);
         bottomBar.Controls.Add(bottomDivider);
 
+        // --- 页头 + 页签条（对齐效果图）：设置 / 说明；胶囊页签 …… 生效图例 ---
+        var heading = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.Transparent, Padding = new Padding(4, 0, 0, 0) };
+        heading.Controls.Add(new Label
+        {
+            Text = "自定义终端的显示、播放和设备相关选项", Dock = DockStyle.Fill,
+            ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 8.5F), TextAlign = ContentAlignment.MiddleLeft,
+        });
+        heading.Controls.Add(new Label
+        {
+            Text = "设置", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
+            Font = new Font("Segoe UI Semibold", 13F), TextAlign = ContentAlignment.MiddleLeft,
+        });
+
+        var tabBar = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, Height = 50, ColumnCount = 2, RowCount = 1,
+            Padding = new Padding(2, 4, 2, 8), BackColor = Color.Transparent,
+        };
+        tabBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        tabBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        tabBar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        var tabPills = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty, BackColor = Color.Transparent,
+        };
+        // SelectedTab is still null before the control has a handle; the first page is the one shown.
+        int shownIndex = Math.Max(0, tabs.SelectedIndex);
+        foreach (TabPage page in tabs.TabPages)
+        {
+            var pill = new PillButton
+            {
+                Text = page.Text, AutoSize = true, Height = 36, Margin = new Padding(0, 0, 6, 0),
+                Selected = tabs.TabPages.IndexOf(page) == shownIndex, Tag = page,
+            };
+            pill.Click += (_, _) => tabs.SelectedTab = page;
+            tabPills.Controls.Add(pill);
+        }
+        tabs.SelectedIndexChanged += (_, _) =>
+        {
+            foreach (var pill in tabPills.Controls.OfType<PillButton>())
+            {
+                pill.Selected = pill.Tag == tabs.SelectedTab;
+                pill.Invalidate();
+            }
+        };
+        tabBar.Controls.Add(tabPills, 0, 0);
+        var legend = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
+            Margin = Padding.Empty, BackColor = Color.Transparent,
+        };
+        foreach (var dot in new[]
+        {
+            EffectDot("重启后生效", ModernUi.Muted, 0, 0), EffectDot("保存后生效", amberEffect, 0, 0), EffectDot("即时生效", ModernUi.Accent, 0, 0),
+        })
+        {
+            dot.Margin = new Padding(14, 10, 0, 0);
+            legend.Controls.Add(dot);
+        }
+        tabBar.Controls.Add(legend, 1, 0);
+        // Narrow window: drop the legend rather than squeeze it — each setting row keeps its own badge.
+        tabBar.Resize += (_, _) =>
+            legend.Visible = tabPills.PreferredSize.Width + legend.Controls.Cast<Control>().Sum(c => c.PreferredSize.Width + c.Margin.Horizontal)
+                <= tabBar.ClientSize.Width - tabBar.Padding.Horizontal;
+
+        // Dock order: the last Top control added sits highest, so heading goes in last.
         Controls.Add(tabs);
         Controls.Add(bottomBar);
+        Controls.Add(tabBar);
+        Controls.Add(heading);
+    }
+
+    /// <summary>A TabControl used purely as a page host: answering TCM_ADJUSTRECT without shrinking the
+    /// rectangle gives the pages the whole client area, so the native tab header and its 3D frame —
+    /// neither of which can be re-coloured — never show.</summary>
+    private sealed class HeaderlessTabControl : TabControl
+    {
+        private const int TCM_ADJUSTRECT = 0x1328;
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == TCM_ADJUSTRECT)
+            {
+                m.Result = (IntPtr)1;
+                return;
+            }
+            base.WndProc(ref m);
+        }
     }
 
     /// <summary>Call whenever this panel becomes the visible one (<c>MainWindow.ShowPanel</c>) — same

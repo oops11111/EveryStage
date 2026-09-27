@@ -39,13 +39,13 @@ public sealed class ToastNotification : Panel
     {
         int width = ToastStack.ToastWidth;
         const int height = 96; // fixed regardless of action count — see class doc comment on why.
-        BackColor = Color.FromArgb(45, 45, 48); // dark chrome, same spirit as MainWindow's own nav sidebar.
+        BackColor = ModernUi.SurfaceRaised; // themed chrome, same token the nav rail / raised surfaces use.
         Width = width;
         Height = height;
 
         var accentBar = new Panel
         {
-            BackColor = severity == ToastSeverity.Critical ? Color.Firebrick : Color.Goldenrod,
+            BackColor = severity == ToastSeverity.Critical ? ModernUi.Danger : ModernUi.Warning,
             Bounds = new Rectangle(0, 0, AccentBarWidth, height),
         };
 
@@ -53,8 +53,8 @@ public sealed class ToastNotification : Panel
         {
             Text = "×",
             FlatStyle = FlatStyle.Flat,
-            ForeColor = Color.White,
-            BackColor = Color.FromArgb(45, 45, 48),
+            ForeColor = ModernUi.Muted,
+            BackColor = ModernUi.SurfaceRaised,
             Bounds = new Rectangle(width - 28, 6, 20, 20),
         };
         closeButton.FlatAppearance.BorderSize = 0;
@@ -63,7 +63,7 @@ public sealed class ToastNotification : Panel
         var messageLabel = new Label
         {
             Text = message,
-            ForeColor = Color.White,
+            ForeColor = ModernUi.Text,
             AutoEllipsis = true,
             Bounds = new Rectangle(AccentBarWidth + 8, 8, width - AccentBarWidth - 8 - 28, height - 8 - ActionButtonHeight - 12),
         };

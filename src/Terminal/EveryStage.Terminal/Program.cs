@@ -205,7 +205,6 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         var library = new FileLibraryStore();
         _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity, _connectionLog);
-        _mainWindow.PreviewRecallRequested += OnPreviewRecallRequested;
         _mainWindow.Show();
 
         _tray = new TrayIconController(_stateMachine);
@@ -291,22 +290,17 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         }
     }
 
-    private void OnPreviewRecallRequested()
-    {
-        if (_stateMachine.State != OutputState.Active || _previewWindow == null) return;
-        _previewWindow.ShowForActiveOutput();
-        _previewWindow.Activate();
-    }
-
     private void OnPairingRequested(PairingRequest request)
     {
         // Raised from DiscoveryService's background receive loop — a modal dialog must be shown
         // from the UI thread.
         _uiContext.Post(_ =>
         {
+            _mainWindow.ShowPairingRequest(request);
             using var dialog = new PairingConfirmationDialog(request);
             dialog.ShowDialog();
             _discovery.RespondToPairing(request.RequestId, dialog.Accepted, dialog.TrustMode, dialog.AllowCast, dialog.AllowMonitor);
+            _mainWindow.ClearPairingRequest(request.RequestId);
         }, null);
     }
 
@@ -443,7 +437,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         if (_castReceiver == null) return;
         if (_castReceiver.ConsecutiveVideoDecodeErrors < MaxConsecutiveDecodeErrorsBeforeDisconnect
             && _castReceiver.ConsecutiveAudioPlaybackErrors < MaxConsecutiveDecodeErrorsBeforeDisconnect
-            && !_castReceiver.PresentLoopFailed)
+            && !_castReceiver.PresentLoopFailed
+            && !_castReceiver.DecodeLoopFailed)
         {
             return;
         }

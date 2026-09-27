@@ -2,140 +2,702 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>EveryStage 终端机 UI 原型</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EveryStage 终端机 UI 原型（高保真）</title>
+<!--
+  风格锁 / STYLE LOCK ─────────────────────────────────────────────
+  本文件为「高保真还原」原型：严格按效果图还原布局 / 配色 / 间距 / 圆角 / 层级。
+  不优化、不发挥、不新增设计图之外的元素。
+  全部颜色取自对原效果图 (1584×993) 的像素取色采样，锁定为下方 CSS 变量，勿凭观感改色。
+  数据与视图分离：页面由文件底部 JS 的 mock 数组 + render* 纯函数生成，接真实接口时只换数据源。
+  ────────────────────────────────────────────────────────────────
+-->
 <style>
-  :root {
-    --bg: #10131a; --surface1: rgba(255,255,255,0.06); --surface2: rgba(255,255,255,0.04);
-    --border: rgba(255,255,255,0.1); --border-accent: rgba(138,180,248,0.35);
-    --accent: #5b8def; --accent-soft: rgba(138,180,248,0.14);
-    --text: rgba(255,255,255,0.92); --text-muted: rgba(255,255,255,0.55);
-    --danger: #ff6b6b; --success: #4ade80;
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; font-family: -apple-system, "Segoe UI", sans-serif; background: linear-gradient(160deg,#1c2128,#0d1117); color: var(--text); padding: 24px; }
-  .app { display:flex; gap:14px; max-width: 900px; margin:0 auto; }
-  .rail { width:80px; flex-shrink:0; background: var(--surface1); backdrop-filter: blur(20px); border:1px solid var(--border); border-radius:14px; padding:12px 8px; display:flex; flex-direction:column; align-items:center; gap:8px; }
-  .logo { font-size:20px; margin-bottom:4px; }
-  .toggle-btn { width:56px; padding:8px 0; border-radius:10px; background: var(--accent-soft); border:1px solid var(--border-accent); display:flex; flex-direction:column; align-items:center; gap:4px; cursor:pointer; }
-  .switch { width:32px; height:18px; border-radius:9px; background: var(--accent); position:relative; }
-  .switch::after { content:''; position:absolute; top:2px; right:2px; width:14px; height:14px; border-radius:50%; background:#fff; }
-  .switch.off { background: rgba(255,255,255,0.15); }
-  .switch.off::after { left:2px; right:auto; }
-  .cut-btn { width:56px; height:44px; border-radius:10px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,90,90,0.35); color: var(--danger); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; cursor:pointer; font-size:11px; font-weight:600; }
-  .divider { width:40px; height:1px; background: var(--border); margin:4px 0; }
-  .nav-btn { width:56px; height:46px; border-radius:8px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; cursor:pointer; color: var(--text-muted); font-size:10px; background:transparent; border:none; }
-  .nav-btn.active { background: var(--accent-soft); color:#a8c7fa; }
-  .status { margin-top:auto; display:flex; flex-direction:column; align-items:center; gap:3px; font-size:9px; color:var(--text-muted); }
-  .dot { width:7px; height:7px; border-radius:50%; background: var(--success); }
-  .main { flex:1; min-width:0; display:flex; flex-direction:column; gap:12px; }
-  .panel { background: var(--surface1); backdrop-filter: blur(20px); border:1px solid var(--border); border-radius:14px; padding:16px; display:none; }
-  .panel.active { display:block; }
-  .panel h3 { font-size:13px; font-weight:500; color: var(--text-muted); margin:0 0 12px; }
-  .tabs { display:flex; gap:6px; margin-bottom:14px; flex-wrap:wrap; }
-  .tab { font-size:12px; padding:6px 12px; border-radius:8px; background:transparent; border:1px solid var(--border); color: var(--text-muted); cursor:pointer; }
-  .tab.active { background: var(--accent); color:#fff; border:none; }
-  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
-  .thumb { aspect-ratio:4/3; border-radius:8px; background: var(--surface2); display:flex; align-items:center; justify-content:center; font-size:24px; margin-bottom:6px; }
-  .fname { font-size:12px; color: var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .audio-row { display:flex; align-items:center; gap:12px; padding:10px 12px; border-radius:10px; background: var(--surface2); margin-bottom:8px; }
-  .play-btn { width:34px; height:34px; border-radius:50%; background: var(--surface1); border:1px solid var(--border); color:var(--text); flex-shrink:0; cursor:pointer; }
-  .progress { flex:1; height:4px; border-radius:2px; background: var(--surface1); position:relative; }
-  .progress::after { content:''; position:absolute; left:0; top:0; height:100%; width:35%; border-radius:2px; background: var(--accent); }
-  .cast-btn { font-size:12px; padding:6px 12px; background: var(--surface1); border:1px solid var(--border); color:var(--text); border-radius:8px; cursor:pointer; }
-  .activity { padding:8px; border-radius:10px; margin-bottom:8px; }
-  .activity.active { background: var(--accent-soft); border:1px solid var(--border-accent); }
-  .activity.inactive { border:1px solid var(--border); }
-  .act-head { display:flex; align-items:center; gap:8px; }
-  .num { width:20px; height:20px; border-radius:50%; background: var(--surface2); display:flex; align-items:center; justify-content:center; font-size:11px; flex-shrink:0; }
-  .num.active { background: var(--accent); color:#fff; }
-  .mode-tag { font-size:10px; padding:2px 8px; border-radius:8px; background: var(--surface2); color: var(--text-muted); margin-left:auto; }
-  .file-thumbs { display:flex; gap:7px; padding:8px 0 0 28px; flex-wrap:wrap; }
-  .mini-thumb { width:34px; height:34px; border-radius:6px; background: var(--surface2); display:flex; align-items:center; justify-content:center; font-size:14px; }
-  .device-row { display:flex; align-items:center; gap:10px; padding:8px; border-radius:8px; border:1px solid var(--border); margin-bottom:6px; }
-  .device-row.pending { background: var(--accent-soft); border-color: var(--border-accent); }
-  .setting-row { display:flex; align-items:center; justify-content:space-between; padding:8px 0; font-size:13px; }
-  .setting-row select, .setting-row button { font-size:12px; padding:5px 10px; background: var(--surface2); border:1px solid var(--border); color:var(--text); border-radius:6px; }
+:root{
+  /* ── 取色锁定（采样自效果图）── */
+  --bg:#071C33;            /* 主画布 / 窗口底 */
+  --bg-top:#0A2038;        /* 顶部极淡渐变 */
+  --sidebar:#081F39;       /* 侧栏底 */
+  --panel:#0C2440;         /* 卡片：音频区 / 信号源 / 设置卡 */
+  --panel-2:#0A1E36;       /* 深嵌层 */
+  --status:#0C2650;        /* 已连接状态卡（偏蓝） */
+  --stroke:rgba(140,180,255,.12);   /* 卡片描边 */
+  --stroke-2:rgba(255,255,255,.05); /* 极淡内描边 */
+  --accent:#0A70FE;        /* 主蓝：按钮 / 导航选中 / 激活 tab */
+  --accent-hi:#2C86FF;
+  --accent-glow:rgba(18,120,255,.45);
+  --green:#37DE78;         /* 在线 / 已连接 / 未播放绿点 */
+  --amber:#F3B24C;         /* 保存后生效 */
+  --gray:#5C7292;          /* 待机灰点 */
+  --purple:#9B6CFF;        /* 音频独立区图标 */
+  --text:#EAF1F8;          /* 主文字 */
+  --text-2:#A6B8CE;        /* 次文字 */
+  --text-3:#6E86A2;        /* 说明文字 */
+  --danger:#FF5D5D;
+  --black:#04101F;         /* 预览 letterbox 黑边 */
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  font-family:"Microsoft YaHei","PingFang SC","Segoe UI",-apple-system,sans-serif;
+  background:linear-gradient(180deg,var(--bg-top),var(--bg) 240px);
+  color:var(--text);font-size:13px;-webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+.app{display:flex;height:100vh;min-height:640px}
+
+/* ═══════════ 侧栏（持久） ═══════════ */
+.sidebar{
+  width:250px;flex-shrink:0;background:var(--sidebar);
+  border-right:1px solid var(--stroke);
+  display:flex;flex-direction:column;padding:20px 18px;gap:16px;
+}
+.brand{display:flex;align-items:center;gap:11px;padding:2px 4px}
+.brand .mark{width:38px;height:38px;flex-shrink:0}
+.brand .name{font-size:19px;font-weight:700;letter-spacing:.2px;line-height:1.05}
+.brand .sub{font-size:12px;color:var(--text-2);letter-spacing:3px;font-weight:400}
+
+.status-card{
+  background:var(--status);border:1px solid rgba(120,160,255,.18);
+  border-radius:12px;padding:12px 14px;cursor:pointer;
+}
+.status-card .top{display:flex;align-items:center;gap:8px}
+.status-card .top b{font-size:14px;font-weight:600;flex:1}
+.status-card .chev{color:var(--text-3);font-size:14px}
+.status-card .lo{font-size:12px;color:var(--green);margin-top:5px;padding-left:16px}
+.dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.dot.green{background:var(--green);box-shadow:0 0 8px rgba(55,222,120,.7)}
+.dot.amber{background:var(--amber)}
+.dot.gray{background:var(--gray)}
+
+.nav{display:flex;flex-direction:column;gap:4px}
+.nav-item{
+  display:flex;align-items:center;gap:12px;height:46px;padding:0 14px;
+  border-radius:10px;color:var(--text-2);cursor:pointer;
+  font-size:15px;font-weight:500;transition:background .15s,color .15s;
+}
+.nav-item svg{width:20px;height:20px;flex-shrink:0}
+.nav-item:hover{background:rgba(255,255,255,.04);color:var(--text)}
+.nav-item.active{background:var(--accent);color:#fff;box-shadow:0 4px 14px var(--accent-glow)}
+
+.side-card{border-top:1px solid var(--stroke-2);padding-top:14px}
+.side-card .lbl{font-size:12px;color:var(--text-3);margin-bottom:10px}
+.libcard{display:flex;align-items:center;gap:10px}
+.libcard .ic{width:34px;height:34px;border-radius:8px;background:linear-gradient(150deg,#2f6fd0,#1b3f7a);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.libcard .t{font-size:13px;font-weight:600}
+.libcard .d{font-size:11px;color:var(--text-3);margin-top:4px;line-height:1.5}
+
+.audiozone{background:rgba(120,90,230,.08);border:1px solid rgba(140,110,255,.16);
+  border-radius:12px;padding:12px 13px}
+.audiozone .hd{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.audiozone .hd .ic{width:26px;height:26px;border-radius:7px;background:rgba(155,108,255,.16);
+  display:flex;align-items:center;justify-content:center;color:var(--purple)}
+.audiozone .hd b{font-size:13px;font-weight:600}
+.audiozone .desc{font-size:11px;color:var(--text-3);line-height:1.6;margin-bottom:10px}
+.wave{display:flex;align-items:flex-end;gap:2px;height:22px;margin-bottom:8px}
+.wave i{width:3px;background:var(--purple);border-radius:2px;opacity:.85}
+.az-time{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-2);margin-bottom:8px}
+.mini-track{flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.1);position:relative}
+.mini-track::after{content:'';position:absolute;left:0;top:0;height:100%;width:52%;border-radius:2px;background:var(--purple)}
+.az-foot{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-2)}
+.az-foot .chk{margin-left:2px}
+.spacer{flex:1}
+.tagline{font-size:12px;color:var(--text-3);line-height:1.7;padding-left:4px}
+
+/* ═══════════ 主区 ═══════════ */
+.main{flex:1;min-width:0;display:flex;flex-direction:column;padding:22px 30px 20px;gap:13px;overflow-y:auto}
+.main>*{flex-shrink:0}
+.titlebar{position:absolute;top:12px;right:20px;display:flex;gap:20px;color:var(--text-3);font-size:15px}
+.titlebar span{cursor:default}
+
+.page-head h1{font-size:26px;font-weight:600;letter-spacing:.5px}
+.page-head p{font-size:13px;color:var(--text-3);margin-top:5px}
+
+.page-body{display:flex;flex-direction:column;gap:13px;min-height:0}
+.page-body>*{flex-shrink:0}
+
+/* 工具栏 */
+.toolbar{display:flex;align-items:center;gap:12px}
+.seg{display:flex;background:var(--panel-2);border:1px solid var(--stroke);border-radius:10px;padding:3px;gap:2px}
+.seg .s{padding:7px 20px;border-radius:8px;font-size:13px;color:var(--text-2);cursor:pointer;transition:.15s}
+.seg .s:hover{color:var(--text)}
+.seg .s.active{background:var(--accent);color:#fff;font-weight:500}
+.btn{display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 18px;border-radius:10px;
+  font-size:13px;font-weight:500;cursor:pointer;border:1px solid var(--stroke);background:var(--panel-2);
+  color:var(--text);transition:.15s;white-space:nowrap}
+.btn:hover{border-color:rgba(140,180,255,.28);background:rgba(255,255,255,.03)}
+.btn svg{width:16px;height:16px}
+.btn.primary{background:var(--accent);border-color:transparent;color:#fff;box-shadow:0 4px 14px var(--accent-glow)}
+.btn.primary:hover{background:var(--accent-hi)}
+.btn.danger:hover{border-color:rgba(255,90,90,.4);color:var(--danger)}
+.dropdown{display:inline-flex;align-items:center;gap:10px;height:40px;padding:0 14px;border-radius:10px;
+  background:var(--panel-2);border:1px solid var(--stroke);cursor:pointer;font-size:13px}
+.dropdown .cap{color:var(--text-3);margin-right:2px}
+.dropdown svg{width:14px;height:14px;color:var(--text-3)}
+
+/* 文件网格 */
+.filegrid{display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+.filecard{cursor:pointer}
+.filethumb{position:relative;aspect-ratio:2/1;border-radius:10px;overflow:hidden;border:1px solid var(--stroke-2)}
+.filethumb .badge{position:absolute;left:8px;bottom:8px;font-size:11px;font-weight:700;padding:2px 7px;border-radius:5px;color:#fff}
+.filethumb .play{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:34px;height:34px;
+  border-radius:50%;background:rgba(0,0,0,.4);backdrop-filter:blur(2px);display:flex;align-items:center;justify-content:center}
+.filecard:hover .filethumb{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.filemeta{display:flex;align-items:center;gap:6px;margin-top:7px}
+.filemeta .fn{font-size:12.5px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+.filemeta .more{color:var(--text-3);letter-spacing:1px;cursor:pointer}
+/* 缩略图渐变占位 */
+.g-sky{background:linear-gradient(160deg,#a9cdf0,#4d7fb8 70%,#2b5488)}
+.g-city{background:linear-gradient(160deg,#f4a56a,#8a5a7e 55%,#26314e)}
+.g-coast{background:linear-gradient(160deg,#ffd18a,#6fa3c8 60%,#2f5d7a)}
+.g-forest{background:linear-gradient(150deg,#8fd08a,#3f7d52 70%,#1f4a34)}
+.g-stage{background:linear-gradient(160deg,#3a2a6a,#1a1440 60%,#0a0a24)}
+.g-earth{background:radial-gradient(circle at 60% 40%,#2b6fb0,#0a1230 75%)}
+.g-slide{background:linear-gradient(160deg,#dfe9f6,#9fbde0 55%,#5b7fb0)}
+.g-pdf{background:linear-gradient(160deg,#eef1f5,#cdd6e2)}
+.g-wave{background:linear-gradient(160deg,#0e2f6b,#061a3e 60%,#020a1c)}
+.g-glass{background:linear-gradient(150deg,#9fb4c8,#5c7186 60%,#33455a)}
+.g-brand{background:linear-gradient(160deg,#e8eef6,#b7c8de)}
+.g-mountain{background:linear-gradient(160deg,#c4d6e6,#6f8aa6 60%,#3c556f)}
+
+/* 卡片区块 */
+.card{background:var(--panel);border:1px solid var(--stroke);border-radius:12px;padding:13px 18px}
+.card-head{display:flex;align-items:baseline;gap:10px;margin-bottom:12px}
+.card-head h3{font-size:16px;font-weight:600}
+.card-head .cap{font-size:12px;color:var(--text-3)}
+
+/* 音频播放区 */
+.audiobar{display:flex;align-items:center;gap:14px}
+.audiobar .ic{width:40px;height:40px;border-radius:9px;background:linear-gradient(150deg,#2f6fd0,#1b3f7a);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.audiobar .nm{font-size:14px;font-weight:500;min-width:96px}
+.iconbtn{width:34px;height:34px;border-radius:8px;background:var(--panel-2);border:1px solid var(--stroke);
+  display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text);flex-shrink:0}
+.iconbtn:hover{border-color:rgba(140,180,255,.3)}
+.iconbtn.plain{background:transparent;border:none}
+.tcode{font-size:12px;color:var(--text-2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.track{flex:1;height:4px;border-radius:3px;background:rgba(255,255,255,.1);position:relative;cursor:pointer}
+.track .fill{position:absolute;left:0;top:0;height:100%;border-radius:3px;background:var(--accent)}
+.track .knob{position:absolute;top:50%;transform:translate(-50%,-50%);width:12px;height:12px;border-radius:50%;
+  background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.5)}
+.vol{display:flex;align-items:center;gap:8px;width:120px;flex-shrink:0}
+.vol .track{flex:1}
+.chk{display:inline-flex;align-items:center;gap:7px;font-size:13px;color:var(--text-2);cursor:pointer}
+.box{width:17px;height:17px;border-radius:5px;border:1.5px solid var(--stroke);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.box.on{background:var(--accent);border-color:var(--accent)}
+.box svg{width:11px;height:11px;color:#fff;display:none}
+.box.on svg{display:block}
+
+/* 活动节目单 */
+.act-list{display:flex;flex-direction:column;gap:10px}
+.act-row{display:flex;align-items:center;gap:16px;padding:12px 14px;border-radius:12px;
+  background:var(--panel-2);border:1px solid var(--stroke-2)}
+.act-row.sel{background:rgba(10,112,254,.1);border:1px solid rgba(20,120,255,.4)}
+.act-num{width:26px;height:26px;border-radius:50%;background:rgba(255,255,255,.06);border:1px solid var(--stroke);
+  display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600;flex-shrink:0;color:var(--text-2)}
+.act-row.sel .act-num{background:var(--accent);border-color:transparent;color:#fff}
+.act-thumb{position:relative;width:120px;height:64px;border-radius:8px;overflow:hidden;flex-shrink:0;border:1px solid var(--stroke-2)}
+.act-thumb .badge{position:absolute;left:6px;bottom:6px;font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;color:#fff}
+.act-thumb .play{position:absolute;inset:0;margin:auto;width:30px;height:30px}
+.act-title b{font-size:15px;font-weight:600}
+.act-title .s{font-size:12px;color:var(--text-3);margin-top:3px}
+.act-title{width:150px;flex-shrink:0}
+.chips{display:flex;gap:10px;flex:1}
+.chip{display:inline-flex;align-items:center;gap:7px;padding:7px 12px;border-radius:8px;background:rgba(255,255,255,.04);
+  border:1px solid var(--stroke-2);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+.chip svg{width:15px;height:15px}
+.act-dur{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text-2);white-space:nowrap}
+.act-status{display:flex;align-items:center;gap:7px;font-size:13px;width:78px;flex-shrink:0}
+.act-status.green{color:var(--green)}
+.act-status.gray{color:var(--text-2)}
+.act-exp{color:var(--text-3);cursor:pointer}
+.playbar{display:flex;align-items:center;gap:14px;padding:2px 2px}
+.playbar .cap{font-size:13px;color:var(--text-3)}
+.playbar .cur{font-size:13px;color:var(--text-2)}
+.playbar .spacer{flex:1}
+
+/* 设置 */
+.settabs{display:flex;align-items:center;gap:8px}
+.settab{padding:9px 20px;border-radius:10px;font-size:14px;color:var(--text-2);cursor:pointer;background:var(--panel-2);border:1px solid var(--stroke)}
+.settab:hover{color:var(--text)}
+.settab.active{background:var(--accent);border-color:transparent;color:#fff;font-weight:500}
+.legend{display:flex;align-items:center;gap:18px;margin-left:auto;font-size:12.5px;color:var(--text-2)}
+.legend span{display:flex;align-items:center;gap:7px}
+.setcard{background:var(--panel);border:1px solid var(--stroke);border-radius:12px;padding:16px 20px}
+.setcard h4{font-size:15px;font-weight:600;margin-bottom:14px}
+.setrow{display:flex;align-items:center;gap:14px}
+.setrow .grow{flex:1}
+.setrow .rt{font-size:12.5px;color:var(--text-2);display:flex;align-items:center;gap:7px}
+.big-chk{width:22px;height:22px;border-radius:6px}
+.big-chk svg{width:13px;height:13px}
+.opt-title{font-size:14px;font-weight:500;white-space:nowrap}
+.opt-sub{font-size:12px;color:var(--text-3);margin-top:3px}
+.themes{display:flex;gap:14px}
+.swatch{display:flex;align-items:center;gap:10px;padding:10px 18px 10px 12px;border-radius:10px;
+  background:var(--panel-2);border:1.5px solid var(--stroke);cursor:pointer;font-size:14px}
+.swatch:hover{border-color:rgba(140,180,255,.3)}
+.swatch.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.swatch .sw{width:34px;height:26px;border-radius:6px;border:1px solid rgba(255,255,255,.15)}
+.sw-light{background:#f2f4f8}.sw-dark{background:#0c1220}.sw-tech{background:linear-gradient(150deg,#0a70fe,#0a2a6e)}
+.field{display:inline-flex;align-items:center;justify-content:space-between;gap:14px;min-width:240px;height:40px;
+  padding:0 14px;border-radius:10px;background:var(--panel-2);border:1px solid var(--stroke);cursor:pointer;font-size:13px}
+.field svg{width:14px;height:14px;color:var(--text-3)}
+.save-row{display:flex;align-items:center;justify-content:flex-end;gap:14px;margin-top:4px}
+.saved{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--green)}
+
+/* 设备页 */
+.dev-list{display:flex;flex-direction:column;gap:10px}
+.dev-row{display:flex;align-items:center;gap:14px;padding:14px 16px;border-radius:12px;background:var(--panel-2);border:1px solid var(--stroke-2)}
+.dev-row.pending{background:rgba(10,112,254,.1);border-color:rgba(20,120,255,.4)}
+.dev-ic{width:44px;height:44px;border-radius:10px;background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.dev-row .nm{font-size:14px;font-weight:600}
+.dev-row .st{font-size:12px;color:var(--text-3);margin-top:3px;display:flex;align-items:center;gap:7px}
+
+/* ── 预览播控坞（持久） ── */
+.dock-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.dock-head h3{font-size:16px;font-weight:600}
+.dock-head .live{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--green)}
+.dock-head .hint{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--text-3)}
+.preview{background:var(--panel-2);border:1px solid var(--stroke);border-radius:12px;padding:14px 16px}
+.screen{background:var(--black);border-radius:8px;height:186px;display:flex;align-items:center;justify-content:center;overflow:hidden;position:relative}
+.screen .frame{height:100%;aspect-ratio:16/9;position:relative;display:flex;align-items:center;overflow:hidden;
+  background:
+    radial-gradient(135% 105% at 90% 90%,rgba(255,201,150,.55) 0%,rgba(255,176,122,0) 42%),
+    linear-gradient(180deg,#d6e5f2 0%,#bcd3e6 48%,#a4bfd8 100%)}
+.screen .frame .es{position:absolute;top:22px;left:34px;font-size:20px;font-weight:700;color:#1a3a5c;letter-spacing:.3px}
+.screen .frame .cap{position:absolute;right:44px;top:50%;transform:translateY(-50%);text-align:left;color:#12324f}
+.screen .frame .cap b{font-size:27px;font-weight:800;line-height:1.36;display:block;text-shadow:0 1px 0 rgba(255,255,255,.25)}
+.screen .frame .cap span{display:block;margin-top:11px;font-size:12.5px;letter-spacing:.6px;color:#345d80}
+.screen .frame .mtn{position:absolute;bottom:0;left:0;right:0;height:58%;
+  background:linear-gradient(180deg,#eff5fb 0%,#c4d3e2 42%,#93aabf 100%);
+  clip-path:polygon(0 56%,12% 27%,24% 50%,38% 13%,50% 45%,60% 31%,68% 53%,80% 68%,100% 84%,100% 100%,0 100%)}
+.screen .frame .mtn2{position:absolute;bottom:0;left:0;right:0;height:42%;
+  background:linear-gradient(180deg,rgba(82,108,140,.6),rgba(48,77,108,.88));
+  clip-path:polygon(0 72%,16% 47%,30% 68%,46% 41%,58% 63%,70% 71%,84% 85%,100% 93%,100% 100%,0 100%)}
+.transport{display:flex;align-items:center;gap:16px;margin-top:12px}
+.transport .grp{display:flex;align-items:center;gap:6px}
+.transport .track{flex:1}
+
+/* ── 信号源坞（持久） ── */
+.sources{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.src-card{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:12px;
+  background:var(--panel-2);border:1px solid var(--stroke-2);cursor:pointer;transition:.15s}
+.src-card:hover{border-color:rgba(140,180,255,.28)}
+.src-card.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent),0 0 18px var(--accent-glow)}
+.src-thumb{width:76px;height:48px;border-radius:7px;flex-shrink:0;overflow:hidden;border:1px solid var(--stroke-2);
+  display:flex;align-items:center;justify-content:center;color:var(--text-3)}
+.src-info{flex:1;min-width:0}
+.src-info .t{font-size:13.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.src-info .s{font-size:12px;margin-top:4px;display:flex;align-items:center;gap:7px;color:var(--text-3)}
+.src-info .s.green{color:var(--green)}
+.src-card .more{color:var(--text-3);letter-spacing:1px}
 </style>
 </head>
 <body>
+<div class="titlebar"><span>—</span><span>▢</span><span>✕</span></div>
 <div class="app">
 
-  <div class="rail">
-    <div class="logo">🖥️</div>
-    <div class="toggle-btn" onclick="document.getElementById('sw').classList.toggle('off')">
-      <span>📡</span>
-      <div class="switch" id="sw"></div>
-      <span style="font-size:9px;">投屏开关</span>
+  <!-- ═══════════ 侧栏 ═══════════ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 48 48" fill="none">
+        <rect x="1" y="1" width="46" height="46" rx="11" fill="#0a1f3e"/>
+        <rect x="10" y="15" width="6" height="18" rx="2" fill="#25c9f5"/>
+        <rect x="18" y="12" width="7" height="24" rx="2" fill="#1e7bff"/>
+        <path d="M27 13 L38 15 V33 L27 35 Z" fill="#2fd0f2"/>
+        <path d="M30 20 L36 24 L30 28 Z" fill="#fff"/>
+      </svg>
+      <div>
+        <div class="name">EveryStage</div>
+        <div class="sub">Terminal</div>
+      </div>
     </div>
-    <div class="cut-btn">🔌 断</div>
-    <div class="divider"></div>
-    <button class="nav-btn active" onclick="showPanel('files',this)">📁<br>文件</button>
-    <button class="nav-btn" onclick="showPanel('activity',this)">📋<br>活动</button>
-    <button class="nav-btn" onclick="showPanel('devices',this)">🖧<br>设备</button>
-    <button class="nav-btn" onclick="showPanel('settings',this)">⚙️<br>设置</button>
-    <div class="status"><div class="dot"></div>已连接</div>
-  </div>
 
-  <div class="main">
+    <div class="status-card">
+      <div class="top"><span class="dot green"></span><b>主屏幕输出</b><span class="chev">›</span></div>
+      <div class="lo">已连接 · 正常输出</div>
+    </div>
 
-    <div class="panel active" id="panel-files">
-      <div class="tabs">
-        <div class="tab active">全部</div><div class="tab">图片</div><div class="tab">视频</div><div class="tab">文档</div><div class="tab">音频</div>
-      </div>
-      <div class="grid">
-        <div><div class="thumb">📊</div><div class="fname">季度汇报.pptx</div></div>
-        <div><div class="thumb">🖼️</div><div class="fname">产品图01.jpg</div></div>
-        <div><div class="thumb">🎬</div><div class="fname">宣传片.mp4</div></div>
-        <div><div class="thumb">📄</div><div class="fname">合同模板.docx</div></div>
-      </div>
-      <h3 style="margin-top:16px;">音频</h3>
-      <div class="audio-row">
-        <button class="play-btn">▶</button>
-        <div style="flex:1;">
-          <div style="font-size:13px;margin-bottom:6px;">背景音乐 - 轻音乐循环.mp3</div>
-          <div class="progress"></div>
+    <nav class="nav" id="nav"></nav>
+
+    <div class="side-card">
+      <div class="lbl">文件库分类</div>
+      <div class="libcard">
+        <div class="ic">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#bcd6ff" stroke-width="1.8"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="8.5" cy="10" r="1.6" fill="#bcd6ff" stroke="none"/><path d="M4 17l4.5-4 3 2.5L16 11l4 4"/></svg>
         </div>
-        <button class="cast-btn">📡 投屏</button>
+        <div>
+          <div class="t">图片 / 视频 / 文档</div>
+          <div class="d">用于管理视觉类素材<br>（不含音频）</div>
+        </div>
       </div>
     </div>
 
-    <div class="panel" id="panel-activity">
-      <h3>周一晨会方案 ▾</h3>
-      <div class="activity active">
-        <div class="act-head"><div class="num active">1</div><span>开场介绍</span><span class="mode-tag">顺序自动</span></div>
-        <div class="file-thumbs"><div class="mini-thumb">📊</div><div class="mini-thumb">🖼️</div><div class="mini-thumb">🖼️</div></div>
+    <div class="audiozone">
+      <div class="hd">
+        <div class="ic"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M9 18V5l10-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg></div>
+        <b>音频独立播放区</b>
       </div>
-      <div class="activity inactive">
-        <div class="act-head"><div class="num">2</div><span>产品展示</span><span class="mode-tag">手动点选</span></div>
+      <div class="desc">独立的音频播放工作区<br>支持时间轴、音量、循环<br>可作为背景音频使用</div>
+      <div class="wave" id="wave"></div>
+      <div class="az-time"><span>00:00 / 03:20</span></div>
+      <div class="az-foot">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 010 7"/></svg>
+        <div class="mini-track"></div>
       </div>
-      <div class="activity inactive">
-        <div class="act-head"><div class="num">3</div><span>合同签署</span><span class="mode-tag">手动点选</span></div>
+      <div class="az-foot" style="margin-top:10px">
+        <span class="chk"><span class="box on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></span>循环播放</span>
+        <span class="spacer"></span>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--text-3)" stroke-width="2"><path d="M21 12a9 9 0 11-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
       </div>
     </div>
 
-    <div class="panel" id="panel-devices">
-      <h3>已配对设备</h3>
-      <div class="device-row pending"><span>💻</span><div style="flex:1;"><div>会议室笔记本</div><div style="font-size:11px;color:var(--text-muted);">请求投屏中</div></div><button class="cast-btn">接受</button></div>
-      <div class="device-row"><span>🖥️</span><div style="flex:1;"><div>展厅主机</div><div style="font-size:11px;color:var(--text-muted);">已配对 · 待机</div></div><button class="cast-btn">投放</button></div>
-    </div>
+    <div class="spacer"></div>
+    <div class="tagline">让每个阶段<br>都精彩呈现</div>
+  </aside>
 
-    <div class="panel" id="panel-settings">
-      <h3>播放行为</h3>
-      <div class="setting-row"><span>投屏开关关闭时点击文件</span><select><option>仅本地预览</option></select></div>
-      <div class="setting-row"><span>新建活动默认模式</span><select><option>顺序自动</option><option>手动点选</option></select></div>
-      <div class="setting-row"><span>纯音频投屏时扩展屏显示</span><select><option>波形动效</option><option>默认背景图</option></select></div>
-    </div>
+  <!-- ═══════════ 主区 ═══════════ -->
+  <main class="main">
+    <div class="page-head" id="pageHead"></div>
+    <div class="page-body" id="pageBody"></div>
 
-  </div>
+    <!-- 预览播控坞（持久） -->
+    <section class="dock">
+      <div class="dock-head">
+        <h3>本地预览 / 播控窗口</h3>
+        <span class="live"><span class="dot green"></span><span id="previewState">本地预览中 · 未投屏</span></span>
+        <span class="hint"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>同一时间仅一个窗口输出</span>
+      </div>
+      <div class="preview">
+        <div class="screen">
+          <div class="frame">
+            <div class="es">EveryStage</div>
+            <div class="mtn"></div>
+            <div class="mtn2"></div>
+            <div class="cap"><b>让每个阶段<br>都精彩呈现</b><span>专业 · 高效 · 连接无限可能</span></div>
+          </div>
+        </div>
+        <div class="transport">
+          <div class="grp">
+            <button class="iconbtn plain" title="上一个"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5v14M20 5v14L9 12z"/></svg></button>
+            <button class="iconbtn plain" id="previewPlay" title="播放/暂停"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg></button>
+            <button class="iconbtn plain" title="下一个"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M18 5v14M4 5l11 7-11 7z"/></svg></button>
+          </div>
+          <span class="tcode">00:18 / 02:45</span>
+          <div class="track"><div class="fill" style="width:35%"></div><div class="knob" style="left:35%"></div></div>
+          <div class="vol"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 010 7"/></svg><div class="track"><div class="fill" style="width:70%"></div><div class="knob" style="left:70%"></div></div></div>
+          <button class="btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>投到扩展屏</button>
+          <button class="iconbtn plain" title="全屏"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 信号源坞（持久） -->
+    <section class="dock">
+      <div class="dock-head" style="margin-bottom:10px">
+        <h3 style="font-size:15px">信号源窗口</h3>
+        <span class="hint" style="margin-left:12px;position:static">选择一个窗口作为当前输出（同一时间仅有一个窗口输出）</span>
+      </div>
+      <div class="sources" id="sources"></div>
+    </section>
+  </main>
 </div>
 
 <script>
-function showPanel(id, btn){
-  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
-  document.getElementById('panel-'+id).classList.add('active');
-  document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
+/* ══════════════ 数据层（mock，后续替换为真实接口即可） ══════════════ */
+const NAV = [
+  {id:'files',   label:'文件', icon:'<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>'},
+  {id:'activity',label:'活动', icon:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none"/>'},
+  {id:'devices', label:'设备', icon:'<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'},
+  {id:'settings',label:'设置', icon:'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/>'},
+];
+
+const FILES = [
+  {name:'主视觉.jpg',    kind:'image', badge:'JPG', color:'#1E6FE0', grad:'g-sky'},
+  {name:'城市风光.jpg',  kind:'image', badge:'JPG', color:'#1E6FE0', grad:'g-city'},
+  {name:'海岸线.jpg',    kind:'image', badge:'JPG', color:'#1E6FE0', grad:'g-coast'},
+  {name:'自然风光.jpg',  kind:'image', badge:'JPG', color:'#1E6FE0', grad:'g-forest'},
+  {name:'产品展示.mp4',  kind:'video', badge:'MP4', color:'rgba(0,0,0,.55)', grad:'g-stage', video:true},
+  {name:'地球.mp4',      kind:'video', badge:'MP4', color:'rgba(0,0,0,.55)', grad:'g-earth', video:true},
+  {name:'开场介绍.pptx', kind:'doc',   badge:'PPT', color:'#E8622E', grad:'g-slide'},
+  {name:'项目方案.pdf',  kind:'doc',   badge:'PDF', color:'#E23B3B', grad:'g-pdf'},
+  {name:'背景图.jpg',    kind:'image', badge:'JPG', color:'#1E6FE0', grad:'g-wave'},
+  {name:'展厅实拍.jpg',  kind:'image', badge:'JPG', color:'#1E6FE0', grad:'g-glass'},
+  {name:'品牌介绍.docx', kind:'doc',   badge:'DOC', color:'#2E6BE0', grad:'g-brand'},
+  {name:'山脉云海.jpg',  kind:'image', badge:'JPG', color:'#1E6FE0', grad:'g-mountain'},
+];
+const FILE_TABS = [{id:'all',label:'全部'},{id:'image',label:'图片'},{id:'video',label:'视频'},{id:'doc',label:'文档'}];
+
+const ACTIVITIES = [
+  {n:1,title:'开场介绍',sub:'公司介绍与活动开场',badge:'PPT',color:'#E8622E',grad:'g-slide',
+   files:[{i:'ppt',t:'开场介绍.pptx'},{i:'img',t:'主视觉.jpg'},{i:'mp3',t:'背景音乐.mp3'}],dur:'00:03:20',status:'未播放',statusColor:'green',selected:true},
+  {n:2,title:'产品展示',sub:'产品功能演示与视频展示',badge:'MP4',color:'rgba(0,0,0,.55)',grad:'g-stage',video:true,
+   files:[{i:'mp4',t:'产品展示.mp4'},{i:'img',t:'背景图.jpg'},{i:'mp3',t:'背景音乐.mp3'}],dur:'00:04:50',status:'未播放',statusColor:'gray'},
+  {n:3,title:'合同签署',sub:'合作条款与签约仪式',badge:'DOC',color:'#2E6BE0',grad:'g-brand',
+   files:[{i:'doc',t:'合同文件.docx'},{i:'img',t:'签约背景.jpg'},{i:'mp3',t:'钢琴音乐.mp3'}],dur:'00:02:30',status:'未播放',statusColor:'gray'},
+];
+
+const SOURCES = [
+  {id:'local',  title:'本地预览 / 播控窗口', status:'本地预览中 · 未投屏', dot:'green', thumb:'g-mountain'},
+  {id:'laptop', title:'会议室笔记本 · 来投',  status:'待机', dot:'amber', icon:'laptop'},
+  {id:'desktop',title:'展厅电脑 · 来投',       status:'待机', dot:'gray',  icon:'monitor'},
+];
+
+const SET_TABS = [{id:'general',label:'通用'},{id:'display',label:'显示'},{id:'playback',label:'播放行为'},{id:'network',label:'网络与设备'},{id:'about',label:'关于'}];
+const THEMES = [{id:'light',label:'白色系',sw:'sw-light'},{id:'dark',label:'黑色系',sw:'sw-dark'},{id:'tech',label:'高科技系',sw:'sw-tech'}];
+
+const DEVICES = [
+  {name:'会议室笔记本', kind:'laptop',  status:'请求投屏中', dot:'amber', action:'接受', pending:true},
+  {name:'展厅电脑',     kind:'monitor', status:'已配对 · 待机', dot:'gray', action:'投放'},
+];
+
+/* ══════════════ 视图状态 ══════════════ */
+const state = {nav:'files', fileFilter:'all', audioPlaying:true, previewPlaying:false, source:'local', theme:'dark', settingsTab:'general'};
+
+/* ══════════════ 小工具 ══════════════ */
+const el=(h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild;};
+const navIcon=(p)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const fileTypeIcon=(i)=>({
+  ppt:'<rect x="4" y="3" width="16" height="18" rx="2" fill="#e8622e"/><path d="M8 8h6v4H8z" fill="#fff"/>',
+  doc:'<rect x="4" y="3" width="16" height="18" rx="2" fill="#2e6be0"/><path d="M8 9h8M8 13h8M8 17h5" stroke="#fff" stroke-width="1.6"/>',
+  mp4:'<rect x="3" y="5" width="18" height="14" rx="2" fill="#1c2b46"/><path d="M11 9l4 3-4 3z" fill="#7fd0ff"/>',
+  img:'<rect x="3" y="5" width="18" height="14" rx="2" fill="#1c3560"/><circle cx="8" cy="10" r="1.6" fill="#7fd0ff"/><path d="M4 17l4-3 3 2 4-4 5 5" stroke="#7fd0ff" stroke-width="1.4" fill="none"/>',
+  mp3:'<circle cx="12" cy="12" r="9" fill="#6b4bd0"/><path d="M10 16V8l5-1v7" stroke="#fff" stroke-width="1.5" fill="none"/><circle cx="9" cy="16" r="1.6" fill="#fff"/><circle cx="14" cy="14" r="1.6" fill="#fff"/>',
+}[i]||'');
+const devIcon=(k)=> k==='laptop'
+  ? '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#9fb8d6" stroke-width="1.6"><rect x="4" y="5" width="16" height="10" rx="1.5"/><path d="M2 19h20l-2-4H4z"/></svg>'
+  : '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#9fb8d6" stroke-width="1.6"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+
+/* ══════════════ 渲染：侧栏导航 & 波形 ══════════════ */
+function renderNav(){
+  const nav=document.getElementById('nav');nav.innerHTML='';
+  NAV.forEach(n=>{
+    const item=el(`<div class="nav-item ${n.id===state.nav?'active':''}">${navIcon(n.icon)}<span>${n.label}</span></div>`);
+    item.onclick=()=>{state.nav=n.id;renderNav();renderPage();};
+    nav.appendChild(item);
+  });
 }
+function renderWave(){
+  const w=document.getElementById('wave');w.innerHTML='';
+  const hs=[7,12,18,10,20,14,8,16,22,11,6,15,19,9,13];
+  hs.forEach(h=>{const b=el('<i></i>');b.style.height=h+'px';w.appendChild(b);});
+}
+
+/* ══════════════ 渲染：页头 + 页面主体 ══════════════ */
+const HEADS={
+  files:['文件','管理本地媒体文件，用于活动播放'],
+  activity:['活动','管理活动方案，按顺序播放多媒体内容'],
+  devices:['设备','管理已配对的投屏设备与来投请求'],
+  settings:['设置','自定义终端的显示、播放和设备相关选项'],
+};
+function renderHead(){const[h,p]=HEADS[state.nav];document.getElementById('pageHead').innerHTML=`<h1>${h}</h1><p>${p}</p>`;}
+
+function renderPage(){
+  renderHead();
+  const body=document.getElementById('pageBody');body.innerHTML='';
+  if(state.nav==='files')    body.appendChild(viewFiles());
+  if(state.nav==='activity') body.appendChild(viewActivity());
+  if(state.nav==='devices')  body.appendChild(viewDevices());
+  if(state.nav==='settings') body.appendChild(viewSettings());
+}
+
+/* ── 文件页 ── */
+function viewFiles(){
+  const wrap=el('<div style="display:flex;flex-direction:column;gap:13px"></div>');
+  // 工具栏
+  const seg=FILE_TABS.map(t=>`<div class="s ${t.id===state.fileFilter?'active':''}" data-f="${t.id}">${t.label}</div>`).join('');
+  const bar=el(`<div class="toolbar">
+    <div class="seg">${seg}</div>
+    <span class="spacer" style="flex:1"></span>
+    <button class="btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></svg>导入文件</button>
+    <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>加入活动</button>
+    <div class="dropdown"><span class="cap">播放触发</span>双击播放<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+  </div>`);
+  bar.querySelectorAll('.seg .s').forEach(s=>s.onclick=()=>{state.fileFilter=s.dataset.f;renderPage();});
+  wrap.appendChild(bar);
+  // 网格
+  const grid=el('<div class="filegrid"></div>');
+  FILES.filter(f=>state.fileFilter==='all'||f.kind===state.fileFilter).forEach(f=>{
+    grid.appendChild(el(`<div class="filecard">
+      <div class="filethumb ${f.grad}">
+        <span class="badge" style="background:${f.color}">${f.badge}</span>
+        ${f.video?'<div class="play"><svg width="14" height="14" viewBox="0 0 24 24" fill="#fff"><path d="M6 4l14 8-14 8z"/></svg></div>':''}
+      </div>
+      <div class="filemeta"><span class="fn">${f.name}</span><span class="more">···</span></div>
+    </div>`));
+  });
+  wrap.appendChild(grid);
+  // 音频播放区
+  wrap.appendChild(el(`<div class="card">
+    <div class="card-head"><h3>音频播放区</h3><span class="cap">管理音频文件，用于背景音乐播放，可加入活动音轨</span></div>
+    <div class="audiobar">
+      <div class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="#bcd6ff"><path d="M9 18V5l10-2v13" stroke="#bcd6ff" stroke-width="1.5" fill="none"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg></div>
+      <span class="nm">背景音乐.mp3</span>
+      <button class="iconbtn" id="audioPlay"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg></button>
+      <span class="tcode">00:42 / 03:20</span>
+      <div class="track"><div class="fill" style="width:40%"></div><div class="knob" style="left:40%"></div></div>
+      <div class="vol"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 010 7"/></svg><div class="track"><div class="fill" style="width:65%"></div><div class="knob" style="left:65%"></div></div></div>
+      <span class="chk"><span class="box on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></span>循环播放</span>
+      <button class="btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>加入活动音轨</button>
+    </div>
+  </div>`));
+  return wrap;
+}
+
+/* ── 活动页 ── */
+function viewActivity(){
+  const wrap=el('<div style="display:flex;flex-direction:column;gap:13px"></div>');
+  wrap.appendChild(el(`<div class="toolbar">
+    <span class="cap" style="color:var(--text-3)">当前方案</span>
+    <div class="dropdown" style="min-width:240px">新品发布会（演示）<span style="flex:1"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+    <span style="flex:1"></span>
+    <button class="btn primary"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></svg>新建方案</button>
+    <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M7 3v6h9"/></svg>保存</button>
+    <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M12 11v6M9 14h6"/></svg>另存为</button>
+    <button class="btn danger"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>删除</button>
+  </div>`));
+
+  const card=el(`<div class="card">
+    <div class="card-head" style="justify-content:space-between"><div style="display:flex;gap:10px;align-items:baseline"><h3>活动节目单</h3><span class="cap">共 3 项</span></div>
+    <span class="act-exp" style="display:flex;align-items:center;gap:6px">展开全部 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg></span></div>
+    <div class="act-list"></div>
+  </div>`);
+  const list=card.querySelector('.act-list');
+  ACTIVITIES.forEach(a=>{
+    const chips=a.files.map(f=>`<span class="chip"><svg viewBox="0 0 24 24">${fileTypeIcon(f.i)}</svg>${f.t}</span>`).join('');
+    list.appendChild(el(`<div class="act-row ${a.selected?'sel':''}">
+      <div class="act-num">${a.n}</div>
+      <div class="act-thumb ${a.grad}"><span class="badge" style="background:${a.color}">${a.badge}</span>${a.video?'<svg class="play" viewBox="0 0 24 24" fill="#fff"><circle cx="12" cy="12" r="11" fill="rgba(0,0,0,.35)"/><path d="M9 7l9 5-9 5z"/></svg>':''}</div>
+      <div class="act-title"><b>${a.title}</b><div class="s">${a.sub}</div></div>
+      <div class="chips">${chips}</div>
+      <div class="act-dur"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>${a.dur}</div>
+      <div class="act-status ${a.statusColor}"><span class="dot ${a.statusColor}"></span>${a.status}</div>
+      <span class="act-exp"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></span>
+    </div>`));
+  });
+  wrap.appendChild(card);
+
+  wrap.appendChild(el(`<div class="playbar">
+    <span class="cap">播控方式</span>
+    <div class="dropdown">手动播控<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+    <span style="width:24px"></span>
+    <span class="cur">当前：1. 开场介绍</span>
+    <span class="spacer"></span>
+    <button class="btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 5v14M20 5v14L9 12z"/></svg>上一项</button>
+    <button class="btn primary"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"/></svg>播放/切换</button>
+    <button class="btn"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M18 5v14M4 5l11 7-11 7z"/></svg>下一项</button>
+    <span class="cur" style="margin-left:6px">下一项：2. 产品展示</span>
+  </div>`));
+  return wrap;
+}
+
+/* ── 设备页（效果图未提供，按同一视觉系统延展） ── */
+function viewDevices(){
+  const wrap=el('<div class="card"></div>');
+  wrap.appendChild(el('<div class="card-head"><h3>已配对设备</h3><span class="cap">接受来投请求，或主动向已配对终端投放</span></div>'));
+  const list=el('<div class="dev-list"></div>');
+  DEVICES.forEach(d=>{
+    const row=el(`<div class="dev-row ${d.pending?'pending':''}">
+      <div class="dev-ic">${devIcon(d.kind)}</div>
+      <div style="flex:1"><div class="nm">${d.name}</div><div class="st"><span class="dot ${d.dot}"></span>${d.status}</div></div>
+      <button class="btn ${d.pending?'primary':''}">${d.action}</button>
+    </div>`);
+    list.appendChild(row);
+  });
+  wrap.appendChild(list);
+  return wrap;
+}
+
+/* ── 设置页 ── */
+function viewSettings(){
+  const wrap=el('<div style="display:flex;flex-direction:column;gap:13px"></div>');
+  const tabs=SET_TABS.map(t=>`<div class="settab ${t.id===state.settingsTab?'active':''}" data-t="${t.id}">${t.label}</div>`).join('');
+  const top=el(`<div class="settabs">${tabs}
+    <div class="legend">
+      <span><span class="dot" style="background:var(--accent)"></span>即时生效</span>
+      <span><span class="dot amber"></span>保存后生效</span>
+      <span><span class="dot gray"></span>重启后生效</span>
+    </div></div>`);
+  top.querySelectorAll('.settab').forEach(t=>t.onclick=()=>{state.settingsTab=t.dataset.t;renderPage();});
+  wrap.appendChild(top);
+
+  // 启动与运行
+  wrap.appendChild(el(`<div class="setcard">
+    <h4>启动与运行</h4>
+    <div class="setrow">
+      <span class="box big-chk on" data-toggle><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M5 12l5 5L20 6"/></svg></span>
+      <div class="grow"><div class="opt-title">终端机启动时投屏开关默认开启</div><div class="opt-sub">仅影响下次启动</div></div>
+      <span class="rt"><span class="dot amber"></span>保存后生效</span>
+    </div>
+  </div>`));
+
+  // 外观设置
+  const themeCard=el(`<div class="setcard">
+    <h4>外观设置</h4>
+    <div class="setrow">
+      <div class="opt-title" style="width:64px">界面主题</div>
+      <div class="themes"></div>
+      <span class="grow"></span>
+      <span class="rt"><span class="dot" style="background:var(--accent)"></span>即时生效</span>
+    </div>
+  </div>`);
+  const themes=themeCard.querySelector('.themes');
+  THEMES.forEach(t=>{
+    const s=el(`<div class="swatch ${t.id===state.theme?'sel':''}"><span class="sw ${t.sw}"></span>${t.label}</div>`);
+    s.onclick=()=>{state.theme=t.id;renderPage();};
+    themes.appendChild(s);
+  });
+  wrap.appendChild(themeCard);
+
+  // 窗口设置
+  wrap.appendChild(el(`<div class="setcard">
+    <h4>窗口设置</h4>
+    <div class="setrow">
+      <div class="opt-title" style="width:96px">窗口启动方式</div>
+      <div class="field">记住上次窗口大小<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg></div>
+      <span class="grow"></span>
+      <span class="rt"><span class="dot gray"></span>重启后生效</span>
+    </div>
+    <div class="save-row"><button class="btn primary" style="padding:0 26px">保存设置</button><span class="saved"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg>已保存</span></div>
+  </div>`));
+
+  // 勾选 toggle
+  wrap.querySelectorAll('[data-toggle]').forEach(b=>b.onclick=()=>b.classList.toggle('on'));
+  return wrap;
+}
+
+/* ══════════════ 渲染：信号源坞（持久） ══════════════ */
+function renderSources(){
+  const box=document.getElementById('sources');box.innerHTML='';
+  SOURCES.forEach(s=>{
+    const sel=s.id===state.source;
+    const thumb=s.thumb?`<div class="src-thumb ${s.thumb}"></div>`:`<div class="src-thumb">${devIcon(s.icon)}</div>`;
+    const card=el(`<div class="src-card ${sel?'sel':''}">
+      ${thumb}
+      <div class="src-info"><div class="t">${s.title}</div><div class="s ${s.dot==='green'?'green':''}"><span class="dot ${s.dot}"></span>${s.status}</div></div>
+      <span class="more">···</span>
+    </div>`);
+    card.onclick=()=>{state.source=s.id;renderSources();
+      document.getElementById('previewState').textContent = s.id==='local'?'本地预览中 · 未投屏':(s.title+' · '+s.status);};
+    box.appendChild(card);
+  });
+}
+
+/* ══════════════ 交互：播放/暂停图标切换 ══════════════ */
+const ICON_PLAY_S='<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"/></svg>';
+const ICON_PAUSE_S='<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
+const ICON_PLAY_L='<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5l12 7-12 7z"/></svg>';
+const ICON_PAUSE_L='<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>';
+document.addEventListener('click',(e)=>{
+  const a=e.target.closest('#audioPlay');
+  if(a){state.audioPlaying=!state.audioPlaying;a.innerHTML=state.audioPlaying?ICON_PAUSE_S:ICON_PLAY_S;}
+  const p=e.target.closest('#previewPlay');
+  if(p){state.previewPlaying=!state.previewPlaying;p.innerHTML=state.previewPlaying?ICON_PAUSE_L:ICON_PLAY_L;}
+});
+
+/* ══════════════ 首次渲染 ══════════════ */
+renderNav();renderWave();renderPage();renderSources();
 </script>
 </body>
 </html>

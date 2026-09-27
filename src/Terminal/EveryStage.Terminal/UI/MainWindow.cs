@@ -9,8 +9,8 @@ using EveryStage.Terminal.UI.Panels;
 namespace EveryStage.Terminal.UI;
 
 /// <summary>
-/// PLANNING.md §8's operator-facing main window: fixed left nav (§8.1: cast switch, "断", the four
-/// panel icons, connection status) + a right content area that swaps between panels. Shown on
+/// PLANNING.md §8's operator-facing main window: fixed left nav (connection status card + the four
+/// panel icons) + a right content area that swaps between panels. Shown on
 /// whatever display the operator is actually sitting at — this is NOT the <c>OverlayWindow</c>,
 /// which covers the bound extended display with actual content output.
 ///
@@ -19,8 +19,11 @@ namespace EveryStage.Terminal.UI;
 /// its fields are and aren't (PLANNING.md only names the five category labels, not any field
 /// within them).
 ///
-/// The 投屏开关 is rendered by the shared <see cref="ToggleSwitch"/> control and keeps the
-/// underlying state-machine behavior in the same place as the prototype interaction.
+/// The nav deliberately doesn't repeat what the title bar and the shared preview dock
+/// (<see cref="SharedPreviewDock"/>) already show: no brand block (the title bar already reads
+/// "EveryStage Terminal"), no 投屏开关/断开投屏 pair (the dock has 断开输出; the cast switch itself
+/// stays reachable from the tray menu, <c>TrayIconController</c>), and no 显示预览窗 recall button
+/// (the dock's local preview covers it).
 ///
 /// Also hosts <see cref="ToastStack"/> (PLANNING.md §11's "右下角Toast通知栈"), pinned on top of
 /// whichever panel is currently showing — its only producer today is
@@ -44,16 +47,17 @@ public sealed class MainWindow : GradientForm
     private readonly Panel _panelHost;
     private readonly SharedPreviewDock _previewDock;
     private readonly ToastStack _toastStack;
-    private readonly ToggleSwitch _castSwitchCheckbox;
     private readonly Label _statusLabel;
-    private readonly Button _recallPreviewButton;
     private readonly System.Windows.Forms.Timer _declinedMessageTimer;
     private readonly FilesPanel _filesPanel;
     private readonly DevicesPanel _devicesPanel;
     private readonly ActivitiesPanel _activitiesPanel;
     private readonly SettingsPanel _settingsPanel;
 
-    public event Action? PreviewRecallRequested;
+    /// <summary>The palette each page was last themed with. Only the visible page is in the tree when
+    /// <see cref="ThemeManager.Apply"/> runs, so <see cref="ShowPanel"/> re-themes a page that missed
+    /// a switch (or the saved theme at startup) from this palette.</summary>
+    private readonly Dictionary<Control, UiPalette> _panelPalettes = new();
 
     public void ShowPairingRequest(PairingRequest request) => _devicesPanel.ShowPairingRequest(request);
 
@@ -94,28 +98,10 @@ public sealed class MainWindow : GradientForm
             GlassTint = Color.FromArgb(178, 8, 23, 40),
         };
 
-        var brandMark = new BrandMark { Bounds = new Rectangle(16, 18, 30, 30) };
-        var brand = new Label
-        {
-            Text = "EveryStage",
-            ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI Semibold", 12F),
-            AutoSize = true,
-            Location = new Point(56, 16),
-        };
-        var product = new Label
-        {
-            Text = "Terminal",
-            ForeColor = ModernUi.Muted,
-            Font = new Font("Segoe UI", 8.5F),
-            AutoSize = true,
-            Location = new Point(57, 37),
-        };
-
-        // 状态卡（对齐效果图）：品牌下方一张圆角卡，主屏幕输出 + 已连接状态，取代原先贴在栏底的裸状态标签。
+        // 状态卡（对齐效果图）：导航栏顶部一张圆角卡，主屏幕输出 + 已连接状态。品牌区已去掉——标题栏已显示「EveryStage Terminal」。
         var statusCard = new GlassPanel
         {
-            Bounds = new Rectangle(16, 60, 218, 58), CornerRadius = 12, AutoScroll = false,
+            Bounds = new Rectangle(16, 16, 218, 58), CornerRadius = 12, AutoScroll = false,
             GlassTint = Color.FromArgb(240, 12, 40, 82),
         };
         var statusDot = new Label
@@ -141,43 +127,15 @@ public sealed class MainWindow : GradientForm
         };
         statusCard.Controls.AddRange(new Control[] { statusDot, statusTitle, statusChevron, _statusLabel });
 
-        // A plain checkbox standing in for §8.1's slide-switch visual — see class doc comment.
-        var switchLabel = new Label
-        {
-            Text = "投屏开关",
-            ForeColor = ModernUi.Text,
-            AutoSize = false,
-            TextAlign = ContentAlignment.MiddleLeft,
-            Bounds = new Rectangle(16, 130, 120, 28),
-        };
-        _castSwitchCheckbox = new ToggleSwitch
-        {
-            // 52px 开关，右对齐到 218px 内容区右缘（16 + 218 - 52 = 182）。
-            Location = new Point(182, 132),
-            Checked = stateMachine.CastSwitchOn,
-        };
-        _castSwitchCheckbox.CheckedChanged += (_, _) => stateMachine.SetCastSwitch(_castSwitchCheckbox.Checked);
-
-        var disconnectButton = new RoundedActionButton { Text = "断开投屏", Bounds = new Rectangle(16, 166, 218, 34) };
-        ModernUi.StyleButton(disconnectButton, danger: true);
-        disconnectButton.FlatAppearance.BorderColor = ModernUi.Danger;
-        disconnectButton.FlatAppearance.BorderSize = 1;
-        disconnectButton.ForeColor = ModernUi.Danger;
-        disconnectButton.BackColor = Color.FromArgb(40, 60, 22, 28);
-        disconnectButton.Font = new Font("Segoe UI Semibold", 10F);
-        disconnectButton.Click += (_, _) => stateMachine.Disconnect();
-
-        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 218);
-        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 268);
-        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 318);
-        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 368);
+        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 92);
+        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 142);
+        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 192);
+        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 242);
         var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
 
-        _recallPreviewButton = new RoundedActionButton { Text = "显示预览窗", Bounds = new Rectangle(16, 430, 218, 34) };
-        ModernUi.StyleButton(_recallPreviewButton);
-        _recallPreviewButton.Click += (_, _) => PreviewRecallRequested?.Invoke();
-
-        // 底部品牌标语（对齐效果图），锚定栏底。
+        // 底部品牌标语（对齐效果图），停靠栏底。用 Dock 而不是「固定坐标 + Anchor=Bottom」：Anchor 的
+        // 底边距是在控件加入 nav 那一刻按 nav 当时的尺寸算的，而那时 nav 还是 WinForms 默认尺寸（约 100px 高），
+        // 于是 y=632 的标语被永久钉在可视区下方几百像素处、从未显示。Dock=Bottom 与父容器尺寸和 DPI 无关。
         var tagline = new Label
         {
             Text = "让每个阶段\r\n都精彩呈现",
@@ -185,15 +143,16 @@ public sealed class MainWindow : GradientForm
             Font = new Font("Segoe UI", 9.5F),
             AutoSize = false,
             TextAlign = ContentAlignment.TopLeft,
-            Bounds = new Rectangle(18, 632, 214, 44),
-            Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
+            Dock = DockStyle.Bottom,
+            Height = 60,
+            Padding = new Padding(18, 0, 0, 16),
         };
 
         nav.Controls.AddRange(new Control[]
         {
-            brandMark, brand, product, statusCard, switchLabel, _castSwitchCheckbox, disconnectButton,
+            statusCard,
             filesButton, activitiesButton, devicesButton, settingsButton,
-            _recallPreviewButton, tagline,
+            tagline,
         });
 
         _contentHost = new GlassPanel
@@ -218,6 +177,17 @@ public sealed class MainWindow : GradientForm
         contentLayout.Controls.Add(_previewDock, 0, 1);
         _contentHost.Controls.Add(contentLayout);
 
+        // 预览坞随窗口变高：效果图里「本地预览 / 播控窗口 + 信号源窗口」约占主区一半，预览画面是视觉主体。
+        // 原先固定 214px 时，窗口多出来的高度全给了页面，预览画面只剩约 50px；现在预览按内容区高度的
+        // 比例增长（下限 96px、上限 300px），其余交给页面。
+        contentLayout.SizeChanged += (_, _) =>
+        {
+            int chrome = _previewDock.ChromeHeight + _previewDock.Margin.Vertical;
+            int preview = Math.Clamp((int)(contentLayout.ClientSize.Height * 0.44) - chrome, 96, 300);
+            float rowHeight = chrome + preview;
+            if (contentLayout.RowStyles[1].Height != rowHeight) contentLayout.RowStyles[1].Height = rowHeight;
+        };
+
         // One shared instance rather than a separate `new FileOperationLogger()` per panel: both
         // panels' loggers ultimately append to the same physical file
         // (`file-operations/file-ops-{date}.log`, see `DailyRollingLogWriter`), and that class's own
@@ -235,6 +205,8 @@ public sealed class MainWindow : GradientForm
         _activitiesPanel = new ActivitiesPanel(
             scenarioStore, scenarioRepository, library, _playback, _fileOpLog, stateMachine);
         _settingsPanel = new SettingsPanel(settingsStore, identity);
+        foreach (Control page in new Control[] { _filesPanel, _devicesPanel, _activitiesPanel, _settingsPanel })
+            _panelPalettes[page] = ModernUi.Palette;
         settingsStore.SettingsChanged += OnSettingsChanged;
 
         filesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, filesButton); ShowPanel(_filesPanel); };
@@ -294,7 +266,7 @@ public sealed class MainWindow : GradientForm
         _stateMachine.StateChanged += OnStateChanged;
         UpdateStatusLabel();
         ShowPanel(_filesPanel);
-        ThemeManager.Apply(this, settingsStore.Current.Theme);
+        ApplyTheme(settingsStore.Current.Theme);
         ModernUi.SetNavActive(navButtons, filesButton);
 
         // Terminal is meant to run unattended in the background (PLANNING.md's whole framing) —
@@ -354,11 +326,21 @@ public sealed class MainWindow : GradientForm
         _panelHost.Controls.Clear();
         panel.Dock = DockStyle.Fill;
         _panelHost.Controls.Add(panel);
+        if (_panelPalettes.TryGetValue(panel, out var themedWith)) ThemeManager.Reapply(panel, themedWith);
+        _panelPalettes[panel] = ModernUi.Palette;
 
         if (panel == _filesPanel) _filesPanel.Refresh_();
         else if (panel == _devicesPanel) _devicesPanel.Refresh_();
         else if (panel == _activitiesPanel) _activitiesPanel.RefreshTree();
         else if (panel == _settingsPanel) _settingsPanel.Refresh_();
+    }
+
+    /// <summary>Applies a theme to the window and records it for whichever page is hosted right now;
+    /// the other pages catch up in <see cref="ShowPanel"/>.</summary>
+    private void ApplyTheme(AppTheme theme)
+    {
+        ThemeManager.Apply(this, theme);
+        foreach (Control hosted in _panelHost.Controls) _panelPalettes[hosted] = ModernUi.Palette;
     }
 
     private void OnStateChanged(OutputState state) => UpdateStatusLabel();
@@ -404,26 +386,24 @@ public sealed class MainWindow : GradientForm
         }
     }
 
-    private void OnSettingsChanged(AppSettings settings) => ThemeManager.Apply(this, settings.Theme);
+    private void OnSettingsChanged(AppSettings settings) => ApplyTheme(settings.Theme);
 
     private void UpdateStatusLabel()
     {
         if (_playback == null)
         {
-            _statusLabel.Text = "● 本机预览模式\n未连接扩展屏";
-            _recallPreviewButton.Enabled = false;
+            _statusLabel.Text = "● 本机预览模式 · 未连接扩展屏"; // 单行：状态卡只有一行高（多行会被截掉第二行）。
             _filesPanel.SetOutputActive(false);
             return;
         }
         bool active = _stateMachine.State == OutputState.Active;
         _statusLabel.Text = active ? "● 输出中" : "○ 待机中";
-        _recallPreviewButton.Enabled = active;
         _filesPanel.SetOutputActive(active);
     }
 
     private void OnPlaybackDeclinedByCastSwitch(MediaFile file)
     {
-        _statusLabel.Text = $"⚠ 投屏开关已关闭\n未投放：{Path.GetFileName(file.SourcePath)}";
+        _statusLabel.Text = $"⚠ 投屏开关已关闭 · 未投放：{Path.GetFileName(file.SourcePath)}"; // 单行，过长由 AutoEllipsis 截断。
         _declinedMessageTimer.Stop(); // restart rather than stack — see the timer's own construction comment.
         _declinedMessageTimer.Start();
     }

@@ -107,7 +107,7 @@ public sealed class FloatingPreviewWindow : Form
         _liveBadge = new Label
         {
             Text = "● LIVE",
-            ForeColor = Color.Red,
+            ForeColor = ModernUi.Danger,
             AutoSize = true,
             Location = new Point(8, 6),
         };
@@ -129,7 +129,7 @@ public sealed class FloatingPreviewWindow : Form
         // PlaybackEngine.DocumentPageInfo is null — see this class's doc comment.
         _pageLabel = new Label
         {
-            ForeColor = Color.DimGray,
+            ForeColor = ModernUi.Muted,
             Bounds = new Rectangle(8, 178, 204, 16),
         };
 
@@ -139,7 +139,7 @@ public sealed class FloatingPreviewWindow : Form
         _previousButton = new Button { Text = "◀ 上一项", Bounds = new Rectangle(8, 200, 60, 24) };
         _pauseButton = new Button { Text = "暂停", Bounds = new Rectangle(72, 200, 44, 24) };
         _nextButton = new Button { Text = "下一项 ▶", Bounds = new Rectangle(120, 200, 60, 24) };
-        _disconnectButton = new Button { Text = "断", ForeColor = Color.DarkRed, Bounds = new Rectangle(184, 200, 28, 24) };
+        _disconnectButton = new Button { Text = "断", ForeColor = ModernUi.Danger, Bounds = new Rectangle(184, 200, 28, 24) };
         _pinButton = new Button { Text = "📌", Bounds = new Rectangle(184, 6, 24, 20) };
 
         // New row below the existing four buttons — grown ClientSize by the same 24px (row) + 4px

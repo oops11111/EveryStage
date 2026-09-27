@@ -24,8 +24,13 @@ namespace EveryStage.Terminal.UI.Panels;
 /// advances playback) visibly moves the selection here too, instead of this panel silently staying
 /// wherever it was last clicked — see <see cref="TryHighlightPlayingFile"/> for what this does and
 /// doesn't cover.
+///
+/// The visible surface follows the reference mockup (页头 · 方案工具栏 · 活动节目单 · 播控条): each
+/// activity is an <see cref="ActivityRowView"/>, the TreeView stays hidden as the selection/model
+/// adapter, and the selection-dependent edits live in one menu (<see cref="_editMenu"/>) shown from
+/// 「编辑 ▾」 and on right-click, instead of two rows of always-visible buttons.
 /// </summary>
-public sealed class ActivitiesPanel : UserControl
+public sealed class ActivitiesPanel : UserControl, IActivityRowHost
 {
     private readonly ScenarioStore _store;
     private readonly ScenarioRepository _repository;
@@ -39,17 +44,49 @@ public sealed class ActivitiesPanel : UserControl
 
     private readonly ComboBox _scenarioCombo;
     private readonly TreeView _tree;
-    private readonly Button _addFileButton;
-    private readonly Button _playModeButton;
-    private readonly Button _audioPropertiesButton;
-    private readonly Button _fadeButton;
-    private readonly Button _stayDurationButton;
-    private readonly Button _completionActionButton;
-    private readonly Button _batchPropertiesButton;
-    private readonly Button _removeButton;
-    private readonly Button _moveUpButton;
-    private readonly Button _moveDownButton;
-    private readonly Label _statusBar;
+
+    /// <summary>The visible 活动节目单: one <see cref="ActivityRowView"/> per activity. <see cref="_tree"/>
+    /// stays hidden as the selection/model adapter every editing handler reads via <see cref="GetSelection"/>.</summary>
+    private readonly FlowLayoutPanel _activityRows;
+    private readonly Label _activityCount;
+    private readonly Label _emptyState;
+    private readonly RoundedActionButton _expandAllButton;
+    private readonly RoundedActionButton _saveButton;
+    private readonly System.Windows.Forms.Timer _saveFeedbackTimer;
+
+    /// <summary>Every selection-dependent edit, opened from the list header's「编辑 ▾」and as the
+    /// right-click menu of a row or file. The *Button field names below predate this: they were
+    /// always-visible buttons until the reference-design rework, and kept their names so the comments
+    /// and handlers that refer to them stay valid.</summary>
+    private readonly ContextMenuStrip _editMenu;
+    private readonly ToolStripMenuItem _playSelectedItem;
+    private readonly ToolStripMenuItem _renameActivityItem;
+    private readonly ToolStripMenuItem _deleteActivityItem;
+    private readonly ToolStripMenuItem _addFileButton;
+    private readonly ToolStripMenuItem _playModeButton;
+    private readonly ToolStripMenuItem _audioPropertiesButton;
+    private readonly ToolStripMenuItem _fadeButton;
+    private readonly ToolStripMenuItem _stayDurationButton;
+    private readonly ToolStripMenuItem _completionActionButton;
+    private readonly ToolStripMenuItem _batchPropertiesButton;
+    private readonly ToolStripMenuItem _removeButton;
+    private readonly ToolStripMenuItem _moveUpButton;
+    private readonly ToolStripMenuItem _moveDownButton;
+
+    // 播控条（效果图底部）: 播控方式 · 当前 · 上一项 / 播放/切换 / 下一项 · 下一项.
+    private readonly ComboBox _playModeCombo;
+    private readonly Label _currentLabel;
+    private readonly Label _nextLabel;
+    private readonly RoundedActionButton _previousActivityButton;
+    private readonly RoundedActionButton _playSwitchButton;
+    private readonly RoundedActionButton _nextActivityButton;
+    private readonly ToolTip _toolTip = new();
+    private bool _updatingPlaybar;
+
+    /// <summary>Row thumbnails, keyed by kind + source path, built off the UI thread by
+    /// <see cref="FilesPanel.BuildThumbnail"/> (the same readers and fallback tiles the 文件 page uses).</summary>
+    private readonly Dictionary<string, Image> _thumbnails = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _thumbnailsRequested = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>File nodes Ctrl+Clicked into a multi-selection for "统一设置属性..." — see
     /// <see cref="OnTreeNodeMouseClick"/>. Deliberately separate from <see cref="TreeView.SelectedNode"/>
@@ -80,43 +117,79 @@ public sealed class ActivitiesPanel : UserControl
         Dock = DockStyle.Fill;
         EnsureAtLeastOneScenario();
 
-        // --- 方案选择器 ---
-        var scenarioBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 44 };
-        ModernUi.MakeResponsiveToolbar(scenarioBar);
-        _scenarioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
+        // --- 页头（对齐效果图，与文件页同款）---
+        var heading = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.Transparent, Padding = new Padding(4, 0, 0, 0) };
+        heading.Controls.Add(new Label
+        {
+            Text = "管理活动方案，按顺序播放多媒体内容", Dock = DockStyle.Fill,
+            ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 8.5F), TextAlign = ContentAlignment.MiddleLeft,
+        });
+        heading.Controls.Add(new Label
+        {
+            Text = "活动", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
+            Font = new Font("Segoe UI Semibold", 13F), TextAlign = ContentAlignment.MiddleLeft,
+        });
+
+        // --- 方案工具栏：当前方案 ▾ …… ＋新建方案 / 保存 / 另存为 / 删除 ---
+        var scenarioBar = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, Height = 50, ColumnCount = 2, RowCount = 1,
+            Padding = new Padding(2, 4, 2, 6), BackColor = Color.Transparent,
+        };
+        scenarioBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        scenarioBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        scenarioBar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        var scenarioPicker = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty, BackColor = Color.Transparent,
+        };
+        scenarioPicker.Controls.Add(new Label { Text = "当前方案", AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(2, 11, 10, 0) });
+        _scenarioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, Margin = new Padding(0, 6, 0, 0) };
         ModernUi.StyleComboBox(_scenarioCombo);
         _scenarioCombo.SelectedIndexChanged += OnScenarioComboChanged;
-        var newScenarioButton = new Button { Text = "新建方案", AutoSize = true };
-        newScenarioButton.Click += (_, _) => OnNewScenario();
-        var saveAsButton = new Button { Text = "另存为...", AutoSize = true };
-        saveAsButton.Click += (_, _) => OnSaveAsScenario();
-        var deleteScenarioButton = new Button { Text = "删除方案", AutoSize = true };
-        deleteScenarioButton.Click += (_, _) => OnDeleteScenario();
-        scenarioBar.Controls.AddRange(new Control[] { _scenarioCombo, newScenarioButton, saveAsButton, deleteScenarioButton });
+        scenarioPicker.Controls.Add(_scenarioCombo);
+        scenarioBar.Controls.Add(scenarioPicker, 0, 0);
 
-        // --- 活动列表工具栏 ---
-        var activityBar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 44 };
-        ModernUi.MakeResponsiveToolbar(activityBar);
-        var newActivityButton = new Button { Text = "新建活动", AutoSize = true };
-        newActivityButton.Click += (_, _) => OnNewActivity();
-        var renameActivityButton = new Button { Text = "重命名活动", AutoSize = true };
-        renameActivityButton.Click += (_, _) => OnRenameActivity();
-        var deleteActivityButton = new Button { Text = "删除活动", AutoSize = true };
-        deleteActivityButton.Click += (_, _) => OnDeleteActivity();
-        _addFileButton = new Button { Text = "添加文件...", AutoSize = true, Enabled = false };
+        var scenarioActions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
+            Margin = Padding.Empty, BackColor = Color.Transparent,
+        };
+        // RightToLeft flow: the first button added ends up right-most (删除), matching the mockup's order.
+        scenarioActions.Controls.Add(ActionButton("删除", OnDeleteScenario, width: 64));
+        scenarioActions.Controls.Add(ActionButton("另存为", OnSaveAsScenario, width: 76));
+        _saveButton = ActionButton("保存", OnSaveScenario, width: 84);
+        scenarioActions.Controls.Add(_saveButton);
+        scenarioActions.Controls.Add(ActionButton("＋ 新建方案", OnNewScenario, primary: true, width: 104));
+        scenarioBar.Controls.Add(scenarioActions, 1, 0);
+        _saveFeedbackTimer = new System.Windows.Forms.Timer { Interval = 2500 };
+        _saveFeedbackTimer.Tick += (_, _) => { _saveFeedbackTimer.Stop(); _saveButton.Text = "保存"; };
+
+        // --- 编辑菜单：「编辑 ▾」按钮与行/文件的右键菜单共用同一个菜单 ---
+        // These used to be two always-visible rows of 14 buttons above the list, which the reference
+        // design doesn't have. Each item's enabled state still comes from UpdateButtonStates, and each
+        // still calls the exact same handler it did as a button.
+        _playSelectedItem = new ToolStripMenuItem("▶ 播放所选") { Enabled = false };
+        _playSelectedItem.Click += (_, _) => PlaySelectedActivity();
+        _renameActivityItem = new ToolStripMenuItem("重命名活动...") { Enabled = false };
+        _renameActivityItem.Click += (_, _) => OnRenameActivity();
+        _deleteActivityItem = new ToolStripMenuItem("删除活动") { Enabled = false };
+        _deleteActivityItem.Click += (_, _) => OnDeleteActivity();
+        _addFileButton = new ToolStripMenuItem("添加文件...") { Enabled = false };
         _addFileButton.Click += (_, _) => OnAddFile();
         // Editing PlayMode is new (see PlaybackEngine.EffectivePlayMode's doc comment on why it
         // previously had nothing to edit — the enum had no runtime effect at all until it did).
         // Context-sensitive: edits the selected FILE's PlayModeOverride if one is selected, else the
         // selected ACTIVITY's own DefaultPlayMode — see OnEditPlayMode.
-        _playModeButton = new Button { Text = "播放方式...", AutoSize = true, Enabled = false };
+        _playModeButton = new ToolStripMenuItem("播放方式...") { Enabled = false };
         _playModeButton.Click += (_, _) => OnEditPlayMode();
         // Only ever enabled for a selected file whose Kind == MediaKind.Audio — see
         // UpdateButtonStates. New the same round PlaybackEngine.PlayStandaloneAudio/ApplyAudioVisual
         // first gave MediaFile.IsBackgroundAudio/BackgroundAudioVisual any runtime effect at all
         // (see this project's README risk #61), following the same "先做行为、再做UI" order
         // PlayMode's editor above already established.
-        _audioPropertiesButton = new Button { Text = "音频属性...", AutoSize = true, Enabled = false };
+        _audioPropertiesButton = new ToolStripMenuItem("音频属性...") { Enabled = false };
         _audioPropertiesButton.Click += (_, _) => OnEditAudioProperties();
         // Only ever enabled for a selected file whose Kind is Video or Audio — see
         // UpdateButtonStates. New the same round PlaybackEngine.FadeDurationFor first gave
@@ -125,7 +198,7 @@ public sealed class ActivitiesPanel : UserControl
         // StayDuration before it — except unlike those, the behavior itself is still only half done
         // (fade-in only), which FadeDialog's own caveat label discloses rather than hiding the
         // control until fade-out also exists.
-        _fadeButton = new Button { Text = "淡入淡出...", AutoSize = true, Enabled = false };
+        _fadeButton = new ToolStripMenuItem("淡入淡出...") { Enabled = false };
         _fadeButton.Click += (_, _) => OnEditFade();
         // Only ever enabled for a selected file whose Kind is Image or Document (PLANNING.md §6
         // "停留时长（图片/文档）") — same "先做行为、再做UI" gap as PlayMode/AllowManualSkip/
@@ -134,7 +207,7 @@ public sealed class ActivitiesPanel : UserControl
         // point was ever missing. Worse than a plain gap: SettingsPanel's own "默认停留时长" help
         // text already claimed a per-file override could be "配置" from "活动面板" before this
         // button existed to do it — see this project's README "已知风险".
-        _stayDurationButton = new Button { Text = "停留时长...", AutoSize = true, Enabled = false };
+        _stayDurationButton = new ToolStripMenuItem("停留时长...") { Enabled = false };
         _stayDurationButton.Click += (_, _) => OnEditStayDuration();
         // Enabled for any selected file regardless of Kind — unlike StayDuration/AudioProperties,
         // MediaFile.OnCompletion applies uniformly (PlaybackEngine.HandleCompletion is reached from
@@ -145,31 +218,35 @@ public sealed class ActivitiesPanel : UserControl
         // before it: HandleCompletion has read and correctly acted on OnCompletion since the round
         // that gave PlaybackEngine its first real behavior at all, but nothing ever let anyone set
         // it away from its NextItem default for a specific file — see this project's README.
-        _completionActionButton = new Button { Text = "完成后动作...", AutoSize = true, Enabled = false };
+        _completionActionButton = new ToolStripMenuItem("完成后动作...") { Enabled = false };
         _completionActionButton.Click += (_, _) => OnEditCompletionAction();
         // Enabled once 2+ file nodes are Ctrl+Click multi-selected — see _multiSelectedFileNodes'
         // own doc comment. Unlike every other button in this bar, this one is NOT driven by
         // GetSelection()/_tree.SelectedNode at all.
-        _batchPropertiesButton = new Button { Text = "统一设置属性...", AutoSize = true, Enabled = false };
+        _batchPropertiesButton = new ToolStripMenuItem("统一设置属性...") { Enabled = false };
         _batchPropertiesButton.Click += (_, _) => OnEditBatchProperties();
-        _removeButton = new Button { Text = "移除文件", AutoSize = true, Enabled = false };
+        _removeButton = new ToolStripMenuItem("移除文件") { Enabled = false };
         _removeButton.Click += (_, _) => OnRemoveFile();
-        _moveUpButton = new Button { Text = "上移", AutoSize = true, Enabled = false };
+        _moveUpButton = new ToolStripMenuItem("上移") { Enabled = false };
         _moveUpButton.Click += (_, _) => MoveSelectedFile(-1);
-        _moveDownButton = new Button { Text = "下移", AutoSize = true, Enabled = false };
+        _moveDownButton = new ToolStripMenuItem("下移") { Enabled = false };
         _moveDownButton.Click += (_, _) => MoveSelectedFile(1);
-        activityBar.Controls.AddRange(new Control[]
+        _editMenu = new ContextMenuStrip
         {
-            newActivityButton, renameActivityButton, deleteActivityButton, _playModeButton,
-            _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton,
-            _batchPropertiesButton, _addFileButton, _removeButton, _moveUpButton, _moveDownButton,
+            ShowImageMargin = false,
+            BackColor = ModernUi.Surface,
+            ForeColor = ModernUi.Text,
+            Renderer = new ToolStripProfessionalRenderer(new FilesPanel.FileMenuColorTable()),
+        };
+        _editMenu.Items.AddRange(new ToolStripItem[]
+        {
+            _playSelectedItem, new ToolStripSeparator(),
+            _renameActivityItem, _addFileButton, _playModeButton, _deleteActivityItem, new ToolStripSeparator(),
+            _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton, _batchPropertiesButton,
+            new ToolStripSeparator(),
+            _moveUpButton, _moveDownButton, _removeButton,
         });
-
-        foreach (var button in scenarioBar.Controls.OfType<Button>().Concat(activityBar.Controls.OfType<Button>()))
-        {
-            button.Height = 32;
-            ModernUi.StyleButton(button);
-        }
+        _editMenu.Opening += (_, _) => UpdateButtonStates();
 
         _tree = new TreeView
         {
@@ -186,7 +263,7 @@ public sealed class ActivitiesPanel : UserControl
             HideSelection = false,
         };
         _tree.DrawNode += DrawActivityNode;
-        _tree.AfterSelect += (_, _) => UpdateButtonStates();
+        _tree.AfterSelect += (_, _) => { UpdateButtonStates(); RefreshCardStyles(); };
         _tree.NodeMouseDoubleClick += OnNodeDoubleClick;
         _tree.NodeMouseClick += OnTreeNodeMouseClick;
         // Activity.IsCollapsed (PLANNING.md §6/§11's "可折叠") until now was collected (cloned by
@@ -199,20 +276,136 @@ public sealed class ActivitiesPanel : UserControl
         // on a freshly-constructed, not-yet-added TreeNode, so they don't loop back into this handler.
         _tree.AfterCollapse += (_, e) => OnActivityCollapseStateChanged(e.Node, collapsed: true);
         _tree.AfterExpand += (_, e) => OnActivityCollapseStateChanged(e.Node, collapsed: false);
+        // Never shown: it is only the selection/model adapter behind the ActivityRowView list below.
+        _tree.Visible = false;
 
-        _statusBar = new Label { Dock = DockStyle.Bottom, Height = 24, TextAlign = ContentAlignment.MiddleLeft, ForeColor = Color.DimGray };
+        // --- 活动节目单卡片：标题行（活动节目单 · 共 N 项 …… ＋新建活动 / 编辑 ▾ / 展开全部）+ 行列表 ---
+        var programCard = new GlassPanel
+        {
+            Dock = DockStyle.Fill, CornerRadius = 12, Padding = new Padding(12, 6, 10, 10),
+            GlassTint = ModernUi.Palette.GlassTint,
+        };
+        var listHeader = new TableLayoutPanel
+        {
+            Dock = DockStyle.Top, Height = 42, ColumnCount = 2, RowCount = 1,
+            Margin = Padding.Empty, Padding = Padding.Empty, BackColor = Color.Transparent,
+        };
+        listHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        listHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        listHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        var listTitle = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty, BackColor = Color.Transparent,
+        };
+        listTitle.Controls.Add(new Label
+        {
+            Text = "活动节目单", AutoSize = true, ForeColor = ModernUi.Text,
+            Font = new Font("Segoe UI Semibold", 11F), Margin = new Padding(0, 9, 8, 0),
+        });
+        _activityCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(0, 12, 0, 0) };
+        listTitle.Controls.Add(_activityCount);
+        listHeader.Controls.Add(listTitle, 0, 0);
+        var listActions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
+            Margin = Padding.Empty, BackColor = Color.Transparent,
+        };
+        _expandAllButton = ActionButton("展开全部 ▾", OnToggleExpandAll, width: 96, height: 30);
+        listActions.Controls.Add(_expandAllButton);
+        RoundedActionButton? editButton = null;
+        editButton = ActionButton("编辑 ▾", () => _editMenu.Show(editButton!, new Point(0, editButton!.Height)), width: 76, height: 30);
+        listActions.Controls.Add(editButton);
+        listActions.Controls.Add(ActionButton("＋ 新建活动", OnNewActivity, width: 100, height: 30));
+        listHeader.Controls.Add(listActions, 1, 0);
 
+        _activityRows = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(0, 2, 0, 0),
+            BackColor = Color.Transparent,
+        };
+        _activityRows.Resize += (_, _) => LayoutRows();
+        _emptyState = new Label
+        {
+            Text = "这个方案还没有活动\r\n点右上角「＋ 新建活动」开始编排节目单",
+            Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = ModernUi.Muted,
+            BackColor = Color.Transparent, Visible = false,
+        };
+        programCard.Controls.Add(_activityRows);
+        programCard.Controls.Add(_emptyState);
+        programCard.Controls.Add(listHeader);
+
+        // --- 播控条：播控方式 ▾ · 当前 …… ‹ 上一项 / ▶ 播放/切换 / 下一项 › · 下一项 ---
+        var playbar = new TableLayoutPanel
+        {
+            Dock = DockStyle.Bottom, Height = 52, ColumnCount = 4, RowCount = 1,
+            Padding = new Padding(2, 10, 2, 2), BackColor = Color.Transparent,
+        };
+        playbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        playbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        playbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        playbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        playbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        var modePicker = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty, BackColor = Color.Transparent,
+        };
+        modePicker.Controls.Add(new Label { Text = "播控方式", AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(0, 10, 8, 0) });
+        // Edits the 当前 activity's DefaultPlayMode — the same field (and the same log + save) as
+        // 编辑 ▾ → 播放方式... with an activity selected; per-file overrides stay in that dialog.
+        _playModeCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120, Margin = new Padding(0, 5, 0, 0) };
+        _playModeCombo.Items.AddRange(new object[] { "顺序自动", "手动点选" });
+        ModernUi.StyleComboBox(_playModeCombo);
+        _playModeCombo.SelectedIndexChanged += (_, _) => OnPlaybarPlayModeChanged();
+        modePicker.Controls.Add(_playModeCombo);
+        playbar.Controls.Add(modePicker, 0, 0);
+        _currentLabel = new Label
+        {
+            Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = ModernUi.Text, Margin = new Padding(16, 0, 8, 0),
+        };
+        playbar.Controls.Add(_currentLabel, 1, 0);
+        var transport = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
+            Margin = Padding.Empty, BackColor = Color.Transparent,
+        };
+        _previousActivityButton = ActionButton("‹  上一项", () => StepActivity(-1), width: 84);
+        _playSwitchButton = ActionButton("▶  播放/切换", PlayOrSwitch, primary: true, width: 108);
+        _nextActivityButton = ActionButton("下一项  ›", () => StepActivity(1), width: 84);
+        transport.Controls.AddRange(new Control[] { _previousActivityButton, _playSwitchButton, _nextActivityButton });
+        playbar.Controls.Add(transport, 2, 0);
+        _nextLabel = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(10, 12, 0, 0) };
+        playbar.Controls.Add(_nextLabel, 3, 0);
+        // Too narrow for "下一项：…" as well → drop it rather than squeeze 当前 into an ellipsis.
+        playbar.Resize += (_, _) => _nextLabel.Visible = playbar.Width >= LogicalToDeviceUnits(760);
+        _toolTip.SetToolTip(_playSwitchButton, "播放所选活动或文件；正在播放时切换到所选项");
+
+        // Dock order: the last Top control added sits highest, so heading goes in last.
+        Controls.Add(programCard);
         Controls.Add(_tree);
-        Controls.Add(activityBar);
+        Controls.Add(playbar);
         Controls.Add(scenarioBar);
-        Controls.Add(_statusBar);
+        Controls.Add(heading);
 
         if (_playback != null) _playback.FileStarted += OnFileStarted;
         _stateMachine.StateChanged += OnStateChanged;
-        UpdateStatusBar(null);
 
         RefreshScenarioCombo();
         RefreshTree();
+
+        RoundedActionButton ActionButton(string text, Action onClick, bool primary = false, int width = 84, int height = 34)
+        {
+            var button = new RoundedActionButton { Text = text, Width = width, Height = height, Margin = new Padding(3, 2, 3, 0) };
+            ModernUi.StyleButton(button, primary: primary);
+            button.Click += (_, _) => onClick();
+            return button;
+        }
     }
 
     /// <summary>PLANNING.md §5's runtime monitor-hot-plug binding — called (at most once) from
@@ -225,8 +418,17 @@ public sealed class ActivitiesPanel : UserControl
     /// usage in this class (<see cref="OnNodeDoubleClick"/>, this class's own <see cref="Dispose"/>)
     /// already reads the field itself rather than a value captured once at construction, so nothing
     /// else needs updating for the field to start actually working.</summary>
+    /// <summary>Idempotent, and unsubscribes the previous engine first. Today Program.cs only
+    /// ever reaches this once (OnDisplaySettingsChanged re-binds only while _overlay is still
+    /// null, and _overlay stays non-null once bound), so a second call is currently unreachable
+    /// - but FilesPanel.AttachPlaybackEngine already guards the same way, and the moment that
+    /// binding guard is relaxed for monitor hot-swap this panel would silently double-subscribe
+    /// while FilesPanel stayed correct. Two of three implementations diverging is exactly the
+    /// shape that makes "every file plays twice" hard to track down.</summary>
     public void AttachPlaybackEngine(PlaybackEngine playback)
     {
+        if (ReferenceEquals(_playback, playback)) return;
+        if (_playback != null) _playback.FileStarted -= OnFileStarted;
         _playback = playback;
         _playback.FileStarted += OnFileStarted;
     }
@@ -616,6 +818,229 @@ public sealed class ActivitiesPanel : UserControl
             ClearMultiSelection();
         }
         UpdateButtonStates();
+        RefreshCardStyles();
+    }
+
+    private void OnCardNodeClick(TreeNode node)
+    {
+        _tree.SelectedNode = node;
+        if (node.Tag is MediaFile && Control.ModifierKeys.HasFlag(Keys.Control))
+        {
+            if (!_multiSelectedFileNodes.Remove(node)) _multiSelectedFileNodes.Add(node);
+            UpdateButtonStates();
+        }
+        else
+        {
+            ClearMultiSelection();
+            UpdateButtonStates();
+        }
+        RefreshCardStyles();
+    }
+
+    private void OnCardNodeDoubleClick(TreeNode node)
+    {
+        OnNodeDoubleClick(this, new TreeNodeMouseClickEventArgs(node, MouseButtons.Left, 2, 0, 0));
+    }
+
+    /// <summary>Repaints the rows (selection, multi-selection and playing state are read at paint time)
+    /// and refreshes the 播控条, which follows the current activity.</summary>
+    private void RefreshCardStyles()
+    {
+        foreach (Control row in _activityRows.Controls) row.Invalidate();
+        UpdatePlaybar();
+    }
+
+    private void PlaySelectedActivity()
+    {
+        if (_playback == null || _tree.SelectedNode == null) return;
+        var node = _tree.SelectedNode;
+        if (node.Tag is Activity activity)
+        {
+            if (activity.Files.Count > 0) _playback.RequestPlay(activity, 0);
+        }
+        else if (node.Tag is MediaFile file && node.Parent?.Tag is Activity owningActivity)
+        {
+            int index = owningActivity.Files.IndexOf(file);
+            if (index >= 0) _playback.RequestPlay(owningActivity, index);
+        }
+    }
+
+    internal void RefreshTheme() => RefreshTree();
+
+    /// <summary>Gives every row the list's width and the height that width needs. The scrollbar's width
+    /// is always reserved, so a scrollbar appearing can't change the width and re-trigger layout.</summary>
+    private void LayoutRows()
+    {
+        int width = Math.Max(LogicalToDeviceUnits(320),
+            _activityRows.Width - SystemInformation.VerticalScrollBarWidth - _activityRows.Padding.Horizontal - 2);
+        _activityRows.SuspendLayout();
+        foreach (var row in _activityRows.Controls.OfType<ActivityRowView>()) row.FitToWidth(width);
+        _activityRows.ResumeLayout();
+        // The rows were resized while layout was suspended, and ResumeLayout alone left AutoScroll with
+        // a stale range (no scrollbar although the rows overflowed) — lay out once more to recompute it.
+        _activityRows.PerformLayout();
+    }
+
+    private TreeNode? FindNode(object tag)
+    {
+        foreach (TreeNode activityNode in _tree.Nodes)
+        {
+            if (activityNode.Tag == tag) return activityNode;
+            foreach (TreeNode fileNode in activityNode.Nodes)
+                if (fileNode.Tag == tag) return fileNode;
+        }
+        return null;
+    }
+
+    private Activity? PlayingActivity => _playback?.CurrentFile != null ? _playback.CurrentActivity : null;
+
+    bool IActivityRowHost.IsSelected(TreeNode node) => ReferenceEquals(_tree.SelectedNode, node);
+    bool IActivityRowHost.IsMultiSelected(TreeNode node) => _multiSelectedFileNodes.Contains(node);
+    Activity? IActivityRowHost.PlayingActivity => PlayingActivity;
+    MediaFile? IActivityRowHost.PlayingFile => _playback?.CurrentFile;
+    void IActivityRowHost.RowNodeClicked(TreeNode node) => OnCardNodeClick(node);
+    void IActivityRowHost.RowNodeDoubleClicked(TreeNode node) => OnCardNodeDoubleClick(node);
+
+    void IActivityRowHost.RowContextMenu(TreeNode node, Control source, Point location)
+    {
+        // Right-clicking one file of an existing Ctrl+click multi-selection keeps that selection, so
+        // 统一设置属性... is reachable from the context menu as well as from 编辑 ▾.
+        if (!_multiSelectedFileNodes.Contains(node)) OnCardNodeClick(node);
+        _editMenu.Show(source, location);
+    }
+
+    void IActivityRowHost.ToggleCollapsed(Activity activity)
+    {
+        // Deferred: this runs inside the row's own MouseDown, and RefreshTree disposes that row.
+        BeginInvoke(() =>
+        {
+            activity.IsCollapsed = !activity.IsCollapsed;
+            _repository.Save(_store);
+            RefreshTree();
+        });
+    }
+
+    Image? IActivityRowHost.ThumbnailFor(MediaFile file)
+    {
+        string key = $"{file.Kind}|{file.SourcePath}";
+        if (_thumbnails.TryGetValue(key, out var cached)) return cached;
+        if (_thumbnailsRequested.Add(key)) _ = LoadThumbnailAsync(file, key);
+        return null;
+    }
+
+    private async Task LoadThumbnailAsync(MediaFile file, string key)
+    {
+        Image? thumbnail = null;
+        try { thumbnail = await Task.Run(() => FilesPanel.BuildThumbnail(file)); }
+        catch (Exception ex) { System.Diagnostics.Trace.TraceError("Activity thumbnail failed: {0}", ex); }
+        if (thumbnail == null) return;
+        if (IsDisposed) { thumbnail.Dispose(); return; }
+        _thumbnails[key] = thumbnail;
+        foreach (Control row in _activityRows.Controls) row.Invalidate();
+    }
+
+    /// <summary>The activity the 播控条 refers to: the one playing in this scenario, else the selected
+    /// one, else the first.</summary>
+    private Activity? PlaybarActivity
+    {
+        get
+        {
+            var scenario = CurrentScenario;
+            if (scenario == null || scenario.Activities.Count == 0) return null;
+            if (PlayingActivity is { } playing && scenario.Activities.Contains(playing)) return playing;
+            return GetSelection().activity ?? scenario.Activities[0];
+        }
+    }
+
+    private void UpdatePlaybar()
+    {
+        var scenario = CurrentScenario;
+        var current = PlaybarActivity;
+        int index = current == null || scenario == null ? -1 : scenario.Activities.IndexOf(current);
+        var next = index >= 0 && index + 1 < scenario!.Activities.Count ? scenario.Activities[index + 1] : null;
+        bool playing = current != null && ReferenceEquals(PlayingActivity, current);
+
+        _currentLabel.Text = current == null ? "当前：—" : $"当前：{index + 1}. {current.Name}{(playing ? "  · 播放中" : "")}";
+        _currentLabel.ForeColor = playing ? ModernUi.Success : ModernUi.Text;
+        _nextLabel.Text = next == null ? "下一项：—" : $"下一项：{index + 2}. {next.Name}";
+        _previousActivityButton.Enabled = index > 0;
+        _nextActivityButton.Enabled = next != null;
+        _playSwitchButton.Enabled = _playback != null && current != null;
+
+        _updatingPlaybar = true;
+        _playModeCombo.Enabled = current != null;
+        _playModeCombo.SelectedIndex = current == null ? -1 : current.DefaultPlayMode == PlayMode.SequentialAuto ? 0 : 1;
+        _updatingPlaybar = false;
+    }
+
+    /// <summary>上一项/下一项 move the 播控条 to the neighbouring activity. While an activity of this
+    /// scenario is playing they switch playback to it; otherwise they only move the selection, so
+    /// output never starts by accident — 播放/切换 is the explicit start.</summary>
+    private void StepActivity(int delta)
+    {
+        var scenario = CurrentScenario;
+        var current = PlaybarActivity;
+        if (scenario == null || current == null) return;
+        int target = scenario.Activities.IndexOf(current) + delta;
+        if (target < 0 || target >= scenario.Activities.Count) return;
+
+        var activity = scenario.Activities[target];
+        bool wasPlaying = PlayingActivity is { } playing && scenario.Activities.Contains(playing);
+        if (FindNode(activity) is { } node) OnCardNodeClick(node);
+        var row = _activityRows.Controls.OfType<ActivityRowView>().FirstOrDefault(r => r.Activity == activity);
+        if (row != null) _activityRows.ScrollControlIntoView(row);
+        if (wasPlaying && _playback != null && activity.Files.Count > 0) _playback.RequestPlay(activity, 0);
+    }
+
+    private void PlayOrSwitch()
+    {
+        if (_tree.SelectedNode == null && PlaybarActivity is { } current && FindNode(current) is { } node)
+            OnCardNodeClick(node);
+        PlaySelectedActivity();
+    }
+
+    private void OnPlaybarPlayModeChanged()
+    {
+        if (_updatingPlaybar || _playModeCombo.SelectedIndex < 0) return;
+        var scenario = CurrentScenario;
+        var activity = PlaybarActivity;
+        if (scenario == null || activity == null) return;
+        var mode = _playModeCombo.SelectedIndex == 0 ? PlayMode.SequentialAuto : PlayMode.ManualSelect;
+        if (activity.DefaultPlayMode == mode) return;
+
+        activity.DefaultPlayMode = mode;
+        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        _repository.Save(_store);
+        foreach (Control row in _activityRows.Controls) row.Invalidate();
+    }
+
+    /// <summary>「保存」: every edit here already saves immediately, so this is an explicit, visible
+    /// confirmation — and a way to retry after an earlier save failed — not the only way to save.</summary>
+    private void OnSaveScenario()
+    {
+        try
+        {
+            _repository.Save(_store);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"方案未保存：{ex.Message}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        _saveButton.Text = "✓ 已保存";
+        _saveFeedbackTimer.Stop();
+        _saveFeedbackTimer.Start();
+    }
+
+    /// <summary>「展开全部 / 收起全部」: collapses everything if any activity is expanded, else expands all.</summary>
+    private void OnToggleExpandAll()
+    {
+        var scenario = CurrentScenario;
+        if (scenario == null || scenario.Activities.Count == 0) return;
+        bool collapse = scenario.Activities.Any(a => !a.IsCollapsed);
+        foreach (var activity in scenario.Activities) activity.IsCollapsed = collapse;
+        _repository.Save(_store);
+        RefreshTree();
     }
 
     private void ClearMultiSelection()
@@ -747,6 +1172,9 @@ public sealed class ActivitiesPanel : UserControl
     private void UpdateButtonStates()
     {
         var (_, activity, file) = GetSelection();
+        _playSelectedItem.Enabled = _playback != null && activity != null;
+        _renameActivityItem.Enabled = activity != null;
+        _deleteActivityItem.Enabled = activity != null;
         _addFileButton.Enabled = activity != null;
         _playModeButton.Enabled = activity != null;
         _audioPropertiesButton.Enabled = file != null && file.Kind == MediaKind.Audio;
@@ -757,6 +1185,7 @@ public sealed class ActivitiesPanel : UserControl
         _removeButton.Enabled = file != null;
         _moveUpButton.Enabled = file != null;
         _moveDownButton.Enabled = file != null;
+        UpdatePlaybar();
     }
 
     /// <summary>Narrower than a bare <c>Kind is MediaKind.Image or MediaKind.Document</c> check —
@@ -795,18 +1224,25 @@ public sealed class ActivitiesPanel : UserControl
 
         if (e.Node.Tag is Activity activity)
         {
-            bool active = e.Node.IsSelected || activity.Files.Any(file => ReferenceEquals(file, _lastStartedFile));
+            bool active = e.Node.IsSelected || activity.Files.Any(file => ReferenceEquals(file, _playback?.CurrentFile));
             using var path = RoundedRect(row, 12);
-            using var fill = new SolidBrush(active ? Color.FromArgb(30, 64, 112) : ModernUi.Surface);
-            using var border = new Pen(active ? Color.FromArgb(130, 66, 139, 255) : ModernUi.Border, active ? 1.4F : 1F);
+            using var fill = new SolidBrush(active ? ModernUi.SurfaceRaised : ModernUi.Surface);
+            using var border = new Pen(active ? ModernUi.Accent : ModernUi.Border, active ? 1.4F : 1F);
             g.FillPath(fill, path);
             g.DrawPath(border, path);
 
             int numberSize = 22;
             var number = new Rectangle(row.Left + 14, row.Top + 12, numberSize, numberSize);
-            using var numberFill = new SolidBrush(active ? ModernUi.Accent : Color.FromArgb(38, 58, 86));
+            using var numberFill = new SolidBrush(active ? ModernUi.Accent : ModernUi.SurfaceRaised);
             g.FillEllipse(numberFill, number);
-            TextRenderer.DrawText(g, (e.Node.Index + 1).ToString(), new Font("Segoe UI Semibold", 9F), number,
+            // Disposed rather than left to the finalizer: this is a TreeView owner-draw callback, so
+            // it runs once per node per repaint. An undisposed Font here leaks a GDI handle every
+            // time the tree is hovered, scrolled or reactivated, and Font objects are far too small
+            // to create the memory pressure that would trigger a collection - the per-process GDI
+            // handle limit is reached long before the finalizer ever runs. On an unattended Terminal
+            // that is a slow death rather than a crash anyone sees happen.
+            using var numberFont = new Font("Segoe UI Semibold", 9F);
+            TextRenderer.DrawText(g, (e.Node.Index + 1).ToString(), numberFont, number,
                 Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
             using var titleFont = new Font("Segoe UI Semibold", 10F);
@@ -817,7 +1253,7 @@ public sealed class ActivitiesPanel : UserControl
             TextRenderer.DrawText(g, $"{activity.Files.Count} 个文件 · {mode}", Font,
                 new Rectangle(number.Right + 12, row.Top + 30, row.Width - 190, 18), ModernUi.Muted,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-            if (activity.Files.Any(file => ReferenceEquals(file, _lastStartedFile)))
+            if (activity.Files.Any(file => ReferenceEquals(file, _playback?.CurrentFile)))
                 TextRenderer.DrawText(g, "● 正在播放", Font, new Rectangle(row.Right - 110, row.Top + 14, 96, 22),
                     ModernUi.Success, TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
             TextRenderer.DrawText(g, e.Node.IsExpanded ? "⌃" : "⌄", Font,
@@ -829,9 +1265,9 @@ public sealed class ActivitiesPanel : UserControl
         if (e.Node.Tag is MediaFile file)
         {
             bool selected = e.Node.IsSelected || _multiSelectedFileNodes.Contains(e.Node);
-            var chip = new Rectangle(row.Left + 28, row.Top + 10, Math.Min(300, row.Width - 56), 42);
+            var chip = new Rectangle(row.Left + 28, row.Top + 10, Math.Min(360, row.Width - 56), 42);
             using var chipPath = RoundedRect(chip, 8);
-            using var chipFill = new SolidBrush(selected ? Color.FromArgb(38, 72, 112) : ModernUi.SurfaceRaised);
+            using var chipFill = new SolidBrush(selected ? ModernUi.Surface : ModernUi.SurfaceRaised);
             using var chipBorder = new Pen(selected ? ModernUi.Accent : ModernUi.Border, selected ? 1.2F : 1F);
             g.FillPath(chipFill, chipPath);
             g.DrawPath(chipBorder, chipPath);
@@ -864,7 +1300,9 @@ public sealed class ActivitiesPanel : UserControl
                 MediaKind.Image or MediaKind.Document => file.StayDuration.HasValue ? $"停留 {file.StayDuration.Value.TotalSeconds:0}s" : "手动翻页",
                 _ => file.OnCompletion == CompletionAction.Loop ? "循环" : "播放",
             };
-            TextRenderer.DrawText(g, meta, new Font("Segoe UI", 8F),
+            // Same per-repaint GDI handle leak as numberFont above.
+            using var metaFont = new Font("Segoe UI", 8F);
+            TextRenderer.DrawText(g, meta, metaFont,
                 new Rectangle(badgeRect.Right + 8, chip.Top + 23, chip.Width - 44, 14), ModernUi.Muted,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
@@ -887,20 +1325,41 @@ public sealed class ActivitiesPanel : UserControl
     {
         // Old TreeNode references go stale the moment the tree they belonged to is torn down below —
         // see _multiSelectedFileNodes' own doc comment. No need to reset their BackColor/ForeColor
-        // first (they're being discarded, not reused).
+        // first (they're being discarded, not reused). The selection is carried over by Tag (the
+        // Activity/MediaFile object itself) so an edit or a collapse toggle doesn't drop it.
+        object? selectedTag = _tree.SelectedNode?.Tag;
         _multiSelectedFileNodes.Clear();
         _tree.Nodes.Clear();
-        var scenario = CurrentScenario;
-        if (scenario == null) return;
+        _activityRows.SuspendLayout();
+        var oldRows = _activityRows.Controls.Cast<Control>().ToList();
+        _activityRows.Controls.Clear();
+        foreach (var row in oldRows) row.Dispose();
 
-        foreach (var activity in scenario.Activities)
+        var scenario = CurrentScenario;
+        int count = scenario?.Activities.Count ?? 0;
+        if (scenario != null)
         {
-            var activityNode = new TreeNode(activity.Name) { Tag = activity };
-            foreach (var file in activity.Files)
-                activityNode.Nodes.Add(new TreeNode(BuildFileNodeText(file)) { Tag = file });
-            if (activity.IsCollapsed) activityNode.Collapse(); else activityNode.Expand();
-            _tree.Nodes.Add(activityNode);
+            for (int i = 0; i < scenario.Activities.Count; i++)
+            {
+                var activity = scenario.Activities[i];
+                var activityNode = new TreeNode(activity.Name) { Tag = activity };
+                foreach (var file in activity.Files)
+                    activityNode.Nodes.Add(new TreeNode(BuildFileNodeText(file)) { Tag = file });
+                if (activity.IsCollapsed) activityNode.Collapse(); else activityNode.Expand();
+                _tree.Nodes.Add(activityNode);
+                _activityRows.Controls.Add(new ActivityRowView(this, activity, activityNode, i + 1));
+            }
         }
+        _activityRows.ResumeLayout(true);
+        LayoutRows();
+
+        _activityCount.Text = $"共 {count} 项";
+        _emptyState.Visible = count == 0;
+        _activityRows.Visible = count > 0;
+        _expandAllButton.Enabled = count > 0;
+        _expandAllButton.Text = scenario != null && scenario.Activities.Any(a => !a.IsCollapsed) ? "收起全部 ▴" : "展开全部 ▾";
+        if (selectedTag != null && FindNode(selectedTag) is { } reselect) _tree.SelectedNode = reselect;
+        RefreshCardStyles();
         UpdateButtonStates();
     }
 
@@ -935,7 +1394,7 @@ public sealed class ActivitiesPanel : UserControl
 
     private void OnFileStarted(MediaFile file)
     {
-        UpdateStatusBar(file);
+        if (InvokeRequired) { BeginInvoke(() => OnFileStarted(file)); return; }
         TryHighlightPlayingFile(file);
     }
 
@@ -977,25 +1436,21 @@ public sealed class ActivitiesPanel : UserControl
                 {
                     if (fileNode.Tag != file) continue;
                     _tree.SelectedNode = fileNode;
+                    RefreshCardStyles();
                     return;
                 }
             }
         }
 
         _tree.SelectedNode = null;
+        RefreshCardStyles();
     }
 
-    private void OnStateChanged(OutputState state) => UpdateStatusBar(state == OutputState.Idle ? null : _lastStartedFile);
-
-    private MediaFile? _lastStartedFile;
-
-    private void UpdateStatusBar(MediaFile? file)
+    /// <summary>Output starting/stopping changes the rows' 播放中 state and the 播控条's 当前 line.</summary>
+    private void OnStateChanged(OutputState state)
     {
-        _lastStartedFile = file ?? _lastStartedFile;
-        bool active = _stateMachine.State == OutputState.Active;
-        _statusBar.Text = active && file != null
-            ? $"● 输出中 — {Path.GetFileName(file.SourcePath)}"
-            : active ? "● 输出中" : "○ 待机中";
+        if (InvokeRequired) { BeginInvoke(() => OnStateChanged(state)); return; }
+        RefreshCardStyles();
     }
 
     protected override void Dispose(bool disposing)
@@ -1004,6 +1459,11 @@ public sealed class ActivitiesPanel : UserControl
         {
             if (_playback != null) _playback.FileStarted -= OnFileStarted;
             _stateMachine.StateChanged -= OnStateChanged;
+            _saveFeedbackTimer.Dispose();
+            _editMenu.Dispose();
+            _toolTip.Dispose();
+            foreach (var image in _thumbnails.Values) image.Dispose();
+            _thumbnails.Clear();
         }
         base.Dispose(disposing);
     }

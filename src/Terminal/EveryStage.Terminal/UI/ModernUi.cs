@@ -5,16 +5,27 @@ namespace EveryStage.Terminal.UI;
 
 internal static class ModernUi
 {
-    public static readonly Color Background = Color.FromArgb(10, 20, 34);
-    public static readonly Color Rail = Color.FromArgb(11, 25, 43);
-    public static readonly Color Surface = Color.FromArgb(18, 37, 59);
-    public static readonly Color SurfaceRaised = Color.FromArgb(25, 48, 76);
-    public static readonly Color Border = Color.FromArgb(48, 75, 106);
-    public static readonly Color Text = Color.FromArgb(239, 245, 255);
-    public static readonly Color Muted = Color.FromArgb(155, 174, 201);
-    public static readonly Color Accent = Color.FromArgb(66, 139, 255);
-    public static readonly Color Danger = Color.FromArgb(255, 73, 78);
-    public static readonly Color Success = Color.FromArgb(42, 210, 128);
+    private static UiPalette _palette = UiPalette.For(EveryStage.Terminal.Data.AppTheme.Dark);
+    private static EveryStage.Terminal.Data.AppTheme _currentTheme = EveryStage.Terminal.Data.AppTheme.Dark;
+    internal static UiPalette Palette => _palette;
+    internal static EveryStage.Terminal.Data.AppTheme CurrentTheme => _currentTheme;
+    public static Color Background => _palette.Background;
+    public static Color Rail => _palette.Rail;
+    public static Color Surface => _palette.Surface;
+    public static Color SurfaceRaised => _palette.SurfaceRaised;
+    public static Color Border => _palette.Border;
+    public static Color Text => _palette.Text;
+    public static Color Muted => _palette.Muted;
+    public static Color Accent => _palette.Accent;
+    public static Color Danger => _palette.Danger;
+    public static Color Warning => _palette.Warning;
+    public static Color Success => _palette.Success;
+
+    internal static void SetPalette(UiPalette palette, EveryStage.Terminal.Data.AppTheme theme)
+    {
+        _palette = palette;
+        _currentTheme = theme;
+    }
 
     public static void StyleButton(Button button, bool primary = false, bool danger = false)
     {
@@ -26,11 +37,37 @@ internal static class ModernUi
         button.Cursor = Cursors.Hand;
         button.Font = new Font("Segoe UI", 10F, FontStyle.Regular);
         button.Padding = new Padding(8, 0, 8, 0);
+        ApplyRoundedButtonRegion(button);
+        button.SizeChanged -= RefreshRoundedButtonRegion;
+        button.SizeChanged += RefreshRoundedButtonRegion;
+    }
+
+    private static void RefreshRoundedButtonRegion(object? sender, EventArgs e)
+    {
+        if (sender is Control control) ApplyRoundedButtonRegion(control);
+    }
+
+    private static void ApplyRoundedButtonRegion(Control control)
+    {
+        if (control.Width < 4 || control.Height < 4) return;
+        var bounds = new Rectangle(0, 0, control.Width, control.Height);
+        bounds.Inflate(-1, -1);
+        int diameter = Math.Min(16, bounds.Height);
+        using var path = new GraphicsPath();
+        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        var previous = control.Region;
+        control.Region = new Region(path);
+        previous?.Dispose();
     }
 
     public static NavItem NavButton(NavIcon icon, string text, int top)
     {
-        return new NavItem(icon, text) { Bounds = new Rectangle(12, top, 142, 46) };
+        // 侧栏加宽到 250px 后导航项整条填满（16px 内边距，218px 宽），选中态实心蓝对齐效果图。
+        return new NavItem(icon, text) { Bounds = new Rectangle(16, top, 218, 46) };
     }
 
     public static void SetNavActive(IEnumerable<NavItem> buttons, NavItem active)
@@ -69,13 +106,20 @@ internal static class ModernUi
         {
             if (e.Index < 0) return;
             bool selected = (e.State & DrawItemState.Selected) != 0;
-            using var background = new SolidBrush(selected ? Color.FromArgb(38, 72, 112) : SurfaceRaised);
+            using var background = new SolidBrush(selected ? Color.FromArgb(64, Accent.R, Accent.G, Accent.B) : SurfaceRaised);
             e.Graphics.FillRectangle(background, e.Bounds);
-            TextRenderer.DrawText(e.Graphics, comboBox.Items[e.Index]?.ToString() ?? string.Empty,
+            TextRenderer.DrawText(e.Graphics, comboBox.GetItemText(comboBox.Items[e.Index]),
                 comboBox.Font, new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, e.Bounds.Width - 12, e.Bounds.Height),
                 Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
             if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
         };
+        // The drop-down list above is owner-drawn, but the closed box is still WinForms' Flat frame,
+        // which ignores BackColor for its border and button face (white outlines on the dark themes).
+        // ComboChrome repaints the closed box; the rounded region matches StyleButton's buttons.
+        ComboChrome.Attach(comboBox);
+        ApplyRoundedButtonRegion(comboBox);
+        comboBox.SizeChanged -= RefreshRoundedButtonRegion;
+        comboBox.SizeChanged += RefreshRoundedButtonRegion;
     }
 
     public static void StyleDialog(Form dialog)
@@ -121,12 +165,111 @@ internal static class ModernUi
             StyleDialogChildren(child, primaryButton);
         }
     }
+
+    /// <summary>
+    /// Repaints the closed box of a <see cref="StyleComboBox"/> combo (fill, current item, chevron,
+    /// border) right after WinForms' own WM_PAINT, in the current palette. Hooked as a
+    /// <see cref="NativeWindow"/> rather than a ComboBox subclass so every existing
+    /// <c>new ComboBox</c> + <see cref="StyleComboBox"/> call site — panels and dialogs alike — picks it
+    /// up unchanged. Only DropDownList combos are styled this way (all of this app's are); an editable
+    /// combo's text box child would paint over this. Colours are read at paint time, so theme
+    /// switches need no re-attach.
+    /// </summary>
+    private sealed class ComboChrome : NativeWindow
+    {
+        private const int WM_PAINT = 0x000F;
+        private const int WM_PRINT = 0x0317;
+        private const int WM_PRINTCLIENT = 0x0318;
+        private readonly ComboBox _combo;
+        private bool _hot;
+
+        private ComboChrome(ComboBox combo)
+        {
+            _combo = combo;
+            if (combo.IsHandleCreated) AssignHandle(combo.Handle);
+            combo.HandleCreated += (_, _) => AssignHandle(combo.Handle);
+            combo.HandleDestroyed += (_, _) => ReleaseHandle();
+            combo.MouseEnter += (_, _) => { _hot = true; combo.Invalidate(); };
+            combo.MouseLeave += (_, _) => { _hot = false; combo.Invalidate(); };
+            combo.GotFocus += (_, _) => combo.Invalidate();
+            combo.LostFocus += (_, _) => combo.Invalidate();
+            combo.DropDownClosed += (_, _) => combo.Invalidate();
+            combo.EnabledChanged += (_, _) => combo.Invalidate();
+            combo.SelectedIndexChanged += (_, _) => combo.Invalidate();
+        }
+
+        public static void Attach(ComboBox combo)
+        {
+            if (combo.DropDownStyle == ComboBoxStyle.DropDownList) _ = new ComboChrome(combo);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            if (!_combo.IsHandleCreated || _combo.IsDisposed) return;
+            if (m.Msg == WM_PAINT)
+            {
+                using var g = Graphics.FromHwnd(_combo.Handle);
+                Paint(g);
+            }
+            else if (m.Msg is WM_PRINT or WM_PRINTCLIENT && m.WParam != IntPtr.Zero)
+            {
+                // DrawToBitmap/PrintWindow go through WM_PRINT, not WM_PAINT — paint the same chrome there.
+                using var g = Graphics.FromHdc(m.WParam);
+                Paint(g);
+            }
+        }
+
+        private void Paint(Graphics g)
+        {
+            int w = _combo.ClientSize.Width, h = _combo.ClientSize.Height;
+            if (w < 8 || h < 8) return;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            bool enabled = _combo.Enabled;
+            bool active = enabled && (_combo.Focused || _combo.DroppedDown);
+
+            // Same geometry as ApplyRoundedButtonRegion's clip, one pixel further in for the border.
+            var box = new Rectangle(1, 1, w - 3, h - 3);
+            int diameter = Math.Min(16, box.Height);
+            using var path = new GraphicsPath();
+            path.AddArc(box.Left, box.Top, diameter, diameter, 180, 90);
+            path.AddArc(box.Right - diameter, box.Top, diameter, diameter, 270, 90);
+            path.AddArc(box.Right - diameter, box.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(box.Left, box.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+
+            Color fill = enabled && _hot ? Blend(SurfaceRaised, Text, 0.05f) : SurfaceRaised;
+            // Fill only the region-shaped area, never Clear(): under WM_PRINT the DC is the whole target
+            // bitmap, not this control's clipped window.
+            using (var brush = new SolidBrush(fill))
+            {
+                g.FillRectangle(brush, 1, 1, w - 2, h - 2);
+            }
+            using (var pen = new Pen(active ? Accent : enabled && _hot ? Blend(Border, Text, 0.25f) : Border, 1F))
+                g.DrawPath(pen, path);
+
+            int button = Math.Min(h, 28);
+            var textRect = Rectangle.FromLTRB(10, 0, w - button - 2, h);
+            TextRenderer.DrawText(g, _combo.GetItemText(_combo.SelectedItem), _combo.Font, textRect,
+                enabled ? Text : Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+            float cx = w - button / 2f - 2, cy = h / 2f;
+            using var chevron = new Pen(enabled ? Muted : Border, 1.6F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            g.DrawLines(chevron, new[] { new PointF(cx - 4.5f, cy - 2f), new PointF(cx, cy + 2.5f), new PointF(cx + 4.5f, cy - 2f) });
+        }
+
+        private static Color Blend(Color baseColor, Color overlay, float amount) => Color.FromArgb(
+            (int)(baseColor.R + (overlay.R - baseColor.R) * amount),
+            (int)(baseColor.G + (overlay.G - baseColor.G) * amount),
+            (int)(baseColor.B + (overlay.B - baseColor.B) * amount));
+    }
 }
 
 public class GradientForm : Form
 {
     private Size _logicalMinimumSize;
     protected Size NormalWindowAspectRatio { get; set; }
+    internal bool IsMicaBackdropActive { get; set; }
 
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct SizingRect { public int Left, Top, Right, Bottom; }
@@ -190,10 +333,12 @@ public class GradientForm : Form
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
+        if (IsMicaBackdropActive) return;
         using var background = new LinearGradientBrush(ClientRectangle,
-            Color.FromArgb(7, 17, 31), Color.FromArgb(18, 39, 65), 32F);
+            ModernUi.Background, ModernUi.Surface, 32F);
         e.Graphics.FillRectangle(background, ClientRectangle);
-        using var glow = new SolidBrush(Color.FromArgb(28, 55, 125, 218));
+        var accent = ModernUi.Accent;
+        using var glow = new SolidBrush(Color.FromArgb(22, accent.R, accent.G, accent.B));
         e.Graphics.FillEllipse(glow, ClientSize.Width / 3, -ClientSize.Height / 2,
             ClientSize.Width, ClientSize.Height);
     }
@@ -263,7 +408,7 @@ internal class GlassPanel : Panel
         using var fill = new LinearGradientBrush(ClientRectangle,
             Color.FromArgb(Math.Min(255, GlassTint.A + 24), GlassTint), GlassTint, 110F);
         e.Graphics.FillPath(fill, path);
-        using var highlight = new Pen(Color.FromArgb(70, 185, 217, 255), 1F);
+        using var highlight = new Pen(Color.FromArgb(70, ModernUi.Accent.R, ModernUi.Accent.G, ModernUi.Accent.B), 1F);
         e.Graphics.DrawPath(highlight, path);
         var inset = ClientRectangle;
         inset.Inflate(-2, -2);
@@ -287,17 +432,27 @@ internal class GlassPanel : Panel
     }
 }
 
-internal sealed class PillButton : Button
+internal sealed class PillButton : Control
 {
     public bool Selected { get; set; }
 
     public PillButton()
     {
-        FlatStyle = FlatStyle.Flat;
-        FlatAppearance.BorderSize = 0;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+            | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw
+            | ControlStyles.SupportsTransparentBackColor | ControlStyles.Selectable, true);
+        BackColor = Color.Transparent;
         Height = 38;
         Padding = new Padding(16, 0, 16, 0);
         Cursor = Cursors.Hand;
+        TabStop = true;
+    }
+
+    public override Size GetPreferredSize(Size proposedSize)
+    {
+        var textSize = TextRenderer.MeasureText(Text, Font);
+        return new Size(Math.Max(42, textSize.Width + Padding.Horizontal),
+            Math.Max(Height, textSize.Height + Padding.Vertical));
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -306,12 +461,15 @@ internal sealed class PillButton : Button
         var rect = ClientRectangle;
         rect.Inflate(-1, -1);
         using var path = Rounded(rect, rect.Height / 2);
-        using var fill = new SolidBrush(Selected ? ModernUi.Accent : ModernUi.SurfaceRaised);
-        using var border = new Pen(Selected ? Color.FromArgb(120, 117, 181, 255) : ModernUi.Border);
+        using var fill = new SolidBrush(Selected ? ModernUi.Accent
+            : !Enabled ? ModernUi.Surface : ModernUi.SurfaceRaised);
+        using var border = new Pen(Selected ? Color.FromArgb(150, ModernUi.Accent.R, ModernUi.Accent.G, ModernUi.Accent.B)
+            : ModernUi.Border);
         e.Graphics.FillPath(fill, path);
         e.Graphics.DrawPath(border, path);
-        TextRenderer.DrawText(e.Graphics, Text, Font, rect, ModernUi.Text,
+        TextRenderer.DrawText(e.Graphics, Text, Font, rect, Enabled ? ModernUi.Text : ModernUi.Muted,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(rect, -6, -6));
     }
 
     private static GraphicsPath Rounded(Rectangle r, int radius)
@@ -338,14 +496,9 @@ internal sealed class AppTitleBar : Panel
     {
         _form = form;
         Dock = DockStyle.Top;
-        Height = 42;
-        BackColor = Color.FromArgb(9, 23, 39);
+        Height = 32;
+        BackColor = ModernUi.Rail;
 
-        var appIcon = new PictureBox
-        {
-            Dock = DockStyle.Left, Width = 42, Padding = new Padding(12, 9, 4, 9),
-            SizeMode = PictureBoxSizeMode.Zoom, Image = form.Icon?.ToBitmap(), BackColor = BackColor,
-        };
         var title = new Label
         {
             Text = $"EveryStage {product}", Dock = DockStyle.Left, Width = 220,
@@ -362,14 +515,12 @@ internal sealed class AppTitleBar : Panel
         close.MouseLeave += (_, _) => close.BackColor = BackColor;
 
         Controls.Add(title);
-        Controls.Add(appIcon);
         // Dock=Right stacks so that the LAST-added control ends up right-most. Windows order left→
         // right is minimize, maximize, close (close at the far right), so add in that same order.
         Controls.Add(minimize);
         Controls.Add(maximize);
         Controls.Add(close);
         title.MouseDown += DragWindow;
-        appIcon.MouseDown += DragWindow;
         MouseDown += DragWindow;
         title.DoubleClick += (_, _) => ToggleMaximize();
         DoubleClick += (_, _) => ToggleMaximize();
@@ -398,17 +549,96 @@ internal sealed class AppTitleBar : Panel
         ? FormWindowState.Normal : FormWindowState.Maximized;
 }
 
-internal sealed class ToggleSwitch : CheckBox
+internal sealed class RoundedActionButton : Button
 {
+    public RoundedActionButton()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+            | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        FlatStyle = FlatStyle.Flat;
+        FlatAppearance.BorderSize = 1;
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs pevent) { }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var bounds = ClientRectangle;
+        bounds.Inflate(-1, -1);
+        using var path = Rounded(bounds, Math.Min(8, bounds.Height / 2));
+        using var fill = new SolidBrush(BackColor);
+        e.Graphics.FillPath(fill, path);
+        if (FlatAppearance.BorderSize > 0)
+        {
+            using var border = new Pen(FlatAppearance.BorderColor, FlatAppearance.BorderSize);
+            e.Graphics.DrawPath(border, path);
+        }
+        TextRenderer.DrawText(e.Graphics, Text, Font, bounds,
+            Enabled ? ForeColor : ModernUi.Muted,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(bounds, -5, -5));
+    }
+
+    private static GraphicsPath Rounded(Rectangle r, int radius)
+    {
+        int d = Math.Max(2, radius * 2);
+        var path = new GraphicsPath();
+        path.AddArc(r.Left, r.Top, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
+    }
+}
+
+internal sealed class ToggleSwitch : Control
+{
+    private bool _checked;
+    public event EventHandler? CheckedChanged;
+    public bool Checked
+    {
+        get => _checked;
+        set
+        {
+            if (_checked == value) return;
+            _checked = value;
+            Invalidate();
+            CheckedChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
     public ToggleSwitch()
     {
-        Appearance = Appearance.Button;
-        FlatStyle = FlatStyle.Flat;
-        FlatAppearance.BorderSize = 0;
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+            | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw
+            | ControlStyles.SupportsTransparentBackColor | ControlStyles.Selectable, true);
+        BackColor = Color.Transparent;
         Size = new Size(52, 28);
         Cursor = Cursors.Hand;
-        Text = string.Empty;
+        TabStop = true;
     }
+
+    protected override void OnClick(EventArgs e)
+    {
+        Checked = !Checked;
+        base.OnClick(e);
+    }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode is Keys.Space or Keys.Enter)
+        {
+            Checked = !Checked;
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+        base.OnKeyDown(e);
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs pevent) { }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -416,7 +646,7 @@ internal sealed class ToggleSwitch : CheckBox
         var track = ClientRectangle;
         track.Inflate(-1, -3);
         using var path = Rounded(track, track.Height / 2);
-        using var trackBrush = new SolidBrush(Checked ? ModernUi.Accent : Color.FromArgb(65, 79, 98));
+        using var trackBrush = new SolidBrush(Checked ? ModernUi.Accent : ModernUi.Border);
         e.Graphics.FillPath(trackBrush, path);
         int d = track.Height - 6;
         int x = Checked ? track.Right - d - 3 : track.Left + 3;
@@ -438,33 +668,27 @@ internal sealed class ToggleSwitch : CheckBox
 /// <summary>品牌标记——设计图左上角的蓝色叠层方块 logo，纯 GDI+ 绘制，不引资源。</summary>
 internal sealed class BrandMark : Control
 {
+    private readonly Image _image;
+
     public BrandMark()
     {
         // SupportsTransparentBackColor must be enabled BEFORE assigning a transparent BackColor —
         // a bare Control rejects Color.Transparent otherwise ("控件不支持透明的背景色").
         SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint, true);
         BackColor = Color.Transparent;
+        _image = ProductIcon.LoadBitmap();
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var r = ClientRectangle;
-        float w = r.Width, h = r.Height;
-        // Three slanted stacked bars, top brightest — a simple layered mark.
-        Color[] shades = { Color.FromArgb(96, 165, 255), Color.FromArgb(66, 139, 255), Color.FromArgb(40, 96, 210) };
-        for (int i = 0; i < 3; i++)
-        {
-            float y = r.Top + h * (0.12f + i * 0.28f);
-            using var path = new GraphicsPath();
-            path.AddLine(r.Left + w * 0.10f, y + h * 0.14f, r.Left + w * 0.55f, y);
-            path.AddLine(r.Left + w * 0.55f, y, r.Left + w * 0.92f, y + h * 0.12f);
-            path.AddLine(r.Left + w * 0.92f, y + h * 0.12f, r.Left + w * 0.47f, y + h * 0.26f);
-            path.CloseFigure();
-            using var brush = new SolidBrush(shades[i]);
-            g.FillPath(brush, path);
-        }
+        e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        e.Graphics.DrawImage(_image, ClientRectangle);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _image.Dispose();
+        base.Dispose(disposing);
     }
 }
 
@@ -504,16 +728,18 @@ internal sealed class NavItem : Control
         var rect = ClientRectangle;
         rect.Inflate(-2, -3);
 
-        if (Selected || _hover)
+        if (Selected)
+        {
+            // 对齐效果图：选中项为实心品牌蓝整条 + 白字（不再是半透明浅色块）。
+            using var path = RoundedRect(rect, LogicalToDeviceUnits(12));
+            using var fill = new SolidBrush(ModernUi.Accent);
+            g.FillPath(fill, path);
+        }
+        else if (_hover)
         {
             using var path = RoundedRect(rect, LogicalToDeviceUnits(12));
-            using var fill = new SolidBrush(Selected ? Color.FromArgb(60, 66, 139, 255) : Color.FromArgb(28, 120, 160, 220));
+            using var fill = new SolidBrush(Color.FromArgb(28, ModernUi.Accent.R, ModernUi.Accent.G, ModernUi.Accent.B));
             g.FillPath(fill, path);
-            if (Selected)
-            {
-                using var border = new Pen(Color.FromArgb(120, 66, 139, 255));
-                g.DrawPath(border, path);
-            }
         }
 
         Color fg = Selected ? Color.White : ModernUi.Muted;

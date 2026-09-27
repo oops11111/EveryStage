@@ -6,8 +6,8 @@ using EveryStage.Terminal.Playback;
 namespace EveryStage.Terminal.UI.Panels;
 
 /// <summary>
-/// PLANNING.md §8.2 的音频「横向播放条」——设计图里是<b>一整条</b>大播放器（封面 + 标题 + 圆形
-/// 播放键 + 进度条 + 时长 + 音量滑块 + 循环 + 右侧「投屏」按钮），不是逐文件的一列小行。
+/// PLANNING.md §8.2 的音频「横向播放条」——设计图里是<b>一整条</b>细长播放器（音符图标 + 名称/时长 +
+/// 播放键 + 进度条 + 音量滑块 + 循环 + 右侧「投屏」按钮），不是逐文件的一列小行。
 ///
 /// 这里只改视觉与交互载体，不改任何播放数据流：
 /// <list type="bullet">
@@ -37,6 +37,9 @@ internal sealed class AudioPlayerBar : GlassPanel
     private Rectangle _loopButton;
     private readonly Button _castButton;
     private bool _compact;
+    private Rectangle _iconTile;
+    private Rectangle _titleRect;
+    private Rectangle _timeRect;
 
     /// <summary>Raised by the right-hand「投屏」button — FilesPanel forwards this to its existing
     /// <c>FilePlayRequested</c> event so playback behavior is byte-for-byte the same as before.</summary>
@@ -56,20 +59,20 @@ internal sealed class AudioPlayerBar : GlassPanel
         LostFocus += (_, _) => Invalidate();
 
         Dock = DockStyle.Top;
-        Height = 116;
+        Height = 64;
         Margin = new Padding(0);
         CornerRadius = 18;
-        GlassTint = Color.FromArgb(205, 15, 33, 55);
+        GlassTint = ModernUi.Palette.GlassTint;
         Visible = false; // flipped on by SetAudioFiles once there are any audio files.
 
         _castButton = new Button
         {
             Text = "🖵  投屏",
-            Font = new Font("Segoe UI Semibold", 11F),
-            ForeColor = Color.White,
+            Font = new Font("Segoe UI Semibold", 9.5F),
+            ForeColor = ModernUi.Text,
             FlatStyle = FlatStyle.Flat,
             Cursor = Cursors.Hand,
-            Size = new Size(112, 48),
+            Size = new Size(96, 34),
         };
         _castButton.FlatAppearance.BorderSize = 0;
         _castButton.BackColor = ModernUi.Accent;
@@ -114,43 +117,44 @@ internal sealed class AudioPlayerBar : GlassPanel
     private void LayoutControls()
     {
         int S(int value) => LogicalToDeviceUnits(value);
-        _compact = ClientSize.Width < LogicalToDeviceUnits(780);
-        int desiredHeight = LogicalToDeviceUnits(_compact ? 172 : 116);
+        // 对齐效果图：宽度足够时是「一整条」单行（音符图标 · 名称/时长 · 播放 · 进度 · 音量 · 循环 ·
+        // 投屏），约 64px 高；过窄时才退化为两行（约 104px），不再是旧版 116/172px 的大封面布局——
+        // 那会在默认 960×720 窗口里挤掉大半个文件网格。
+        _compact = ClientSize.Width < S(600);
+        int desiredHeight = S(_compact ? 104 : 64);
         if (Height != desiredHeight) Height = desiredHeight;
-        int h = ClientSize.Height, w = ClientSize.Width;
-        int cy = h / 2;
+        int w = ClientSize.Width, h = ClientSize.Height;
+        int pad = S(16);
+        _castButton.Size = new Size(S(96), S(34));
 
-        // Artwork square on the far left.
-        int art = h - S(32);
-        int artLeft = S(20);
-        int cover = artLeft + art + S(20);
-
-        _playButton = new Rectangle(cover, cy - S(22), S(44), S(44));
-        int progLeft = _playButton.Right + S(20);
-
-        // Cast button on the far right; volume + loop sit to its left.
-        _castButton.Size = new Size(S(112), S(48));
-        _castButton.Location = new Point(w - _castButton.Width - S(20), cy - _castButton.Height / 2);
-        _loopButton = new Rectangle(_castButton.Left - S(44), cy - S(14), S(28), S(28));
-        _volumeTrack = new Rectangle(_loopButton.Left - S(132), cy - S(2), S(110), S(4));
-        var volIcon = _volumeTrack.Left - S(34);
-
-        // Time label reserves ~92px; progress track fills the middle up to the volume icon.
-        int timeWidth = S(100);
-        int progRight = volIcon - timeWidth - S(24);
-        _progressTrack = new Rectangle(progLeft, cy - S(2), Math.Max(S(60), progRight - progLeft), S(4));
-        if (_compact)
+        if (!_compact)
         {
-            _playButton = new Rectangle(S(20), S(56), S(44), S(44));
-            _progressTrack = new Rectangle(S(80), S(76), Math.Max(S(20), w - S(204)), S(4));
-            _castButton.Size = new Size(S(112), S(36));
-            _castButton.Location = new Point(Math.Max(0, w - S(132)), S(116));
-            _loopButton = new Rectangle(_castButton.Left - S(44), S(120), S(28), S(28));
-            _volumeTrack = new Rectangle(S(50), S(132), Math.Max(S(20), Math.Min(S(110), _loopButton.Left - S(70))), S(4));
+            int cy = h / 2;
+            _iconTile = new Rectangle(pad, cy - S(20), S(40), S(40));
+            _titleRect = new Rectangle(_iconTile.Right + S(12), cy - S(19), S(128), S(20));
+            _timeRect = new Rectangle(_titleRect.Left, cy + S(1), S(128), S(18));
+            _playButton = new Rectangle(_titleRect.Right + S(12), cy - S(17), S(34), S(34));
+            _castButton.Location = new Point(w - pad - _castButton.Width, cy - _castButton.Height / 2);
+            _loopButton = new Rectangle(_castButton.Left - S(40), cy - S(14), S(28), S(28));
+            int volWidth = w >= S(760) ? S(100) : S(64);
+            _volumeTrack = new Rectangle(_loopButton.Left - S(16) - volWidth, cy - S(2), volWidth, S(4));
+            int progLeft = _playButton.Right + S(16);
+            _progressTrack = new Rectangle(progLeft, cy - S(2), Math.Max(S(40), _volumeTrack.Left - S(46) - progLeft), S(4));
         }
         else
         {
-            _castButton.Size = new Size(LogicalToDeviceUnits(112), LogicalToDeviceUnits(48));
+            int row1 = S(28), row2 = S(72);
+            _iconTile = new Rectangle(pad, row1 - S(14), S(28), S(28));
+            _timeRect = new Rectangle(w - pad - S(96), row1 - S(9), S(96), S(18));
+            _titleRect = new Rectangle(_iconTile.Right + S(10), row1 - S(10),
+                Math.Max(S(20), _timeRect.Left - S(8) - _iconTile.Right - S(10)), S(20));
+            _playButton = new Rectangle(pad, row2 - S(17), S(34), S(34));
+            _castButton.Location = new Point(w - pad - _castButton.Width, row2 - _castButton.Height / 2);
+            _loopButton = new Rectangle(_castButton.Left - S(38), row2 - S(14), S(28), S(28));
+            int volWidth = Math.Max(S(24), Math.Min(S(72), (w - S(300)) / 3));
+            _volumeTrack = new Rectangle(_loopButton.Left - S(14) - volWidth, row2 - S(2), volWidth, S(4));
+            int progLeft = _playButton.Right + S(14);
+            _progressTrack = new Rectangle(progLeft, row2 - S(2), Math.Max(S(20), _volumeTrack.Left - S(42) - progLeft), S(4));
         }
     }
 
@@ -161,66 +165,54 @@ internal sealed class AudioPlayerBar : GlassPanel
         g.SmoothingMode = SmoothingMode.AntiAlias;
         if (_boundFile == null) return;
 
-        int h = ClientSize.Height, cy = h / 2;
+        int S(int value) => LogicalToDeviceUnits(value);
 
-        // Artwork.
-        int art = _compact ? 0 : h - LogicalToDeviceUnits(32);
-        var artRect = new Rectangle(LogicalToDeviceUnits(20), (h - art) / 2, art, art);
-        if (!_compact)
-        using (var artPath = Rounded(artRect, 12))
+        // Icon tile（效果图左侧的小方块音符图标）。旧版这里是一整块封面，且误用了下方给细进度条
+        // 用的胶囊形 Rounded()，结果只在方块顶部画出一条空胶囊。
+        using (var tilePath = RoundedBox(_iconTile, S(9)))
+        using (var tileBg = new LinearGradientBrush(_iconTile, Color.FromArgb(47, 111, 208), Color.FromArgb(27, 63, 122), 60F))
+            g.FillPath(tileBg, tilePath);
+        using (var noteFont = new Font("Segoe UI Symbol", _iconTile.Height * 0.46f, GraphicsUnit.Pixel))
+            TextRenderer.DrawText(g, "♫", noteFont, _iconTile, Color.FromArgb(188, 214, 255),
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+
+        // Title + time: single row stacks them beside the tile; compact puts time on the right.
+        using (var titleFont = new Font("Segoe UI Semibold", 10.5F))
+            TextRenderer.DrawText(g, Path.GetFileName(_boundFile.SourcePath), titleFont, _titleRect, ModernUi.Text,
+                TextFormatFlags.EndEllipsis | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        using (var timeFont = new Font("Segoe UI", 9F))
+            TextRenderer.DrawText(g, PositionText(), timeFont, _timeRect, ModernUi.Muted,
+                (_compact ? TextFormatFlags.Right : TextFormatFlags.Left) | TextFormatFlags.VerticalCenter);
+
+        // Play/pause — dark rounded icon button, as in the reference (not a large accent circle).
+        using (var btnPath = RoundedBox(_playButton, S(8)))
         {
-            using var artBg = new LinearGradientBrush(artRect, Color.FromArgb(58, 92, 150), Color.FromArgb(30, 52, 92), 60F);
-            g.FillPath(artBg, artPath);
-            using var note = new SolidBrush(Color.FromArgb(220, 235, 250));
-            using var noteFont = new Font("Segoe UI Symbol", art * 0.34f, GraphicsUnit.Pixel);
-            TextRenderer.DrawText(g, "♫", noteFont, artRect, Color.FromArgb(230, 240, 250),
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            using var btnFill = new SolidBrush(ModernUi.Surface);
+            g.FillPath(btnFill, btnPath);
+            using var btnPen = new Pen(ModernUi.Border, 1F);
+            g.DrawPath(btnPen, btnPath);
         }
-
-        // Title.
-        var titleRect = new Rectangle(artRect.Right + LogicalToDeviceUnits(20), artRect.Top - LogicalToDeviceUnits(2),
-            Math.Max(1, _progressTrack.Right - artRect.Right - LogicalToDeviceUnits(20)), LogicalToDeviceUnits(28));
-        if (_compact) titleRect = new Rectangle(LogicalToDeviceUnits(20), LogicalToDeviceUnits(12),
-            Math.Max(1, Width - LogicalToDeviceUnits(40)), LogicalToDeviceUnits(30));
-        using (var titleFont = new Font("Segoe UI Semibold", 13F))
-            TextRenderer.DrawText(g, Path.GetFileName(_boundFile.SourcePath), titleFont, titleRect,
-                ModernUi.Text, TextFormatFlags.EndEllipsis | TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-
-        // Round play/pause button.
-        using (var playFill = new SolidBrush(ModernUi.Accent))
-            g.FillEllipse(playFill, _playButton);
-        using (var glyph = new SolidBrush(Color.White))
+        using (var glyph = new SolidBrush(ModernUi.Text))
         {
+            int gcx = _playButton.Left + _playButton.Width / 2, gcy = _playButton.Top + _playButton.Height / 2;
             if (IsBoundPlaying && _playback?.IsPaused == false)
             {
-                int bw = 5, bh = 16, gap = 5;
-                int bx = _playButton.Left + _playButton.Width / 2 - bw - gap / 2;
-                int by = _playButton.Top + (_playButton.Height - bh) / 2;
-                g.FillRectangle(glyph, bx, by, bw, bh);
-                g.FillRectangle(glyph, bx + bw + gap, by, bw, bh);
+                int bw = S(4), bh = S(14), gap = S(4);
+                g.FillRectangle(glyph, gcx - bw - gap / 2, gcy - bh / 2, bw, bh);
+                g.FillRectangle(glyph, gcx + gap / 2, gcy - bh / 2, bw, bh);
             }
             else
             {
-                int cx = _playButton.Left + _playButton.Width / 2 + 2;
-                int cyy = _playButton.Top + _playButton.Height / 2;
-                g.FillPolygon(glyph, new[]
-                {
-                    new PointF(cx - 7, cyy - 9), new PointF(cx - 7, cyy + 9), new PointF(cx + 8, cyy),
-                });
+                float x = gcx + S(1);
+                g.FillPolygon(glyph, new[] { new PointF(x - S(5), gcy - S(7)), new PointF(x - S(5), gcy + S(7)), new PointF(x + S(7), gcy) });
             }
         }
 
         // Progress track + filled portion + knob.
         DrawTrack(g, _progressTrack, ProgressFraction(), true);
 
-        // Time label.
-        var timeRect = new Rectangle(_progressTrack.Right + LogicalToDeviceUnits(12), _progressTrack.Top - LogicalToDeviceUnits(10), LogicalToDeviceUnits(100), LogicalToDeviceUnits(24));
-        using (var timeFont = new Font("Segoe UI", 10F))
-            TextRenderer.DrawText(g, PositionText(), timeFont, timeRect, ModernUi.Muted,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-
         // Volume icon + track.
-        var volIconRect = new Rectangle(_volumeTrack.Left - LogicalToDeviceUnits(30), _volumeTrack.Top - LogicalToDeviceUnits(10), LogicalToDeviceUnits(24), LogicalToDeviceUnits(24));
+        var volIconRect = new Rectangle(_volumeTrack.Left - S(30), _volumeTrack.Top - S(10), S(24), S(24));
         DrawVolumeIcon(g, volIconRect);
         DrawTrack(g, _volumeTrack, VolumeFraction(), true);
 
@@ -231,7 +223,7 @@ internal sealed class AudioPlayerBar : GlassPanel
     private void DrawTrack(Graphics g, Rectangle track, float fraction, bool knob)
     {
         fraction = Math.Clamp(fraction, 0f, 1f);
-        using (var bg = new SolidBrush(Color.FromArgb(60, 91, 126)))
+        using (var bg = new SolidBrush(ModernUi.Border))
         using (var bgPath = Rounded(track, track.Height / 2))
             g.FillPath(bg, bgPath);
         var filled = new Rectangle(track.Left, track.Top, (int)(track.Width * fraction), track.Height);
@@ -396,6 +388,20 @@ internal sealed class AudioPlayerBar : GlassPanel
         if (r.Width <= d || r.Height <= d) { path.AddRectangle(r); return path; }
         path.AddArc(r.Left, r.Top, d, d, 90, 180);
         path.AddArc(r.Right - d, r.Top, d, d, 270, 180);
+        path.CloseFigure();
+        return path;
+    }
+
+    /// <summary>A real rounded rectangle (four corner arcs). <see cref="Rounded"/> above builds a
+    /// stadium/pill for thin tracks and draws the wrong shape for anything taller than 2×radius.</summary>
+    private static GraphicsPath RoundedBox(Rectangle r, int radius)
+    {
+        int d = Math.Min(Math.Max(2, radius * 2), Math.Min(r.Width, r.Height));
+        var path = new GraphicsPath();
+        path.AddArc(r.Left, r.Top, d, d, 180, 90);
+        path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
+        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
+        path.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
         path.CloseFigure();
         return path;
     }

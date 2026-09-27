@@ -1,5 +1,6 @@
 using System.Windows.Forms;
 using EveryStage.Terminal.StateMachine;
+using EveryStage.Terminal.UI;
 
 namespace EveryStage.Terminal.Tray;
 
@@ -14,6 +15,7 @@ public sealed class TrayIconController : IDisposable
     private readonly NotifyIcon _notifyIcon;
     private readonly ToolStripMenuItem _castSwitchItem;
     private readonly OutputStateMachine _stateMachine;
+    private readonly Icon _productIcon;
 
     public event Action? ExitRequested;
     public event Action? MainWindowRequested;
@@ -35,9 +37,10 @@ public sealed class TrayIconController : IDisposable
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
 
+        _productIcon = ProductIcon.LoadIcon();
         _notifyIcon = new NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application, // placeholder; replace with product icon in Phase 4/5.
+            Icon = _productIcon,
             Text = "EveryStage 终端机",
             ContextMenuStrip = menu,
             Visible = true,
@@ -89,5 +92,6 @@ public sealed class TrayIconController : IDisposable
         _stateMachine.CastSwitchChanged -= OnCastSwitchChanged;
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
+        _productIcon.Dispose();
     }
 }

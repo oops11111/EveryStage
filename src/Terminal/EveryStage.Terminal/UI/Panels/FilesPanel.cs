@@ -60,14 +60,21 @@ public sealed class FilesPanel : UserControl
     private PlaybackEngine? _playback;
     private readonly ListView _listView;
     private readonly ImageList _thumbnails;
+    // Managed keyed images are reliable for owner-drawn Tile items even when the native
+    // LargeImageList is intentionally not assigned.
+    private readonly Dictionary<string, Image> _thumbnailByFileId = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? _thumbnailLoad;
     private readonly SemaphoreSlim _thumbnailWorker = new(1, 1);
     private readonly Dictionary<string, Image> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<string> _thumbnailCacheOrder = new();
     private const int ThumbnailCacheCapacity = 128;
-    private readonly Button _removeButton;
-    private readonly Button _addToActivityButton;
-    private readonly Button _previewButton;
+    private ToolStripMenuItem _removeMenuItem = null!;
+    private ToolStripMenuItem _addToActivityMenuItem = null!;
+    private ToolStripMenuItem _previewMenuItem = null!;
+    private ToolStripMenuItem _openLocationMenuItem = null!;
+    private readonly ContextMenuStrip _fileContextMenu;
+    private readonly ContextMenuStrip _toolbarMenu;
+    private MediaFile? _contextFile;
     private readonly PillButton _outputStatusChip;
     private MediaKind? _activeFilter;
     private bool _outputActive;
@@ -78,6 +85,7 @@ public sealed class FilesPanel : UserControl
     /// (or the first one otherwise); all playback data flow (pause/volume/loop/cast) is unchanged —
     /// see <see cref="AudioPlayerBar"/>'s own doc comment.</summary>
     private readonly AudioPlayerBar _audioBar;
+    private readonly Label _audioHeading;
     private readonly System.Windows.Forms.Timer _audioBarRefreshTimer;
     private readonly Label _emptyStateLabel;
 
@@ -87,6 +95,8 @@ public sealed class FilesPanel : UserControl
     /// (<see cref="OnCastFromAudioBar"/>) — confirmed with the user that button should mean exactly
     /// this and nothing more.</summary>
     public event Action<MediaFile>? FilePlayRequested;
+
+    public event Action? PlaybackStopRequested;
 
     public FilesPanel(
         FileLibraryStore library, FileOperationLogger fileOpLog, ScenarioStore scenarioStore,
@@ -100,74 +110,91 @@ public sealed class FilesPanel : UserControl
         if (_playback != null) _playback.FileStarted += OnFileStarted;
         Dock = DockStyle.Fill;
         AllowDrop = true;
-        BackColor = Color.Transparent;
+        BackColor = ModernUi.Background;
         Padding = new Padding(0);
 
-        var toolbar = new FlowLayoutPanel
+        var heading = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.Transparent, Padding = new Padding(4, 0, 0, 0) };
+        var pageTitle = new Label
+        {
+            Text = "文件", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
+            Font = new Font("Segoe UI Semibold", 13F), TextAlign = ContentAlignment.MiddleLeft,
+        };
+        var pageDescription = new Label
+        {
+            Text = "管理本地媒体文件，用于活动播放", Dock = DockStyle.Fill,
+            ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 8.5F), TextAlign = ContentAlignment.MiddleLeft,
+        };
+        heading.Controls.Add(pageDescription);
+        heading.Controls.Add(pageTitle);
+
+        var toolbar = new TableLayoutPanel
         {
             Dock = DockStyle.Top,
-            Height = 68,
-            MinimumSize = new Size(0, 68),
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = true,
-            Padding = new Padding(8, 14, 8, 10),
+            Height = 48,
+            MinimumSize = new Size(0, 48),
+            ColumnCount = 2,
+            RowCount = 1,
+            Padding = new Padding(2, 4, 2, 4),
             BackColor = ModernUi.Background,
         };
-        toolbar.Layout += (_, _) =>
+        // 筛选胶囊按内容定宽，其余宽度全给右侧操作区——原先 54%/46% 平分时左栏有空余、右栏却放不下，
+        //「播放触发 · 双击播放」在默认窗口里被截成半句「· 双击」。
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+        toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        var filterBar = new FlowLayoutPanel
         {
-            if (toolbar.Controls.Count == 0) return;
-            int requiredHeight = toolbar.Controls.Cast<Control>().Max(control => control.Bottom + control.Margin.Bottom)
-                + toolbar.Padding.Bottom;
-            requiredHeight = Math.Max(toolbar.MinimumSize.Height, requiredHeight);
-            if (toolbar.Height != requiredHeight) toolbar.Height = requiredHeight;
+            Dock = DockStyle.Fill, WrapContents = false, FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = Padding.Empty, Padding = Padding.Empty, BackColor = ModernUi.Background,
         };
-        toolbar.Controls.Add(MakeFilterButton("全部", null));
-        toolbar.Controls.Add(MakeFilterButton("图片", MediaKind.Image));
-        toolbar.Controls.Add(MakeFilterButton("视频", MediaKind.Video));
-        toolbar.Controls.Add(MakeFilterButton("文档", MediaKind.Document));
-        toolbar.Controls.Add(MakeFilterButton("音频", MediaKind.Audio));
+        filterBar.Controls.Add(MakeFilterButton("全部", null));
+        filterBar.Controls.Add(MakeFilterButton("图片", MediaKind.Image));
+        filterBar.Controls.Add(MakeFilterButton("视频", MediaKind.Video));
+        filterBar.Controls.Add(MakeFilterButton("文档", MediaKind.Document));
+        toolbar.Controls.Add(filterBar, 0, 0);
 
-        var importButton = new Button { Text = "＋ 导入文件", AutoSize = true, Height = 36 };
+        var toolbarActions = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, WrapContents = false, FlowDirection = FlowDirection.RightToLeft,
+            Margin = Padding.Empty, Padding = Padding.Empty, BackColor = ModernUi.Background,
+        };
+        var moreButton = new PillButton { Text = "⋮", Width = 42, Height = 38, Margin = new Padding(2, 1, 2, 0) };
+        _toolbarMenu = BuildToolbarMenu();
+        moreButton.Click += (_, _) => _toolbarMenu.Show(moreButton, new Point(0, moreButton.Height));
+        toolbarActions.Controls.Add(moreButton);
+
+        var importButton = new RoundedActionButton { Text = "⇧ 导入文件", Width = 94, Height = 34, Margin = new Padding(3, 2, 3, 0) };
         ModernUi.StyleButton(importButton, primary: true);
         importButton.Click += (_, _) => ImportViaDialog();
-        toolbar.Controls.Add(importButton);
+        toolbarActions.Controls.Add(importButton);
 
-        _removeButton = new Button { Text = "移除", AutoSize = true, Height = 36, Enabled = false };
-        ModernUi.StyleButton(_removeButton, danger: true);
-        _removeButton.Click += OnRemoveClick;
-        toolbar.Controls.Add(_removeButton);
+        var addToActivityButton = new RoundedActionButton { Text = "＋ 加入活动", Width = 94, Height = 34, Margin = new Padding(3, 2, 3, 0), Enabled = false };
+        ModernUi.StyleButton(addToActivityButton);
+        addToActivityButton.Click += OnAddToActivityClick;
+        toolbarActions.Controls.Add(addToActivityButton);
 
-        // PLANNING.md §11 "批量选择"'s "加入活动" — previously left unimplemented (see this
-        // project's README "尚未开始") specifically because this panel had no activity-list UI of
-        // its own to add into; ActivityPickerDialog now supplies exactly that. Same
-        // enable-on-selection reuse of the always-visible toolbar as _removeButton above, handles
-        // any number of selected files at once.
-        _addToActivityButton = new Button { Text = "加入活动...", AutoSize = true, Height = 36, Enabled = false };
-        ModernUi.StyleButton(_addToActivityButton);
-        _addToActivityButton.Click += OnAddToActivityClick;
-        toolbar.Controls.Add(_addToActivityButton);
-
-        _previewButton = new Button { Text = "播放 / 预览", AutoSize = true, Height = 36, Enabled = false };
-        ModernUi.StyleButton(_previewButton, primary: true);
-        _previewButton.Click += (_, _) => PlayOrPreviewSelected();
-        toolbar.Controls.Add(_previewButton);
+        var playbackHint = new Label
+        {
+            Text = "播放触发 · 双击播放", AutoSize = true,
+            Margin = new Padding(2, 11, 8, 0), ForeColor = ModernUi.Muted,
+        };
+        toolbarActions.Controls.Add(playbackHint);
+        // Too narrow for the whole hint → hide it outright rather than let the right-to-left flow clip
+        // it into a meaningless fragment.
+        toolbarActions.Resize += (_, _) =>
+        {
+            int needed = toolbarActions.Controls.Cast<Control>().Where(c => c != playbackHint)
+                .Sum(c => c.Width + c.Margin.Horizontal) + playbackHint.PreferredWidth + playbackHint.Margin.Horizontal;
+            playbackHint.Visible = needed <= toolbarActions.ClientSize.Width;
+        };
 
         _outputStatusChip = new PillButton
         {
             Text = "○  待机", AutoSize = true, Height = 38,
-            Margin = new Padding(10, 0, 4, 0), Enabled = false,
+            Margin = new Padding(4, 1, 8, 0), Enabled = false,
         };
-        toolbar.Controls.Add(_outputStatusChip);
-
-        var moreButton = new PillButton { Text = "⋮", Width = 42, Height = 38, Margin = new Padding(2, 0, 0, 0) };
-        moreButton.Click += (_, _) =>
-        {
-            var menu = new ContextMenuStrip();
-            menu.Items.Add("重新载入文件库", null, (_, _) => Refresh_());
-            menu.Items.Add("打开文件所在位置", null, (_, _) => OpenSelectedLocation());
-            menu.Show(moreButton, new Point(0, moreButton.Height));
-        };
-        toolbar.Controls.Add(moreButton);
+        toolbar.Controls.Add(toolbarActions, 1, 0);
 
         // Not assigned to _listView.LargeImageList on purpose: this ListView is fully OwnerDraw and
         // DrawMediaCard looks thumbnails up directly from _thumbnails.Images[key], so the ListView
@@ -177,11 +204,11 @@ public sealed class FilesPanel : UserControl
         // that spammed the crash log on every empty-library show. Keeping the ImageList purely as a
         // keyed bitmap cache for owner-draw avoids that entirely.
         _thumbnails = new ImageList { ImageSize = new Size(240, 150), ColorDepth = ColorDepth.Depth32Bit };
-        _listView = new ListView
+        _listView = new MediaCardGridView
         {
             Dock = DockStyle.Fill,
             View = View.Tile,
-            TileSize = new Size(282, 262),
+            TileSize = new Size(200, 144),
             OwnerDraw = true,
             // PLANNING.md §11 "批量选择": Ctrl/Shift+点击 multi-select now works, and both "删除"
             // (below) and "加入活动" (OnAddToActivityClick) handle any number of selected items —
@@ -200,14 +227,18 @@ public sealed class FilesPanel : UserControl
         _listView.SelectedIndexChanged += (_, _) =>
         {
             bool hasSelection = _listView.SelectedItems.Count > 0;
-            _removeButton.Enabled = hasSelection;
-            _addToActivityButton.Enabled = hasSelection;
-            _previewButton.Enabled = hasSelection;
+            addToActivityButton.Enabled = hasSelection;
+            _removeMenuItem.Enabled = hasSelection;
+            _addToActivityMenuItem.Enabled = hasSelection;
+            _previewMenuItem.Enabled = hasSelection;
+            _openLocationMenuItem.Enabled = hasSelection;
         };
         _listView.DoubleClick += (_, _) =>
         {
             PlayOrPreviewSelected();
         };
+        _fileContextMenu = BuildFileContextMenu();
+        _listView.MouseUp += OnFileListMouseUp;
 
         DragEnter += OnDragEnter;
         DragDrop += OnDragDrop;
@@ -215,19 +246,26 @@ public sealed class FilesPanel : UserControl
         _listView.DragDrop += OnDragDrop;
         _listView.AllowDrop = true;
 
-        // Single large player bar, docked at the BOTTOM to match the design (full-width bar under
-        // the file grid). A thin spacer keeps it clear of the grid's edge.
+        // Audio remains a distinct horizontal playback zone, separate from the visual-media cards.
         _audioBar = new AudioPlayerBar(library, fileOpLog, playback) { Dock = DockStyle.Bottom };
         _audioBar.CastRequested += OnCastFromAudioBar;
         var audioBarSpacer = new Panel { Dock = DockStyle.Bottom, Height = 12, BackColor = Color.Transparent };
+        _audioHeading = new Label
+        {
+            Text = "音频播放区　·　管理音频文件，用于背景音播放，可加入活动",
+            Dock = DockStyle.Bottom, Height = 24, ForeColor = ModernUi.Muted,
+            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(5, 0, 0, 0),
+        };
 
         // Control.Controls.Add order determines Dock z-order for same-DockStyle siblings: the LAST
         // one added claims its edge first. _listView (Fill) is added first so it takes whatever's
         // left; the audio bar and its spacer claim the bottom edge; toolbar claims the top.
         Controls.Add(_listView);
+        Controls.Add(_audioHeading);
         Controls.Add(_audioBar);
         Controls.Add(audioBarSpacer);
         Controls.Add(toolbar);
+        Controls.Add(heading);
 
         _emptyStateLabel = new Label
         {
@@ -265,9 +303,13 @@ public sealed class FilesPanel : UserControl
             _thumbnailLoad?.Dispose();
             _thumbnailLoad = null;
             _thumbnails.Dispose();
+            _toolbarMenu.Dispose();
+            foreach (var image in _thumbnailByFileId.Values) image.Dispose();
+            _thumbnailByFileId.Clear();
             foreach (var image in _thumbnailCache.Values) image.Dispose();
             _thumbnailCache.Clear();
             _thumbnailCacheOrder.Clear();
+            _fileContextMenu.Dispose();
             if (_playback != null) _playback.FileStarted -= OnFileStarted;
             _audioBarRefreshTimer.Dispose();
         }
@@ -320,7 +362,173 @@ public sealed class FilesPanel : UserControl
         }
     }
 
-    private Button MakeFilterButton(string label, MediaKind? filter)
+    private ContextMenuStrip BuildFileContextMenu()
+    {
+        var menu = new ContextMenuStrip
+        {
+            ShowImageMargin = false,
+            BackColor = ModernUi.Background,
+            ForeColor = ModernUi.Text,
+            Renderer = new ToolStripProfessionalRenderer(new FileMenuColorTable()),
+        };
+        menu.Items.Add("循环播放", null, (_, _) => SetCompletionAndPlay(CompletionAction.Loop));
+        menu.Items.Add("顺序播放", null, (_, _) => StartSequentialPlayback());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("停止播放", null, (_, _) => PlaybackStopRequested?.Invoke());
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("删除文件", null, (_, _) => OnRemoveClick(this, EventArgs.Empty));
+        menu.Opening += (_, _) =>
+        {
+            menu.BackColor = ModernUi.Surface;
+            menu.ForeColor = ModernUi.Text;
+            foreach (ToolStripItem item in menu.Items)
+                item.ForeColor = ModernUi.Text;
+        };
+        return menu;
+    }
+
+    private ContextMenuStrip BuildToolbarMenu()
+    {
+        var menu = new ContextMenuStrip
+        {
+            ShowImageMargin = false,
+            BackColor = ModernUi.Surface,
+            ForeColor = ModernUi.Text,
+            Renderer = new ToolStripProfessionalRenderer(new FileMenuColorTable()),
+        };
+        menu.Items.Add("导入文件...", null, (_, _) => ImportViaDialog());
+        menu.Items.Add(new ToolStripSeparator());
+        _previewMenuItem = new ToolStripMenuItem("播放 / 预览", null, (_, _) => PlayOrPreviewSelected()) { Enabled = false };
+        _addToActivityMenuItem = new ToolStripMenuItem("加入活动...", null, OnAddToActivityClick) { Enabled = false };
+        _removeMenuItem = new ToolStripMenuItem("移除所选文件", null, OnRemoveClick) { Enabled = false };
+        menu.Items.Add(_previewMenuItem);
+        menu.Items.Add(_addToActivityMenuItem);
+        menu.Items.Add(_removeMenuItem);
+        menu.Items.Add(new ToolStripSeparator());
+        _openLocationMenuItem = new ToolStripMenuItem("打开文件所在位置", null, (_, _) => OpenSelectedLocation()) { Enabled = false };
+        menu.Items.Add(_openLocationMenuItem);
+        menu.Items.Add("重新载入文件库", null, (_, _) => Refresh_());
+        menu.Opening += (_, _) =>
+        {
+            menu.BackColor = ModernUi.Surface;
+            menu.ForeColor = ModernUi.Text;
+            foreach (ToolStripItem item in menu.Items) item.ForeColor = ModernUi.Text;
+        };
+        return menu;
+    }
+
+    private void OnFileListMouseUp(object? sender, MouseEventArgs e)
+    {
+        var hit = _listView.HitTest(e.Location).Item;
+        if (hit?.Tag is not MediaFile file) return;
+        bool moreClicked = e.Button == MouseButtons.Left && GetMoreBounds(hit).Contains(e.Location);
+        if (e.Button != MouseButtons.Right && !moreClicked) return;
+
+        if (!hit.Selected)
+        {
+            foreach (ListViewItem item in _listView.SelectedItems) item.Selected = false;
+            hit.Selected = true;
+        }
+        _listView.FocusedItem = hit;
+        _contextFile = file;
+        _fileContextMenu.Show(_listView, e.Location);
+    }
+
+    private static Rectangle GetMoreBounds(ListViewItem item)
+    {
+        var card = item.Bounds;
+        card.Inflate(-8, -8);
+        const int pad = 7;
+        int previewWidth = card.Width - pad * 2;
+        int previewHeight = Math.Max(1, (int)Math.Round(previewWidth * 0.42));
+        int nameBottom = card.Top + pad + previewHeight + 3 + 18;
+        return new Rectangle(card.Right - pad - 22, nameBottom + 1, 22, 14);
+    }
+
+    private void SetCompletionAndPlay(CompletionAction action)
+    {
+        var file = _contextFile;
+        if (file == null) return;
+        var oldValue = file.OnCompletion;
+        if (oldValue != action)
+        {
+            file.OnCompletion = action;
+            try { _library.Save(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                file.OnCompletion = oldValue;
+                MessageBox.Show(this, $"无法保存播放方式：{ex.Message}", "保存失败",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.OnCompletion), oldValue.ToString(), action.ToString());
+        }
+        FilePlayRequested?.Invoke(file);
+    }
+
+    private void StartSequentialPlayback()
+    {
+        if (_contextFile == null) return;
+        if (_playback == null)
+        {
+            FilePlayRequested?.Invoke(_contextFile);
+            return;
+        }
+
+        var files = _listView.Items.Cast<ListViewItem>()
+            .Select(item => item.Tag as MediaFile)
+            .Where(file => file != null)
+            .Cast<MediaFile>()
+            .ToList();
+        int startIndex = files.FindIndex(file => file.Id == _contextFile.Id);
+        if (startIndex < 0) return;
+
+        // The library grid has no persisted activity/list object of its own. Use a transient queue
+        // of copies so sequential playback follows the current visible library order without
+        // mutating saved per-file settings or the activity store.
+        var queue = new Activity { Name = "文件区顺序播放", DefaultPlayMode = PlayMode.SequentialAuto };
+        foreach (var file in files)
+        {
+            var copy = file.Clone(preserveId: true);
+            copy.PlayModeOverride = null;
+            copy.OnCompletion = CompletionAction.NextItem;
+            queue.Files.Add(copy);
+        }
+        _playback.RequestPlay(queue, startIndex);
+    }
+
+    internal sealed class FileMenuColorTable : ProfessionalColorTable
+    {
+        public override Color ToolStripDropDownBackground => ModernUi.Surface;
+        public override Color MenuBorder => ModernUi.Border;
+        public override Color MenuItemBorder => ModernUi.Accent;
+        public override Color MenuItemSelected => ModernUi.SurfaceRaised;
+        public override Color MenuItemSelectedGradientBegin => ModernUi.SurfaceRaised;
+        public override Color MenuItemSelectedGradientEnd => ModernUi.SurfaceRaised;
+        public override Color ImageMarginGradientBegin => ModernUi.Surface;
+        public override Color ImageMarginGradientMiddle => ModernUi.Surface;
+        public override Color ImageMarginGradientEnd => ModernUi.Surface;
+        public override Color SeparatorDark => ModernUi.Border;
+        public override Color SeparatorLight => ModernUi.Surface;
+    }
+
+    private sealed class MediaCardGridView : ListView
+    {
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == 0x0014 && m.WParam != IntPtr.Zero) // WM_ERASEBKGND
+            {
+                using var graphics = Graphics.FromHdc(m.WParam);
+                using var background = new SolidBrush(ModernUi.Background);
+                graphics.FillRectangle(background, ClientRectangle);
+                m.Result = new IntPtr(1);
+                return;
+            }
+            base.WndProc(ref m);
+        }
+    }
+
+    private PillButton MakeFilterButton(string label, MediaKind? filter)
     {
         var button = new PillButton { Text = label, AutoSize = true, Height = 38, Margin = new Padding(4, 0, 4, 0), Selected = _activeFilter == filter };
         button.Click += (_, _) =>
@@ -468,10 +676,16 @@ public sealed class FilesPanel : UserControl
         _thumbnailLoad?.Cancel();
         _thumbnailLoad?.Dispose();
         _thumbnailLoad = new CancellationTokenSource();
+        foreach (var image in _thumbnailByFileId.Values) image.Dispose();
+        _thumbnailByFileId.Clear();
         _thumbnails.Images.Clear();
         _listView.Items.Clear();
 
-        foreach (var file in _library.Files.Where(f => _activeFilter == null || f.Kind == _activeFilter))
+        // Audio has its own persistent horizontal player area; keep it out of the visual-media
+        // thumbnail grid so the "全部" view does not duplicate audio as generic file cards.
+        foreach (var file in _library.Files.Where(f => _activeFilter == null
+                     ? f.Kind != MediaKind.Audio
+                     : f.Kind == _activeFilter))
         {
             string key = file.Id.ToString();
             // ImageList.Images.Add copies the bitmap's pixel data into its own native image list
@@ -489,6 +703,9 @@ public sealed class FilesPanel : UserControl
 
         RefreshAudioBar();
         HighlightCurrentFile();
+        _emptyStateLabel.Text = _library.Files.Any(f => f.Kind == MediaKind.Audio)
+            ? "暂无图片、视频或文档\n\n音频文件在下方独立播放区管理"
+            : "文件库还是空的\n\n点击“＋ 导入文件”或将文件拖到这里";
         _emptyStateLabel.Visible = _listView.Items.Count == 0;
         PositionEmptyState();
         if (IsHandleCreated) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
@@ -536,6 +753,8 @@ public sealed class FilesPanel : UserControl
                         _thumbnailCacheOrder.Enqueue(cacheKey);
                     }
                     string key = file.Id.ToString();
+                    if (!_thumbnailByFileId.ContainsKey(key))
+                        _thumbnailByFileId.Add(key, (Image)thumbnail.Clone());
                     if (!_thumbnails.Images.ContainsKey(key)) _thumbnails.Images.Add(key, thumbnail);
                     _listView.Invalidate();
                 }
@@ -600,7 +819,9 @@ public sealed class FilesPanel : UserControl
     /// bar hides itself when there are no audio files (see <see cref="AudioPlayerBar.SetAudioFiles"/>).</summary>
     private void RefreshAudioBar()
     {
-        _audioBar.SetAudioFiles(_library.Files.Where(f => f.Kind == MediaKind.Audio).ToList());
+        var audioFiles = _library.Files.Where(f => f.Kind == MediaKind.Audio).ToList();
+        _audioBar.SetAudioFiles(audioFiles);
+        _audioHeading.Visible = audioFiles.Count > 0;
     }
 
     /// <summary>"独立投屏" — unchanged behavior: raise the same <see cref="FilePlayRequested"/> event
@@ -612,7 +833,7 @@ public sealed class FilesPanel : UserControl
         _audioBar.RefreshLiveState();
     }
 
-    private static Image BuildThumbnail(MediaFile file)
+    internal static Image BuildThumbnail(MediaFile file)
     {
         const int tw = 240, th = 150;
         if (file.Kind == MediaKind.Document && new[] { ".docx", ".pptx", ".xlsx" }.Contains(Path.GetExtension(file.SourcePath), StringComparer.OrdinalIgnoreCase))
@@ -735,7 +956,7 @@ public sealed class FilesPanel : UserControl
                 || string.Equals(media.SourcePath, current.SourcePath, StringComparison.OrdinalIgnoreCase));
 
         // Card background — design uses a flat raised surface with a blue ring when selected.
-        using (var path = RoundedCard(card, 16))
+        using (var path = RoundedCard(card, 10))
         using (var fill = new SolidBrush(selected || playing ? Color.FromArgb(24, 46, 78) : ModernUi.SurfaceRaised))
         using (var border = new Pen(playing ? ModernUi.Success : selected ? ModernUi.Accent : Color.FromArgb(38, 60, 90),
                    selected || playing ? 2F : 1F))
@@ -744,15 +965,17 @@ public sealed class FilesPanel : UserControl
             g.DrawPath(border, path);
         }
 
-        int pad = 12;
-        var imageRect = new Rectangle(card.Left + pad, card.Top + pad, card.Width - pad * 2, 150);
-        using (var imagePath = RoundedCard(imageRect, 12))
+        int pad = 7;
+        int previewWidth = Math.Max(1, card.Width - pad * 2);
+        int previewHeight = Math.Max(1, (int)Math.Round(previewWidth * 0.42));
+        var imageRect = new Rectangle(card.Left + pad, card.Top + pad, previewWidth, previewHeight);
+        using (var imagePath = RoundedCard(imageRect, 8))
         {
             var state = g.Save();
             g.SetClip(imagePath);
             using (var imgBg = new SolidBrush(Color.FromArgb(20, 37, 58)))
                 g.FillRectangle(imgBg, imageRect);
-            if (e.Item.ImageKey.Length > 0 && _thumbnails.Images[e.Item.ImageKey] is Image image)
+            if (e.Item.ImageKey.Length > 0 && _thumbnailByFileId.TryGetValue(e.Item.ImageKey, out var image))
             {
                 // Cover-fill the image area (crop to fill), matching the design's edge-to-edge thumbnails.
                 float scale = Math.Max((float)imageRect.Width / image.Width, (float)imageRect.Height / image.Height);
@@ -765,25 +988,25 @@ public sealed class FilesPanel : UserControl
         // Video play badge, centered.
         if (media is { Kind: MediaKind.Video })
         {
-            var playCircle = new Rectangle(imageRect.Left + imageRect.Width / 2 - 24, imageRect.Top + imageRect.Height / 2 - 24, 48, 48);
+            var playCircle = new Rectangle(imageRect.Left + imageRect.Width / 2 - 13, imageRect.Top + imageRect.Height / 2 - 13, 26, 26);
             using var playBrush = new SolidBrush(Color.FromArgb(150, 8, 20, 38));
             g.FillEllipse(playBrush, playCircle);
             using var triBrush = new SolidBrush(Color.White);
             var tri = new[]
             {
-                new PointF(playCircle.Left + 19, playCircle.Top + 14),
-                new PointF(playCircle.Left + 19, playCircle.Top + 34),
-                new PointF(playCircle.Left + 34, playCircle.Top + 24),
+                new PointF(playCircle.Left + 10, playCircle.Top + 7),
+                new PointF(playCircle.Left + 10, playCircle.Top + 19),
+                new PointF(playCircle.Left + 19, playCircle.Top + 13),
             };
             g.FillPolygon(triBrush, tri);
         }
 
         // Colored type badge in the image's bottom-left (P / W / X / PDF / image / ♫).
         if (media != null)
-            DrawTypeBadge(g, new Rectangle(imageRect.Left + 12, imageRect.Bottom - 46, 34, 34), media);
+            DrawTypeBadge(g, new Rectangle(imageRect.Left + 7, imageRect.Bottom - 27, 21, 21), media);
 
         // Selection checkbox — always visible top-right, filled when selected (design shows the ☑).
-        var box = new Rectangle(imageRect.Right - 30, imageRect.Top + 10, 20, 20);
+        var box = new Rectangle(imageRect.Right - 24, imageRect.Top + 5, 16, 16);
         using (var boxPath = RoundedCard(box, 5))
         {
             using var boxFill = new SolidBrush(selected ? ModernUi.Accent : Color.FromArgb(150, 10, 24, 42));
@@ -804,8 +1027,8 @@ public sealed class FilesPanel : UserControl
 
         // File name.
         string name = media != null ? Path.GetFileName(media.SourcePath) : e.Item.Text;
-        var nameRect = new Rectangle(card.Left + pad, imageRect.Bottom + 12, card.Width - pad * 2, 24);
-        using (var nameFont = new Font("Segoe UI Semibold", 11F))
+        var nameRect = new Rectangle(card.Left + pad, imageRect.Bottom + 3, card.Width - pad * 2, 18);
+        using (var nameFont = new Font("Segoe UI Semibold", 10F))
             TextRenderer.DrawText(g, name, nameFont, nameRect,
                 playing ? ModernUi.Success : ModernUi.Text,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
@@ -821,12 +1044,12 @@ public sealed class FilesPanel : UserControl
             }
             catch (Exception) { meta = KindLabel(media.Kind); }
         }
-        var metaRect = new Rectangle(card.Left + pad, nameRect.Bottom + 2, card.Width - pad * 2 - 24, 20);
-        using (var metaFont = new Font("Segoe UI", 9F))
+        var metaRect = new Rectangle(card.Left + pad, nameRect.Bottom + 1, card.Width - pad * 2 - 24, 14);
+        using (var metaFont = new Font("Segoe UI", 8F))
             TextRenderer.DrawText(g, meta, metaFont, metaRect,
                 ModernUi.Muted, TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left);
 
-        var moreRect = new Rectangle(card.Right - pad - 22, nameRect.Bottom + 2, 22, 20);
+        var moreRect = new Rectangle(card.Right - pad - 22, nameRect.Bottom + 1, 22, 14);
         using (var moreFont = new Font("Segoe UI", 11F, FontStyle.Bold))
             TextRenderer.DrawText(g, "⋯", moreFont, moreRect, ModernUi.Muted,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
@@ -850,14 +1073,14 @@ public sealed class FilesPanel : UserControl
         if (file.Kind == MediaKind.Image)
         {
             // A small "mountain + sun" image glyph rather than a letter.
-            using var pen = new Pen(Color.White, 2F) { LineJoin = LineJoin.Round };
-            g.DrawEllipse(pen, r.Left + 8, r.Top + 8, 5, 5);
+            using var pen = new Pen(Color.White, 1.6F) { LineJoin = LineJoin.Round };
+            g.DrawEllipse(pen, r.Left + 6, r.Top + 6, 4, 4);
             using var tri = new SolidBrush(Color.White);
             g.FillPolygon(tri, new[]
             {
-                new PointF(r.Left + 7, r.Bottom - 8),
-                new PointF(r.Left + 14, r.Top + 16),
-                new PointF(r.Left + 21, r.Bottom - 8),
+                new PointF(r.Left + 5, r.Bottom - 6),
+                new PointF(r.Left + 11, r.Top + 12),
+                new PointF(r.Left + 18, r.Bottom - 6),
             });
             return;
         }
