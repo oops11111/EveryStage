@@ -41,8 +41,10 @@ public sealed class MainWindow : GradientForm
     private readonly ScenarioRepository _scenarioRepository;
     private readonly FileOperationLogger _fileOpLog;
     private readonly Panel _contentHost;
+    private readonly Panel _panelHost;
+    private readonly SharedPreviewDock _previewDock;
     private readonly ToastStack _toastStack;
-    private readonly CheckBox _castSwitchCheckbox;
+    private readonly ToggleSwitch _castSwitchCheckbox;
     private readonly Label _statusLabel;
     private readonly Button _recallPreviewButton;
     private readonly System.Windows.Forms.Timer _declinedMessageTimer;
@@ -52,6 +54,10 @@ public sealed class MainWindow : GradientForm
     private readonly SettingsPanel _settingsPanel;
 
     public event Action? PreviewRecallRequested;
+
+    public void ShowPairingRequest(PairingRequest request) => _devicesPanel.ShowPairingRequest(request);
+
+    public void ClearPairingRequest(string requestId) => _devicesPanel.ClearPairingRequest(requestId);
 
     public MainWindow(
         OutputStateMachine stateMachine, PlaybackEngine? playback, FileLibraryStore library,
@@ -66,6 +72,7 @@ public sealed class MainWindow : GradientForm
         _scenarioRepository = scenarioRepository;
 
         Text = "EveryStage Terminal";
+        Icon = ProductIcon.LoadIcon();
         NormalWindowAspectRatio = new Size(4, 3);
         ClientSize = new Size(960, 720);
         MinimumSize = new Size(800, 600);
@@ -75,22 +82,26 @@ public sealed class MainWindow : GradientForm
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.None;
         WindowsAppearance.UseDarkTitleBar(this);
-        WindowsAppearance.EnableGlass(this);
+        WindowsAppearance.EnableMica(this);
+        // Keep the client area fully app-painted. Windows 10's legacy acrylic/blur accent policy
+        // composites through transparent WinForms children as a flat gray surface (not the design
+        // palette), even when each GlassPanel has an opaque tint. GlassPanel supplies the visual
+        // treatment itself, so enabling DWM blur here only undermines the UI and thumbnail canvas.
 
         var nav = new GlassPanel
         {
-            Dock = DockStyle.Fill, Padding = new Padding(0), CornerRadius = 14, AutoScroll = false,
+            Dock = DockStyle.Fill, Padding = new Padding(0), CornerRadius = 2, AutoScroll = false,
             GlassTint = Color.FromArgb(178, 8, 23, 40),
         };
 
-        var brandMark = new BrandMark { Bounds = new Rectangle(14, 14, 28, 28) };
+        var brandMark = new BrandMark { Bounds = new Rectangle(16, 18, 30, 30) };
         var brand = new Label
         {
             Text = "EveryStage",
             ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI Semibold", 11F),
+            Font = new Font("Segoe UI Semibold", 12F),
             AutoSize = true,
-            Location = new Point(52, 12),
+            Location = new Point(56, 16),
         };
         var product = new Label
         {
@@ -98,26 +109,56 @@ public sealed class MainWindow : GradientForm
             ForeColor = ModernUi.Muted,
             Font = new Font("Segoe UI", 8.5F),
             AutoSize = true,
-            Location = new Point(52, 28),
+            Location = new Point(57, 37),
         };
 
-        // A plain checkbox standing in for §8.1's slide-switch visual — see class doc comment.
-        _castSwitchCheckbox = new ToggleSwitch
+        // 状态卡（对齐效果图）：品牌下方一张圆角卡，主屏幕输出 + 已连接状态，取代原先贴在栏底的裸状态标签。
+        var statusCard = new GlassPanel
         {
-            Location = new Point(118, 62),
-            Checked = stateMachine.CastSwitchOn,
+            Bounds = new Rectangle(16, 60, 218, 58), CornerRadius = 12, AutoScroll = false,
+            GlassTint = Color.FromArgb(240, 12, 40, 82),
         };
+        var statusDot = new Label
+        {
+            Text = "●", ForeColor = ModernUi.Success, Font = new Font("Segoe UI", 8F),
+            AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Bounds = new Rectangle(14, 10, 14, 18),
+        };
+        var statusTitle = new Label
+        {
+            Text = "主屏幕输出", ForeColor = ModernUi.Text, Font = new Font("Segoe UI Semibold", 10.5F),
+            AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Bounds = new Rectangle(30, 8, 160, 22),
+        };
+        var statusChevron = new Label
+        {
+            Text = "›", ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 12F),
+            AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Bounds = new Rectangle(180, 6, 24, 22),
+        };
+        _statusLabel = new Label
+        {
+            ForeColor = ModernUi.Success, Font = new Font("Segoe UI", 8.5F),
+            AutoSize = false, AutoEllipsis = true, Bounds = new Rectangle(16, 32, 190, 17),
+            TextAlign = ContentAlignment.MiddleLeft,
+        };
+        statusCard.Controls.AddRange(new Control[] { statusDot, statusTitle, statusChevron, _statusLabel });
+
+        // A plain checkbox standing in for §8.1's slide-switch visual — see class doc comment.
         var switchLabel = new Label
         {
             Text = "投屏开关",
             ForeColor = ModernUi.Text,
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleLeft,
-            Bounds = new Rectangle(14, 62, 96, 20),
+            Bounds = new Rectangle(16, 130, 120, 28),
+        };
+        _castSwitchCheckbox = new ToggleSwitch
+        {
+            // 52px 开关，右对齐到 218px 内容区右缘（16 + 218 - 52 = 182）。
+            Location = new Point(182, 132),
+            Checked = stateMachine.CastSwitchOn,
         };
         _castSwitchCheckbox.CheckedChanged += (_, _) => stateMachine.SetCastSwitch(_castSwitchCheckbox.Checked);
 
-        var disconnectButton = new Button { Text = "⏻  断", Bounds = new Rectangle(14, 94, 140, 32) };
+        var disconnectButton = new RoundedActionButton { Text = "断开投屏", Bounds = new Rectangle(16, 166, 218, 34) };
         ModernUi.StyleButton(disconnectButton, danger: true);
         disconnectButton.FlatAppearance.BorderColor = ModernUi.Danger;
         disconnectButton.FlatAppearance.BorderSize = 1;
@@ -126,37 +167,56 @@ public sealed class MainWindow : GradientForm
         disconnectButton.Font = new Font("Segoe UI Semibold", 10F);
         disconnectButton.Click += (_, _) => stateMachine.Disconnect();
 
-        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 142);
-        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 188);
-        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 234);
-        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 280);
+        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 218);
+        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 268);
+        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 318);
+        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 368);
         var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
 
-        _recallPreviewButton = new Button { Text = "显示预览窗", Bounds = new Rectangle(14, 338, 140, 34) };
+        _recallPreviewButton = new RoundedActionButton { Text = "显示预览窗", Bounds = new Rectangle(16, 430, 218, 34) };
         ModernUi.StyleButton(_recallPreviewButton);
         _recallPreviewButton.Click += (_, _) => PreviewRecallRequested?.Invoke();
 
-        _statusLabel = new Label
+        // 底部品牌标语（对齐效果图），锚定栏底。
+        var tagline = new Label
         {
-            ForeColor = ModernUi.Success,
+            Text = "让每个阶段\r\n都精彩呈现",
+            ForeColor = ModernUi.Muted,
+            Font = new Font("Segoe UI", 9.5F),
             AutoSize = false,
-            Bounds = new Rectangle(14, 570, 140, 40),
-            TextAlign = ContentAlignment.MiddleLeft,
+            TextAlign = ContentAlignment.TopLeft,
+            Bounds = new Rectangle(18, 632, 214, 44),
             Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
         };
 
         nav.Controls.AddRange(new Control[]
         {
-            brandMark, brand, product, switchLabel, _castSwitchCheckbox, disconnectButton,
+            brandMark, brand, product, statusCard, switchLabel, _castSwitchCheckbox, disconnectButton,
             filesButton, activitiesButton, devicesButton, settingsButton,
-            _recallPreviewButton, _statusLabel,
+            _recallPreviewButton, tagline,
         });
 
         _contentHost = new GlassPanel
         {
-            Dock = DockStyle.Fill, Padding = new Padding(16), CornerRadius = 14,
+            Dock = DockStyle.Fill, Padding = new Padding(12), CornerRadius = 12,
             GlassTint = Color.FromArgb(160, 15, 35, 58),
         };
+
+        var contentLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            BackColor = Color.Transparent,
+            ColumnCount = 1,
+            RowCount = 2,
+            Padding = Padding.Empty,
+        };
+        contentLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+        contentLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 214F));
+        _panelHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        _previewDock = new SharedPreviewDock(stateMachine, playback) { Margin = new Padding(0, 10, 0, 0) };
+        contentLayout.Controls.Add(_panelHost, 0, 0);
+        contentLayout.Controls.Add(_previewDock, 0, 1);
+        _contentHost.Controls.Add(contentLayout);
 
         // One shared instance rather than a separate `new FileOperationLogger()` per panel: both
         // panels' loggers ultimately append to the same physical file
@@ -169,6 +229,7 @@ public sealed class MainWindow : GradientForm
 
         _filesPanel = new FilesPanel(library, _fileOpLog, scenarioStore, scenarioRepository, _playback);
         _filesPanel.FilePlayRequested += OnFilePlayRequested;
+        _filesPanel.PlaybackStopRequested += _stateMachine.Disconnect;
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);
         _activitiesPanel = new ActivitiesPanel(
@@ -181,17 +242,18 @@ public sealed class MainWindow : GradientForm
         devicesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, devicesButton); ShowPanel(_devicesPanel); };
         settingsButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, settingsButton); ShowPanel(_settingsPanel); };
 
-        // Keep the prototype's 24px outer margin and 14px rail/content gap explicit. A table layout
-        // is more stable than competing Left/Fill docking children when DPI scaling is enabled.
+        // Keep the rail close to the window edge, like the reference UI, while reserving a compact
+        // content gutter. A table layout is more stable than competing Left/Fill docking children
+        // when DPI scaling is enabled.
         var body = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             BackColor = Color.Transparent,
-            Padding = new Padding(24),
+            Padding = new Padding(0, 6, 12, 12),
             ColumnCount = 3,
             RowCount = 1,
         };
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 168F));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250F));
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 14F));
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
         body.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
@@ -264,21 +326,34 @@ public sealed class MainWindow : GradientForm
     /// equivalent fix-up: that lambda closes over the <see cref="_playback"/> FIELD (via the implicit
     /// <c>this</c> capture), so it already reads whatever the field currently holds on each invocation
     /// — this method updating the field is all that closure needs.</summary>
+    /// <summary>Idempotent, and unsubscribes the previous engine first - the same guard
+    /// FilesPanel.AttachPlaybackEngine already had and ActivitiesPanel has now. Program.cs only
+    /// reaches this once today (OnDisplaySettingsChanged re-binds only while _overlay is still
+    /// null, and _overlay stays non-null once bound), so a second call is currently unreachable;
+    /// the guard is here so that relaxing that binding rule for monitor hot-swap cannot quietly
+    /// turn every playback notification into two.</summary>
     public void AttachPlaybackEngine(PlaybackEngine playback)
     {
+        if (ReferenceEquals(_playback, playback)) return;
+        if (_playback != null)
+        {
+            _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
+            _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
+        }
         _playback = playback;
         _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
         _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
         _activitiesPanel.AttachPlaybackEngine(playback);
         _filesPanel.AttachPlaybackEngine(playback);
+        _previewDock.AttachPlaybackEngine(playback);
         UpdateStatusLabel();
     }
 
     private void ShowPanel(Control panel)
     {
-        _contentHost.Controls.Clear();
+        _panelHost.Controls.Clear();
         panel.Dock = DockStyle.Fill;
-        _contentHost.Controls.Add(panel);
+        _panelHost.Controls.Add(panel);
 
         if (panel == _filesPanel) _filesPanel.Refresh_();
         else if (panel == _devicesPanel) _devicesPanel.Refresh_();
@@ -392,9 +467,20 @@ public sealed class MainWindow : GradientForm
     private void RemoveFileFromActivity(Activity activity, MediaFile file)
     {
         var scenario = _scenarioStore.Scenarios.FirstOrDefault(s => s.Activities.Contains(activity));
-        activity.Files.Remove(file);
+        int index = activity.Files.IndexOf(file);
+        if (index < 0) return;
+        activity.Files.RemoveAt(index);
+        // Save before logging/refreshing, and roll the in-memory removal back if it fails — otherwise the
+        // tree refreshes as "removed" while disk still has the file and no error is shown, since the
+        // Terminal's ThreadException handler only logs (audit C-25). Mirrors FilesPanel/ActivitiesPanel.
+        try { _scenarioRepository.Save(_scenarioStore); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            activity.Files.Insert(index, file);
+            MessageBox.Show(this, $"移除未保存：{ex.Message}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         if (scenario != null) _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
-        _scenarioRepository.Save(_scenarioStore);
         _activitiesPanel.RefreshTree();
     }
 
@@ -402,7 +488,12 @@ public sealed class MainWindow : GradientForm
     /// refresh), reached from a Toast instead of that panel's own "移除" button.</summary>
     private void RemoveFileFromLibrary(MediaFile file)
     {
-        _library.Remove(file.Id);
+        try { _library.Remove(file.Id); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"移除未保存：{ex.Message}", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
         _filesPanel.Refresh_();
     }

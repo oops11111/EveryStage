@@ -5,12 +5,9 @@ namespace EveryStage.Terminal.UI.Panels;
 
 /// <summary>
 /// PLANNING.md §8.2's 设备面板: "已配对设备列表（信任状态）+ 发现新设备区域". This implements the
-/// first half — the paired-device list, with trust/permission columns and a remove button. The
-/// "发现新设备" half isn't here: on the Terminal side there's nothing to actively discover (Casters
-/// find the Terminal, not the other way around, per PLANNING.md §7's beacon direction) — pairing
-/// requests already surface via <see cref="PairingConfirmationDialog"/> regardless of whether this
-/// panel is even open, so a duplicate "incoming requests" list here would just be redundant UI for
-/// the same underlying event.
+/// paired-device list and a presentation area for pairing requests. Pairing-request display is
+/// deliberately fed through this control's public methods so UI event wiring can be added without
+/// changing the discovery or authorization flow.
 /// </summary>
 public sealed class DevicesPanel : UserControl
 {
@@ -19,6 +16,8 @@ public sealed class DevicesPanel : UserControl
     private readonly ListView _listView;
     private readonly Button _removeButton;
     private readonly Button _editPermissionsButton;
+    private readonly Label _requestLabel;
+    private PairingRequest? _displayedPairingRequest;
 
     public DevicesPanel(PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog)
     {
@@ -26,7 +25,7 @@ public sealed class DevicesPanel : UserControl
         _connectionLog = connectionLog;
         Dock = DockStyle.Fill;
 
-        var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
+        var header = new Panel { Dock = DockStyle.Top, Height = 52, BackColor = Color.Transparent };
         var title = new Label
         {
             Text = "已配对设备", AutoSize = true, Location = new Point(0, 0),
@@ -34,24 +33,35 @@ public sealed class DevicesPanel : UserControl
         };
         var subtitle = new Label
         {
-            Text = "配对请求会以弹窗提醒，确认后会出现在此列表中。",
-            AutoSize = true, Location = new Point(0, 25),
+            Text = "管理已配对设备、信任状态与远程操作权限。",
+            AutoSize = true, Location = new Point(0, 27),
             Font = new Font("Segoe UI", 8.5F), ForeColor = ModernUi.Muted,
         };
         header.Controls.AddRange(new Control[] { title, subtitle });
 
-        var requestHint = new GlassPanel
+        var requestSection = new Panel
         {
-            Dock = DockStyle.Top, Height = 42, CornerRadius = 10,
-            Padding = new Padding(12, 0, 12, 0), GlassTint = Color.FromArgb(125, 16, 47, 82),
+            Dock = DockStyle.Top, Height = 104, Padding = new Padding(0, 8, 0, 8),
+            BackColor = Color.Transparent,
         };
-        var requestLabel = new Label
+        var requestTitle = new Label
         {
-            Dock = DockStyle.Fill,
-            Text = "⌁  新的配对请求会在这里对应显示，并由确认弹窗完成授权。",
+            Dock = DockStyle.Top, Height = 26, Text = "配对请求",
+            Font = new Font("Segoe UI Semibold", 10F), ForeColor = ModernUi.Text,
+        };
+        var requestCard = new GlassPanel
+        {
+            Dock = DockStyle.Fill, CornerRadius = 10,
+            Padding = new Padding(12, 0, 12, 0), GlassTint = ModernUi.Surface,
+        };
+        _requestLabel = new Label
+        {
+            Dock = DockStyle.Fill, Text = "暂无请求",
             ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleLeft,
         };
-        requestHint.Controls.Add(requestLabel);
+        requestCard.Controls.Add(_requestLabel);
+        requestSection.Controls.Add(requestCard);
+        requestSection.Controls.Add(requestTitle);
 
         _listView = new ListView
         {
@@ -59,12 +69,23 @@ public sealed class DevicesPanel : UserControl
             OwnerDraw = true, BorderStyle = BorderStyle.None, GridLines = false,
             BackColor = ModernUi.Background, ForeColor = ModernUi.Text, HeaderStyle = ColumnHeaderStyle.Nonclickable,
             Font = new Font("Segoe UI", 9F),
+            SmallImageList = new ImageList { ImageSize = new Size(1, 42), ColorDepth = ColorDepth.Depth32Bit },
         };
-        _listView.Columns.Add("设备名", 160);
-        _listView.Columns.Add("信任状态", 100);
-        _listView.Columns.Add("允许被投放", 90);
-        _listView.Columns.Add("允许被监看", 90);
-        _listView.Columns.Add("配对时间", 140);
+        _listView.SmallImageList.Images.Add(new Bitmap(1, 42));
+        _listView.Columns.Add("设备名", 210);
+        _listView.Columns.Add("信任状态", 140);
+        _listView.Columns.Add("允许被投放", 140);
+        _listView.Columns.Add("允许被监看", 140);
+        _listView.Columns.Add("配对时间", 180);
+        _listView.SizeChanged += (_, _) => ResizeColumns();
+        _listView.DrawItem += (_, e) =>
+        {
+            var rowBounds = new Rectangle(e.Bounds.Left, e.Bounds.Top, e.Bounds.Width, 42);
+            Color backgroundColor = e.Item?.Selected == true ? ModernUi.Accent
+                : e.ItemIndex % 2 == 0 ? ModernUi.Surface : ModernUi.SurfaceRaised;
+            using var background = new SolidBrush(backgroundColor);
+            e.Graphics.FillRectangle(background, rowBounds);
+        };
         _listView.DrawColumnHeader += (_, e) =>
         {
             using var background = new SolidBrush(ModernUi.SurfaceRaised);
@@ -79,12 +100,9 @@ public sealed class DevicesPanel : UserControl
         _listView.DrawItem += (_, e) => e.DrawDefault = false;
         _listView.DrawSubItem += (_, e) =>
         {
-            Color backgroundColor = e.Item?.Selected == true ? Color.FromArgb(38, 72, 112)
-                : e.ItemIndex % 2 == 0 ? ModernUi.Surface : Color.FromArgb(21, 42, 66);
-            using var background = new SolidBrush(backgroundColor);
-            e.Graphics.FillRectangle(background, e.Bounds);
+            var rowBounds = new Rectangle(e.Bounds.Left, e.Bounds.Top, e.Bounds.Width, 42);
             TextRenderer.DrawText(e.Graphics, e.SubItem?.Text ?? string.Empty, _listView.Font,
-                new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, e.Bounds.Width - 14, e.Bounds.Height),
+                new Rectangle(e.Bounds.Left + 10, e.Bounds.Top, e.Bounds.Width - 14, rowBounds.Height),
                 ModernUi.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         };
         _listView.SelectedIndexChanged += (_, _) =>
@@ -116,10 +134,43 @@ public sealed class DevicesPanel : UserControl
 
         Controls.Add(_listView);
         Controls.Add(buttonBar);
-        Controls.Add(requestHint);
+        Controls.Add(requestSection);
         Controls.Add(header);
 
         Refresh_();
+    }
+
+    private void ResizeColumns()
+    {
+        if (_listView.Columns.Count != 5 || _listView.ClientSize.Width < 5) return;
+        int available = Math.Max(430, _listView.ClientSize.Width - 4);
+        int[] weights = [24, 17, 18, 18, 23];
+        int used = 0;
+        for (int i = 0; i < weights.Length; i++)
+        {
+            int width = i == weights.Length - 1 ? available - used : available * weights[i] / 100;
+            width = Math.Max(i == 0 ? 105 : 90, width);
+            _listView.Columns[i].Width = width;
+            used += width;
+        }
+    }
+
+    /// <summary>Display a pairing request in the request area. Call on the UI thread.</summary>
+    public void ShowPairingRequest(PairingRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        _displayedPairingRequest = request;
+        _requestLabel.Text = $"{request.DeviceName}  ·  {request.RemoteAddress}  ·  等待确认";
+        _requestLabel.ForeColor = ModernUi.Text;
+    }
+
+    /// <summary>Clear the displayed request when it is resolved. A stale request cannot clear a newer one.</summary>
+    public void ClearPairingRequest(string requestId)
+    {
+        if (_displayedPairingRequest?.RequestId != requestId) return;
+        _displayedPairingRequest = null;
+        _requestLabel.Text = "暂无请求";
+        _requestLabel.ForeColor = ModernUi.Muted;
     }
 
     private void OnRemoveClick(object? sender, EventArgs e)
@@ -130,7 +181,12 @@ public sealed class DevicesPanel : UserControl
             "移除配对", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (confirm != DialogResult.Yes) return;
 
-        _pairedDevices.Remove(device.DeviceId);
+        try { _pairedDevices.Remove(device.DeviceId); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"移除未保存：{ex.Message}", "配对记录保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         // DeviceConnectionLogger.LogUnpaired's first real caller (PLANNING.md §14.4's "配对/取消
         // 配对" — LogPaired/LogConnected/LogDisconnected were already wired from DiscoveryService,
         // but nothing ever called this one) — see this project's README "已知风险".
@@ -148,10 +204,23 @@ public sealed class DevicesPanel : UserControl
         // Mutate the same PairedDevice instance PairedDeviceStore.All already holds, then Upsert —
         // matches DiscoveryService.RespondToPairing's own use of Upsert for "this is the current
         // truth for this DeviceId, persist it" rather than a separate in-place-update method.
+        var oldTrust = device.TrustMode;
+        var oldCast = device.AllowCast;
+        var oldMonitor = device.AllowMonitor;
         device.TrustMode = dialog.TrustMode;
         device.AllowCast = dialog.AllowCast;
         device.AllowMonitor = dialog.AllowMonitor;
-        _pairedDevices.Upsert(device);
+        // Roll the in-memory edit back and surface the failure if the save doesn't land, rather than
+        // showing the edited flags while disk keeps the old ones with no error (audit C-25).
+        try { _pairedDevices.Upsert(device); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            device.TrustMode = oldTrust;
+            device.AllowCast = oldCast;
+            device.AllowMonitor = oldMonitor;
+            MessageBox.Show(this, $"权限未保存：{ex.Message}", "配对记录保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         Refresh_();
     }
 

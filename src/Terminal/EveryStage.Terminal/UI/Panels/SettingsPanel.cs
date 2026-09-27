@@ -3,6 +3,7 @@ using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Display;
 using EveryStage.Terminal.Logging;
 using System.Diagnostics;
+using System.Drawing.Drawing2D;
 
 namespace EveryStage.Terminal.UI.Panels;
 
@@ -55,11 +56,21 @@ public sealed class SettingsPanel : UserControl
         {
             bool selected = e.Index == tabs.SelectedIndex;
             var bounds = tabs.GetTabRect(e.Index);
+            bounds.Inflate(-3, -2);
+            using var path = new GraphicsPath();
+            int radius = Math.Min(9, bounds.Height / 2);
+            path.AddArc(bounds.Left, bounds.Top, radius * 2, radius * 2, 180, 90);
+            path.AddArc(bounds.Right - radius * 2, bounds.Top, radius * 2, radius * 2, 270, 90);
+            path.AddArc(bounds.Right - radius * 2, bounds.Bottom - radius * 2, radius * 2, radius * 2, 0, 90);
+            path.AddArc(bounds.Left, bounds.Bottom - radius * 2, radius * 2, radius * 2, 90, 90);
+            path.CloseFigure();
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             using var background = new SolidBrush(selected ? ModernUi.Accent : ModernUi.SurfaceRaised);
-            e.Graphics.FillRectangle(background, bounds);
+            e.Graphics.FillPath(background, path);
             TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, tabs.Font, bounds,
                 selected ? Color.White : ModernUi.Muted,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            e.Graphics.SmoothingMode = SmoothingMode.Default;
         };
 
         var settings = _settingsStore.Current;
@@ -72,20 +83,67 @@ public sealed class SettingsPanel : UserControl
             Location = new Point(16, 16),
             Checked = settings.CastSwitchDefaultOn,
         };
-        var themeLabel = new Label { Text = "界面主题：", AutoSize = true, Location = new Point(16, 78) };
-        _themeComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(16, 100), Width = 180 };
-        ModernUi.StyleComboBox(_themeComboBox);
+        var themeLabel = new Label
+        {
+            Text = "界面主题",
+            AutoSize = true,
+            Location = new Point(16, 84),
+            Font = new Font("Segoe UI Semibold", 10F),
+            ForeColor = ModernUi.Text,
+        };
+        _themeComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Visible = false };
         _themeComboBox.Items.AddRange(new object[] { "白色系", "黑色系", "高科技系" });
         _themeComboBox.SelectedIndex = Math.Clamp((int)settings.Theme, 0, _themeComboBox.Items.Count - 1);
+        var themeCards = new FlowLayoutPanel
+        {
+            Location = new Point(16, 112),
+            Size = new Size(570, 112),
+            WrapContents = false,
+            BackColor = ModernUi.Background,
+            Margin = Padding.Empty,
+        };
+        string[] themeNames = { "白色系", "黑色系", "高科技系" };
+        for (int i = 0; i < themeNames.Length; i++)
+        {
+            int themeIndex = i;
+            var card = new ThemePreviewCard(themeNames[i], i, () => _themeComboBox.SelectedIndex, index =>
+            {
+                _themeComboBox.SelectedIndex = index;
+                foreach (Control control in themeCards.Controls) control.Invalidate();
+            })
+            {
+                Size = new Size(174, 100),
+                Margin = new Padding(0, 0, 12, 0),
+            };
+            themeCards.Controls.Add(card);
+        }
         var generalNote = new Label
         {
-            Text = "更改后需要重启终端机才能生效 —— 这是启动时的默认值，不会改变当前正在运行的开关状态。",
-            ForeColor = Color.DimGray,
+            Text = "更改后重启生效；此项仅设置启动默认值，不改变当前开关。",
+            ForeColor = ModernUi.Muted,
             AutoSize = true,
-            Location = new Point(16, 44),
+            Location = new Point(16, 46),
         };
         var generalTab = new TabPage("通用");
-        generalTab.Controls.AddRange(new Control[] { _castSwitchDefaultCheckbox, generalNote, themeLabel, _themeComboBox });
+
+        // 生效标识（对齐效果图）：右上角图例 + 界面主题行「即时生效」徽标。颜色按真实语义：
+        // 蓝=即时、琥珀=保存后、灰=重启后（本页勾选项的“重启后生效”已在 generalNote 说明）。
+        var amberEffect = Color.FromArgb(243, 178, 76);
+        Label EffectDot(string text, Color dot, int x, int y) => new()
+        {
+            Text = "●  " + text, ForeColor = dot, AutoSize = true, BackColor = Color.Transparent,
+            Font = new Font("Segoe UI", 8.5F), Location = new Point(x, y),
+        };
+        var legendInstant = EffectDot("即时生效", ModernUi.Accent, 336, 17);
+        var legendSave = EffectDot("保存后生效", amberEffect, 416, 17);
+        var legendRestart = EffectDot("重启后生效", ModernUi.Muted, 506, 17);
+        var themeEffectBadge = EffectDot("即时生效", ModernUi.Accent, 470, 85);
+
+        generalTab.Controls.AddRange(new Control[]
+        {
+            _castSwitchDefaultCheckbox, generalNote, themeLabel, themeCards, _themeComboBox,
+            legendInstant, legendSave, legendRestart, themeEffectBadge,
+        });
 
         // --- 显示 ---
         var monitorLabel = new Label { Text = "扩展屏选择：", AutoSize = true, Location = new Point(16, 20) };
@@ -96,7 +154,7 @@ public sealed class SettingsPanel : UserControl
         {
             Text = "选择本身更改后需要重启终端机才能生效；但下面的显示器列表现在每次切换到本面板都会重新\n" +
                    "枚举一次（见 Refresh_()），不再需要重启整个终端机主界面才能看到刚插拔的显示器。",
-            ForeColor = Color.DimGray,
+            ForeColor = ModernUi.Muted,
             AutoSize = true,
             Location = new Point(16, 76),
         };
@@ -127,7 +185,7 @@ public sealed class SettingsPanel : UserControl
         {
             Text = "关闭时保留原有行为：没有单独设置停留时长的图片/文档会一直停留，直到手动切换到下一项。\n" +
                    "单个文件自己设置的停留时长（活动面板里配置）始终优先于这里的默认值。立即生效，无需重启。",
-            ForeColor = Color.DimGray,
+            ForeColor = ModernUi.Muted,
             AutoSize = true,
             Location = new Point(16, 80),
         };
@@ -146,7 +204,7 @@ public sealed class SettingsPanel : UserControl
         var networkNote = new Label
         {
             Text = "重命名会立即生效——下一次广播的beacon就会带上新名字，不需要重启。",
-            ForeColor = Color.DimGray,
+            ForeColor = ModernUi.Muted,
             AutoSize = true,
             Location = new Point(16, 76),
         };
@@ -187,11 +245,13 @@ public sealed class SettingsPanel : UserControl
         var saveSettingsButton = new Button { Text = "保存设置", Dock = DockStyle.Left, Width = 120, Height = 32 };
         ModernUi.StyleButton(saveSettingsButton, primary: true);
         saveSettingsButton.Click += OnSaveSettingsClick;
-        _savedLabel = new Label { ForeColor = Color.SeaGreen, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0) };
+        _savedLabel = new Label { ForeColor = ModernUi.Success, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0) };
 
-        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 46, BackColor = ModernUi.Background };
+        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 47, BackColor = ModernUi.Background };
+        var bottomDivider = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = ModernUi.Border };
         bottomBar.Controls.Add(_savedLabel);
         bottomBar.Controls.Add(saveSettingsButton);
+        bottomBar.Controls.Add(bottomDivider);
 
         Controls.Add(tabs);
         Controls.Add(bottomBar);
@@ -265,7 +325,15 @@ public sealed class SettingsPanel : UserControl
                 : null,
         };
 
-        _settingsStore.Save(updated);
+        // Same guard+message convention as FilesPanel's own saves: on the Terminal an unguarded save
+        // throw only reaches the ThreadException handler, which logs to CrashLogger without any dialog —
+        // so the operator would see neither "已保存" nor an error. Surface it here instead (audit C-25).
+        try { _settingsStore.Save(updated); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"设置未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         _savedLabel.Text = "已保存。";
     }
 
@@ -324,9 +392,71 @@ public sealed class SettingsPanel : UserControl
             return;
         }
 
+        // Mutate then persist, but roll the in-memory name back if the save fails, rather than leaving
+        // the new name live (and broadcast in the next beacon) while disk still holds the old one and no
+        // error is shown (audit C-25). With DeviceIdentity's degraded-load guard, Save() also throws
+        // IOException when this identity was minted over a momentarily-locked file — caught here too.
+        string previousName = _identity.DeviceName;
         _identity.DeviceName = name;
-        _identity.Save();
+        try { _identity.Save(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _identity.DeviceName = previousName;
+            MessageBox.Show(this, $"设备名称未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         _savedLabel.Text = "设备名称已保存。";
+    }
+
+    private sealed class ThemePreviewCard : Control
+    {
+        private readonly string _title;
+        private readonly int _index;
+        private readonly Func<int> _selectedIndex;
+        private readonly Action<int> _select;
+
+        public ThemePreviewCard(string title, int index, Func<int> selectedIndex, Action<int> select)
+        {
+            _title = title;
+            _index = index;
+            _selectedIndex = selectedIndex;
+            _select = select;
+            Cursor = Cursors.Hand;
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+        }
+
+        protected override void OnClick(EventArgs e)
+        {
+            base.OnClick(e);
+            _select(_index);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var g = e.Graphics;
+            bool selected = _selectedIndex() == _index;
+            var theme = UiPalette.For((AppTheme)_index);
+            var bounds = Rectangle.Inflate(ClientRectangle, -1, -1);
+            using var cardFill = new SolidBrush(ModernUi.Surface);
+            using var border = new Pen(selected ? ModernUi.Accent : ModernUi.Border, selected ? 2F : 1F);
+            g.FillRectangle(cardFill, bounds);
+            g.DrawRectangle(border, bounds);
+
+            var preview = new Rectangle(10, 10, Width - 20, 57);
+            using (var previewFill = new SolidBrush(theme.Background)) g.FillRectangle(previewFill, preview);
+            using (var railFill = new SolidBrush(theme.Rail)) g.FillRectangle(railFill, preview.X, preview.Y, 7, preview.Height);
+            using (var textBrush = new SolidBrush(theme.Text))
+            {
+                g.FillRectangle(textBrush, preview.X + 17, preview.Y + 12, 48, 5);
+                g.FillRectangle(textBrush, preview.X + 17, preview.Y + 24, 75, 4);
+            }
+            using (var accentBrush = new SolidBrush(theme.Accent))
+                g.FillRectangle(accentBrush, preview.Right - 43, preview.Y + 17, 31, 17);
+
+            TextRenderer.DrawText(g, _title, Font, new Rectangle(10, 72, Width - 20, 20),
+                ModernUi.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+        }
     }
 
     private sealed record MonitorComboItem(string DeviceName, string Label)
