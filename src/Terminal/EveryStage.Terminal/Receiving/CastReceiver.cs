@@ -150,7 +150,14 @@ public sealed class CastReceiver : IDisposable
     /// (Program.cs) for the policy that watches this to decide when persistent decode failure should
     /// disconnect the cast entirely, the same way <c>CheckCastLiveness</c> already does for a Caster
     /// that's gone silent.</summary>
-    public int ConsecutiveVideoDecodeErrors { get; private set; }
+    private int _consecutiveVideoDecodeErrors;
+
+    /// <summary>Written from two threads now that the decoder is an asynchronous MFT: the RTP
+    /// receive thread (a submission that threw) and the decoder's own event-loop thread (a decode
+    /// that failed, and a decoded frame that clears it). Interlocked rather than a plain property
+    /// because Program.CheckDecodeHealth turns this into a disconnect decision - a lost update
+    /// here is a Terminal that keeps showing a stream it can no longer decode.</summary>
+    public int ConsecutiveVideoDecodeErrors => Volatile.Read(ref _consecutiveVideoDecodeErrors);
 
     /// <summary>True once <see cref="RunPresentLoop"/>'s background <see cref="Thread"/> has died from
     /// an unhandled exception (e.g. <see cref="VideoSurface.PresentFrame"/> failing on a lost/reset
@@ -168,6 +175,10 @@ public sealed class CastReceiver : IDisposable
     /// signal that this cast's video pipeline is permanently gone and the cast should be disconnected,
     /// even though decoding itself may keep reporting success.</summary>
     public bool PresentLoopFailed { get; private set; }
+
+    /// <summary>The decoder's own terminal-failure flag, the decode-side counterpart of
+    /// <see cref="PresentLoopFailed"/>. See H264HardwareDecoder.DecodeLoopFailed.</summary>
+    public bool DecodeLoopFailed => _decoder.DecodeLoopFailed;
 
     /// <summary>Combined video+audio "gap events / (received + gap events)" ratio as a percentage —
     /// see <see cref="RtpReceiver.GapEvents"/>'s own doc comment for why this is an honest
@@ -434,7 +445,7 @@ public sealed class CastReceiver : IDisposable
     private void OnVideoDecodingFailed(Exception ex)
     {
         LastError = ex.Message;
-        ConsecutiveVideoDecodeErrors++;
+        Interlocked.Increment(ref _consecutiveVideoDecodeErrors);
     }
 
     private void OnAacDecodingFailed(Exception ex)
@@ -467,18 +478,30 @@ public sealed class CastReceiver : IDisposable
             {
                 _decoder.SubmitAccessUnit(accessUnit, presentationTicks);
             }
-            LastError = null;
-            ConsecutiveVideoDecodeErrors = 0;
+            // NOT cleared here any more. On the asynchronous decoder path SubmitAccessUnit only
+            // enqueues, so reaching this line proves the access unit was accepted for decoding -
+            // not that anything decoded. Clearing here meant every arriving access unit wiped the
+            // failure count, and since a stream that cannot be decoded still delivers packets, the
+            // count could never reach Program.MaxConsecutiveDecodeErrorsBeforeDisconnect: the
+            // Terminal would sit on a frozen picture forever instead of dropping the cast. The
+            // reset lives in OnFrameDecoded now, where a frame coming out is real proof of health.
         }
         catch (Exception ex)
         {
+            // Submission itself failing is still a genuine failure, and still this thread's to count.
             LastError = ex.Message;
-            ConsecutiveVideoDecodeErrors++;
+            Interlocked.Increment(ref _consecutiveVideoDecodeErrors);
         }
     }
 
     private void OnFrameDecoded(ID3D11Texture2D texture, int arraySlice, int width, int height, long presentationTicks)
     {
+        // A frame coming out of the decoder is the only real evidence the video pipeline works,
+        // so this is where the failure count is cleared. Same thread as OnVideoDecodingFailed
+        // (the decoder's event loop), so clear-vs-increment cannot interleave between them.
+        LastError = null;
+        Interlocked.Exchange(ref _consecutiveVideoDecodeErrors, 0);
+
         if (!HasAudio)
         {
             // No audio clock to pace against — present immediately, same as before this round.

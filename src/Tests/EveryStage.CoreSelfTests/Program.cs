@@ -41,6 +41,8 @@ await RunAsync("Unreadable stores preserve original data", () => Task.FromResult
 await RunAsync("RTP idle gap timeout", TestIdleGapTimeout);
 await RunAsync("H.264 payload format robustness", () => Task.FromResult(TestPayloadFormatRobustness()));
 await RunAsync("Access unit assembly", () => Task.FromResult(TestAccessUnitAssembly()));
+await RunAsync("Replay freshness bound", () => Task.FromResult(TestReplayFreshness()));
+await RunAsync("Queue position survives list edits", () => Task.FromResult(TestQueuePositionAfterListEdits()));
 await RunAsync("Media authentication and replay protection", () => Task.FromResult(TestMediaAuthentication()));
 await RunAsync("Authenticated RTP delivery", TestAuthenticatedDelivery);
 await RunAsync("Authenticated cast-start acknowledgement", () =>
@@ -320,6 +322,97 @@ async Task<(bool, string?)> TestAuthenticatedDelivery()
     return (true, null);
 }
 
+// Regression case for the cast_start idempotent-retry path, which used to return before the replay
+// guard ran at all - so a captured cast_start stayed replayable indefinitely. Exercised here at the
+// ReplayGuard primitive, since DiscoveryService itself is not compiled into these self-tests.
+(bool, string?) TestReplayFreshness()
+{
+    var now = DateTimeOffset.UtcNow;
+    static DiscoveryProtocol.CastStopMessage Message(DateTimeOffset issuedAt) => new()
+    {
+        SenderDeviceId = Guid.NewGuid(),
+        MessageId = Guid.NewGuid(),
+        IssuedAtUtc = issuedAt,
+    };
+
+    // A retry legitimately repeats a MessageId, so de-duplication must not gate it - but a message
+    // issued outside the clock-skew window must still be refused on that same path.
+    var fresh = Message(now);
+    if (!ReplayGuard.IsFresh(fresh, now)) return (false, "A message issued now was judged stale.");
+    if (!ReplayGuard.IsFresh(fresh, now)) return (false, "IsFresh is not idempotent - a retry of a fresh message was refused.");
+
+    var stale = Message(now - ReplayGuard.DefaultAllowedClockSkew - TimeSpan.FromSeconds(1));
+    if (ReplayGuard.IsFresh(stale, now))
+        return (false, "A message issued outside the clock-skew window was accepted as fresh - a captured packet would stay replayable forever on the idempotent-retry path.");
+
+    var future = Message(now + ReplayGuard.DefaultAllowedClockSkew + TimeSpan.FromSeconds(1));
+    if (ReplayGuard.IsFresh(future, now)) return (false, "A message issued too far in the future was accepted as fresh.");
+
+    var unidentified = Message(now);
+    unidentified.MessageId = Guid.Empty;
+    if (ReplayGuard.IsFresh(unidentified, now)) return (false, "A message with no identifier was accepted as fresh.");
+
+    // TryAccept must still enforce BOTH halves: freshness and single use.
+    var guard = new ReplayGuard();
+    var once = Message(now);
+    if (!guard.TryAccept(once, now)) return (false, "TryAccept refused a fresh, unseen message.");
+    if (guard.TryAccept(once, now)) return (false, "TryAccept admitted the same message twice.");
+    if (guard.TryAccept(stale, now)) return (false, "TryAccept admitted a stale message.");
+
+    return (true, null);
+}
+
+// Regression cases for queue position being resolved by a cached index. The UI edits Activity.Files
+// directly (ActivitiesPanel add/remove/reorder, and the playback-error Toast's 移除) without telling
+// PlaybackEngine, so any cached index goes stale and the next advance silently skips a file.
+(bool, string?) TestQueuePositionAfterListEdits()
+{
+    static MediaFile F(string name) => new() { Id = Guid.NewGuid(), SourcePath = name, Kind = MediaKind.Image };
+    static int Next(Activity activity, MediaFile? current, int cachedIndex, int delta) =>
+        PlaybackQueueNavigator.FindNextPlayable(
+            activity,
+            PlaybackQueueNavigator.ResolveScanOrigin(activity, current, cachedIndex, delta),
+            delta);
+
+    var a = F("a"); var b = F("b"); var c = F("c"); var d = F("d");
+
+    // Undisturbed list: position still comes out right.
+    var plain = new Activity { Name = "queue-test", Files = { a, b, c } };
+    if (Next(plain, b, 1, 1) != 2) return (false, "Forward advance on an unmodified list did not reach the next file.");
+    if (Next(plain, b, 1, -1) != 0) return (false, "Backward advance on an unmodified list did not reach the previous file.");
+
+    // A file BEFORE the current one is removed: every later index shifts down by one, so a cached
+    // index now points past where it should and the file that moved into the gap is skipped.
+    var shifted = new Activity { Name = "queue-test", Files = { a, b, c, d } };
+    shifted.Files.Remove(a); // cached index for c was 2; c now lives at 1
+    int afterShift = Next(shifted, c, 2, 1);
+    if (afterShift < 0) return (false, "Removing an earlier file ended the activity while a later file was still queued.");
+    if (!ReferenceEquals(shifted.Files[afterShift], d))
+        return (false, $"Removing an earlier file skipped past the next file (landed on '{shifted.Files[afterShift].SourcePath}', expected 'd').");
+
+    // The currently playing file is removed: whatever shifted into its slot must play next, not be
+    // stepped over.
+    var removedCurrent = new Activity { Name = "queue-test", Files = { a, b, c } };
+    removedCurrent.Files.Remove(b); // b was index 1; c now occupies index 1
+    int afterRemoval = Next(removedCurrent, b, 1, 1);
+    if (afterRemoval < 0) return (false, "Removing the playing file ended the activity even though a later file remained.");
+    if (!ReferenceEquals(removedCurrent.Files[afterRemoval], c))
+        return (false, "Removing the playing file skipped the file that took its place.");
+
+    // Backward from a removed file: everything before the vacated slot is unmoved.
+    var backward = new Activity { Name = "queue-test", Files = { a, b, c } };
+    backward.Files.Remove(b);
+    int back = Next(backward, b, 1, -1);
+    if (back < 0 || !ReferenceEquals(backward.Files[back], a))
+        return (false, "Backward advance from a removed file did not land on the file before it.");
+
+    // Removing the last file leaves nothing to advance to, which is an ending, not a skip.
+    var tail = new Activity { Name = "queue-test", Files = { a, b } };
+    tail.Files.Remove(b);
+    if (Next(tail, b, 1, 1) >= 0) return (false, "Advancing past a removed final file invented a file to play.");
+
+    return (true, null);
+}
 async Task<(bool, string?)> TestIdleGapTimeout()
 {
     using var portProbe = new System.Net.Sockets.UdpClient(0);

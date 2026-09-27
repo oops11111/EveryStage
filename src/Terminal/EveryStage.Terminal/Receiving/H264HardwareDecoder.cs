@@ -72,6 +72,7 @@ public sealed class H264HardwareDecoder : IDisposable
     private readonly Task? _eventLoopTask;
     private readonly object _lifecycleGate = new();
     private int _accessUnitsDropped;
+    private int _decodeLoopFailed;
     private int _disposed;
 
     /// <summary>Raised once per decoded frame the MFT produces. On the asynchronous path - the
@@ -100,6 +101,19 @@ public sealed class H264HardwareDecoder : IDisposable
     /// loop. Expected to be true for any hardware decoder; exposed so a diagnostic can assert which
     /// path was actually taken rather than assuming.</summary>
     public bool IsAsynchronous => _isAsynchronous;
+
+    /// <summary>True once the asynchronous event loop has ended from an unhandled exception, so
+    /// no further access unit will ever be decoded by this instance.
+    ///
+    /// This needs to be its own terminal flag rather than something a caller infers from an error
+    /// count, for exactly the reason CastReceiver.PresentLoopFailed exists: a thread that dies
+    /// raises DecodingFailed once and then stops, so an error COUNT sits at one forever while the
+    /// pipeline is permanently dead. Program.CheckDecodeHealth disconnects at 90 consecutive
+    /// errors, which a dead loop can never reach - without this flag a lost D3D11 device (the
+    /// whole point of the per-frame TestDevice check) would leave an unattended Terminal frozen on
+    /// its last decoded frame indefinitely, which is precisely the state that check exists to
+    /// avoid.</summary>
+    public bool DecodeLoopFailed => Volatile.Read(ref _decodeLoopFailed) != 0;
 
     public H264HardwareDecoder(D3D11Device gpu, int width, int height)
     {
@@ -174,6 +188,14 @@ public sealed class H264HardwareDecoder : IDisposable
     /// rather than being thrown back at the caller.</summary>
     public void SubmitAccessUnit(byte[] annexBAccessUnit, long sampleTimeTicks)
     {
+        // Teardown is not an error. CastReceiver.Dispose disposes RtpReceiver first, but that only
+        // waits two seconds for its receive loop to actually stop and returns either way, so a NAL
+        // unit can still arrive here after this decoder has been disposed. Without this guard the
+        // enqueue below would throw ObjectDisposedException off the semaphore, which CastReceiver
+        // would faithfully record as a video decode failure - a spurious error message attached to
+        // an ordinary shutdown.
+        if (Volatile.Read(ref _disposed) != 0) return;
+
         if (!_isAsynchronous)
         {
             EnsureDeviceStillValid();
@@ -182,15 +204,22 @@ public sealed class H264HardwareDecoder : IDisposable
             return;
         }
 
+        bool dropped = false;
         while (_pending.Count >= MaxPendingAccessUnits && _pending.TryDequeue(out _))
         {
             Interlocked.Increment(ref _accessUnitsDropped);
-            // The semaphore count is intentionally not decremented to match: a surplus permit only
-            // makes the event loop take one spurious lap and find an empty queue, which it handles.
+            dropped = true;
         }
 
         _pending.Enqueue((annexBAccessUnit, sampleTimeTicks));
-        _accessUnitAvailable.Release();
+
+        // Only signal a net increase in queue depth, matching H264HardwareEncoder.SubmitFrame's
+        // accounting: a drop-then-enqueue leaves the depth unchanged, so releasing a permit for it
+        // would drift the semaphore count permanently above _pending.Count. Every surplus permit
+        // buys one wasted lap where the MFT asked for input, a permit was consumed, and the queue
+        // turned out to be empty - harmless individually, unbounded over a long cast under
+        // sustained backpressure.
+        if (!dropped) _accessUnitAvailable.Release();
     }
 
     private void RunEventLoop(CancellationToken token)
@@ -226,6 +255,9 @@ public sealed class H264HardwareDecoder : IDisposable
         }
         catch (Exception ex)
         {
+            // Set BEFORE raising, so a handler that reacts to the failure already sees the loop
+            // as terminally dead rather than merely having reported one error.
+            Volatile.Write(ref _decodeLoopFailed, 1);
             DecodingFailed?.Invoke(ex);
         }
     }

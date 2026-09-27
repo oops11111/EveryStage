@@ -99,6 +99,10 @@ public sealed class SwapChainPresenter : IDisposable
         CreateOutputView();
         // Output size changed -> processor/enumerator sized for the old target must be rebuilt.
         _processor?.Dispose();
+        // Same discarded-HRESULT problem as Present below. A failed resize is worse than a failed present,
+        // because this method has already disposed _backBuffer and _outputView by this point: continuing
+        // past it leaves the presenter holding a disposed back buffer and a null output view that the next
+        // PresentFrame would hand straight to VideoProcessorBlt.
         _processor = null;
         _enumerator?.Dispose();
         _enumerator = null;
@@ -124,7 +128,14 @@ public sealed class SwapChainPresenter : IDisposable
         _videoContext.VideoProcessorSetStreamDestRect(_processor!, 0, true, new RectI(0, 0, _outputWidth, _outputHeight));
         _videoContext.VideoProcessorBlt(_processor!, _outputView!, 0, 1, new[] { stream });
 
-        _swapChain.Present(vsync ? 1u : 0u, PresentFlags.None);
+        // Result checked, not discarded. Vortice returns the HRESULT rather than throwing, so the
+        // previous bare call swallowed DXGI_ERROR_DEVICE_REMOVED / DXGI_ERROR_DEVICE_RESET entirely: a
+        // lost GPU left the present loop cheerfully presenting into nothing, forever, with no exception,
+        // no failure flag, and therefore no CheckDecodeHealth teardown - the frozen-last-frame shape this
+        // pipeline already guards against on the decode side. CheckError only throws on a failed HRESULT,
+        // so the success-category DXGI_STATUS_OCCLUDED (window minimised or covered, entirely normal)
+        // still passes through untouched.
+        _swapChain.Present(vsync ? 1u : 0u, PresentFlags.None).CheckError();
     }
 
     private void EnsureProcessor(int frameWidth, int frameHeight)

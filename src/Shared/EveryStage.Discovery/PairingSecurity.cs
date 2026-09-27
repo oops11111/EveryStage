@@ -64,11 +64,23 @@ public sealed class ReplayGuard
     private readonly object _gate = new();
     private readonly Dictionary<Guid, DateTimeOffset> _seen = new();
 
-    public bool TryAccept(DiscoveryProtocol.AuthenticatedMessage message, DateTimeOffset now, TimeSpan? allowedClockSkew = null)
+    /// <summary>The freshness half of <see cref="TryAccept"/>, on its own: the message carries a
+    /// usable identifier and its issue time is inside the allowed clock skew. Split out because an
+    /// idempotent-retry path legitimately needs to accept a MessageId it has already seen (that is
+    /// what makes it a retry) while still refusing one issued hours ago - skipping de-duplication
+    /// must not also mean skipping the only bound this protocol places on how long a captured
+    /// packet stays replayable.</summary>
+    public static bool IsFresh(DiscoveryProtocol.AuthenticatedMessage message, DateTimeOffset now, TimeSpan? allowedClockSkew = null)
     {
         var window = allowedClockSkew ?? DefaultAllowedClockSkew;
-        if (message.MessageId == Guid.Empty || message.IssuedAtUtc < now - window || message.IssuedAtUtc > now + window)
-            return false;
+        return message.MessageId != Guid.Empty
+            && message.IssuedAtUtc >= now - window
+            && message.IssuedAtUtc <= now + window;
+    }
+    public bool TryAccept(DiscoveryProtocol.AuthenticatedMessage message, DateTimeOffset now, TimeSpan? allowedClockSkew = null)
+    {
+        if (!IsFresh(message, now, allowedClockSkew)) return false;
+        var window = allowedClockSkew ?? DefaultAllowedClockSkew;
         lock (_gate)
         {
             foreach (var expired in _seen.Where(x => x.Value < now - window).Select(x => x.Key).ToList())

@@ -93,7 +93,16 @@ public sealed class PairedDeviceStore
         try
         {
             using (var stream = File.Create(tempPath))
+            {
                 JsonSerializer.Serialize(stream, _devices, JsonOptions);
+                // Flushed all the way to the device, not just out of the .NET buffer. File.Replace's rename is a
+                // journalled NTFS metadata operation, but the temp file's DATA blocks are not journalled with it -
+                // closing the stream only hands them to the OS cache. Lose power in the window where the rename is
+                // durable and the contents are not, and a zero-length or truncated file has atomically replaced a
+                // good one: exactly the outcome this class's atomic-write comment promises cannot happen. One
+                // FlushFileBuffers closes that window.
+                stream.Flush(flushToDisk: true);
+            }
 
             if (File.Exists(_storePath)) File.Replace(tempPath, _storePath, destinationBackupFileName: null);
             else File.Move(tempPath, _storePath);

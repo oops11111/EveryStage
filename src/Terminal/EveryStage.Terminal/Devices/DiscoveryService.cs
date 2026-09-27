@@ -285,6 +285,15 @@ public sealed class DiscoveryService : IDisposable
             || !PairingSecurity.Verify(msg, device.PairingKey)) return;
         if (msg.MessageId == _lastStartMessageId && _lastStartResult != null)
         {
+            // Idempotent retry: this exact cast_start was already acted on, so re-send the
+            // cached outcome instead of starting a second cast. De-duplication is deliberately
+            // skipped here - a retry IS a duplicate MessageId, that is the whole point - but
+            // freshness is NOT. Without this check the branch returned before _replayGuard ran
+            // at all, which meant a captured cast_start stayed replayable forever (the memo
+            // below is never cleared while a session lasts), each replay eliciting a signed
+            // cast_start_ack to whatever source address the datagram claimed. That bypassed the
+            // only bound this protocol places on replay age.
+            if (!ReplayGuard.IsFresh(msg, DateTimeOffset.UtcNow)) return;
             _ = SendStartResultAsync(msg, device.PairingKey!, remoteEndPoint, _lastStartResult.Task);
             return;
         }
@@ -426,6 +435,10 @@ public sealed class DiscoveryService : IDisposable
         CastStopRequested?.Invoke(msg.DeviceId);
         _activeCasterDeviceId = null;
         _activeCasterKey = null;
+        // Retire the idempotent-retry memo with the session it belongs to. Leaving it armed kept
+        // the fast path above answering replays of a cast_start whose cast had already ended.
+        _lastStartMessageId = Guid.Empty;
+        _lastStartResult = null;
     }
 
     private void HandlePairRequest(DiscoveryProtocol.PairRequestMessage req, IPEndPoint remoteEndPoint)

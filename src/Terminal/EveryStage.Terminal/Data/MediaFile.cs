@@ -37,17 +37,18 @@ public sealed class MediaFile
     public bool IsBackgroundAudio { get; set; }
     public AudioVisual BackgroundAudioVisual { get; set; } = AudioVisual.DefaultBackgroundImage;
 
-    /// <summary>Deep-copies every setting except <see cref="Id"/> (which gets a fresh
-    /// <see cref="Guid.NewGuid"/> value from the property initializer above, exactly like every
-    /// other new <see cref="MediaFile"/>) — this class's own doc comment explains why an activity's
-    /// copy of a file is always independent from here on, never a shared reference back to whatever
-    /// it was copied from. Pulled out of <c>ActivitiesPanel</c> (where this field list used to live
+    /// <summary>Deep-copies every setting and, by default, assigns a fresh <see cref="Id"/> so an
+    /// activity's copy stays independent from the library entry it came from. Set
+    /// <paramref name="preserveId"/> only for an ephemeral playback queue that must keep log identity
+    /// without mutating the persisted entry. Pulled out of <c>ActivitiesPanel</c> (where this field list used to live
     /// as a private <c>CloneFile</c> method, the only caller until now) so a second caller —
     /// <c>FilesPanel</c>'s "加入活动..." (PLANNING.md §11 "批量选择") — doesn't need its own
     /// independently-drifting copy of the same field list. Whichever new field this class gains
     /// next only needs to be added here once.</summary>
-    public MediaFile Clone() => new()
+    /// <param name="preserveId">Preserve the source identity for temporary, non-persisted queues.</param>
+    public MediaFile Clone(bool preserveId = false) => new()
     {
+        Id = preserveId ? Id : Guid.NewGuid(),
         SourcePath = SourcePath,
         Kind = Kind,
         PlayModeOverride = PlayModeOverride,

@@ -423,8 +423,11 @@ public sealed class PlaybackEngine : IDisposable
         // _currentFile, not about the transparent slots in between.
         if (trigger == PlaybackTrigger.ManualSkip && _currentFile?.AllowManualSkip == false) return false;
 
+        // Resolved by identity, not by the cached index - the activity's file list is edited
+        // directly by the UI with no notification to this engine. See ResolveScanOrigin.
+        int from = PlaybackQueueNavigator.ResolveScanOrigin(_currentActivity, _currentFile, _currentFileIndex, delta);
         int next = PlaybackQueueNavigator.FindNextPlayable(
-            _currentActivity, _currentFileIndex, delta, StartOrUpdateBackgroundAudio);
+            _currentActivity, from, delta, StartOrUpdateBackgroundAudio);
         if (next < 0) return false;
 
         _currentFileIndex = next;
@@ -725,6 +728,7 @@ public sealed class PlaybackEngine : IDisposable
 
         _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
         RaisePlaybackAbnormallyInterrupted(file, ex.Message);
+        ArmFailureAdvanceTimer(file);
     }
 
     /// <summary>PLANNING.md §6's per-file "淡入/淡出时长 + 音量是否随渐变" — <see cref="MediaFile.VolumeFollowsFade"/>
@@ -977,6 +981,7 @@ public sealed class PlaybackEngine : IDisposable
             _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
             // Same PlaybackAbnormallyInterrupted reasoning as OnVideoFailed.
             RaisePlaybackAbnormallyInterrupted(file, ex.Message);
+            ArmFailureAdvanceTimer(file);
         }));
     }
 
@@ -1000,6 +1005,53 @@ public sealed class PlaybackEngine : IDisposable
     {
         int? seconds = _settingsStore.Current.DefaultStayDurationSeconds;
         return seconds is > 0 ? TimeSpan.FromSeconds(seconds.Value) : TimeSpan.Zero;
+    }
+
+    /// <summary>How long a failed file stays on screen before the queue moves past it. Long enough
+    /// that the Toast raised alongside it is actually readable by anyone standing there, short
+    /// enough that an unattended Terminal is not showing black for a noticeable stretch.</summary>
+    private static readonly TimeSpan FailedContentAdvanceDelay = TimeSpan.FromSeconds(3);
+
+    /// <summary>Moves the queue past a file that failed to play, after a short delay.
+    ///
+    /// Until this existed, every failure handler (OnImageOrDocumentFailed, OnVideoFailed,
+    /// OnAudioFailed) logged the failure and raised PlaybackAbnormallyInterrupted - and stopped.
+    /// ArmStayDurationTimer is the only route from image/document content to HandleCompletion, and
+    /// a failure never reached it, so SequentialAuto auto-advance stalled on the failing file
+    /// permanently. One deleted or corrupted file froze the whole playlist. The designed recovery
+    /// was the Toast's 重试/移除 buttons, which needs somebody standing at the Terminal - and this
+    /// product is specified unattended (PLANNING.md 14.4, the same framing Program.CheckDecodeHealth
+    /// cites when it auto-disconnects a stuck cast rather than waiting for a human).
+    ///
+    /// Deliberately does NOT go through HandleCompletion, and so deliberately ignores the file's own
+    /// CompletionAction: Loop would re-play a file already known to be broken every few seconds,
+    /// forever, and HoldOnLastFrame would hold on a frame that does not exist (the failure path
+    /// clears ContentSurface to black). Neither is a meaningful completion semantic for content that
+    /// never played. PlayMode is still honoured, because ManualSelect means an operator is choosing
+    /// what comes next and is by definition present.
+    ///
+    /// Reuses _stayDurationTimer rather than adding a second timer field so that every existing
+    /// cancellation point (PlayFile, Stop, Dispose) already covers it. The one behavioural seam: a
+    /// pause landing inside this 3-second window resumes through ArmStayDurationTimer, which does go
+    /// via HandleCompletion - narrow, requires an operator (so not the unattended case this fixes),
+    /// and degrades to the CompletionAction behaviour that was there before.</summary>
+    private void ArmFailureAdvanceTimer(MediaFile file)
+    {
+        _stayDurationTimer?.Stop();
+        _stayDurationTimer?.Dispose();
+
+        var timer = new System.Windows.Forms.Timer { Interval = (int)FailedContentAdvanceDelay.TotalMilliseconds };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            if (!ReferenceEquals(file, _currentFile)) return; // moved on already - nothing to advance past.
+            if (EffectivePlayMode(file) != PlayMode.SequentialAuto) return;
+            if (!TryAdvance(1, PlaybackTrigger.ActivityAuto)) TryAdvanceToNextActivity();
+        };
+        _stayDurationTimer = timer;
+        _stayDurationArmedAt = DateTime.UtcNow;
+        _stayDurationTotal = FailedContentAdvanceDelay;
+        timer.Start();
     }
 
     private void ArmStayDurationTimer(MediaFile file, TimeSpan duration, bool isFreshStart)
@@ -1124,6 +1176,7 @@ public sealed class PlaybackEngine : IDisposable
             // PLANNING.md §11's Toast "涉及播放的异常需带可执行按钮（重试/移除）" — see
             // PlaybackAbnormallyInterrupted's own doc comment for what built that UI on top of this.
             RaisePlaybackAbnormallyInterrupted(file, ex.Message);
+            ArmFailureAdvanceTimer(file);
         }));
     }
 
@@ -1212,6 +1265,20 @@ public sealed class PlaybackEngine : IDisposable
             _playbackLogger.LogPlaybackEnded(_currentFile.Id, "preempted_by_device_cast");
             _currentFile = null;
         }
+
+        // Every other path that stops showing a file clears this (PlayImageAsync/PlayDocumentAsync
+        // before loading, OnImageOrDocumentFailed, the audio-visual paths); this one did not.
+        // ContentSurface holds whatever Bitmap reference it was last handed and owns none of them,
+        // so leaving the preempted file's frame in place has two consequences. The visible one: if
+        // CastReceiver construction then fails, Program.OnCastStartRequested returns without ever
+        // calling ShowVideoSurface, so the extended display keeps painting a local file the engine
+        // has already abandoned while the state machine reads Idle. The sharp one: a page turn in
+        // flight when the cast preempts will, on completion, dispose exactly the Bitmap held here
+        // (PdfContentRenderer.TurnPageAsync swaps then disposes the previous frame) while
+        // TurnDocumentPageAsync's version guard skips the matching SetFrame - leaving OnPaint to
+        // draw a disposed Bitmap and throw on every repaint thereafter. Same failure shape
+        // OnImageOrDocumentFailed already documents and clears for.
+        _overlay.ContentSurface.SetFrame(null);
         _stayDurationTimer?.Stop();
         _stayDurationTimer?.Dispose();
         _stayDurationTimer = null;
