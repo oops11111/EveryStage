@@ -29,3 +29,7 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Internal audit notes (security findings) - keep local, never publish.
+docs/AUDIT-2026-09-22.md
+docs/AUDIT-HANDOFF.md
