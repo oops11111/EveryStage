@@ -10,17 +10,18 @@ namespace EveryStage.Terminal.Display;
 /// for everything drawn with GDI+), so one <see cref="Playback.PlaybackEngine"/> implementation drives
 /// both channels.
 ///
-/// Content is laid out in a centred viewport of <see cref="ViewportAspect"/> (4:3 by default, per the
-/// play-control spec); inside it, images/pages are aspect-fitted by <see cref="ContentSurface"/> and video
-/// by the swap chain's <see cref="EveryStage.Rendering.VideoScaleMode"/>, so nothing is ever stretched.
-/// Around the viewport the control shows its own (theme) background.
+/// Content uses the whole preview area and is scaled to its full WIDTH, keeping the aspect ratio: content
+/// taller than the area is cropped equally top and bottom, wider content gets bars top and bottom (the
+/// operator asked for "横向最大，纵向显示不完全也可以"). Images/pages do this through
+/// <see cref="ContentSurface.ScaleMode"/>; video through the swap chain's
+/// <see cref="EveryStage.Rendering.VideoScaleMode.FitWidth"/> (the engine's Preview default). Nothing is
+/// ever stretched.
 ///
 /// An optional overlay card (the error card) can be placed over the preview area with
 /// <see cref="SetOverlayCard"/>.
 /// </summary>
 public sealed class PreviewSurface : Control, IPlaybackOutput
 {
-    private double _viewportAspect = 4.0 / 3.0;
     private Control? _overlayCard;
 
     public Control VideoHost { get; }
@@ -29,14 +30,7 @@ public sealed class PreviewSurface : Control, IPlaybackOutput
     /// <summary>Raised when the video host's pixel size changes, so the owner can resize the swap chain.</summary>
     public event Action<int, int>? VideoHostResized;
 
-    /// <summary>Width / height of the content viewport.</summary>
-    public double ViewportAspect
-    {
-        get => _viewportAspect;
-        set { _viewportAspect = value > 0 ? value : 4.0 / 3.0; PerformLayout(); Invalidate(); }
-    }
-
-    /// <summary>Viewport rectangle in client coordinates (for tests and overlays).</summary>
+    /// <summary>Content rectangle in client coordinates — the whole preview area (for tests and overlays).</summary>
     public Rectangle Viewport { get; private set; }
 
     public PreviewSurface()
@@ -44,7 +38,7 @@ public sealed class PreviewSurface : Control, IPlaybackOutput
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Color.FromArgb(4, 16, 31);
         VideoHost = new Control { BackColor = Color.Black, Visible = false };
-        ContentSurface = new ContentSurface { Dock = DockStyle.None };
+        ContentSurface = new ContentSurface { Dock = DockStyle.None, ScaleMode = EveryStage.Rendering.VideoScaleMode.FitWidth };
         Controls.Add(ContentSurface);
         Controls.Add(VideoHost);
         VideoHost.SizeChanged += (_, _) => VideoHostResized?.Invoke(Math.Max(1, VideoHost.ClientSize.Width), Math.Max(1, VideoHost.ClientSize.Height));
@@ -102,15 +96,7 @@ public sealed class PreviewSurface : Control, IPlaybackOutput
         base.OnLayout(levent);
         var client = ClientRectangle;
         if (client.Width <= 0 || client.Height <= 0) return;
-        int width = client.Width, height = (int)Math.Round(width / _viewportAspect);
-        if (height > client.Height)
-        {
-            height = client.Height;
-            width = (int)Math.Round(height * _viewportAspect);
-        }
-        width = Math.Max(1, width);
-        height = Math.Max(1, height);
-        Viewport = new Rectangle((client.Width - width) / 2, (client.Height - height) / 2, width, height);
+        Viewport = client;
         ContentSurface.Bounds = Viewport;
         VideoHost.Bounds = Viewport;
         if (_overlayCard != null) _overlayCard.Bounds = ClientRectangle;

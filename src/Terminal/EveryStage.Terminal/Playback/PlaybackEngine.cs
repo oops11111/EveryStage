@@ -278,8 +278,13 @@ public sealed class PlaybackEngine : IDisposable
     public string? CurrentVideoCodec => _currentFile?.Kind == MediaKind.Video ? _videoController?.VideoCodec : null;
     public bool CurrentVideoHasAudio => _currentFile?.Kind == MediaKind.Video && (_videoController?.HasAudio ?? false);
 
-    /// <summary>"仅显示首帧" / "仅显示首页" for an animated GIF / multi-page TIFF currently shown, else null.</summary>
-    public string? CurrentImageNote => _currentFile?.Kind == MediaKind.Image ? _imageRenderer.FirstFrameOnlyNote : null;
+    /// <summary>Short note for the Preview heading: "仅显示首帧/首页" (animated GIF / multi-page TIFF) or the WPS hint for an Office document previewed by its cover; else null.</summary>
+    public string? CurrentContentNote => _currentFile switch
+    {
+        { Kind: MediaKind.Image } => _imageRenderer.FirstFrameOnlyNote,
+        { Kind: MediaKind.Document } f when IsOfficeDocument(f) && !_output.CanHostExternalDocumentWindow => "投到屏幕后在 WPS 中打开编辑",
+        _ => null,
+    };
 
     /// <summary>Video playback diagnostics (A/V sync self-test).</summary>
     public (long Presented, long Dropped) VideoFrameStats =>
@@ -391,6 +396,8 @@ public sealed class PlaybackEngine : IDisposable
         _stateMachine = channel == PlaybackChannel.Program ? stateMachine : null;
         _output = output;
         _videoSurface = videoSurface;
+        // Preview fills its width (vertical overflow cropped); the extended display shows the whole frame.
+        _videoScaleMode = channel == PlaybackChannel.Preview ? EveryStage.Rendering.VideoScaleMode.FitWidth : EveryStage.Rendering.VideoScaleMode.Fit;
         _settingsStore = settingsStore;
         _scenarioStore = scenarioStore;
         if (_stateMachine != null) _stateMachine.StateChanged += OnOutputStateChanged;
@@ -818,7 +825,7 @@ public sealed class PlaybackEngine : IDisposable
         try
         {
             _output.ContentSurface.SetFrame(null);
-            _pdfRenderer.SetTargetSize(_output.ContentSurface.ClientSize);
+            _pdfRenderer.SetTargetSize(PdfTargetSize());
             await _pdfRenderer.LoadAsync(file.SourcePath);
             if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile)) return;
             _output.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
@@ -1358,6 +1365,18 @@ public sealed class PlaybackEngine : IDisposable
         _output.Post(new Action(() => HandleCompletion(file)));
     }
 
+    /// <summary>Render pages at the size they will actually be drawn: the full width when the surface fills
+    /// its width (Preview — otherwise a page fitted to a short, wide area gets upscaled and blurry), the
+    /// whole surface otherwise (extended display).</summary>
+    private System.Drawing.Size PdfTargetSize()
+    {
+        var size = _output.ContentSurface.ClientSize;
+        int width = Math.Max(1, size.Width);
+        return _output.ContentSurface.ScaleMode == EveryStage.Rendering.VideoScaleMode.FitWidth
+            ? new System.Drawing.Size(width, width * 8) // height effectively unbounded: FitPage scales by width
+            : new System.Drawing.Size(width, Math.Max(1, size.Height));
+    }
+
     private void OnVideoFirstFrame()
     {
         var file = _currentFile;
@@ -1379,10 +1398,13 @@ public sealed class PlaybackEngine : IDisposable
         try
         {
             var size = _output.ContentSurface.ClientSize;
-            size = new System.Drawing.Size(Math.Max(320, size.Width), Math.Max(240, size.Height));
-            using var cover = OfficeThumbnailReader.Read(file.SourcePath, size);
-            _audioVisualFrame = AudioVisualRenderer.CreateCoverCard(size, cover, System.IO.Path.GetFileName(file.SourcePath),
-                "Office 文档 · 投到屏幕后在 WPS 中打开并编辑");
+            size = new System.Drawing.Size(Math.Max(1, size.Width), Math.Max(1, size.Height));
+            // The embedded cover itself, scaled to the preview width like any image (the reader fits within
+            // the target, so an unbounded height means "scale by width"). The WPS note goes to the Preview
+            // heading (CurrentContentNote) instead of shrinking the cover into a card.
+            var cover = OfficeThumbnailReader.Read(file.SourcePath, new System.Drawing.Size(size.Width, size.Width * 8));
+            _audioVisualFrame = cover ?? AudioVisualRenderer.CreateCoverCard(size, null, System.IO.Path.GetFileName(file.SourcePath),
+                "Office 文档 · 无内嵌封面");
             _output.ContentSurface.SetFrame(_audioVisualFrame);
             SetState(PlaybackChannelState.Playing);
         }

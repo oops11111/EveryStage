@@ -48,7 +48,7 @@ internal static class PreviewProgramTests
             form.Controls.Add(previewSurface);
             _ = form.Handle;
             form.PerformLayout();
-            Require(Math.Abs(previewSurface.Viewport.Width / (double)previewSurface.Viewport.Height - 4.0 / 3.0) < 0.02, "Preview viewport is not 4:3.");
+            Require(previewSurface.Viewport == previewSurface.ClientRectangle, "Preview content does not use the whole preview area.");
 
             // Hosted CI runners have no GPU video processor and no audio endpoint. Probe both, run what the
             // machine supports and report the rest as SKIP (the app itself degrades the same way: no video
@@ -99,7 +99,7 @@ internal static class PreviewProgramTests
             Console.WriteLine("PASS: internal preview without an extended display (images, video with/without audio, audio)");
             foreach (var line in matrix) Console.WriteLine("  FORMAT " + line);
 
-            // ── 2. Image aspect ratio: 2:1 image in the 4:3 viewport is letterboxed, not stretched ──
+            // ── 2. Preview fills its width, keeps the aspect ratio, crops vertically when needed ──────
             preview.RequestPlay(Media(Path.Combine(media, "wide.png")));
             Require(WaitFor(() => preview.State == PlaybackChannelState.Playing, 5000), "Wide PNG did not load.");
             Pump(200);
@@ -108,10 +108,25 @@ internal static class PreviewProgramTests
                 previewSurface.ContentSurface.DrawToBitmap(shot, new Rectangle(Point.Empty, shot.Size));
                 var top = shot.GetPixel(shot.Width / 2, 2);
                 var middle = shot.GetPixel(shot.Width / 2, shot.Height / 2);
+                var leftEdge = shot.GetPixel(1, shot.Height / 2);
+                var rightEdge = shot.GetPixel(shot.Width - 2, shot.Height / 2);
                 Require(top.R < 30 && top.G < 30 && top.B < 30, "Letterbox band missing above a wide image (image was stretched).");
-                Require(middle.R > 200 && middle.G < 60, "Wide image content not drawn in the middle of the viewport.");
+                Require(middle.R > 200 && middle.G < 60, "Wide image content not drawn in the middle of the preview.");
+                Require(leftEdge.R > 200 && rightEdge.R > 200, "Wide image does not fill the preview width.");
             }
-            Console.WriteLine("PASS: images keep their aspect ratio inside the 4:3 preview viewport");
+            preview.RequestPlay(Media(Path.Combine(media, "tall.png")));
+            Require(WaitFor(() => preview.State == PlaybackChannelState.Playing, 5000), "Tall PNG did not load.");
+            Pump(200);
+            using (var shot = new Bitmap(previewSurface.ContentSurface.Width, previewSurface.ContentSurface.Height))
+            {
+                previewSurface.ContentSurface.DrawToBitmap(shot, new Rectangle(Point.Empty, shot.Size));
+                foreach (var p in new[] { new Point(1, 1), new Point(shot.Width - 2, 1), new Point(1, shot.Height - 2), new Point(shot.Width / 2, shot.Height / 2) })
+                {
+                    var c = shot.GetPixel(p.X, p.Y);
+                    Require(c.B > 200 && c.R < 60, $"Tall image not scaled to full width (pixel {p} is {c}): it was fitted instead of filling the width.");
+                }
+            }
+            Console.WriteLine("PASS: preview fills its width with the aspect ratio kept (wide content letterboxed, tall content cropped top/bottom)");
 
             // ── 3. Video: A/V sync, silent video, pause / seek / loop ─────────────────────────────
             var av = Media(Path.Combine(media, "av.mp4"));
@@ -322,9 +337,13 @@ internal static class PreviewProgramTests
         Require(src.Width == 1920 && dst.Width == 400 && dst.Height == 225 && dst.Top == 37, "Fit rectangle wrong for 16:9 in 4:3.");
         (src, dst) = SwapChainPresenter.ComputeRects(VideoScaleMode.Fill, 1920, 1080, 400, 300);
         Require(dst.Width == 400 && dst.Height == 300 && src.Height == 1080 && src.Width == 1440 && src.Left == 240, "Fill rectangle wrong for 16:9 in 4:3.");
+        (src, dst) = SwapChainPresenter.ComputeRects(VideoScaleMode.FitWidth, 1920, 1080, 400, 300);
+        Require(src.Width == 1920 && src.Height == 1080 && dst.Left == 0 && dst.Width == 400 && dst.Height == 225 && dst.Top == 37, "FitWidth wrong for a wide frame (should span the width, bars top/bottom).");
+        (src, dst) = SwapChainPresenter.ComputeRects(VideoScaleMode.FitWidth, 1080, 1920, 400, 300);
+        Require(dst.Width == 400 && dst.Height == 300 && src.Width == 1080 && src.Height == 810 && src.Top == 555, "FitWidth wrong for a tall frame (should span the width, crop top/bottom).");
         (src, dst) = SwapChainPresenter.ComputeRects(VideoScaleMode.Stretch, 1920, 1080, 400, 300);
         Require(src.Width == 1920 && dst.Width == 400 && dst.Height == 300, "Stretch rectangle wrong.");
-        Console.WriteLine("PASS: video fit / fill / stretch rectangles keep the aspect ratio");
+        Console.WriteLine("PASS: video fit-width / fit / fill / stretch rectangles");
     }
 
     /// <summary>Returns (file name, null) for generated fixtures and (extension, reason) for formats in
@@ -366,6 +385,7 @@ internal static class PreviewProgramTests
 
         // Fixtures used by specific tests (not part of the format matrix loop).
         SaveSolid(Path.Combine(dir, "wide.png"), 200, 100, Color.Red, ImageFormat.Png);
+        SaveSolid(Path.Combine(dir, "tall.png"), 100, 200, Color.Blue, ImageFormat.Png);
         File.WriteAllText(Path.Combine(dir, "broken.mp4"), "this is not a video file");
 
         // Every whitelisted extension must be covered by the matrix (verified or explicitly unverified).
@@ -380,7 +400,7 @@ internal static class PreviewProgramTests
 
     private static string DescribePlaying(PlaybackEngine engine, MediaFile file) => file.Kind switch
     {
-        MediaKind.Image => $"图片 {engine.CurrentThumbnail?.Width}x{engine.CurrentThumbnail?.Height}{(engine.CurrentImageNote is { } n ? "，" + n : "")}",
+        MediaKind.Image => $"图片 {engine.CurrentThumbnail?.Width}x{engine.CurrentThumbnail?.Height}{(engine.CurrentContentNote is { } n ? "，" + n : "")}",
         MediaKind.Video => $"视频 {engine.CurrentVideoCodec}{(engine.CurrentVideoHasAudio ? " + 音轨" : "，无音轨")}，时长 {engine.Duration?.TotalSeconds:F2}s",
         _ => $"音频，时长 {engine.Duration?.TotalSeconds:F2}s",
     };

@@ -65,7 +65,7 @@ Program.cs：只有绑定了扩展屏才创建 OverlayWindow / VideoSurface / Pl
 | 层 | 文件 | 要点 |
 |---|---|---|
 | 输出抽象 | `Display/IPlaybackOutput.cs`（新）、`Display/OverlayWindow.cs` | 引擎只依赖「内容画布 + 视频宿主 + 投递到 UI 线程」；扩展屏窗口实现它 |
-| 预览画布 | `Display/PreviewSurface.cs`（新） | 主窗口内的预监器：居中 4:3 视口，图片等比适配、背景主题色；错误卡片覆盖层 |
+| 预览画布 | `Display/PreviewSurface.cs`（新） | 主窗口内的预监器：内容横向铺满预览区（保持宽高比，纵向超出部分上下居中裁切，不足则上下留黑边）；视频默认「满宽」，可切换适应/填充；Office 文档显示内嵌封面；错误卡片覆盖层 |
 | 引擎 | `Playback/PlaybackEngine.cs`、`Playback/PlaybackState.cs`（新） | 同一类的两个实例（Preview/Program）；统一状态 Idle/Loading/Playing/Paused/Failed、位置/时长/跳转/循环/音量/静音/完成；Take 快照；统一失败处理与错误卡片数据；投屏开关只拦 Program |
 | 输出状态 | `StateMachine/OutputStateMachine.cs` | 新增当前输出源（本地媒体/设备来投）；关闭投屏开关只切断本地 Program，不影响设备来投 |
 | 视频 | `ContentEngine/VideoContentController.cs`、`Rendering/Decode/VideoDecodeSource.cs`、`Rendering/SwapChainPresenter.cs`、`Display/VideoSurface.cs` | 音轨可选（无音轨按墙钟定速）；音频保持 250ms 预缓冲（原每帧只补一块 AAC 会欠载）；暂停/恢复/跳转（解码到目标点）/音量/静音/淡入淡出；视频适应/填充/拉伸；分阶段错误 + 编码信息 |
@@ -82,7 +82,7 @@ Program.cs：只有绑定了扩展屏才创建 OverlayWindow / VideoSurface / Pl
 全部 6 个项目 Debug/Release 构建 0 警告 0 错误；CoreSelfTests 全通过；WindowsSelfTests 全通过，含：
 
 - 无扩展屏内部预览：图片、带/不带音轨视频、音频（格式矩阵见下）
-- 图片在 4:3 视口内保持宽高比（2:1 图片上下留黑边，未拉伸）
+- 预览内容横向铺满且保持宽高比：2:1 图片上下留黑边；1:2 图片横向铺满、上下裁切；视频满宽矩形计算（宽画面、竖画面）
 - 带音轨 MP4 音画同步：90/90 帧呈现、0 丢帧，3.0 秒片段用时 3.06–3.08 秒
 - 无音轨 MP4 正常播放（墙钟定速）
 - 视频、音频：暂停/恢复/播放中跳转/暂停中跳转/循环

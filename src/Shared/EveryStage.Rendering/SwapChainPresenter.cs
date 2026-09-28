@@ -16,6 +16,9 @@ public enum VideoScaleMode
     /// <summary>Keep the frame's aspect ratio and cover the whole output, cropping the overflow
     /// equally from both sides.</summary>
     Fill,
+    /// <summary>Keep the frame's aspect ratio and always use the full output width: a frame taller than
+    /// the output is cropped equally top and bottom, a wider one is letterboxed top and bottom.</summary>
+    FitWidth,
 }
 
 /// <summary>
@@ -164,6 +167,19 @@ public sealed class SwapChainPresenter : IDisposable
         var fullDest = new RectI(0, 0, outputWidth, outputHeight);
         if (mode == VideoScaleMode.Stretch || frameWidth <= 0 || frameHeight <= 0 || outputWidth <= 0 || outputHeight <= 0)
             return (fullSource, fullDest);
+
+        if (mode == VideoScaleMode.FitWidth)
+        {
+            double scale = outputWidth / (double)frameWidth;
+            int scaledHeight = (int)Math.Round(frameHeight * scale);
+            if (scaledHeight <= outputHeight)
+            {
+                int h = Math.Max(1, scaledHeight);
+                return (fullSource, new RectI(0, (outputHeight - h) / 2, outputWidth, h));
+            }
+            int croppedHeight = Math.Clamp((int)Math.Round(outputHeight / scale), 1, frameHeight);
+            return (new RectI(0, (frameHeight - croppedHeight) / 2, frameWidth, croppedHeight), fullDest);
+        }
 
         double scaleFit = Math.Min(outputWidth / (double)frameWidth, outputHeight / (double)frameHeight);
         if (mode == VideoScaleMode.Fit)

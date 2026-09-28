@@ -137,7 +137,7 @@ internal sealed class SharedPreviewDock : Panel
         var volumeIcon = new Label { Text = "\uE767", Font = new Font(IconFont, 10F), Dock = DockStyle.Fill, ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleCenter, Margin = Padding.Empty };
         _volume = new MediaTrack { Dock = DockStyle.Fill, Margin = new Padding(2, 0, 8, 0), Value = 1f };
         _loopButton = IconButton("\uE8EE", "循环播放当前文件（不保存到文件设置）");
-        _scaleButton = TextButton("适应", "视频显示：适应（完整显示）/ 填充（铺满裁切）");
+        _scaleButton = TextButton("满宽", "视频显示：满宽（横向铺满，上下可能裁切）→ 适应（完整显示）→ 填充（铺满裁切）");
         _takeButton = TextButton("投到屏幕", "把预览中的内容投到扩展屏正式输出");
         ModernUi.StyleButton(_takeButton, primary: true);
         _stopOutputButton = TextButton("停止输出", "停止扩展屏上的正式输出（预览保留）");
@@ -150,7 +150,7 @@ internal sealed class SharedPreviewDock : Panel
         // The fixed-width columns take ~616px, which left the progress track only a few pixels wide at
         // the default window size. While the track would be shorter than MinProgressWidth, drop the
         // least essential columns in order: the volume icon + slider, then the timecode, then the
-        // 适应/填充 button (video only). Default size drops just the volume; 800×600 drops all three.
+        // 满宽/适应/填充 button (video only). Default size drops just the volume; 800×600 drops all three.
         int[][] droppable = { new[] { 6, 7 }, new[] { 4 }, new[] { 9 } };
         int dropped = 0;
         transport.Resize += (_, _) =>
@@ -217,7 +217,12 @@ internal sealed class SharedPreviewDock : Panel
         _scaleButton.Click += (_, _) =>
         {
             if (_preview == null) return;
-            _preview.VideoScaleMode = _preview.VideoScaleMode == VideoScaleMode.Fill ? VideoScaleMode.Fit : VideoScaleMode.Fill;
+            _preview.VideoScaleMode = _preview.VideoScaleMode switch
+            {
+                VideoScaleMode.FitWidth => VideoScaleMode.Fit,
+                VideoScaleMode.Fit => VideoScaleMode.Fill,
+                _ => VideoScaleMode.FitWidth,
+            };
             RefreshNow();
         };
         _takeButton.Click += (_, _) => TakeRequested?.Invoke();
@@ -273,7 +278,7 @@ internal sealed class SharedPreviewDock : Panel
     /// <summary>Idle monitor shows the branded splash rather than a bare dark box.</summary>
     private void ShowIdleSplash()
     {
-        _placeholder ??= PreviewPlaceholder.Create(800, 600);
+        _placeholder ??= PreviewPlaceholder.Create(800, 450); // wide splash: the preview fills its width
         PreviewSurface.ShowImageSurface();
         PreviewSurface.ContentSurface.SetFrame(_placeholder);
     }
@@ -298,7 +303,7 @@ internal sealed class SharedPreviewDock : Panel
             PlaybackChannelState.Failed => ("● 播放失败" + fileLabel, ModernUi.Danger),
             _ => ("● 待机 · 双击文件在此预览", ModernUi.Muted),
         };
-        if (preview?.CurrentImageNote is { } note && state == PlaybackChannelState.Playing) text += "（" + note + "）";
+        if (preview?.CurrentContentNote is { } note && state == PlaybackChannelState.Playing) text += "（" + note + "）";
         if (preview?.Muted == true && state is PlaybackChannelState.Playing or PlaybackChannelState.Paused) text += " · 预监静音";
         SetText(_previewState, text, color);
 
@@ -333,7 +338,7 @@ internal sealed class SharedPreviewDock : Panel
         _loopButton.Enabled = hasFile;
         _loopButton.ForeColor = preview?.LoopCurrent == true ? ModernUi.Accent : ModernUi.Text;
         _scaleButton.Enabled = file?.Kind == MediaKind.Video && hasFile;
-        SetText(_scaleButton, preview?.VideoScaleMode == VideoScaleMode.Fill ? "填充" : "适应", null);
+        SetText(_scaleButton, preview?.VideoScaleMode switch { VideoScaleMode.Fill => "填充", VideoScaleMode.Fit => "适应", _ => "满宽" }, null);
 
         // Disabled (not just a warning on click) while no extended display is bound.
         _takeButton.Enabled = _program != null && hasFile && state != PlaybackChannelState.Failed && state != PlaybackChannelState.Loading;

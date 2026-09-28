@@ -17,6 +17,15 @@ namespace EveryStage.Terminal.ContentEngine;
 public sealed class ContentSurface : Control
 {
     private Bitmap? _frame;
+    private EveryStage.Rendering.VideoScaleMode _scaleMode = EveryStage.Rendering.VideoScaleMode.Fit;
+
+    /// <summary>How the frame maps onto this surface. Fit (default, the extended display) shows the whole
+    /// frame; FitWidth (the Preview monitor) always fills the width and crops top/bottom as needed.</summary>
+    public EveryStage.Rendering.VideoScaleMode ScaleMode
+    {
+        get => _scaleMode;
+        set { _scaleMode = value; Invalidate(); }
+    }
 
     public ContentSurface()
     {
@@ -38,12 +47,33 @@ public sealed class ContentSurface : Control
 
         e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
 
-        float scale = Math.Min((float)Width / _frame.Width, (float)Height / _frame.Height);
+        float scale = _scaleMode switch
+        {
+            EveryStage.Rendering.VideoScaleMode.FitWidth => (float)Width / _frame.Width,
+            EveryStage.Rendering.VideoScaleMode.Fill => Math.Max((float)Width / _frame.Width, (float)Height / _frame.Height),
+            EveryStage.Rendering.VideoScaleMode.Stretch => 0f, // handled below
+            _ => Math.Min((float)Width / _frame.Width, (float)Height / _frame.Height),
+        };
+        if (_scaleMode == EveryStage.Rendering.VideoScaleMode.Stretch)
+        {
+            DrawNoEdgeBleed(e.Graphics, new Rectangle(0, 0, Width, Height));
+            return;
+        }
         int drawWidth = (int)(_frame.Width * scale);
         int drawHeight = (int)(_frame.Height * scale);
         int x = (Width - drawWidth) / 2;
         int y = (Height - drawHeight) / 2;
 
-        e.Graphics.DrawImage(_frame, x, y, drawWidth, drawHeight);
+        DrawNoEdgeBleed(e.Graphics, new Rectangle(x, y, drawWidth, drawHeight));
+    }
+
+    /// <summary>Scaled draw without the dark 1px seam GDI+'s bicubic filter otherwise blends into every
+    /// edge (it samples past the bitmap and mixes in transparent black); mirroring the edge pixels
+    /// (TileFlipXY) keeps the border the image's own colour — most visible when the Preview enlarges.</summary>
+    private void DrawNoEdgeBleed(Graphics g, Rectangle destination)
+    {
+        using var attributes = new System.Drawing.Imaging.ImageAttributes();
+        attributes.SetWrapMode(WrapMode.TileFlipXY);
+        g.DrawImage(_frame!, destination, 0, 0, _frame!.Width, _frame.Height, GraphicsUnit.Pixel, attributes);
     }
 }
