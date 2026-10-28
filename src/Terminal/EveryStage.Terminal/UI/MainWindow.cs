@@ -93,7 +93,7 @@ public sealed class MainWindow : GradientForm
         ClientSize = new Size(960, 720);
         MinimumSize = new Size(800, 600);
         BackColor = ModernUi.Background;
-        Font = new Font("Segoe UI", 10F);
+        Font = new Font(ModernUi.UiFont, 10F);
         AutoScaleMode = AutoScaleMode.Dpi;
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.None;
@@ -118,22 +118,22 @@ public sealed class MainWindow : GradientForm
         };
         var statusDot = new Label
         {
-            Text = "●", ForeColor = ModernUi.Success, Font = new Font("Segoe UI", 8F),
+            Text = "●", ForeColor = ModernUi.Success, Font = new Font(ModernUi.UiFont, 8F),
             AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Bounds = new Rectangle(14, 10, 14, 18),
         };
         var statusTitle = new Label
         {
-            Text = "主屏幕输出", ForeColor = ModernUi.Text, Font = new Font("Segoe UI Semibold", 10.5F),
+            Text = "主屏幕输出", ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 10.5F),
             AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Bounds = new Rectangle(30, 8, 160, 22),
         };
         var statusChevron = new Label
         {
-            Text = "›", ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 12F),
+            Text = "›", ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 12F),
             AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Bounds = new Rectangle(180, 6, 24, 22),
         };
         _statusLabel = new Label
         {
-            ForeColor = ModernUi.Success, Font = new Font("Segoe UI", 8.5F),
+            ForeColor = ModernUi.Success, Font = new Font(ModernUi.UiFont, 8.5F),
             AutoSize = false, AutoEllipsis = true, Bounds = new Rectangle(16, 32, 190, 17),
             TextAlign = ContentAlignment.MiddleLeft,
         };
@@ -152,7 +152,7 @@ public sealed class MainWindow : GradientForm
         {
             Text = "让每个阶段\r\n都精彩呈现",
             ForeColor = ModernUi.Muted,
-            Font = new Font("Segoe UI", 9.5F),
+            Font = new Font(ModernUi.UiFont, 9.5F),
             AutoSize = false,
             TextAlign = ContentAlignment.TopLeft,
             Dock = DockStyle.Bottom,

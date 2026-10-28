@@ -143,12 +143,12 @@ public sealed class FilesPanel : UserControl
         var pageTitle = new Label
         {
             Text = "文件", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI Semibold", 13F), TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font(ModernUi.UiFontSemibold, 13F), TextAlign = ContentAlignment.MiddleLeft,
         };
         var pageDescription = new Label
         {
             Text = "管理本地媒体文件，用于活动播放", Dock = DockStyle.Fill,
-            ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 8.5F), TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft,
         };
         heading.Controls.Add(pageDescription);
         heading.Controls.Add(pageTitle);
@@ -262,7 +262,7 @@ public sealed class FilesPanel : UserControl
             BackColor = ModernUi.Background,
             ForeColor = ModernUi.Text,
             BorderStyle = BorderStyle.None,
-            Font = new Font("Segoe UI", 10F),
+            Font = new Font(ModernUi.UiFont, 10F),
         };
         _listView.DrawItem += DrawMediaCard;
         _listView.SelectedIndexChanged += (_, _) =>
@@ -311,7 +311,7 @@ public sealed class FilesPanel : UserControl
             FilePlayRequested?.Invoke(file); // internal Preview playback — never an external player
             _audioBar.RefreshLiveState();
         };
-        var audioTitleFont = new Font("Segoe UI Semibold", 10.5F);
+        var audioTitleFont = new Font(ModernUi.UiFontSemibold, 10.5F);
         var audioHeader = new FlowLayoutPanel
         {
             Dock = DockStyle.Top, Height = TextRenderer.MeasureText("音频播放区 Ag", audioTitleFont).Height + 8,
@@ -319,7 +319,7 @@ public sealed class FilesPanel : UserControl
             BackColor = Color.Transparent, Margin = Padding.Empty, Padding = new Padding(2, 2, 0, 0),
         };
         audioHeader.Controls.Add(new Label { Text = "音频播放区", AutoSize = true, ForeColor = ModernUi.Text, Font = audioTitleFont, Margin = new Padding(0, 0, 12, 0) });
-        audioHeader.Controls.Add(new Label { Text = "管理音频文件，用于背景音乐播放，可加入活动音轨", AutoSize = true, ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 9F), Margin = new Padding(0, 3, 0, 0) });
+        audioHeader.Controls.Add(new Label { Text = "管理音频文件，用于背景音乐播放，可加入活动音轨", AutoSize = true, ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 9F), Margin = new Padding(0, 3, 0, 0) });
         var audioCard = new GlassPanel
         {
             Dock = DockStyle.Bottom, Padding = new Padding(10, 4, 10, 8), CornerRadius = 10,
@@ -355,7 +355,7 @@ public sealed class FilesPanel : UserControl
             ForeColor = ModernUi.Muted,
             BackColor = ModernUi.Surface,
             TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI", 12F),
+            Font = new Font(ModernUi.UiFont, 12F),
             Size = new Size(420, 110),
             Visible = false,
         };
@@ -715,7 +715,7 @@ public sealed class FilesPanel : UserControl
                 | ControlStyles.ResizeRedraw | ControlStyles.Selectable | ControlStyles.SupportsTransparentBackColor, true);
             Cursor = Cursors.Hand;
             TabStop = true;
-            Font = new Font("Segoe UI", 10F);
+            Font = new Font(ModernUi.UiFont, 10F);
             AccessibleRole = AccessibleRole.PageTabList;
             AccessibleName = "文件类型筛选";
         }
@@ -1380,7 +1380,7 @@ public sealed class FilesPanel : UserControl
         if (media != null)
         {
             var (badgeText, badgeColor) = FileTypeBadge.For(media);
-            using var badgeFont = new Font("Segoe UI", 8F, FontStyle.Bold);
+            using var badgeFont = new Font(ModernUi.UiFont, 8F, FontStyle.Bold);
             var textSize = TextRenderer.MeasureText(badgeText, badgeFont, Size.Empty, TextFormatFlags.NoPadding);
             var badge = new Rectangle(imageRect.Left + 2, imageRect.Bottom - 18, textSize.Width + 10, 17);
             using (var badgePath = RoundedCard(badge, 4))
@@ -1393,7 +1393,7 @@ public sealed class FilesPanel : UserControl
         // File name with the ⋯ affordance on the same row, as in the reference (date/size live in
         // the item tooltip — see CardToolTip).
         string name = media != null ? Path.GetFileName(media.SourcePath) : e.Item.Text;
-        using (var nameFont = new Font("Segoe UI", 9F))
+        using (var nameFont = new Font(ModernUi.UiFont, 9F))
             TextRenderer.DrawText(g, name, nameFont, layout.Name,
                 playing ? ModernUi.Success : ModernUi.Text,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
@@ -1470,7 +1470,7 @@ public sealed class FilesPanel : UserControl
         if (caption != null)
         {
             using var captionBrush = new SolidBrush(Color.FromArgb(210, 225, 240));
-            using var captionFont = new Font("Segoe UI", 11F);
+            using var captionFont = new Font(ModernUi.UiFont, 11F);
             using var centered = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             graphics.DrawString(caption, captionFont, captionBrush, new RectangleF(0, 0, 240, 150), centered);
         }

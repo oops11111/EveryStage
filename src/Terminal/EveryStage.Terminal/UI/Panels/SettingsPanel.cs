@@ -68,7 +68,7 @@ public sealed class SettingsPanel : UserControl
             Text = "主题",
             AutoSize = true,
             Location = new Point(16, 84),
-            Font = new Font("Segoe UI Semibold", 10F),
+            Font = new Font(ModernUi.UiFontSemibold, 10F),
             ForeColor = ModernUi.Text,
         };
         _themeComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Visible = false };
@@ -112,7 +112,7 @@ public sealed class SettingsPanel : UserControl
         Label EffectDot(string text, Color dot, int x, int y) => new()
         {
             Text = "●  " + text, ForeColor = dot, AutoSize = true, BackColor = Color.Transparent,
-            Font = new Font("Segoe UI", 8.5F), Location = new Point(x, y),
+            Font = new Font(ModernUi.UiFont, 8.5F), Location = new Point(x, y),
         };
         var themeEffectBadge = EffectDot("即时生效", ModernUi.Accent, 470, 85);
 
@@ -244,12 +244,12 @@ public sealed class SettingsPanel : UserControl
         heading.Controls.Add(new Label
         {
             Text = "自定义终端的显示、播放和设备相关选项", Dock = DockStyle.Fill,
-            ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 8.5F), TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft,
         });
         heading.Controls.Add(new Label
         {
             Text = "设置", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI Semibold", 13F), TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font(ModernUi.UiFontSemibold, 13F), TextAlign = ContentAlignment.MiddleLeft,
         });
 
         var tabBar = new TableLayoutPanel

@@ -37,7 +37,7 @@ public sealed class PairingConfirmationDialog : Form
             Text = code,
             Bounds = new Rectangle(12, 18, 356, 52),
             TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI Semibold", 28F),
+            Font = new Font(ModernUi.UiFontSemibold, 28F),
             ForeColor = ModernUi.Accent,
         };
         var codeHint = new Label

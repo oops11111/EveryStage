@@ -117,8 +117,8 @@ internal sealed class SharedPreviewDock : Panel
 
         // Row heights come from the real fonts/control sizes, and every cell has a zero margin
         // (TableLayoutPanel's default 3px cell margins used to clip the buttons and cards).
-        var titleFont = new Font("Segoe UI Semibold", 10.5F);
-        var smallFont = new Font("Segoe UI", 9F);
+        var titleFont = new Font(ModernUi.UiFontSemibold, 10.5F);
+        var smallFont = new Font(ModernUi.UiFont, 9F);
         int titleHeight = TextRenderer.MeasureText("本地预览 Ag", titleFont).Height;
         var layout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 1, RowCount = 4, Padding = Padding.Empty, Margin = Padding.Empty };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, titleHeight + 10));      // heading
@@ -492,9 +492,9 @@ internal sealed class SharedPreviewDock : Panel
             var name = new Label
             {
                 Text = title, Dock = DockStyle.Top, Height = 18, ForeColor = ModernUi.Text,
-                Font = new Font("Segoe UI Semibold", 9F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
+                Font = new Font(ModernUi.UiFontSemibold, 9F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
             };
-            _state = new Label { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 8F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+            _state = new Label { Dock = DockStyle.Fill, Font = new Font(ModernUi.UiFont, 8F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
             labels.Controls.Add(_state);
             labels.Controls.Add(name);
             Card.Controls.Add(labels);
@@ -544,7 +544,7 @@ internal sealed class SharedPreviewDock : Panel
             _caption = new Label
             {
                 Dock = DockStyle.Bottom, Height = 30, BackColor = Color.FromArgb(210, 12, 29, 49),
-                ForeColor = ModernUi.Text, Font = new Font("Segoe UI", 8.5F),
+                ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFont, 8.5F),
                 TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 76, 0),
                 AutoEllipsis = true,
             };
@@ -568,9 +568,9 @@ internal sealed class SharedPreviewDock : Panel
             _title = new Label
             {
                 Text = "设备投屏窗口", Dock = DockStyle.Top, Height = 19, ForeColor = ModernUi.Text,
-                Font = new Font("Segoe UI Semibold", 9F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
+                Font = new Font(ModernUi.UiFontSemibold, 9F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
             };
-            _state = new Label { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 8F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+            _state = new Label { Dock = DockStyle.Fill, Font = new Font(ModernUi.UiFont, 8F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
             _labels.Controls.Add(_state);
             _labels.Controls.Add(_title);
             Card.Controls.Add(_labels);
@@ -619,8 +619,8 @@ internal sealed class SharedPreviewDock : Panel
         {
             BackColor = Color.FromArgb(24, 14, 20);
             Padding = new Padding(14, 8, 14, 8);
-            var smallFont = new Font("Segoe UI", 8.5F);
-            _title = new Label { Dock = DockStyle.Top, Height = 22, ForeColor = Color.FromArgb(255, 120, 120), Font = new Font("Segoe UI Semibold", 10F), AutoEllipsis = true };
+            var smallFont = new Font(ModernUi.UiFont, 8.5F);
+            _title = new Label { Dock = DockStyle.Top, Height = 22, ForeColor = Color.FromArgb(255, 120, 120), Font = new Font(ModernUi.UiFontSemibold, 10F), AutoEllipsis = true };
             _detail = new Label { Dock = DockStyle.Top, Height = 18, ForeColor = Color.FromArgb(210, 214, 222), Font = smallFont, AutoEllipsis = true };
             _suggestion = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(160, 170, 186), Font = smallFont, AutoEllipsis = true };
             var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
@@ -635,7 +635,7 @@ internal sealed class SharedPreviewDock : Panel
 
             static RoundedActionButton Action(string text, Action onClick, bool primary = false)
             {
-                var button = new RoundedActionButton { Text = text, AutoSize = false, Width = TextRenderer.MeasureText(text, new Font("Segoe UI", 9F)).Width + 26, Height = 28, Margin = new Padding(0, 2, 8, 0), Padding = Padding.Empty };
+                var button = new RoundedActionButton { Text = text, AutoSize = false, Width = TextRenderer.MeasureText(text, new Font(ModernUi.UiFont, 9F)).Width + 26, Height = 28, Margin = new Padding(0, 2, 8, 0), Padding = Padding.Empty };
                 ModernUi.StyleButton(button, primary: primary);
                 button.Click += (_, _) => onClick();
                 return button;

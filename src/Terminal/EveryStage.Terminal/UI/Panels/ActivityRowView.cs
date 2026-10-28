@@ -33,12 +33,12 @@ internal interface IActivityRowHost
 /// </summary>
 internal sealed class ActivityRowView : Control
 {
-    private static readonly Font TitleFont = new("Segoe UI Semibold", 10.5F);
-    private static readonly Font BodyFont = new("Segoe UI", 9F);
-    private static readonly Font SmallFont = new("Segoe UI", 8.5F);
-    private static readonly Font ChipTitleFont = new("Segoe UI Semibold", 9F);
-    private static readonly Font BadgeFont = new("Segoe UI", 7.5F, FontStyle.Bold);
-    private static readonly Font NumberFont = new("Segoe UI Semibold", 9.5F);
+    private static readonly Font TitleFont = new(ModernUi.UiFontSemibold, 10.5F);
+    private static readonly Font BodyFont = new(ModernUi.UiFont, 9F);
+    private static readonly Font SmallFont = new(ModernUi.UiFont, 8.5F);
+    private static readonly Font ChipTitleFont = new(ModernUi.UiFontSemibold, 9F);
+    private static readonly Font BadgeFont = new(ModernUi.UiFont, 7.5F, FontStyle.Bold);
+    private static readonly Font NumberFont = new(ModernUi.UiFontSemibold, 9.5F);
 
     private readonly IActivityRowHost _host;
     private readonly Activity _activity;

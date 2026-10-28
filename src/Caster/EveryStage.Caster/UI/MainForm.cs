@@ -204,7 +204,7 @@ public sealed class MainForm : GradientForm
         {
             Bounds = new Rectangle(24, 104, 472, 190),
             DisplayMember = nameof(TerminalListEntry.DisplayText), // else ListBox shows the record's generated ToString().
-            Font = new Font("Segoe UI", 11F),
+            Font = new Font(ModernUi.UiFont, 11F),
             DrawMode = DrawMode.OwnerDrawFixed,
             ItemHeight = LogicalToDeviceUnits(84), // owner-drawn: not touched by auto-scaling
             BorderStyle = BorderStyle.None,
@@ -234,7 +234,7 @@ public sealed class MainForm : GradientForm
         // PLANNING.md §12"选择捕获哪个显示器"——之前ScreenCaptureSource固定捕获outputIndex=0，
         // 多显示器场景完全没有UI选择。RefreshMonitorList()（下面）在构造函数末尾和每次回到待机态
         // 时都会重新枚举，跟这一轮刚修过的SettingsPanel显示器列表是同一个"别只枚举一次"教训。
-        var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font("Segoe UI Semibold", 16F), AutoSize = true, Location = new Point(24, 30) };
+        var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font(ModernUi.UiFontSemibold, 16F), AutoSize = true, Location = new Point(24, 30) };
         var connected = new Label { Text = "●  已连接", ForeColor = ModernUi.Success, AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Bounds = new Rectangle(360, 34, 136, 24) };
         var targetLabel = new Label { Text = "选择终端", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(24, 80) };
         var monitorLabel = new Label { Text = "显示器", ForeColor = ModernUi.Muted, AutoSize = true, Bounds = new Rectangle(24, 316, 472, 22) };
@@ -281,16 +281,16 @@ public sealed class MainForm : GradientForm
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
         // 布局对齐设计图：左侧显示器图标，右侧上「终端名」下「计时」，再下一条质量行。
-        _pairedWithLabel = new Label { Bounds = new Rectangle(120, 22, 344, 30), Font = new Font("Segoe UI Semibold", 15F) };
+        _pairedWithLabel = new Label { Bounds = new Rectangle(120, 22, 344, 30), Font = new Font(ModernUi.UiFontSemibold, 15F) };
         _elapsedLabel = new Label
         {
             Text = "00:00", Bounds = new Rectangle(118, 48, 340, 60),
-            Font = new Font("Segoe UI Semibold", 34F), ForeColor = Color.FromArgb(102, 163, 255),
+            Font = new Font(ModernUi.UiFontSemibold, 34F), ForeColor = Color.FromArgb(102, 163, 255),
         };
         _qualityLabel = new Label
         {
             Text = "●  正在建立连接…", Bounds = new Rectangle(28, 124, 430, 30),
-            Font = new Font("Segoe UI", 10.5F), ForeColor = ModernUi.Success,
+            Font = new Font(ModernUi.UiFont, 10.5F), ForeColor = ModernUi.Success,
         };
         var liveCard = new GlassPanel
         {
@@ -312,7 +312,7 @@ public sealed class MainForm : GradientForm
         {
             Text = "🛡  当前正在共享所选显示器",
             ForeColor = ModernUi.Warning,
-            Font = new Font("Segoe UI Semibold", 11F),
+            Font = new Font(ModernUi.UiFontSemibold, 11F),
             Bounds = new Rectangle(20, 18, 430, 28),
         };
         var privacyCard = new GlassPanel
@@ -331,7 +331,7 @@ public sealed class MainForm : GradientForm
         _stopCastButton.Click += (_, _) => ShowStandby();
         ModernUi.Primary(_stopCastButton, danger: true);
 
-        var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font("Segoe UI Semibold", 16F), AutoSize = true, Location = new Point(24, 30) };
+        var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font(ModernUi.UiFontSemibold, 16F), AutoSize = true, Location = new Point(24, 30) };
         _liveStateLabel = new Label { Text = "●  已连接 · 等待终端投到大屏", ForeColor = ModernUi.Warning, AutoSize = true, Location = new Point(292, 42) };
 
         var diagnosticsNoteLabel = new Label
@@ -1305,8 +1305,8 @@ public sealed class MainForm : GradientForm
         var iconRect = new Rectangle(card.Left + S(20), card.Top + (card.Height - S(40)) / 2, S(48), S(40));
         DrawMonitorGlyph(g, iconRect, Color.FromArgb(150, 178, 220));
 
-        using var titleFont = new Font("Segoe UI Semibold", 12F);
-        using var metaFont = new Font("Segoe UI", 9.5F);
+        using var titleFont = new Font(ModernUi.UiFontSemibold, 12F);
+        using var metaFont = new Font(ModernUi.UiFont, 9.5F);
         int textLeft = iconRect.Right + S(18);
         TextRenderer.DrawText(g, entry.DeviceName, titleFont,
             new Rectangle(textLeft, card.Top + S(14), card.Width - textLeft - S(60) + card.Left, S(28)), ModernUi.Text,

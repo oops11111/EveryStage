@@ -37,12 +37,12 @@ public sealed class DevicesPanel : UserControl
         heading.Controls.Add(new Label
         {
             Text = "管理已配对设备、信任状态与远程操作权限", Dock = DockStyle.Fill,
-            ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 8.5F), TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft,
         });
         heading.Controls.Add(new Label
         {
             Text = "设备", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI Semibold", 13F), TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font(ModernUi.UiFontSemibold, 13F), TextAlign = ContentAlignment.MiddleLeft,
         });
 
         // --- 配对请求 ---
@@ -50,7 +50,7 @@ public sealed class DevicesPanel : UserControl
         var requestTitle = new Label
         {
             Dock = DockStyle.Top, Height = 28, Text = "配对请求", TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font("Segoe UI Semibold", 11F), ForeColor = ModernUi.Text,
+            Font = new Font(ModernUi.UiFontSemibold, 11F), ForeColor = ModernUi.Text,
         };
         _requestCard = new GlassPanel
         {
@@ -77,7 +77,7 @@ public sealed class DevicesPanel : UserControl
         listHeader.Controls.Add(new Label
         {
             Text = "已配对设备", AutoSize = true, ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI Semibold", 11F), Margin = new Padding(0, 9, 8, 0),
+            Font = new Font(ModernUi.UiFontSemibold, 11F), Margin = new Padding(0, 9, 8, 0),
         });
         _deviceCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(0, 12, 0, 0) };
         listHeader.Controls.Add(_deviceCount);
@@ -224,9 +224,9 @@ public sealed class DevicesPanel : UserControl
     /// </summary>
     private sealed class DeviceRow : Control
     {
-        private static readonly Font NameFont = new("Segoe UI Semibold", 10.5F);
-        private static readonly Font BodyFont = new("Segoe UI", 9F);
-        private static readonly Font TagFont = new("Segoe UI", 8.5F);
+        private static readonly Font NameFont = new(ModernUi.UiFontSemibold, 10.5F);
+        private static readonly Font BodyFont = new(ModernUi.UiFont, 9F);
+        private static readonly Font TagFont = new(ModernUi.UiFont, 8.5F);
 
         private readonly PairedDevice _device;
         private readonly Action<PairedDevice> _edit;

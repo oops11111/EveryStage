@@ -225,7 +225,7 @@ internal sealed class DocumentControlBar : Panel
         _pageBox = new TextBox
         {
             Width = 38, Margin = Padding.Empty, TextAlign = HorizontalAlignment.Center, BorderStyle = BorderStyle.FixedSingle,
-            BackColor = ModernUi.Surface, ForeColor = ModernUi.Text, Font = new Font("Segoe UI", 9F),
+            BackColor = ModernUi.Surface, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFont, 9F),
         };
         _toolTip.SetToolTip(_pageBox, "输入页码 / 幻灯片序号后按回车跳转");
         var box = _pageBox;
@@ -238,7 +238,7 @@ internal sealed class DocumentControlBar : Panel
         };
         _items.Add(new Item(box, "跳转页码", () => Status is { PageCount: > 0 }, null, null));
         Controls.Add(box);
-        _pageCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = Padding.Empty, Font = new Font("Segoe UI", 8.5F), BackColor = Color.Transparent };
+        _pageCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = Padding.Empty, Font = new Font(ModernUi.UiFont, 8.5F), BackColor = Color.Transparent };
         _items.Add(new Item(_pageCount, "", () => true, null, null));
         Controls.Add(_pageCount);
     }

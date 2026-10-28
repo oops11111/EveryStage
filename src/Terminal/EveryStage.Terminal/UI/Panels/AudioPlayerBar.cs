@@ -312,7 +312,7 @@ internal sealed class AudioPlayerBar : GlassPanel
         _showLoopLabel = !_compact || w >= S(520);
         int loopWidth = S(18);
         if (_showLoopLabel)
-            using (var loopFont = new Font("Segoe UI", 9F))
+            using (var loopFont = new Font(ModernUi.UiFont, 9F))
                 loopWidth = S(24) + TextRenderer.MeasureText(LoopText, loopFont).Width;
         _loopButton = new Rectangle(_actionButton.Left - S(16) - loopWidth, row - S(12), loopWidth, S(24));
         _loopBox = new Rectangle(_loopButton.Left + S(1), row - S(8), S(16), S(16));
@@ -341,14 +341,14 @@ internal sealed class AudioPlayerBar : GlassPanel
 
         if (_boundFile == null)
         {
-            using var emptyFont = new Font("Segoe UI", 9.5F);
+            using var emptyFont = new Font(ModernUi.UiFont, 9.5F);
             TextRenderer.DrawText(g, EmptyText, emptyFont, _titleRect, ModernUi.Muted,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             return;
         }
 
         // File name doubles as the track selector:「背景音乐.mp3 ▾」.
-        using (var titleFont = new Font("Segoe UI Semibold", 10.5F))
+        using (var titleFont = new Font(ModernUi.UiFontSemibold, 10.5F))
         {
             var nameRect = Rectangle.FromLTRB(_titleRect.Left, _titleRect.Top, _titleRect.Right - S(16), _titleRect.Bottom);
             string name = Path.GetFileName(_boundFile.SourcePath);
@@ -357,7 +357,7 @@ internal sealed class AudioPlayerBar : GlassPanel
             int nameWidth = Math.Min(nameRect.Width, TextRenderer.MeasureText(g, name, titleFont, nameRect.Size, TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding).Width);
             DrawChevron(g, new Point(nameRect.Left + nameWidth + S(12), _titleRect.Top + _titleRect.Height / 2), ModernUi.Muted);
         }
-        using (var timeFont = new Font("Segoe UI", 9F))
+        using (var timeFont = new Font(ModernUi.UiFont, 9F))
             TextRenderer.DrawText(g, PositionText(), timeFont, _timeRect, ModernUi.Muted,
                 (_compact ? TextFormatFlags.Right : TextFormatFlags.Left) | TextFormatFlags.VerticalCenter);
 
@@ -444,7 +444,7 @@ internal sealed class AudioPlayerBar : GlassPanel
         }
         if (!_showLoopLabel) return;
         var labelRect = Rectangle.FromLTRB(_loopBox.Right + S(6), _loopButton.Top, _loopButton.Right, _loopButton.Bottom);
-        using var labelFont = new Font("Segoe UI", 9F);
+        using var labelFont = new Font(ModernUi.UiFont, 9F);
         TextRenderer.DrawText(g, LoopText, labelFont, labelRect, ModernUi.Muted,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }

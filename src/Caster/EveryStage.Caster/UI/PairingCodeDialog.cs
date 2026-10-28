@@ -19,14 +19,14 @@ public sealed class PairingCodeDialog : Form
             Text = $"正在与 \"{terminalName}\" 配对",
             Bounds = new Rectangle(16, 16, 328, 28),
             TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI Semibold", 11F),
+            Font = new Font(ModernUi.UiFontSemibold, 11F),
         };
         _codeLabel = new Label
         {
             Text = "--- ---",
             Bounds = new Rectangle(16, 48, 328, 58),
             TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI Semibold", 30F),
+            Font = new Font(ModernUi.UiFontSemibold, 30F),
             ForeColor = ModernUi.Accent,
         };
         var hint = new Label

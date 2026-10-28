@@ -78,7 +78,7 @@ internal sealed class AudioSidebarCard : Control
         _volumeTrack = Rectangle.FromLTRB(_volumeIcon.Right + 8, y + 6, w - pad - 4, y + 9);
         y += 14 + 10;
         _loopBox = new Rectangle(pad + 1, y + 1, 16, 16);
-        using (var font = new Font("Segoe UI", 8.5F))
+        using (var font = new Font(ModernUi.UiFont, 8.5F))
             _loop = new Rectangle(pad, y, 16 + 8 + TextRenderer.MeasureText("循环播放", font).Width, 18);
         _restart = new Rectangle(w - pad - 18, y, 18, 18);
     }
@@ -106,11 +106,11 @@ internal sealed class AudioSidebarCard : Control
         using (var noteFont = new Font("Segoe UI Symbol", 11F))
             TextRenderer.DrawText(g, "♫", noteFont, _iconTile, Purple,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-        using (var titleFont = new Font("Segoe UI Semibold", 10F))
+        using (var titleFont = new Font(ModernUi.UiFontSemibold, 10F))
             TextRenderer.DrawText(g, "音频独立播放区", titleFont, _title, ModernUi.Text,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 
-        using var smallFont = new Font("Segoe UI", 8.5F);
+        using var smallFont = new Font(ModernUi.UiFont, 8.5F);
         if (!_compact)
         {
             for (int i = 0; i < Description.Length; i++)
@@ -122,7 +122,7 @@ internal sealed class AudioSidebarCard : Control
         // Current track (selector) — or an import hint when the library has no audio.
         if (file != null)
         {
-            using var nameFont = new Font("Segoe UI", 9F);
+            using var nameFont = new Font(ModernUi.UiFont, 9F);
             var nameRect = Rectangle.FromLTRB(_nameRow.Left, _nameRow.Top, _nameRow.Right - 14, _nameRow.Bottom);
             string name = Path.GetFileName(file.SourcePath);
             TextRenderer.DrawText(g, name, nameFont, nameRect, ModernUi.Text,

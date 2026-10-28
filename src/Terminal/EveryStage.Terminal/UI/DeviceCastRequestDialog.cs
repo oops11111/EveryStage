@@ -23,7 +23,7 @@ public sealed class DeviceCastRequestDialog : Form
             Text = "新的设备请求投屏",
             Bounds = new Rectangle(18, 16, 380, 28),
             ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI Semibold", 13F),
+            Font = new Font(ModernUi.UiFontSemibold, 13F),
         };
         var body = new Label
         {
@@ -32,7 +32,7 @@ public sealed class DeviceCastRequestDialog : Form
                    $"接受后将断开 {currentDeviceName}；如果它正在大屏上，会先恢复到投屏前的内容。新的设备会进入设备投屏窗口，按“投屏”后才上大屏。",
             Bounds = new Rectangle(18, 52, 384, 96),
             ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI", 9.5F),
+            Font = new Font(ModernUi.UiFont, 9.5F),
         };
 
         _acceptButton = new Button { Bounds = new Rectangle(214, 172, 92, 30) };

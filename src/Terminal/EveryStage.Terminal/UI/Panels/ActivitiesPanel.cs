@@ -123,12 +123,12 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         heading.Controls.Add(new Label
         {
             Text = "管理活动方案，按顺序播放多媒体内容", Dock = DockStyle.Fill,
-            ForeColor = ModernUi.Muted, Font = new Font("Segoe UI", 8.5F), TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft,
         });
         heading.Controls.Add(new Label
         {
             Text = "活动", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI Semibold", 13F), TextAlign = ContentAlignment.MiddleLeft,
+            Font = new Font(ModernUi.UiFontSemibold, 13F), TextAlign = ContentAlignment.MiddleLeft,
         });
 
         // --- 方案工具栏：当前方案 ▾ …… ＋新建方案 / 保存 / 另存为 / 删除 ---
@@ -305,7 +305,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         listTitle.Controls.Add(new Label
         {
             Text = "活动节目单", AutoSize = true, ForeColor = ModernUi.Text,
-            Font = new Font("Segoe UI Semibold", 11F), Margin = new Padding(0, 9, 8, 0),
+            Font = new Font(ModernUi.UiFontSemibold, 11F), Margin = new Padding(0, 9, 8, 0),
         });
         _activityCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(0, 12, 0, 0) };
         listTitle.Controls.Add(_activityCount);
@@ -1293,11 +1293,11 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             // to create the memory pressure that would trigger a collection - the per-process GDI
             // handle limit is reached long before the finalizer ever runs. On an unattended Terminal
             // that is a slow death rather than a crash anyone sees happen.
-            using var numberFont = new Font("Segoe UI Semibold", 9F);
+            using var numberFont = new Font(ModernUi.UiFontSemibold, 9F);
             TextRenderer.DrawText(g, (e.Node.Index + 1).ToString(), numberFont, number,
                 Color.White, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
-            using var titleFont = new Font("Segoe UI Semibold", 10F);
+            using var titleFont = new Font(ModernUi.UiFontSemibold, 10F);
             TextRenderer.DrawText(g, activity.Name, titleFont,
                 new Rectangle(number.Right + 12, row.Top + 8, row.Width - 190, 22), ModernUi.Text,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
@@ -1341,7 +1341,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
                 _ => ModernUi.Accent,
             });
             g.FillEllipse(badgeFill, badgeRect);
-            using var badgeFont = new Font("Segoe UI Semibold", badge.Length > 1 ? 6.5F : 9F);
+            using var badgeFont = new Font(ModernUi.UiFontSemibold, badge.Length > 1 ? 6.5F : 9F);
             TextRenderer.DrawText(g, badge, badgeFont, badgeRect, Color.White,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             TextRenderer.DrawText(g, Path.GetFileName(file.SourcePath), Font,
@@ -1353,7 +1353,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
                 _ => file.OnCompletion == CompletionAction.Loop ? "循环" : "播放",
             };
             // Same per-repaint GDI handle leak as numberFont above.
-            using var metaFont = new Font("Segoe UI", 8F);
+            using var metaFont = new Font(ModernUi.UiFont, 8F);
             TextRenderer.DrawText(g, meta, metaFont,
                 new Rectangle(badgeRect.Right + 8, chip.Top + 23, chip.Width - 44, 14), ModernUi.Muted,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);

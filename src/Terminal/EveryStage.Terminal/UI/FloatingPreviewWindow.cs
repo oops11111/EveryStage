@@ -93,7 +93,7 @@ public sealed class FloatingPreviewWindow : Form
         AutoScaleMode = AutoScaleMode.Dpi;
         BackColor = ModernUi.Background;
         ForeColor = ModernUi.Text;
-        Font = new Font("Segoe UI", 9F);
+        Font = new Font(ModernUi.UiFont, 9F);
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;

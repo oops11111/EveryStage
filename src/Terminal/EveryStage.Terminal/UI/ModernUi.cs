@@ -5,6 +5,30 @@ namespace EveryStage.Terminal.UI;
 
 internal static class ModernUi
 {
+    /// <summary>The UI text font: Windows 11's Segoe UI Variable (Text optical size) when it is installed
+    /// AND Windows links it to Microsoft YaHei UI for Chinese (HKLM FontLink\SystemLink); otherwise Segoe
+    /// UI. The link check matters: the UI is mostly Chinese, Segoe UI Variable has no CJK glyphs, and a
+    /// machine without that link (seen in the wild) renders the Chinese with a worse fallback or as boxes.</summary>
+    internal static readonly string UiFont = PickTextFont("Segoe UI Variable Text", "Segoe UI");
+
+    /// <summary>Semibold counterpart of <see cref="UiFont"/> (headings, labels).</summary>
+    internal static readonly string UiFontSemibold = PickTextFont("Segoe UI Variable Text Semibold", "Segoe UI Semibold");
+
+    private static string PickTextFont(string windows11Family, string fallback)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return fallback;
+        try
+        {
+            using var link = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\FontLink\SystemLink");
+            if (link?.GetValue(windows11Family) is not string[] fonts
+                || !fonts.Any(f => f.Contains("YaHei", StringComparison.OrdinalIgnoreCase)))
+                return fallback;
+            using var installed = new System.Drawing.Text.InstalledFontCollection();
+            return installed.Families.Any(f => string.Equals(f.Name, windows11Family, StringComparison.OrdinalIgnoreCase))
+                ? windows11Family : fallback;
+        }
+        catch (Exception) { return fallback; }
+    }
     private static UiPalette _palette = UiPalette.For(EveryStage.Terminal.Data.AppTheme.Dark);
     private static EveryStage.Terminal.Data.AppTheme _currentTheme = EveryStage.Terminal.Data.AppTheme.Dark;
     internal static UiPalette Palette => _palette;
@@ -37,7 +61,7 @@ internal static class ModernUi
         button.BackColor = primary ? (danger ? Danger : Accent) : Surface;
         button.ForeColor = primary ? (danger ? Color.White : AccentForeground) : Text;
         button.Cursor = Cursors.Hand;
-        button.Font = new Font("Segoe UI", 10F, FontStyle.Regular);
+        button.Font = new Font(ModernUi.UiFont, 10F, FontStyle.Regular);
         button.Padding = new Padding(8, 0, 8, 0);
         ApplyRoundedButtonRegion(button);
         button.SizeChanged -= RefreshRoundedButtonRegion;
@@ -135,7 +159,7 @@ internal static class ModernUi
         dialog.AutoScaleDimensions = new SizeF(96F, 96F);
         dialog.BackColor = Background;
         dialog.ForeColor = Text;
-        dialog.Font = new Font("Segoe UI", 9.5F);
+        dialog.Font = new Font(ModernUi.UiFont, 9.5F);
         WindowsAppearance.UseDarkTitleBar(dialog);
         StyleDialogChildren(dialog, dialog.AcceptButton as Button);
         dialog.ResumeLayout(true);
@@ -607,7 +631,7 @@ internal sealed class AppTitleBar : Panel
         {
             Text = $"EveryStage {product}", Dock = DockStyle.Left, Width = 220,
             Padding = new Padding(4, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = ModernUi.Text, Font = new Font("Segoe UI Semibold", 10F),
+            ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 10F),
         };
         var close = new CaptionButton(CaptionButton.CloseGlyph, isClose: true);
         var maximize = new CaptionButton(CaptionButton.MaximizeGlyph);
@@ -879,7 +903,7 @@ internal sealed class NavItem : Control
         _icon = icon;
         _label = text;
         Cursor = Cursors.Hand;
-        Font = new Font("Segoe UI", 11.5F);
+        Font = new Font(ModernUi.UiFont, 11.5F);
         SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer
             | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
         BackColor = Color.Transparent;
