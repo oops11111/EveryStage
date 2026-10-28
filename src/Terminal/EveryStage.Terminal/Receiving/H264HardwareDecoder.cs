@@ -135,6 +135,7 @@ public sealed class H264HardwareDecoder : IDisposable
             //    MF_E_TRANSFORM_ASYNC_LOCKED, including the attribute reads on the next line.
             UnlockAsyncProcessing(_decoder);
             _isAsynchronous = ReportsAsynchronous(_decoder);
+            RequestLowLatency(_decoder);
 
             // 2. Refuse a transform that cannot take a DXGI device manager at all, rather than
             //    handing it one anyway and hoping. MF_SA_D3D11_AWARE == TRUE is the documented
@@ -416,6 +417,20 @@ public sealed class H264HardwareDecoder : IDisposable
         // simply ignores an attribute it never checks. Same call and same reasoning as
         // H264HardwareEncoder.UnlockAsyncProcessing and AacAudioDecoder.UnlockAsyncProcessingIfNeeded.
         attributes.Set(MF_TRANSFORM_ASYNC_UNLOCK, 1u);
+    }
+
+    /// <summary>MF_LOW_LATENCY: without it an H.264 decoder may hold several decoded frames back for
+    /// reordering before releasing the first, which adds that many frame times of delay to a live cast
+    /// whose stream never has B-frames to reorder. Best effort: a decoder that ignores the attribute
+    /// just keeps its default.</summary>
+    private static void RequestLowLatency(IMFTransform decoder)
+    {
+        try
+        {
+            using var attributes = decoder.Attributes;
+            attributes.Set(MF_LOW_LATENCY, 1u);
+        }
+        catch (Exception) { }
     }
 
     private static bool ReportsAsynchronous(IMFTransform decoder)

@@ -34,6 +34,10 @@ public sealed class EncodeSelfTestRunner : IDisposable
 
     public string? LastError { get; private set; }
 
+    /// <summary>Forwards <see cref="H264HardwareEncoder.TuningSummary"/>: which real-time settings this
+    /// machine's encoder accepted.</summary>
+    public string TuningSummary => _encoder?.TuningSummary ?? "";
+
     /// <summary>Raised from the background loop or the encoder's own event loop — marshal to the
     /// UI thread before touching UI.</summary>
     public event Action? StatsUpdated;

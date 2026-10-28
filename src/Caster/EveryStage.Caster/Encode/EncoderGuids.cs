@@ -66,15 +66,21 @@ internal static class EncoderGuids
 
     // --- CodecAPI properties (codecapi.h) used for zero-latency low-delay real-time encoding
     // (PLANNING.md §4.2 "禁用B帧，零延迟预设，CBR码率控制，短GOP") ---
-    // Lower confidence than the mfapi.h/mfobjects.h GUIDs above: these are reconstructed from
-    // memory of commonly-referenced MF encoding sample code rather than a header file just read,
-    // and codecapi.h has many similarly-named properties that are easy to misremember a hex digit
-    // of. If SetValue() on any of these throws or silently has no effect, treat the GUID itself as
-    // the first suspect, not the calling code around it.
+    // Checked against the mingw-w64 codecapi.h. Four of the earlier literals here (low-latency mode,
+    // GOP size, temporal layer count, CABAC) were wrong; nothing used them until ApplyLowLatencySettings.
     public static readonly Guid CODECAPI_AVEncCommonRateControlMode = new("1c0608e9-370c-4710-8a58-cb6181c42423");
+    public static readonly Guid CODECAPI_AVEncCommonMeanBitRate = new("f7222374-2144-4815-b550-a37f8e12ee52");
     public static readonly Guid CODECAPI_AVEncCommonQualityVsSpeed = new("98332df8-03cd-476b-89fa-3f9e442dec9f");
-    public static readonly Guid CODECAPI_AVLowLatencyMode = new("9c27891a-ed7a-40e1-88e8-b2227a7444ff");
-    public static readonly Guid CODECAPI_AVEncMPVGOPSize = new("95f31b26-95a4-41aa-9394-8ee2461e1fc4");
-    public static readonly Guid CODECAPI_AVEncVideoTemporalLayerCount = new("19caebff-e738-4faf-a1d0-3910305ff052");
-    public static readonly Guid CODECAPI_AVEncH264CABACEnable = new("ee6cad62-d305-4248-a5e4-7e5f18f3b0f3");
+    public static readonly Guid CODECAPI_AVLowLatencyMode = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
+    public static readonly Guid CODECAPI_AVEncMPVGOPSize = new("95f31b26-95a4-41aa-9303-246a7fc6eef1");
+    public static readonly Guid CODECAPI_AVEncMPVDefaultBPictureCount = new("8d390aac-dc5c-4200-b57f-814d04babab2");
+    public static readonly Guid CODECAPI_AVEncVideoTemporalLayerCount = new("19caebff-b74d-4cfd-8c27-c2f9d97d5f52");
+    public static readonly Guid CODECAPI_AVEncH264CABACEnable = new("ee6cad62-d305-4248-a50e-e1b255f7caf8");
+
+    // eAVEncCommonRateControlMode_CBR (codecapi.h).
+    public const uint RateControlModeCbr = 0;
+
+    // Output media type attribute (mfapi.h): maximum frames between key frames. A second route to the
+    // same short GOP for encoders that read it instead of CODECAPI_AVEncMPVGOPSize.
+    public static readonly Guid MF_MT_MAX_KEYFRAME_SPACING = new("c16eb52b-73a1-476f-8d62-839d6a020652");
 }

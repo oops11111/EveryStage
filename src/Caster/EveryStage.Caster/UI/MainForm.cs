@@ -554,9 +554,20 @@ public sealed class MainForm : GradientForm
         _encodeStatsLabel.ForeColor = Color.DimGray;
         _encodeStatsLabel.Text =
             $"已编码访问单元数: {_encodeSelfTest.AccessUnitsEncoded}\n" +
-            $"编码总字节数: {_encodeSelfTest.TotalEncodedBytes}" +
+            $"编码总字节数: {_encodeSelfTest.TotalEncodedBytes} · {TuningLine(_encodeSelfTest.TuningSummary)}" +
             droppedLine;
     }
+
+    /// <summary>"低延迟参数 5/5" from <see cref="H264HardwareEncoder.TuningSummary"/> (the label has
+    /// room for one short line; the full per-setting result is in the tooltip).</summary>
+    private string TuningLine(string summary)
+    {
+        var parts = summary.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        _encodeStatsToolTip.SetToolTip(_encodeStatsLabel, summary);
+        return $"低延迟参数 {parts.Count(p => p.EndsWith("=ok", StringComparison.Ordinal))}/{parts.Length}";
+    }
+
+    private readonly ToolTip _encodeStatsToolTip = new();
 
     private void OnAudioCaptureSelfTestClick(object? sender, EventArgs e)
     {

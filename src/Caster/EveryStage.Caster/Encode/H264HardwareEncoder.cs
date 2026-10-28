@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.InteropServices;
 using EveryStage.Rendering;
 using Vortice.Direct3D11;
 using Vortice.MediaFoundation;
@@ -117,9 +118,11 @@ public sealed class H264HardwareEncoder : IDisposable
             RequireD3D11Aware(_encoder);
             BindDeviceManager(_encoder, gpu);
 
+            // Before the media types: several encoders only honour GOP size / B-frame count while
+            // negotiating them.
+            TuningSummary = ApplyLowLatencySettings(_encoder, frameRateNumerator, bitrateBps);
             ConfigureOutputType(_encoder, width, height, frameRateNumerator, bitrateBps);
             ConfigureInputType(_encoder, width, height, frameRateNumerator);
-            ApplyLowLatencySettings(_encoder);
 
             _outputProvidesOwnSamples = OutputProvidesOwnSamples(_encoder);
             _events = _encoder.QueryInterface<IMFMediaEventGenerator>();
@@ -447,6 +450,7 @@ public sealed class H264HardwareEncoder : IDisposable
             type.Set(MF_MT_FRAME_RATE, PackUInt64((uint)frameRateNumerator, 1));
             type.Set(MF_MT_AVG_BITRATE, (uint)bitrateBps);
             type.Set(MF_MT_INTERLACE_MODE, 2u); // 2 = MFVideoInterlace_Progressive.
+            type.Set(MF_MT_MAX_KEYFRAME_SPACING, (uint)frameRateNumerator); // one key frame a second
 
             // Encoders generally require the OUTPUT type set before the INPUT type — the output
             // type is what determines which input types the encoder will subsequently accept.
@@ -470,18 +474,57 @@ public sealed class H264HardwareEncoder : IDisposable
         }
     }
 
-    private static void ApplyLowLatencySettings(IMFTransform encoder)
+    /// <summary>Which CodecAPI settings the encoder accepted, e.g. "cbr=ok gop=ok bframes=0x80004001" —
+    /// a failed HRESULT means that setting kept the vendor default. For diagnostics on real hardware.</summary>
+    public string TuningSummary { get; } = "";
+
+    // ICodecAPI (strmif.h). Vortice.MediaFoundation 3.6.2 does not bind it, so it is declared here; only
+    // the methods up to SetValue are called, the earlier ones exist to keep the vtable order.
+    [ComImport, Guid("901db4c7-31ce-41a2-85dc-8fa0bf41b8da"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    private interface ICodecApi
     {
-        // NOTE: this whole method is the least-confident part of an already low-confidence file.
-        // ICodecAPI.SetValue's exact Vortice signature (does it take a boxed `object`, a
-        // library-specific Variant wrapper type, or something else for the PROPVARIANT the native
-        // API expects?) is unverified, as are all six CODECAPI_* GUID values themselves (see
-        // EncoderGuids.cs). If this method doesn't compile as written, that is expected — the
-        // *intent* (CBR rate control, low-latency mode, a short GOP, no B-frames via CABAC/temporal
-        // layer settings) is what PLANNING.md §4.2 asks for; fix the mechanism, keep the intent.
-        // Vortice.MediaFoundation 3.6.2 does not expose ICodecAPI. The media type still carries
-        // bitrate, frame-rate and progressive-mode requirements; codec-specific tuning remains
-        // best-effort and is intentionally skipped when the binding cannot represent it.
+        [PreserveSig] int IsSupported(ref Guid api);
+        [PreserveSig] int IsModifiable(ref Guid api);
+        [PreserveSig] int GetParameterRange(ref Guid api, IntPtr valueMin, IntPtr valueMax, IntPtr steppingDelta);
+        [PreserveSig] int GetParameterValues(ref Guid api, IntPtr values, IntPtr valuesCount);
+        [PreserveSig] int GetDefaultValue(ref Guid api, IntPtr value);
+        [PreserveSig] int GetValue(ref Guid api, IntPtr value);
+        [PreserveSig] int SetValue(ref Guid api, [MarshalAs(UnmanagedType.Struct)] ref object value);
+    }
+
+    /// <summary>PLANNING.md §4.2's real-time settings: CBR at the target bitrate, low-latency mode, a
+    /// one-second GOP and no B-frames. Without them the encoder ran on vendor defaults, where the GOP can
+    /// be many seconds long — a frame lost on the network or dropped for backpressure then left the
+    /// Terminal's picture corrupted until the next key frame. Every setting is best effort: a vendor MFT
+    /// that rejects one keeps its default, and casting still starts.</summary>
+    private static string ApplyLowLatencySettings(IMFTransform encoder, int frameRateNumerator, int bitrateBps)
+    {
+        object? rcw = null;
+        try
+        {
+            rcw = Marshal.GetObjectForIUnknown(encoder.NativePointer);
+            if (rcw is not ICodecApi api) return "codecapi=unsupported";
+            string Set(string name, Guid key, object value)
+            {
+                try
+                {
+                    int hr = api.SetValue(ref key, ref value);
+                    return hr >= 0 ? $"{name}=ok" : $"{name}=0x{hr:x8}";
+                }
+                catch (Exception ex) { return $"{name}={ex.GetType().Name}"; }
+            }
+            return string.Join(" ",
+                Set("cbr", CODECAPI_AVEncCommonRateControlMode, RateControlModeCbr),
+                Set("bitrate", CODECAPI_AVEncCommonMeanBitRate, (uint)bitrateBps),
+                Set("lowlatency", CODECAPI_AVLowLatencyMode, true),
+                Set("gop", CODECAPI_AVEncMPVGOPSize, (uint)frameRateNumerator),
+                Set("bframes", CODECAPI_AVEncMPVDefaultBPictureCount, 0u));
+        }
+        catch (Exception ex) { return $"codecapi={ex.GetType().Name}"; }
+        finally
+        {
+            if (rcw != null && Marshal.IsComObject(rcw)) Marshal.ReleaseComObject(rcw);
+        }
     }
 
     /// <summary>Refuses a transform that cannot accept a DXGI device manager at all, rather

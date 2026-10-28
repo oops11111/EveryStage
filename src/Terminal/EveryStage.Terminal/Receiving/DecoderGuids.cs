@@ -54,4 +54,8 @@ internal static class DecoderGuids
     public static readonly Guid MF_SA_D3D11_AWARE = new("206b4fc8-fcf9-4c51-afe3-9764369e33a0");
     public static readonly Guid MF_SA_D3D11_BINDFLAGS = new("eacf97ad-065c-4408-bee3-fdcbfd128be2");
     public static readonly Guid MF_SA_MINIMUM_OUTPUT_SAMPLE_COUNT = new("851745d5-c3d6-476d-9527-498ef2d10d18");
+
+    // Set on the decoder's own attribute store before the media types (mfapi.h; checked against the
+    // mingw-w64 header). Same value as CODECAPI_AVLowLatencyMode.
+    public static readonly Guid MF_LOW_LATENCY = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
 }
