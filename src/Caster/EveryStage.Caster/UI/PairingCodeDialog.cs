@@ -41,6 +41,11 @@ public sealed class PairingCodeDialog : Form
         Controls.AddRange(new Control[] { title, _codeLabel, hint, cancel });
         BackColor = ModernUi.Surface;
         ForeColor = ModernUi.Text;
+        // Laid out in 96-DPI pixels; scale with the monitor so the 30pt code is not clipped at 125–150 %.
+        SuspendLayout();
+        AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        ResumeLayout(true);
     }
 
     public void SetCode(string verificationCode)

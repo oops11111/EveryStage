@@ -206,7 +206,7 @@ public sealed class MainForm : GradientForm
             DisplayMember = nameof(TerminalListEntry.DisplayText), // else ListBox shows the record's generated ToString().
             Font = new Font("Segoe UI", 11F),
             DrawMode = DrawMode.OwnerDrawFixed,
-            ItemHeight = 84,
+            ItemHeight = LogicalToDeviceUnits(84), // owner-drawn: not touched by auto-scaling
             BorderStyle = BorderStyle.None,
             IntegralHeight = false,
         };
@@ -241,7 +241,7 @@ public sealed class MainForm : GradientForm
         _monitorComboBox = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(24, 342, 472, 36),
-            DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = 30, FlatStyle = FlatStyle.Flat,
+            DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = LogicalToDeviceUnits(30), FlatStyle = FlatStyle.Flat,
         };
         _monitorComboBox.DrawItem += DrawMonitorItem;
 
@@ -480,6 +480,18 @@ public sealed class MainForm : GradientForm
 
         _liveCastStatsTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _liveCastStatsTimer.Tick += (_, _) => RefreshLiveCastStats();
+
+        // Every bound above is in 96-DPI pixels. AutoScaleMode alone scaled nothing (no
+        // AutoScaleDimensions means a factor of 1), so on a 125–150 % laptop only the fonts grew and
+        // text was clipped. Declaring the design DPI scales the form and its controls once, here.
+        SuspendLayout();
+        AutoScaleDimensions = new SizeF(96F, 96F);
+        ResumeLayout(true);
+        // Scaled up, the minimum can exceed a small laptop's work area (1366×768 at 125 %): keep the
+        // window on screen rather than forcing its bottom edge below the task bar.
+        var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+        MinimumSize = new Size(Math.Min(MinimumSize.Width, workingArea.Width), Math.Min(MinimumSize.Height, workingArea.Height));
+        Size = new Size(Math.Min(Width, workingArea.Width), Math.Min(Height, workingArea.Height));
     }
 
     private void OnCaptureSelfTestClick(object? sender, EventArgs e)
@@ -1277,9 +1289,11 @@ public sealed class MainForm : GradientForm
         var entry = (TerminalListEntry)_terminalListBox.Items[e.Index];
         bool selected = (e.State & DrawItemState.Selected) != 0;
         var g = e.Graphics;
+        // Layout in 96-DPI units scaled to the list's DPI: the fixed pixels clipped the title at 125–150 %.
+        int S(int value) => _terminalListBox.LogicalToDeviceUnits(value);
         var card = e.Bounds;
-        card.Inflate(-4, -6);
-        using (var path = RoundedCard(card, 14))
+        card.Inflate(-S(4), -S(6));
+        using (var path = RoundedCard(card, S(14)))
         using (var fill = new SolidBrush(selected ? Color.FromArgb(26, 48, 82) : Color.FromArgb(22, 34, 54)))
         using (var border = new Pen(selected ? ModernUi.Accent : Color.FromArgb(44, 62, 90), selected ? 2F : 1F))
         {
@@ -1288,23 +1302,23 @@ public sealed class MainForm : GradientForm
         }
 
         // Monitor icon (matches the design's line-art display).
-        var iconRect = new Rectangle(card.Left + 20, card.Top + (card.Height - 40) / 2, 48, 40);
+        var iconRect = new Rectangle(card.Left + S(20), card.Top + (card.Height - S(40)) / 2, S(48), S(40));
         DrawMonitorGlyph(g, iconRect, Color.FromArgb(150, 178, 220));
 
         using var titleFont = new Font("Segoe UI Semibold", 12F);
         using var metaFont = new Font("Segoe UI", 9.5F);
-        int textLeft = iconRect.Right + 18;
+        int textLeft = iconRect.Right + S(18);
         TextRenderer.DrawText(g, entry.DeviceName, titleFont,
-            new Rectangle(textLeft, card.Top + 16, card.Width - textLeft - 60 + card.Left, 24), ModernUi.Text,
+            new Rectangle(textLeft, card.Top + S(14), card.Width - textLeft - S(60) + card.Left, S(28)), ModernUi.Text,
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
         string meta = entry.Live != null ? "在线 · 可投屏" : "离线 · 等待终端上线";
         TextRenderer.DrawText(g, meta, metaFont,
-            new Rectangle(textLeft, card.Top + 42, card.Width - textLeft - 60 + card.Left, 22),
+            new Rectangle(textLeft, card.Top + S(42), card.Width - textLeft - S(60) + card.Left, S(22)),
             entry.Live != null ? ModernUi.Muted : Color.FromArgb(128, 143, 164),
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
 
         // Round radio selector on the right (design: filled blue check when selected, empty ring otherwise).
-        var radio = new Rectangle(card.Right - 46, card.Top + (card.Height - 26) / 2, 26, 26);
+        var radio = new Rectangle(card.Right - S(46), card.Top + (card.Height - S(26)) / 2, S(26), S(26));
         if (selected)
         {
             using var fillSel = new SolidBrush(ModernUi.Accent);
@@ -1312,9 +1326,9 @@ public sealed class MainForm : GradientForm
             using var check = new Pen(Color.White, 2.4F) { StartCap = LineCap.Round, EndCap = LineCap.Round };
             g.DrawLines(check, new[]
             {
-                new PointF(radio.Left + 7, radio.Top + 13),
-                new PointF(radio.Left + 11, radio.Top + 17),
-                new PointF(radio.Left + 19, radio.Top + 8),
+                new PointF(radio.Left + S(7), radio.Top + S(13)),
+                new PointF(radio.Left + S(11), radio.Top + S(17)),
+                new PointF(radio.Left + S(19), radio.Top + S(8)),
             });
         }
         else
