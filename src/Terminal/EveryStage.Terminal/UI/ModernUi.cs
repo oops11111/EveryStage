@@ -928,11 +928,12 @@ internal sealed class CaptionButton : Control
         Dock = DockStyle.Right;
         Width = 46;
         TabStop = false;
-        BackColor = Color.Transparent;
-        Font = new Font(IconFontFamily, 7.5F);
+        // Styles first: a transparent BackColor throws unless SupportsTransparentBackColor is already set.
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
             | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
         SetStyle(ControlStyles.Selectable, false);
+        BackColor = Color.Transparent;
+        Font = new Font(IconFontFamily, 7.5F);
     }
 
     public string Glyph
