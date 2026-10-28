@@ -1377,7 +1377,7 @@ public sealed class FilesPanel : UserControl
         // Type chip (JPG / MP4 / PPT / PDF / DOC …) at the thumbnail's bottom-left corner.
         if (media != null)
         {
-            var (badgeText, badgeColor) = TypeBadge(media);
+            var (badgeText, badgeColor) = FileTypeBadge.For(media);
             using var badgeFont = new Font("Segoe UI", 8F, FontStyle.Bold);
             var textSize = TextRenderer.MeasureText(badgeText, badgeFont, Size.Empty, TextFormatFlags.NoPadding);
             var badge = new Rectangle(imageRect.Left + 2, imageRect.Bottom - 18, textSize.Width + 10, 17);
@@ -1413,22 +1413,6 @@ public sealed class FilesPanel : UserControl
             return info.Exists ? $"{name}\n{info.LastWriteTime:yyyy/MM/dd}    {FormatBytes(info.Length)}" : $"{name}\n文件不可用";
         }
         catch (Exception) { return $"{name}\n{KindLabel(file.Kind)}"; }
-    }
-
-    /// <summary>The reference type chip: file extension in white on a type color (JPG blue, MP4
-    /// slate, PPT orange, PDF red, DOC blue).</summary>
-    private static (string Text, Color Color) TypeBadge(MediaFile file)
-    {
-        string ext = Path.GetExtension(file.SourcePath).TrimStart('.').ToUpperInvariant();
-        return ext switch
-        {
-            "PPT" or "PPTX" => ("PPT", Color.FromArgb(232, 98, 46)),
-            "PDF" => ("PDF", Color.FromArgb(226, 59, 59)),
-            "DOC" or "DOCX" => ("DOC", Color.FromArgb(46, 107, 224)),
-            "XLS" or "XLSX" => ("XLS", Color.FromArgb(33, 160, 96)),
-            _ when file.Kind == MediaKind.Video => (ext.Length is > 0 and <= 4 ? ext : "视频", Color.FromArgb(58, 90, 148)),
-            _ => (ext.Length is > 0 and <= 4 ? ext : KindLabel(file.Kind), Color.FromArgb(30, 111, 224)),
-        };
     }
 
     private static Color Blend(Color from, Color to, double amount) => Color.FromArgb(

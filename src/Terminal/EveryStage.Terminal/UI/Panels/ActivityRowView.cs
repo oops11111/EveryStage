@@ -307,7 +307,7 @@ internal sealed class ActivityRowView : Control
             g.FillPolygon(glyph, new[] { new PointF(px, py), new PointF(px, play.Bottom - d * 0.30f), new PointF(play.Right - d * 0.28f, play.Top + d / 2f) });
         }
 
-        var (label, color) = KindBadge(file);
+        var (label, color) = FileTypeBadge.For(file);
         var size = TextRenderer.MeasureText(label, BadgeFont, Size.Empty, TextFormatFlags.NoPadding);
         var badge = new Rectangle(_thumbRect.Left + S(6), _thumbRect.Bottom - S(6) - S(16), size.Width + S(10), S(16));
         using (var path = RoundedBox(badge, S(4)))
@@ -394,26 +394,10 @@ internal sealed class ActivityRowView : Control
         };
     }
 
-    /// <summary>Type label + colour, as on the mockup's thumbnails (PPT orange, PDF red, DOC blue…).</summary>
-    private static (string Label, Color Color) KindBadge(MediaFile file)
-    {
-        string ext = Path.GetExtension(file.SourcePath).TrimStart('.').ToUpperInvariant();
-        return ext switch
-        {
-            "PPT" or "PPTX" => ("PPT", Color.FromArgb(232, 98, 46)),
-            "PDF" => ("PDF", Color.FromArgb(226, 59, 59)),
-            "DOC" or "DOCX" => ("DOC", Color.FromArgb(46, 107, 224)),
-            "XLS" or "XLSX" => ("XLS", Color.FromArgb(33, 140, 84)),
-            _ when file.Kind == MediaKind.Video => (ext.Length is > 0 and <= 4 ? ext : "视频", Color.FromArgb(170, 0, 0, 0)),
-            _ when file.Kind == MediaKind.Audio => (ext.Length is > 0 and <= 4 ? ext : "音频", Color.FromArgb(107, 75, 208)),
-            _ => (ext.Length is > 0 and <= 4 ? ext : "文件", Color.FromArgb(30, 111, 224)),
-        };
-    }
-
     /// <summary>Small coloured file-type glyphs, following the prototype's fileTypeIcon().</summary>
     private void DrawKindIcon(Graphics g, Rectangle r, MediaFile file)
     {
-        var (_, color) = KindBadge(file);
+        var (_, color) = FileTypeBadge.For(file);
         if (file.Kind == MediaKind.Audio)
         {
             using (var fill = new SolidBrush(Color.FromArgb(107, 75, 208))) g.FillEllipse(fill, r);
