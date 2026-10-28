@@ -126,12 +126,19 @@ internal static class ModernUi
 
     public static void StyleDialog(Form dialog)
     {
+        dialog.SuspendLayout();
+        // The dialogs are laid out in code in 96-DPI pixels. AutoScaleMode alone scaled nothing: with no
+        // AutoScaleDimensions WinForms' scale factor is 1, so at 125–150 % only the (point-sized) fonts
+        // grew and text was clipped by the fixed boxes (the pairing code, checkbox captions). Declaring
+        // the design DPI makes ResumeLayout scale every bound by DeviceDpi / 96 — a no-op at 100 %.
         dialog.AutoScaleMode = AutoScaleMode.Dpi;
+        dialog.AutoScaleDimensions = new SizeF(96F, 96F);
         dialog.BackColor = Background;
         dialog.ForeColor = Text;
         dialog.Font = new Font("Segoe UI", 9.5F);
         WindowsAppearance.UseDarkTitleBar(dialog);
         StyleDialogChildren(dialog, dialog.AcceptButton as Button);
+        dialog.ResumeLayout(true);
     }
 
     private static void StyleDialogChildren(Control parent, Button? primaryButton)
