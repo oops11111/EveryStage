@@ -14,16 +14,17 @@ internal static class WindowsAppearance
     public static void UseDarkTitleBar(Form form)
     {
         if (!OperatingSystem.IsWindows()) return;
-        form.HandleCreated += (_, _) => Apply(form.Handle);
-        if (form.IsHandleCreated) Apply(form.Handle);
+        form.HandleCreated += (_, _) => ApplyTitleBarTheme(form, ModernUi.CurrentTheme != EveryStage.Terminal.Data.AppTheme.Light);
+        if (form.IsHandleCreated) ApplyTitleBarTheme(form, ModernUi.CurrentTheme != EveryStage.Terminal.Data.AppTheme.Light);
     }
 
-    private static void Apply(IntPtr handle)
+    public static void ApplyTitleBarTheme(Form form, bool dark)
     {
-        int enabled = 1;
+        if (!OperatingSystem.IsWindows() || !form.IsHandleCreated) return;
+        int enabled = dark ? 1 : 0;
         // Windows 10 20H1+ uses 20; older Windows 10 builds use 19.
-        if (DwmSetWindowAttribute(handle, DwaUseImmersiveDarkMode, ref enabled, sizeof(int)) != 0)
-            DwmSetWindowAttribute(handle, 19, ref enabled, sizeof(int));
+        if (DwmSetWindowAttribute(form.Handle, DwaUseImmersiveDarkMode, ref enabled, sizeof(int)) != 0)
+            DwmSetWindowAttribute(form.Handle, 19, ref enabled, sizeof(int));
     }
 
     /// <summary>Requests the system Mica backdrop on Windows 11 22H2+. On older Windows versions,

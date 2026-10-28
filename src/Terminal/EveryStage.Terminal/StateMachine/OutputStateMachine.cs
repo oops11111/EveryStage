@@ -18,8 +18,10 @@ public enum OutputState { Idle, Active }
 ///   deliberately independent axes, not one combined state — §9.1 is explicit that disconnecting
 ///   ("断") does not turn the switch off, and turning the switch off does not disconnect an
 ///   already-active output.
-/// - Clicking a local file only starts output when the switch is on; a device cast request always
-///   can, switch or no switch (§9.1: "设备投屏请求不受此开关影响").
+/// - Clicking a local file only starts output when the switch is on. Device-cast requests are gated
+///   by the receiver/controller before they reach this class; once admitted, the raw state
+///   transition below stays independent from the switch. The application layer listens to the switch
+///   and retracts any device cast already on Program without disconnecting the device preview.
 /// - "断" is the only path back to Idle, and it hands the screen back to Windows rather than
 ///   moving to some app-owned standby visual (§9.2) — that behavior lives in the overlay
 ///   window/content engine, this class only tracks *that* the transition happened.
@@ -57,24 +59,34 @@ public sealed class OutputStateMachine
     public event Action<OutputState>? StateChanged;
     public event Action<bool>? CastSwitchChanged;
 
+    /// <summary>Told about a subscriber that threw (the others still run). Subscriber exceptions used to be
+    /// swallowed with no record anywhere — exactly where a broken "断" cleanup would hide (audit C-21).
+    /// Program sets this to the crash logger.</summary>
+    public Action<string, Exception>? SubscriberFailed { get; set; }
+
+    private void ReportSubscriberFailure(string eventName, Exception ex)
+    {
+        try { SubscriberFailed?.Invoke("OutputStateMachine." + eventName, ex); }
+        catch (Exception) { } // the reporter itself must not break notification
+    }
+
     public void SetCastSwitch(bool on)
     {
+        bool cutLocal;
         lock (_gate)
         {
             if (CastSwitchOn == on) return;
+            cutLocal = !on && State == OutputState.Active && Source == ProgramSource.LocalMedia;
             CastSwitchOn = on;
         }
         RaiseCastSwitchChanged(on);
 
-        // The switch governs local Program output only: turning it off takes local media off the
-        // extended display (Preview is a separate channel and keeps its content). A device cast is
-        // governed by the casting device and its pairing permission, so it is left running.
-        if (!on)
-        {
-            bool cutLocal;
-            lock (_gate) cutLocal = State == OutputState.Active && Source == ProgramSource.LocalMedia;
-            if (cutLocal) Disconnect();
-        }
+        // The switch directly governs local Program output: turning it off takes local media off the
+        // extended display (Preview is a separate channel and keeps its content). Device-cast requests
+        // are not rejected here; Program wires CastSwitchChanged to the device-cast controller so an
+        // already-on-Program device stream is retracted to the device preview and its restore point is
+        // applied without disconnecting the device.
+        if (cutLocal) Disconnect();
     }
 
     /// <summary>Local file click. Returns true if this call actually started (or was already
@@ -82,12 +94,19 @@ public sealed class OutputStateMachine
     /// the cast switch is off.</summary>
     public bool RequestLocalFilePlayback()
     {
-        bool switchOn;
-        lock (_gate) { switchOn = CastSwitchOn; }
-        return switchOn && TransitionToActive(ProgramSource.LocalMedia);
+        // The switch is checked inside the same lock as the transition (audit B-16): read-then-transition
+        // let a switch-off in between still start local output on the extended display.
+        return TransitionToActive(ProgramSource.LocalMedia, requireCastSwitch: true);
     }
 
-    /// <summary>Device cast request. Always allowed, independent of the cast switch (§9.1).</summary>
+    /// <summary>Restores local media that was already on Program before a device cast took over.
+    /// This is not a fresh local投屏 request, so it intentionally bypasses the current cast-switch
+    /// position while unwinding the device cast back to its saved restore point.</summary>
+    public bool RestoreLocalFilePlayback() => TransitionToActive(ProgramSource.LocalMedia);
+
+    /// <summary>Device cast accepted by the receiver/controller. Independent from the cast switch:
+    /// the switch prevents local content from taking over the extended display, not network casters
+    /// from requesting a Terminal-side device cast.</summary>
     public bool AcceptDeviceCastRequest() => TransitionToActive(ProgramSource.DeviceCast);
 
     /// <summary>"断". No-op if already idle. Never changes <see cref="CastSwitchOn"/>.</summary>
@@ -102,10 +121,11 @@ public sealed class OutputStateMachine
         RaiseStateChanged(OutputState.Idle);
     }
 
-    private bool TransitionToActive(ProgramSource source)
+    private bool TransitionToActive(ProgramSource source, bool requireCastSwitch = false)
     {
         lock (_gate)
         {
+            if (requireCastSwitch && !CastSwitchOn) return false;
             Source = source;
             if (State == OutputState.Active) return true;
             State = OutputState.Active;
@@ -127,10 +147,11 @@ public sealed class OutputStateMachine
             {
                 ((Action<OutputState>)handler)(state);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                ReportSubscriberFailure("StateChanged", ex);
                 // Deliberately swallowed here rather than re-thrown after the loop: this class has
-                // no logger of its own to record which subscriber failed, and PLANNING.md's "无人
+                // no logger of its own (SubscriberFailed reports it), and PLANNING.md's "无人
                 // 值守" framing already means every subscriber above is written to treat its own
                 // failures as best-effort (see e.g. AudioTakeoverService's own doc comment) — the
                 // one new guarantee this method adds is that a failure in one no longer costs every
@@ -151,8 +172,9 @@ public sealed class OutputStateMachine
             {
                 ((Action<bool>)handler)(on);
             }
-            catch (Exception)
+            catch (Exception ex)
             {
+                ReportSubscriberFailure("CastSwitchChanged", ex);
             }
         }
     }

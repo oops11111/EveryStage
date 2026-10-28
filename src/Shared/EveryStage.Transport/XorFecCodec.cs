@@ -10,14 +10,20 @@ public static class XorFecCodec
     public const int BlockSize = 8;
     public const int MetadataSize = 4 + 1 + 2 + 1 + 2 + 1 + 4 + BlockSize * 2 + BlockSize * 4 + 1;
 
+    private static int MetadataSizeFor(int count) => 15 + count * 6 + 1;
+
+    /// <summary>Parity over 1..<see cref="BlockSize"/> consecutive packets. Partial blocks exist so parity
+    /// is sent at the end of every access unit: waiting for eight packets meant that at the packet rate of
+    /// static screen content (one packet per frame) the parity came long after the receiver had given up
+    /// on the gap — FEC then never recovered anything exactly when content is static (audit A-19).</summary>
     public static byte[] CreateParity(IReadOnlyList<RtpPacket> packets, ushort baseSequence)
     {
-        if (packets.Count != BlockSize) throw new ArgumentException("FEC block must contain eight packets.");
+        if (packets.Count is < 1 or > BlockSize) throw new ArgumentException("FEC block must contain one to eight packets.");
         int maxLength = packets.Max(packet => packet.Payload.Length);
-        var result = new byte[MetadataSize + maxLength];
+        var result = new byte[MetadataSizeFor(packets.Count) + maxLength];
         Magic.CopyTo(result, 0); result[4] = 1;
         BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(5, 2), baseSequence);
-        result[7] = BlockSize;
+        result[7] = (byte)packets.Count;
         BinaryPrimitives.WriteUInt16BigEndian(result.AsSpan(8, 2), checked((ushort)maxLength));
         result[10] = packets[0].PayloadType;
         BinaryPrimitives.WriteUInt32BigEndian(result.AsSpan(11, 4), packets[0].Ssrc);
@@ -53,7 +59,7 @@ public static class XorFecCodec
         ushort baseSequence = BinaryPrimitives.ReadUInt16BigEndian(parityPayload.AsSpan(5, 2));
         int count = parityPayload[7];
         int maxLength = BinaryPrimitives.ReadUInt16BigEndian(parityPayload.AsSpan(8, 2));
-        if (count != BlockSize) return false;
+        if (count is < 1 or > BlockSize) return false;
         int lengthsOffset = fixedMetadata;
         int timestampsOffset = lengthsOffset + count * 2;
         int markerOffset = timestampsOffset + count * 4;

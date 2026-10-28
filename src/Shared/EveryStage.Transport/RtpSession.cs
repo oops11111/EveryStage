@@ -91,10 +91,13 @@ public sealed class RtpSession : IDisposable
         if (_fecPayloadType.HasValue)
         {
             _fecBlock.Add(packet);
-            if (_fecBlock.Count == XorFecCodec.BlockSize)
+            // Parity also closes a partial block at the end of each access unit (marker): the receiver
+            // only waits ~60 ms for a gap, and at static-screen packet rates eight packets take far
+            // longer than that, so full-block-only parity never arrived in time (audit A-19).
+            if (_fecBlock.Count == XorFecCodec.BlockSize || packet.Marker)
             {
                 byte[] parityPayload = XorFecCodec.CreateParity(_fecBlock,
-                    unchecked((ushort)(packet.SequenceNumber - (XorFecCodec.BlockSize - 1))));
+                    unchecked((ushort)(packet.SequenceNumber - (_fecBlock.Count - 1))));
                 var parity = new RtpPacket
                 {
                     Marker = false, PayloadType = _fecPayloadType.Value, SequenceNumber = packet.SequenceNumber,

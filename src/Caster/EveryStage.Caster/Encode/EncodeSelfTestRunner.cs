@@ -119,7 +119,7 @@ public sealed class EncodeSelfTestRunner : IDisposable
         return copy;
     }
 
-    private void OnAccessUnitEncoded(byte[] accessUnit)
+    private void OnAccessUnitEncoded(byte[] accessUnit, long sampleTime)
     {
         AccessUnitsEncoded++;
         TotalEncodedBytes += accessUnit.Length;

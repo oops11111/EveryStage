@@ -10,6 +10,8 @@ public enum PlaybackTrigger
     ActivityAuto,
     /// <summary>Accepted device cast request — bypasses the cast switch (PLANNING.md §9.1).</summary>
     DeviceRequest,
+    /// <summary>Restoring the local Program content that was temporarily displaced by a device cast.</summary>
+    DeviceRestore,
     /// <summary>Manual next/previous from the floating preview window (PLANNING.md §8.3).</summary>
     ManualSkip,
 }
@@ -40,4 +42,13 @@ public sealed class PlaybackLogger
     /// the ordinary completion-action paths <see cref="LogPlaybackEnded"/> covers.</summary>
     public void LogAbnormalInterruption(Guid mediaFileId, string reason) =>
         _writer.Write("playback_interrupted", new { mediaFileId, reason });
+
+    /// <summary>A video kept playing without sound because its audio output could not be opened or
+    /// stopped mid-play (output device removed, display with HDMI audio switched off).</summary>
+    public void LogAudioOutputLost(Guid mediaFileId, string reason) =>
+        _writer.Write("audio_output_lost", new { mediaFileId, reason });
+
+    /// <summary>The machine could not decode a video in real time; frames were dropped.</summary>
+    public void LogDecodeTooSlow(Guid mediaFileId, string detail) =>
+        _writer.Write("video_decode_too_slow", new { mediaFileId, detail });
 }

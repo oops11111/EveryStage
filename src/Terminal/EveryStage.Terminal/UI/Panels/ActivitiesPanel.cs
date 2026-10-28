@@ -68,6 +68,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     private readonly ToolStripMenuItem _fadeButton;
     private readonly ToolStripMenuItem _stayDurationButton;
     private readonly ToolStripMenuItem _completionActionButton;
+    private readonly ToolStripMenuItem _documentSettingsButton;
     private readonly ToolStripMenuItem _batchPropertiesButton;
     private readonly ToolStripMenuItem _removeButton;
     private readonly ToolStripMenuItem _moveUpButton;
@@ -220,6 +221,9 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         // it away from its NextItem default for a specific file — see this project's README.
         _completionActionButton = new ToolStripMenuItem("完成后动作...") { Enabled = false };
         _completionActionButton.Click += (_, _) => OnEditCompletionAction();
+        // PDF / Word / presentation playback settings (reading mode, page range, editor, native/static…).
+        _documentSettingsButton = new ToolStripMenuItem("文档播放设置...") { Enabled = false };
+        _documentSettingsButton.Click += (_, _) => OnEditDocumentSettings();
         // Enabled once 2+ file nodes are Ctrl+Click multi-selected — see _multiSelectedFileNodes'
         // own doc comment. Unlike every other button in this bar, this one is NOT driven by
         // GetSelection()/_tree.SelectedNode at all.
@@ -242,7 +246,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         {
             _playSelectedItem, new ToolStripSeparator(),
             _renameActivityItem, _addFileButton, _playModeButton, _deleteActivityItem, new ToolStripSeparator(),
-            _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton, _batchPropertiesButton,
+            _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton, _documentSettingsButton, _batchPropertiesButton,
             new ToolStripSeparator(),
             _moveUpButton, _moveDownButton, _removeButton,
         });
@@ -440,11 +444,38 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         var scenario = new Scenario { Name = "默认方案" };
         _store.Scenarios.Add(scenario);
         _store.CurrentScenarioId = scenario.Id;
-        _repository.Save(_store);
+        // First run, or a store that could not be read (the repository then refuses to save, protecting
+        // the real file): the default scenario lives in memory until a save succeeds.
+        try { _repository.Save(_store); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
 
     private Scenario? CurrentScenario =>
         _store.Scenarios.FirstOrDefault(s => s.Id == _store.CurrentScenarioId) ?? _store.Scenarios.FirstOrDefault();
+
+    /// <summary>Saves an edit already applied to <see cref="_store"/>. On failure (file locked, no write
+    /// access, or the store could not be read at startup) the operator is told, and the panel goes back to
+    /// what is on disk. Every edit used to call Save bare: a failure reached only the crash log while the
+    /// screen showed the change as done — a deleted activity came back after a restart (audit A-7).</summary>
+    private bool TrySave()
+    {
+        try
+        {
+            _repository.Save(_store);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            bool reverted = _repository.TryReloadInto(_store);
+            EnsureAtLeastOneScenario();
+            MessageBox.Show(this,
+                reverted ? $"修改未能保存，已恢复为保存前的内容。\n{ex.Message}" : $"修改未能保存，重启后将丢失。\n{ex.Message}",
+                "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            RefreshScenarioCombo();
+            RefreshTree();
+            return false;
+        }
+    }
 
     private void RefreshScenarioCombo()
     {
@@ -460,7 +491,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     {
         if (_scenarioCombo.SelectedItem is not Scenario scenario) return;
         _store.CurrentScenarioId = scenario.Id;
-        _repository.Save(_store);
+        if (!TrySave()) return;
         RefreshTree();
     }
 
@@ -472,8 +503,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         var scenario = new Scenario { Name = name };
         _store.Scenarios.Add(scenario);
         _store.CurrentScenarioId = scenario.Id;
+        if (!TrySave()) return;
         _fileOpLog.LogScenarioCreated(scenario.Id, scenario.Name);
-        _repository.Save(_store);
         RefreshScenarioCombo();
         RefreshTree();
     }
@@ -496,8 +527,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         };
         _store.Scenarios.Add(clone);
         _store.CurrentScenarioId = clone.Id;
+        if (!TrySave()) return;
         _fileOpLog.LogScenarioCreated(clone.Id, clone.Name);
-        _repository.Save(_store);
         RefreshScenarioCombo();
         RefreshTree();
     }
@@ -528,8 +559,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
 
         _store.Scenarios.Remove(current);
         _store.CurrentScenarioId = _store.Scenarios.First().Id;
+        if (!TrySave()) return;
         _fileOpLog.LogScenarioDeleted(current.Id, current.Name);
-        _repository.Save(_store);
         RefreshScenarioCombo();
         RefreshTree();
     }
@@ -544,8 +575,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
 
         var activity = new Activity { Name = name };
         scenario.Activities.Add(activity);
+        if (!TrySave()) return;
         _fileOpLog.LogActivityCreated(scenario.Id, activity.Id, activity.Name);
-        _repository.Save(_store);
         RefreshTree();
     }
 
@@ -558,8 +589,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (name == null) return;
 
         activity.Name = name;
+        if (!TrySave()) return;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
-        _repository.Save(_store);
         RefreshTree();
     }
 
@@ -573,8 +604,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (confirm != DialogResult.Yes) return;
 
         scenario.Activities.Remove(activity);
+        if (!TrySave()) return;
         _fileOpLog.LogActivityDeleted(scenario.Id, activity.Id, activity.Name);
-        _repository.Save(_store);
         RefreshTree();
     }
 
@@ -587,8 +618,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (picker.ShowDialog(this) != DialogResult.OK || picker.Selected == null) return;
 
         activity.Files.Add(picker.Selected.Clone());
+        if (!TrySave()) return;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
-        _repository.Save(_store);
         RefreshTree();
     }
 
@@ -615,8 +646,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             string? oldValue = file.PlayModeOverride?.ToString();
             string? newValue = fileDialog.SelectedPlayMode?.ToString();
             file.PlayModeOverride = fileDialog.SelectedPlayMode;
+            if (!TrySave()) return;
             _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.PlayModeOverride), oldValue, newValue);
-            _repository.Save(_store);
             return;
         }
 
@@ -625,8 +656,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (dialog.SelectedPlayMode == activity.DefaultPlayMode) return; // no actual change — nothing to log/save.
 
         activity.DefaultPlayMode = dialog.SelectedPlayMode!.Value; // never null — allowInherit defaults false above.
+        if (!TrySave()) return;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
-        _repository.Save(_store);
     }
 
     /// <summary>Only reachable when a selected file's <c>Kind == MediaKind.Audio</c> — see
@@ -660,7 +691,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
                 file.BackgroundAudioVisual.ToString(), dialog.BackgroundAudioVisual.ToString());
             file.BackgroundAudioVisual = dialog.BackgroundAudioVisual;
         }
-        _repository.Save(_store);
+        if (!TrySave()) return;
         // Unlike OnEditPlayMode/OnEditStayDuration/OnEditCompletionAction just above/below (none of
         // which change anything the tree actually displays), IsBackgroundAudio now affects the file
         // node's own text (see BuildFileNodeText) — without this, toggling the checkbox wouldn't be
@@ -698,7 +729,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
                 file.FadeDuration?.ToString(), dialog.FadeDuration?.ToString());
             file.FadeDuration = dialog.FadeDuration;
         }
-        _repository.Save(_store);
+        if (!TrySave()) return;
     }
 
     /// <summary>Only reachable when a selected file's <c>Kind</c> is Image, or Document that isn't an
@@ -707,6 +738,26 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     /// <see cref="OnEditAudioProperties"/>: <c>MediaFile.StayDuration</c> is only ever a per-file
     /// override of the 设置 面板's single global default, there is no per-activity default to fall
     /// back to editing when nothing is selected.</summary>
+    /// <summary>"文档播放设置": PDF reading mode / page range / zoom, Word editor, presentation mode.</summary>
+    private void OnEditDocumentSettings()
+    {
+        var (_, activity, file) = GetSelection();
+        if (activity == null || file?.Kind != MediaKind.Document) return;
+        using var dialog = new DocumentSettingsDialog(file);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var old = file.Document;
+        file.Document = dialog.Result;
+        try { _repository.Save(_store); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            file.Document = old;
+            MessageBox.Show(this, $"文档播放设置未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.Document), null, DocumentSettingsDialog.Summarize(file));
+        RefreshTree();
+    }
+
     private void OnEditStayDuration()
     {
         var (_, activity, file) = GetSelection();
@@ -724,8 +775,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         string? oldValue = file.StayDuration?.ToString();
         string? newValue = dialog.SelectedStayDuration?.ToString();
         file.StayDuration = dialog.SelectedStayDuration;
+        if (!TrySave()) return;
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.StayDuration), oldValue, newValue);
-        _repository.Save(_store);
     }
 
     /// <summary>Only reachable when a file is selected — see <see cref="UpdateButtonStates"/>.
@@ -744,8 +795,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         string oldValue = file.OnCompletion.ToString();
         string newValue = dialog.SelectedCompletionAction.ToString();
         file.OnCompletion = dialog.SelectedCompletionAction;
+        if (!TrySave()) return;
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.OnCompletion), oldValue, newValue);
-        _repository.Save(_store);
     }
 
     private void OnRemoveFile()
@@ -754,8 +805,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (scenario == null || activity == null || file == null) return;
 
         activity.Files.Remove(file);
+        if (!TrySave()) return;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
-        _repository.Save(_store);
         RefreshTree();
     }
 
@@ -769,8 +820,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (newIndex < 0 || newIndex >= activity.Files.Count) return;
 
         (activity.Files[index], activity.Files[newIndex]) = (activity.Files[newIndex], activity.Files[index]);
+        if (!TrySave()) return;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
-        _repository.Save(_store);
         RefreshTree();
         SelectFileNode(activity, file);
     }
@@ -915,7 +966,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         BeginInvoke(() =>
         {
             activity.IsCollapsed = !activity.IsCollapsed;
-            _repository.Save(_store);
+            if (!TrySave()) return;
             RefreshTree();
         });
     }
@@ -1009,8 +1060,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (activity.DefaultPlayMode == mode) return;
 
         activity.DefaultPlayMode = mode;
+        if (!TrySave()) return;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
-        _repository.Save(_store);
         foreach (Control row in _activityRows.Controls) row.Invalidate();
     }
 
@@ -1020,7 +1071,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     {
         try
         {
-            _repository.Save(_store);
+            _repository.Save(_store); // explicit retry: report, keep the edits in memory
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -1039,7 +1090,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (scenario == null || scenario.Activities.Count == 0) return;
         bool collapse = scenario.Activities.Any(a => !a.IsCollapsed);
         foreach (var activity in scenario.Activities) activity.IsCollapsed = collapse;
-        _repository.Save(_store);
+        if (!TrySave()) return;
         RefreshTree();
     }
 
@@ -1151,7 +1202,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
 
         if (!anyChange) return; // every row left unchecked — nothing to save/refresh.
 
-        _repository.Save(_store);
+        if (!TrySave()) return;
         // BuildFileNodeText depends on IsBackgroundAudio, and RefreshTree also clears
         // _multiSelectedFileNodes (see that method's own comment) — both reasons OnEditAudioProperties
         // already refreshes after its own IsBackgroundAudio change apply here too.
@@ -1181,6 +1232,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _fadeButton.Enabled = file != null && file.Kind is MediaKind.Video or MediaKind.Audio;
         _stayDurationButton.Enabled = file != null && IsStayDurationApplicable(file);
         _completionActionButton.Enabled = file != null;
+        _documentSettingsButton.Enabled = file?.Kind == MediaKind.Document;
         _batchPropertiesButton.Enabled = _multiSelectedFileNodes.Count >= 2;
         _removeButton.Enabled = file != null;
         _moveUpButton.Enabled = file != null;
@@ -1199,7 +1251,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     /// <see cref="BatchPropertiesDialog"/>'s own applicability check, so this one definition is the
     /// only place that needs to know about the Office-document exception.</summary>
     private static bool IsStayDurationApplicable(MediaFile file) =>
-        file.Kind == MediaKind.Image || (file.Kind == MediaKind.Document && !WpsDocumentController.IsOfficeDocument(file.SourcePath));
+        file.Kind == MediaKind.Image || (file.Kind == MediaKind.Document && !EveryStage.Terminal.Documents.DocumentFormats.IsOffice(file.SourcePath));
 
     private void SelectFileNode(Activity activity, MediaFile file)
     {
@@ -1389,7 +1441,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (node?.Tag is not Activity activity || activity.IsCollapsed == collapsed) return;
 
         activity.IsCollapsed = collapsed;
-        _repository.Save(_store);
+        if (!TrySave()) return;
     }
 
     private void OnFileStarted(MediaFile file)

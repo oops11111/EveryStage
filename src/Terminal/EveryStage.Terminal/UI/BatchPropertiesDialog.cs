@@ -95,7 +95,7 @@ public sealed class BatchPropertiesDialog : Form
 
     public BatchPropertiesDialog(IReadOnlyCollection<MediaFile> files)
     {
-        // Excludes an Office document (see WpsDocumentController.IsOfficeDocument) from the same
+        // Excludes an Office document (see DocumentFormats.IsOffice) from the same
         // MediaKind.Document value a PDF gets — PlaybackEngine.PlayOfficeDocument deliberately never
         // arms the stay-duration timer this setting controls, so applying one to an Office document
         // would silently do nothing at playback time (same reasoning as
@@ -103,7 +103,7 @@ public sealed class BatchPropertiesDialog : Form
         // is private to a different class, and this dialog has no existing reference to it to call
         // through).
         _stayDurationApplicable = files.All(f =>
-            f.Kind == MediaKind.Image || (f.Kind == MediaKind.Document && !WpsDocumentController.IsOfficeDocument(f.SourcePath)));
+            f.Kind == MediaKind.Image || (f.Kind == MediaKind.Document && !EveryStage.Terminal.Documents.DocumentFormats.IsOffice(f.SourcePath)));
         _fadeApplicable = files.All(f => f.Kind is MediaKind.Video or MediaKind.Audio);
         _backgroundAudioApplicable = files.All(f => f.Kind == MediaKind.Audio);
 

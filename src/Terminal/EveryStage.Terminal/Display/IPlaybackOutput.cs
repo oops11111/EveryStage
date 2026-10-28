@@ -25,16 +25,8 @@ public interface IPlaybackOutput
     /// raise completion/failure on their own worker threads; the engine marshals through this.</summary>
     void Post(Action action);
 
-    /// <summary>True only for the extended display, which can cede its monitor to WPS's own window for
-    /// Office documents. The Preview surface can't embed another application's window.</summary>
-    bool CanHostExternalDocumentWindow { get; }
-
-    /// <summary>Screen rectangle an external document window should cover (the bound monitor).</summary>
-    Rectangle ExternalDocumentBounds { get; }
-
-    /// <summary>Hide so the external document window is visible (Program: hide the overlay).</summary>
-    void YieldToExternalWindow();
-
-    /// <summary>Undo <see cref="YieldToExternalWindow"/>.</summary>
-    void ReclaimFromExternalWindow();
+    /// <summary>Screen rectangle of the extended display this output covers (Program), or null for an
+    /// in-app surface (Preview). A native slide show runs at this size, behind the output window, and is
+    /// captured onto it — no other application's window is ever shown on the extended display.</summary>
+    Rectangle? OutputScreenBounds { get; }
 }

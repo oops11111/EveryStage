@@ -33,20 +33,18 @@ namespace EveryStage.Caster.Encode;
 /// <see cref="AacAudioDecoder"/> needs no separate out-of-band AudioSpecificConfig at all, a
 /// meaningful simplification a real RFC 3640 receiver wouldn't get to make.
 ///
-/// Not wired into <see cref="Casting.LiveCastSession"/>'s network send path yet — see this project's
-/// README for why (there's still no RTP packetizer/depacketizer for this stream, nor a
-/// <c>CastStartMessage</c> field to tell the Terminal which codec to expect). Instead this round adds
-/// the missing decode-side half (<see cref="AacAudioDecoder"/>, <c>EveryStage.Rendering.Decode</c>)
-/// and validates the full encode-then-decode round trip in one process via
-/// <see cref="AacEncodeSelfTestRunner"/> — the same "build + self-test before wiring into the real
-/// send path" order <c>EncodeSelfTestRunner</c> already established for the H.264 encoder, just with
-/// an extra step now that both directions exist to actually chain together.
+/// Wired into <see cref="Casting.LiveCastSession"/>'s send path (one ADTS access unit per RTP packet,
+/// <c>CastStartMessage.AudioIsAac</c>). Verified against the real Microsoft AAC encoder on Windows 10
+/// 19045 by WindowsSelfTests' <c>CastAudioTests</c> (encode → decode round trip): synchronous as assumed,
+/// but without an attribute store (GetAttributes = E_NOTIMPL), without its own output samples, and
+/// accepting an output type only BEFORE the input type is set — all handled below (audit A-6 / A-26).
 /// </summary>
 public sealed class AacAudioEncoder : IDisposable
 {
     private readonly IMFTransform _encoder;
     private long _nextSampleTime; // 100ns units.
     private readonly long _bytesPerSecond;
+    private readonly bool _providesSamples;
 
     /// <summary>Raised (from whichever thread calls <see cref="SubmitPcm"/> — see that method) with
     /// one ADTS-framed AAC access unit.</summary>
@@ -74,10 +72,13 @@ public sealed class AacAudioEncoder : IDisposable
         {
             UnlockAsyncProcessingIfNeeded(_encoder);
 
-            // Input type must be set before enumerating output types — see ConfigureOutputType's doc
-            // comment for why (the opposite order from H264HardwareEncoder, which sets output first).
+            // Output type first — the Microsoft AAC encoder rejects any output type once the input type is
+            // set (see ConfigureOutputType).
+            ConfigureOutputType(_encoder, sampleRate, channels);
             ConfigureInputType(_encoder, sampleRate, channels);
-            ConfigureOutputType(_encoder);
+            // The Microsoft AAC encoder does not allocate its own output samples; calling ProcessOutput
+            // without one fails every time, which used to be read as "nothing ready" (audit A-6).
+            _providesSamples = EveryStage.Rendering.MediaFoundationHelpers.ProvidesOutputSamples(_encoder);
 
             // NOTE: same unverified exact enum member names as H264HardwareEncoder's identical two
             // calls — native values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING / MFT_MESSAGE_NOTIFY_START_OF_STREAM.
@@ -154,29 +155,17 @@ public sealed class AacAudioEncoder : IDisposable
     {
         while (true)
         {
-            var outputBuffer = new OutputDataBuffer { StreamID = 0 };
-            // Same "treat any ProcessOutput failure as nothing-ready-yet rather than distinguishing
-            // MF_E_TRANSFORM_NEED_MORE_INPUT from a real error" simplification
-            // H264HardwareEncoder.HandleHaveOutput already uses — see that method's own NOTE.
-            var result = _encoder.ProcessOutput(ProcessOutputFlags.None, 1, ref outputBuffer, out _);
-            if (result.Failure) return;
-
-            var sample = outputBuffer.Sample;
-            if (sample == null) return;
-
+            var status = EveryStage.Rendering.MediaFoundationHelpers.ProcessOneOutput(_encoder, _providesSamples, out var sample);
+            if (status == EveryStage.Rendering.TransformOutput.NeedMoreInput) return;
+            if (status == EveryStage.Rendering.TransformOutput.StreamChanged)
+                throw new InvalidOperationException("AAC 编码器在推流中改变了输出格式");
             try
             {
-                using var contiguousBuffer = sample.ConvertToContiguousBuffer();
-                contiguousBuffer.Lock(out var data, out _, out var currentLength);
-                var accessUnit = new byte[currentLength];
-                System.Runtime.InteropServices.Marshal.Copy(data, accessUnit, 0, currentLength);
-                contiguousBuffer.Unlock();
-
-                AccessUnitEncoded?.Invoke(accessUnit);
+                AccessUnitEncoded?.Invoke(EveryStage.Rendering.MediaFoundationHelpers.CopySampleData(sample!));
             }
             finally
             {
-                sample.Dispose();
+                sample!.Dispose();
             }
         }
     }
@@ -212,12 +201,10 @@ public sealed class AacAudioEncoder : IDisposable
 
     private static void UnlockAsyncProcessingIfNeeded(IMFTransform encoder)
     {
-        // The built-in AAC encoder MFT is documented/commonly reported as synchronous — this repo
-        // has no way to verify that on a real machine (see this class's doc comment), so this unlock
-        // is applied defensively anyway: setting it on a synchronous MFT is harmless but pointless,
-        // same reasoning H264HardwareEncoder.UnlockAsyncProcessing's own doc comment gives.
-        using var attributes = encoder.Attributes;
-        attributes.Set(MF_TRANSFORM_ASYNC_UNLOCK, 1u);
+        // The built-in AAC encoder MFT is synchronous and has no attribute store at all (GetAttributes
+        // returns E_NOTIMPL, verified on Windows 10 19045) — reading .Attributes unconditionally made this
+        // constructor throw on every machine, so casts never carried audio.
+        EveryStage.Rendering.MediaFoundationHelpers.UnlockAsyncIfSupported(encoder);
     }
 
     private static void ConfigureInputType(IMFTransform encoder, int sampleRate, int channels)
@@ -236,31 +223,40 @@ public sealed class AacAudioEncoder : IDisposable
         }
     }
 
-    /// <summary>The built-in AAC encoder MFT famously only accepts a small, fixed set of
-    /// (samplerate, channels, bitrate) combinations for its output type, rather than an arbitrary
-    /// <c>MF_MT_AVG_BYTES_PER_SECOND</c> value the way <c>H264HardwareEncoder.ConfigureOutputType</c>
-    /// can just set directly — which combinations are valid depends on the input type already
-    /// negotiated by <see cref="ConfigureInputType"/> and can only be discovered by enumerating
-    /// <c>GetOutputAvailableType</c>, not guessed as a single <c>SetOutputType</c> call. This takes
-    /// whichever type index 0 offers rather than searching the full enumeration for the one closest
-    /// to some target bitrate — a real implementation would likely want that search, but it needs
-    /// more unverified API surface (<c>IMFAttributes.CopyAllItems</c>, to keep a chosen candidate
-    /// alive past the enumeration call that produced it) on top of an already-novel code path this
-    /// round chose not to add; see this project's README "已知风险".</summary>
-    private static void ConfigureOutputType(IMFTransform encoder)
+    /// <summary>Sets an explicit AAC output type: ADTS framing (see MF_MT_AAC_PAYLOAD_TYPE in
+    /// EncoderGuids.cs), 16-bit, the stream's rate/channels, and the first bitrate the encoder accepts from
+    /// the fixed set it supports (128 kbps preferred). Must run BEFORE <see cref="ConfigureInputType"/>:
+    /// the Microsoft AAC encoder rejects every output type — even the ones it enumerates itself — once
+    /// the input type is set (MF_E_INVALIDMEDIATYPE, verified on Windows 10 19045). The previous
+    /// input-first, "take index 0" setup therefore never worked; it was masked by the constructor failing
+    /// even earlier on the attribute store (audit A-26).</summary>
+    private static void ConfigureOutputType(IMFTransform encoder, int sampleRate, int channels)
     {
-        // NOTE: GetOutputAvailableType's exact Vortice signature/return shape is unverified — native
-        // signature is GetOutputAvailableType(DWORD dwOutputStreamID, DWORD dwTypeIndex,
-        // IMFMediaType **ppType), returning MF_E_NO_MORE_TYPES once dwTypeIndex is out of range.
-        var type = encoder.GetOutputAvailableType(0, 0);
-        using (type)
+        Exception? last = null;
+        foreach (uint bytesPerSecond in new uint[] { 16000, 24000, 20000, 12000 }) // 128 / 192 / 160 / 96 kbps
         {
-            // ADTS-framed access units — see MF_MT_AAC_PAYLOAD_TYPE's own doc comment in
-            // EncoderGuids.cs for why (self-describing per-frame headers mean AacAudioDecoder needs
-            // no separate out-of-band AudioSpecificConfig).
-            type.Set(MF_MT_AAC_PAYLOAD_TYPE, 1u);
-            encoder.SetOutputType(0, type, 0);
+            var type = MediaFactory.MFCreateMediaType();
+            using (type)
+            {
+                type.Set(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+                type.Set(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+                type.Set(MF_MT_AUDIO_BITS_PER_SAMPLE, 16u);
+                type.Set(MF_MT_AUDIO_SAMPLES_PER_SECOND, (uint)sampleRate);
+                type.Set(MF_MT_AUDIO_NUM_CHANNELS, (uint)channels);
+                type.Set(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, bytesPerSecond);
+                type.Set(MF_MT_AAC_PAYLOAD_TYPE, 1u);
+                try
+                {
+                    encoder.SetOutputType(0, type, 0);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    last = ex;
+                }
+            }
         }
+        throw new NotSupportedException($"AAC 编码器不支持 {sampleRate} Hz {channels} 声道", last);
     }
 
     public void Dispose()

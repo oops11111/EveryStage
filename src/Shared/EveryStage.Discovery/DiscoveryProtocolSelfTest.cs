@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text.Json;
 
 namespace EveryStage.Discovery;
 
@@ -148,12 +150,28 @@ public static class DiscoveryProtocolSelfTest
             case DiscoveryProtocol.BeaconMessage o when received is DiscoveryProtocol.BeaconMessage r:
                 if (o.DeviceId != r.DeviceId) return $"DeviceId {o.DeviceId} != {r.DeviceId}";
                 if (o.DeviceName != r.DeviceName) return $"DeviceName '{o.DeviceName}' != '{r.DeviceName}'";
+                if (o.PairingProtocolVersion != r.PairingProtocolVersion) return $"PairingProtocolVersion {o.PairingProtocolVersion} != {r.PairingProtocolVersion}";
                 return null;
 
             case DiscoveryProtocol.PairRequestMessage o when received is DiscoveryProtocol.PairRequestMessage r:
                 if (o.RequestId != r.RequestId) return $"RequestId '{o.RequestId}' != '{r.RequestId}'";
                 if (o.DeviceId != r.DeviceId) return $"DeviceId {o.DeviceId} != {r.DeviceId}";
                 if (o.DeviceName != r.DeviceName) return $"DeviceName '{o.DeviceName}' != '{r.DeviceName}'";
+                if (o.PairingProtocolVersion != r.PairingProtocolVersion) return $"PairingProtocolVersion {o.PairingProtocolVersion} != {r.PairingProtocolVersion}";
+                if (o.CasterPublicKey != r.CasterPublicKey) return "CasterPublicKey did not round-trip.";
+                if (o.CasterNonceCommitment != r.CasterNonceCommitment) return "CasterNonceCommitment did not round-trip.";
+                return null;
+
+            case DiscoveryProtocol.PairChallengeMessage o when received is DiscoveryProtocol.PairChallengeMessage r:
+                if (o.RequestId != r.RequestId) return $"RequestId '{o.RequestId}' != '{r.RequestId}'";
+                if (o.TerminalDeviceId != r.TerminalDeviceId) return $"TerminalDeviceId {o.TerminalDeviceId} != {r.TerminalDeviceId}";
+                if (o.TerminalPublicKey != r.TerminalPublicKey) return "TerminalPublicKey did not round-trip.";
+                if (o.TerminalNonce != r.TerminalNonce) return "TerminalNonce did not round-trip.";
+                return null;
+
+            case DiscoveryProtocol.PairRevealMessage o when received is DiscoveryProtocol.PairRevealMessage r:
+                if (o.RequestId != r.RequestId) return $"RequestId '{o.RequestId}' != '{r.RequestId}'";
+                if (o.CasterNonce != r.CasterNonce) return "CasterNonce did not round-trip.";
                 return null;
 
             case DiscoveryProtocol.PairResponseMessage o when received is DiscoveryProtocol.PairResponseMessage r:
@@ -162,6 +180,7 @@ public static class DiscoveryProtocolSelfTest
                 if (o.Reason != r.Reason) return $"Reason '{o.Reason}' != '{r.Reason}'";
                 if (o.PairingKey != r.PairingKey) return "PairingKey did not round-trip.";
                 if (o.PairingKeyFormatVersion != r.PairingKeyFormatVersion) return "PairingKeyFormatVersion did not round-trip.";
+                if (o.KeyConfirmation != r.KeyConfirmation) return "KeyConfirmation did not round-trip.";
                 return null;
 
             case DiscoveryProtocol.CastStartMessage o when received is DiscoveryProtocol.CastStartMessage r:
@@ -186,12 +205,27 @@ public static class DiscoveryProtocolSelfTest
                 if (o.SequenceNumber != r.SequenceNumber) return $"SequenceNumber {o.SequenceNumber} != {r.SequenceNumber}";
                 if (o.SentAtUtc != r.SentAtUtc) return $"SentAtUtc {o.SentAtUtc:O} != {r.SentAtUtc:O}";
                 if (o.FramesDecoded != r.FramesDecoded) return $"FramesDecoded {o.FramesDecoded} != {r.FramesDecoded}";
+                if (o.OnProgram != r.OnProgram) return $"OnProgram {o.OnProgram} != {r.OnProgram}";
                 if (o.VideoBytesReceived != r.VideoBytesReceived) return $"VideoBytesReceived {o.VideoBytesReceived} != {r.VideoBytesReceived}";
                 if (o.VideoError != r.VideoError) return $"VideoError '{o.VideoError}' != '{r.VideoError}'";
                 if (o.HasAudio != r.HasAudio) return $"HasAudio {o.HasAudio} != {r.HasAudio}";
                 if (o.AudioBytesReceived != r.AudioBytesReceived) return $"AudioBytesReceived {o.AudioBytesReceived} != {r.AudioBytesReceived}";
                 if (o.AudioError != r.AudioError) return $"AudioError '{o.AudioError}' != '{r.AudioError}'";
                 if (o.PayloadTypeMismatches != r.PayloadTypeMismatches) return $"PayloadTypeMismatches {o.PayloadTypeMismatches} != {r.PayloadTypeMismatches}";
+                return null;
+
+            case DiscoveryProtocol.CastStartAckMessage o when received is DiscoveryProtocol.CastStartAckMessage r:
+                if (o.MediaSessionId != r.MediaSessionId) return $"MediaSessionId {o.MediaSessionId} != {r.MediaSessionId}";
+                if (o.Ready != r.Ready) return $"Ready {o.Ready} != {r.Ready}";
+                if (o.Pending != r.Pending) return $"Pending {o.Pending} != {r.Pending}";
+                if (o.Error != r.Error) return $"Error '{o.Error}' != '{r.Error}'";
+                return null;
+
+            case DiscoveryProtocol.CastStartRejectedMessage o when received is DiscoveryProtocol.CastStartRejectedMessage r:
+                if (o.TerminalDeviceId != r.TerminalDeviceId) return $"TerminalDeviceId {o.TerminalDeviceId} != {r.TerminalDeviceId}";
+                if (o.CasterDeviceId != r.CasterDeviceId) return $"CasterDeviceId {o.CasterDeviceId} != {r.CasterDeviceId}";
+                if (o.MediaSessionId != r.MediaSessionId) return $"MediaSessionId {o.MediaSessionId} != {r.MediaSessionId}";
+                if (o.Reason != r.Reason) return $"Reason '{o.Reason}' != '{r.Reason}'";
                 return null;
 
             case DiscoveryProtocol.CastStatusAckMessage o when received is DiscoveryProtocol.CastStatusAckMessage r:
@@ -227,10 +261,29 @@ public static class DiscoveryProtocolSelfTest
         var deviceId = Guid.NewGuid();
         return new List<DiscoveryProtocol.Message>
         {
-            new DiscoveryProtocol.BeaconMessage { DeviceId = deviceId, DeviceName = "自检-Terminal" },
-            new DiscoveryProtocol.PairRequestMessage { RequestId = "req-1", DeviceId = deviceId, DeviceName = "自检-Caster" },
+            new DiscoveryProtocol.BeaconMessage { DeviceId = deviceId, DeviceName = "自检-Terminal", PairingProtocolVersion = PairingHandshake.ProtocolVersion },
+            new DiscoveryProtocol.PairRequestMessage
+            {
+                RequestId = "req-1", DeviceId = deviceId, DeviceName = "自检-Caster",
+                PairingProtocolVersion = PairingHandshake.ProtocolVersion,
+                CasterPublicKey = Convert.ToBase64String(new byte[] { 1, 2, 3 }),
+                CasterNonceCommitment = Convert.ToBase64String(new byte[32]),
+            },
+            new DiscoveryProtocol.PairChallengeMessage
+            {
+                RequestId = "req-1",
+                TerminalDeviceId = Guid.NewGuid(),
+                TerminalPublicKey = Convert.ToBase64String(new byte[] { 4, 5, 6 }),
+                TerminalNonce = Convert.ToBase64String(new byte[32]),
+            },
+            new DiscoveryProtocol.PairRevealMessage { RequestId = "req-1", CasterNonce = Convert.ToBase64String(new byte[32]) },
             new DiscoveryProtocol.PairResponseMessage { RequestId = "req-1", Accepted = false, Reason = "用户拒绝", PairingKey = null },
-            new DiscoveryProtocol.PairResponseMessage { RequestId = "req-2", Accepted = true, Reason = null, PairingKey = PairingSecurity.GenerateKey(), PairingKeyFormatVersion = PairingSecurity.CurrentKeyFormatVersion },
+            new DiscoveryProtocol.PairResponseMessage
+            {
+                RequestId = "req-2", Accepted = true, Reason = null, PairingKey = null,
+                PairingKeyFormatVersion = PairingSecurity.CurrentKeyFormatVersion,
+                KeyConfirmation = Convert.ToBase64String(new byte[32]),
+            },
             new DiscoveryProtocol.CastStartMessage
             {
                 DeviceId = deviceId, Width = 1920, Height = 1080, PayloadType = 96,
@@ -241,9 +294,17 @@ public static class DiscoveryProtocolSelfTest
             new DiscoveryProtocol.CastStatusMessage
             {
                 DeviceId = deviceId, SessionId = Guid.NewGuid(), SequenceNumber = 42, SentAtUtc = DateTimeOffset.UtcNow, FramesDecoded = 12345,
-                VideoBytesReceived = 987654321, VideoError = "解码失败：测试用错误信息",
+                OnProgram = true, VideoBytesReceived = 987654321, VideoError = "解码失败：测试用错误信息",
                 HasAudio = true, AudioBytesReceived = 123456, AudioError = null,
                 PayloadTypeMismatches = 3,
+            },
+            new DiscoveryProtocol.CastStartAckMessage { MediaSessionId = Guid.NewGuid(), Ready = false, Pending = true, Error = null },
+            new DiscoveryProtocol.CastStartRejectedMessage
+            {
+                TerminalDeviceId = Guid.NewGuid(),
+                CasterDeviceId = deviceId,
+                MediaSessionId = Guid.NewGuid(),
+                Reason = "not_paired",
             },
             new DiscoveryProtocol.CastStatusAckMessage { DeviceId = deviceId, SessionId = Guid.NewGuid(), SequenceNumber = 42 },
             new DiscoveryProtocol.PingMessage { RequestId = "ping-1" },
@@ -280,8 +341,108 @@ public static class DiscoveryProtocolSelfTest
             return "Pairing key validation accepted invalid input.";
         if (!PairingSecurity.IsSupportedKey(key1, PairingSecurity.CurrentKeyFormatVersion))
             return "Current key format was rejected.";
-        if (PairingSecurity.IsSupportedKey(key1, 0) || PairingSecurity.IsSupportedKey(key1, 999))
+        if (PairingSecurity.IsSupportedKey(key1, 1) || PairingSecurity.IsSupportedKey(key1, 0) || PairingSecurity.IsSupportedKey(key1, 999))
             return "Legacy or future key format was accepted without an explicit migration.";
+        string? responseFailure = CheckPairResponseDoesNotCarryV2Key();
+        if (responseFailure != null) return responseFailure;
+        string? handshakeFailure = CheckPairingHandshake();
+        if (handshakeFailure != null) return handshakeFailure;
+        return null;
+    }
+
+    private static string? CheckPairResponseDoesNotCarryV2Key()
+    {
+        var response = new DiscoveryProtocol.PairResponseMessage
+        {
+            RequestId = Guid.NewGuid().ToString("N"),
+            Accepted = true,
+            PairingKey = null,
+            PairingKeyFormatVersion = PairingSecurity.CurrentKeyFormatVersion,
+            KeyConfirmation = Convert.ToBase64String(new byte[32]),
+        };
+        byte[] encoded = DiscoveryProtocol.Encode(response);
+        using var doc = JsonDocument.Parse(encoded);
+        if (doc.RootElement.TryGetProperty(nameof(DiscoveryProtocol.PairResponseMessage.PairingKey), out _))
+            return "Pairing v2 response serialized a PairingKey field.";
+        if (!doc.RootElement.TryGetProperty(nameof(DiscoveryProtocol.PairResponseMessage.KeyConfirmation), out var confirmation)
+            || confirmation.ValueKind != JsonValueKind.String)
+            return "Pairing v2 response did not serialize KeyConfirmation.";
+        if (DiscoveryProtocol.Decode(encoded) is not DiscoveryProtocol.PairResponseMessage decoded
+            || !decoded.Accepted
+            || decoded.PairingKey != null
+            || decoded.KeyConfirmation != response.KeyConfirmation)
+            return "Pairing v2 response did not round-trip without a PairingKey.";
+        return null;
+    }
+
+    private static string? CheckPairingHandshake()
+    {
+        string requestId = Guid.NewGuid().ToString("N");
+        Guid casterId = Guid.NewGuid();
+        Guid terminalId = Guid.NewGuid();
+        using var caster = new CasterPairingHandshake(requestId, casterId, terminalId);
+        using var terminal = new TerminalPairingHandshake(
+            requestId, casterId, terminalId, caster.CasterPublicKey, caster.CasterNonceCommitment);
+
+        var casterResult = caster.ProcessChallenge(terminal.TerminalPublicKey, terminal.TerminalNonce);
+        var terminalResult = terminal.ProcessReveal(caster.CasterNonce);
+        if (casterResult.PairingKey != terminalResult.PairingKey) return "Pairing v2 derived different keys.";
+        if (casterResult.VerificationCode != terminalResult.VerificationCode) return "Pairing v2 derived different verification codes.";
+        if (casterResult.VerificationCode.Length != 6 || casterResult.VerificationCode.Any(ch => ch < '0' || ch > '9'))
+            return $"Pairing v2 verification code has an invalid format: '{casterResult.VerificationCode}'.";
+        if (!caster.VerifyKeyConfirmation(terminalResult.KeyConfirmation)) return "Pairing v2 key confirmation failed.";
+        if (!PairingSecurity.IsSupportedKey(casterResult.PairingKey, PairingSecurity.CurrentKeyFormatVersion))
+            return "Pairing v2 key is not accepted as the current supported key format.";
+
+        string? transcriptFailure =
+            CheckPairingTranscriptBinding("request id", requestId, Guid.NewGuid().ToString("N"), casterId, casterId, terminalId, terminalId)
+            ?? CheckPairingTranscriptBinding("caster device id", requestId, requestId, casterId, Guid.NewGuid(), terminalId, terminalId)
+            ?? CheckPairingTranscriptBinding("terminal device id", requestId, requestId, casterId, casterId, terminalId, Guid.NewGuid());
+        if (transcriptFailure != null) return transcriptFailure;
+
+        using var attackerTerminal = new TerminalPairingHandshake(
+            requestId, casterId, terminalId, caster.CasterPublicKey, caster.CasterNonceCommitment);
+        var attackerCasterResult = caster.ProcessChallenge(attackerTerminal.TerminalPublicKey, attackerTerminal.TerminalNonce);
+        var realTerminalResult = terminal.ProcessReveal(caster.CasterNonce);
+        if (attackerCasterResult.VerificationCode == realTerminalResult.VerificationCode)
+            return "Pairing v2 MITM simulation unexpectedly produced the same verification code.";
+        if (caster.VerifyKeyConfirmation(realTerminalResult.KeyConfirmation))
+            return "Pairing v2 accepted key confirmation after public-key substitution.";
+
+        using var commitmentCaster = new CasterPairingHandshake(Guid.NewGuid().ToString("N"), Guid.NewGuid(), Guid.NewGuid());
+        using var commitmentTerminal = new TerminalPairingHandshake(
+            requestId, casterId, terminalId, commitmentCaster.CasterPublicKey, commitmentCaster.CasterNonceCommitment);
+        try
+        {
+            commitmentTerminal.ProcessReveal(Convert.ToBase64String(new byte[PairingHandshake.NonceSizeBytes]));
+            return "Pairing v2 accepted a nonce that did not match its commitment.";
+        }
+        catch (CryptographicException) { }
+
+        return null;
+    }
+
+    private static string? CheckPairingTranscriptBinding(
+        string fieldName,
+        string casterRequestId,
+        string terminalRequestId,
+        Guid casterCasterId,
+        Guid terminalCasterId,
+        Guid casterTerminalId,
+        Guid terminalTerminalId)
+    {
+        using var caster = new CasterPairingHandshake(casterRequestId, casterCasterId, casterTerminalId);
+        using var terminal = new TerminalPairingHandshake(
+            terminalRequestId, terminalCasterId, terminalTerminalId,
+            caster.CasterPublicKey, caster.CasterNonceCommitment);
+        var casterResult = caster.ProcessChallenge(terminal.TerminalPublicKey, terminal.TerminalNonce);
+        var terminalResult = terminal.ProcessReveal(caster.CasterNonce);
+        if (casterResult.PairingKey == terminalResult.PairingKey)
+            return $"Pairing v2 did not bind {fieldName} into the derived key.";
+        if (casterResult.VerificationCode == terminalResult.VerificationCode)
+            return $"Pairing v2 did not bind {fieldName} into the verification code.";
+        if (caster.VerifyKeyConfirmation(terminalResult.KeyConfirmation))
+            return $"Pairing v2 accepted key confirmation with a mismatched {fieldName}.";
         return null;
     }
 

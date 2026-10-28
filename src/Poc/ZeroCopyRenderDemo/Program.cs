@@ -127,7 +127,7 @@ internal static class Program
                 // pool (see VideoDecodeSource.ReadNextVideoFrame), not a fresh allocation — release
                 // the COM ref every iteration (present or drop) or the pool never recycles slots,
                 // which would show up as exactly the kind of leak the 1-hour soak test is for.
-                frame.Value.Texture.Dispose();
+                frame.Value.Release(); // texture + the sample that keeps its decoder slot reserved
             }
         }
     }

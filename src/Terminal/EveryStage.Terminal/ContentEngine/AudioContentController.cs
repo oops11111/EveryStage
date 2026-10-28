@@ -130,11 +130,17 @@ public sealed class AudioContentController : IDisposable
     }
 
     /// <summary>Current position within the file, accounting for any <see cref="TrySeekTo"/> calls
-    /// since <see cref="Play"/> started — see <see cref="_seekBaseTicks"/>'s own doc comment for why
-    /// this isn't simply <see cref="AudioPlaybackClock.PositionTicks"/>. <see cref="TimeSpan.Zero"/>
-    /// if nothing is currently playing.</summary>
+    /// since <see cref="Play"/> started (<see cref="_seekBaseTicks"/>) and counting only content actually
+    /// played — not silence the device rendered while decoding stalled (audit B-22, see
+    /// <see cref="AudioTimeline"/>). <see cref="TimeSpan.Zero"/> if nothing is currently playing.</summary>
     public TimeSpan CurrentPosition =>
-        _audioClock == null ? TimeSpan.Zero : TimeSpan.FromTicks(_seekBaseTicks + _audioClock.PositionTicks);
+        _timeline is { } timeline ? TimeSpan.FromTicks(_seekBaseTicks + timeline.ContentTicks) : TimeSpan.Zero;
+
+    private volatile AudioTimeline? _timeline;
+
+    /// <summary>Test hook: one decode stall of this length once a second of content has played (a slow
+    /// disk or network share).</summary>
+    internal static TimeSpan SimulatedStall { get; set; }
 
     /// <summary>Best-effort total duration of the current file — null if nothing is playing, or if
     /// <see cref="AudioDecodeSource.TryGetDuration"/> failed for it (see that method's own doc
@@ -168,7 +174,17 @@ public sealed class AudioContentController : IDisposable
         Stop();
 
         var source = new AudioDecodeSource(path);
-        var audioClock = new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
+        AudioPlaybackClock audioClock;
+        try
+        {
+            audioClock = OpenOutput(source);
+        }
+        catch
+        {
+            // The source already holds the file open and an MFStartup reference (audit B-20).
+            source.Dispose();
+            throw;
+        }
         _fadeDuration = fadeDuration is { Ticks: > 0 } ? fadeDuration : null;
         // A zero-or-negative fade has nothing to ramp over, so it's treated as "no fade in/out"
         // rather than risking a divide-by-zero in ComputeFadeMultiplier.
@@ -226,7 +242,19 @@ public sealed class AudioContentController : IDisposable
 
         _seekBaseTicks = position.Ticks;
         _seekTargetTicks = position.Ticks;
-        var audioClock = new AudioPlaybackClock(_source.AudioSampleRate, _source.AudioChannels);
+        AudioPlaybackClock audioClock;
+        try
+        {
+            audioClock = OpenOutput(_source);
+        }
+        catch (Exception ex)
+        {
+            // The old playback thread and clock are already gone. Escaping to the caller (a UI event
+            // handler) used to leave the channel "playing" with nothing running and no error card (audit
+            // B-21); report it the way a mid-play failure is reported instead.
+            PlaybackFailed?.Invoke(ex);
+            return false;
+        }
         // Computed up front (rather than left at some default and corrected on the next loop
         // iteration, tens of milliseconds later) so a seek landing inside the fade-in/fade-out
         // window doesn't produce a brief, audible full-volume blip before the first real chunk
@@ -238,6 +266,25 @@ public sealed class AudioContentController : IDisposable
         StartPlaybackThread(_source, audioClock);
         return true;
     }
+
+    /// <summary>Opens the audio output for <paramref name="source"/>, turning a failure (no output device,
+    /// audit B-20) into an error the Preview card can show.</summary>
+    private static AudioPlaybackClock OpenOutput(AudioDecodeSource source)
+    {
+        try
+        {
+            return new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
+        }
+        catch (Exception ex)
+        {
+            throw new MediaOpenException(MediaFailureStage.Render, $"无法打开声音输出设备（{ex.Message.Trim()}）", ex, audioCodec: source.AudioCodec);
+        }
+    }
+
+    /// <summary>The output stopped on its own mid-play (endpoint removed, audit A-24). A standalone
+    /// audio item cannot continue without it, so the playback thread fails with this.</summary>
+    private static Exception OutputLost(AudioPlaybackClock clock) =>
+        new MediaOpenException(MediaFailureStage.Render, $"声音输出已断开（{clock.FaultReason}）", null);
 
     /// <summary>Pauses in place — unlike <see cref="VideoContentController"/> (whose <c>Stop()</c>
     /// tears the decode source down entirely, see its own doc comment on why video pause-in-place
@@ -280,6 +327,7 @@ public sealed class AudioContentController : IDisposable
 
         _audioClock?.Dispose();
         _audioClock = null;
+        _timeline = null;
     }
 
     /// <summary>Shared startup between <see cref="Play"/> and <see cref="TrySeekTo"/> — assumes the
@@ -296,7 +344,9 @@ public sealed class AudioContentController : IDisposable
         // thread and can do so after our Stop — audio then plays on while reported "paused". Resume()
         // starts it (WasapiOut.Play covers both "never started" and "paused").
         if (!_paused) audioClock.Start();
-        _playbackThread = new Thread(() => RunPlaybackLoop(source, audioClock, cts.Token))
+        var timeline = new AudioTimeline(audioClock, source.AudioSampleRate, source.AudioChannels);
+        _timeline = timeline;
+        _playbackThread = new Thread(() => RunPlaybackLoop(source, audioClock, timeline, cts.Token))
         {
             IsBackground = true,
             Name = "EveryStage.AudioPlayback",
@@ -304,11 +354,11 @@ public sealed class AudioContentController : IDisposable
         _playbackThread.Start();
     }
 
-    private void RunPlaybackLoop(AudioDecodeSource source, AudioPlaybackClock audioClock, CancellationToken token)
+    private void RunPlaybackLoop(AudioDecodeSource source, AudioPlaybackClock audioClock, AudioTimeline timeline, CancellationToken token)
     {
         try
         {
-            RunPlaybackLoopCore(source, audioClock, token);
+            RunPlaybackLoopCore(source, audioClock, timeline, token);
         }
         catch (Exception ex)
         {
@@ -323,47 +373,67 @@ public sealed class AudioContentController : IDisposable
     /// for the math and why <see cref="CurrentPosition"/> (not wall-clock elapsed time) is the right
     /// time base — it keeps the ramp correct across a <see cref="Pause"/>/<see cref="Resume"/> and a
     /// <see cref="TrySeekTo"/> alike.</summary>
-    private void RunPlaybackLoopCore(AudioDecodeSource source, AudioPlaybackClock audioClock, CancellationToken token)
+    private void RunPlaybackLoopCore(AudioDecodeSource source, AudioPlaybackClock audioClock, AudioTimeline timeline, CancellationToken token)
     {
+        bool stallSimulated = false;
         while (!token.IsCancellationRequested)
         {
             var decoded = source.ReadNextChunk();
+            if (SimulatedStall > TimeSpan.Zero && !stallSimulated && timeline.ContentTicks > TimeSpan.TicksPerSecond)
+            {
+                stallSimulated = true;
+                Thread.Sleep(SimulatedStall);
+            }
             if (decoded == null)
             {
                 // Decoding runs up to AheadBudgetTicks ahead of the speaker, so end-of-stream is NOT the
                 // end of playback. Reporting completion here fired ~1 s early: sequential playback then
-                // started the next item and cut the last second of every track. Wait for the device to
-                // drain what is queued (indefinitely while paused, abandoned on Stop/seek).
-                while (!token.IsCancellationRequested && audioClock.BufferedDurationTicks > 0)
+                // started the next item and cut the last second of every track. Wait until the device has
+                // actually played everything handed to it — an empty BufferedWaveProvider only means WASAPI
+                // has taken the data, about one device period before it is heard (audit C-33). Waits
+                // indefinitely while paused; abandoned on Stop/seek.
+                while (!token.IsCancellationRequested && timeline.ContentTicks < timeline.EnqueuedContentTicks)
+                {
+                    if (audioClock.IsFaulted) throw OutputLost(audioClock); // ContentTicks reads the position, which detects a stopped output
                     Thread.Sleep(10);
+                }
                 if (token.IsCancellationRequested) return;
                 PlaybackCompleted?.Invoke();
                 return;
             }
             var trimmed = PcmTrim.ToTarget(decoded.Value.Pcm, decoded.Value.TimestampTicks, _seekTargetTicks, source.AudioSampleRate, source.AudioChannels);
             if (trimmed == null) continue; // entirely before the seek target
-            var chunk = (DecodedAudioChunk?)new DecodedAudioChunk(trimmed.Value.Pcm, trimmed.Value.TimestampTicks);
 
-            // Pace against playback: wait until the clock is within AheadBudgetTicks of this chunk's
-            // position IN THE FILE. chunk.TimestampTicks is file-absolute (MF SetCurrentPosition does
-            // not rebase sample timestamps to 0 after a seek), but audioClock.PositionTicks is this
-            // clock instance's own counter from 0 — so the file position is _seekBaseTicks + PositionTicks
-            // (same conversion CurrentPosition and the fade update use). Subtracting _seekBaseTicks here
-            // puts both sides on the clock's own base; omitting it (the audit's B-17) made a seek to T
-            // wait for ~T of playback that never comes — hanging playback or dumping a long silence.
-            while (!token.IsCancellationRequested && audioClock.PositionTicks < chunk.Value.TimestampTicks - _seekBaseTicks - AheadBudgetTicks)
+            // Line the chunk up with the end of the content already queued (file time = _seekBaseTicks +
+            // the clock's content time): a gap in the track becomes silence, an overlap is trimmed
+            // (audit B-22). Unlike video, audio that arrives late after a stall is NOT dropped — nothing
+            // else plays against it, so every bit of the file is heard.
+            var pcm = PcmTrim.AlignTo(trimmed.Value.Pcm, trimmed.Value.TimestampTicks, _seekBaseTicks + timeline.EnqueuedContentTicks,
+                source.AudioSampleRate, source.AudioChannels);
+            if (pcm == null) continue;
+
+            // Pace on what is queued, not on timestamps against the clock: the clock also counts silence
+            // it rendered while starved, so after a decode stall a timestamp comparison let decoding run
+            // unbounded and overflow the 5 s buffer, silently discarding content (audit B-22).
+            while (!token.IsCancellationRequested && audioClock.BufferedDurationTicks > AheadBudgetTicks)
+            {
+                _ = audioClock.PositionTicks; // reading the position is what detects a stopped output
+                // A stopped output never drains: without this the wait would hold forever (audit A-24).
+                if (audioClock.IsFaulted) throw OutputLost(audioClock);
                 Thread.Sleep(5);
+            }
+            if (audioClock.IsFaulted) throw OutputLost(audioClock);
 
             if (token.IsCancellationRequested) return;
 
             if (_fadeDuration.HasValue)
             {
-                _fadeMultiplier = ComputeFadeMultiplier(_seekBaseTicks + audioClock.PositionTicks);
+                _fadeMultiplier = ComputeFadeMultiplier(_seekBaseTicks + timeline.ContentTicks);
                 audioClock.Volume = EffectiveVolume;
             }
 
-            audioClock.Enqueue(chunk.Value.Pcm);
-            LevelChanged?.Invoke(ComputePeakLevel(chunk.Value.Pcm));
+            timeline.Enqueue(pcm);
+            LevelChanged?.Invoke(ComputePeakLevel(pcm));
         }
     }
 

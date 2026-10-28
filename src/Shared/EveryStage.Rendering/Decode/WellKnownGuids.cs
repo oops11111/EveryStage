@@ -40,7 +40,12 @@ internal static class WellKnownGuids
     public static readonly Guid MF_MT_AUDIO_BITS_PER_SAMPLE = new("f2deb57f-40fa-4764-aa33-ed4f2d1ff669");
     // Same "ADTS, self-describing per frame" choice AacAudioEncoder makes on the output side (1 =
     // ADTS) — see that class's and EncoderGuids' doc comments.
-    public static readonly Guid MF_MT_AAC_PAYLOAD_TYPE = new("bfbabe79-7434-4d1c-94f0-72a3b9e17491");
+    // The value used to end in ...e17491, which is not a Media Foundation key: the decoder never saw a
+    // payload type (audit A-26). Verified against Vortice.MediaFoundation.MediaTypeAttributeKeys.AacPayloadType.
+    public static readonly Guid MF_MT_AAC_PAYLOAD_TYPE = new("bfbabe79-7434-4d1c-94f0-72a3b9e17188");
+    // HEAACWAVEINFO tail (after WAVEFORMATEX) the Microsoft AAC decoder requires on its input type —
+    // without it SetInputType fails with MF_E_INVALIDMEDIATYPE (verified on Windows 10 19045).
+    public static readonly Guid MF_MT_USER_DATA = new("b6bc765f-4c3b-40a4-bd51-2535b66fe09d");
 
     // --- IMFSourceReader / IMFReadWriteClassFactory creation attributes (mfreadwrite.h) ---
     // Binds the source reader's internal DXVA decoder to our D3D11 device via IMFDXGIDeviceManager

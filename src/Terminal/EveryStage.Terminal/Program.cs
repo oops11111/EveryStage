@@ -110,9 +110,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private PlaybackEngine? _playback;
     private FloatingPreviewWindow? _previewWindow;
     private readonly MainWindow _mainWindow;
-    private CastReceiver? _castReceiver;
-    private Guid _castingDeviceId;
-    private IPEndPoint? _castingCasterEndPoint;
+    private DeviceCastController? _deviceCastController;
     private readonly System.Windows.Forms.Timer _castStatusTimer;
     private readonly DeviceConnectionLogger _connectionLog = new();
     private readonly CrashLogger _crashLogger;
@@ -139,6 +137,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _store = store;
         _repository = repository;
         _crashLogger = crashLogger;
+        _stateMachine.SubscriberFailed = (source, ex) => _crashLogger.LogUnhandledException(source, ex);
         _uiContext = SynchronizationContext.Current
             ?? throw new InvalidOperationException("Expected Program.Main to have installed a WindowsFormsSynchronizationContext first.");
 
@@ -177,6 +176,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
         _stateMachine.StateChanged += OnOutputStateChanged;
+        _stateMachine.CastSwitchChanged += OnCastSwitchChanged;
 
         _identity = DeviceIdentity.LoadOrCreate("terminal");
         var pairedDevices = new PairedDeviceStore();
@@ -192,7 +192,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // CastStopMessage, and without this a CastReceiver would keep "casting" a frozen last frame
         // forever. CheckDecodeHealth is the third, previously-missing policy check this same timer
         // now also drives (see its own doc comment) — all three started/stopped alongside
-        // _castReceiver in StopCasting()/OnCastStartRequested, never left running with nothing to
+        // DeviceCastController in Connect()/Stop(), never left running with nothing to
         // report or check.
         _castStatusTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _castStatusTimer.Tick += (_, _) =>
@@ -205,6 +205,21 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         var library = new FileLibraryStore();
         _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity, _connectionLog);
+        _deviceCastController = new DeviceCastController(
+            _mainWindow, _identity.DeviceId, _discovery, _connectionLog, _stateMachine,
+            () => _overlay, () => _videoSurface, () => _playback);
+        _deviceCastController.SessionStarted += () =>
+        {
+            _castStatusTickCount = 0;
+            _castStatusTimer.Start();
+        };
+        _deviceCastController.SessionEnded += () => _castStatusTimer.Stop();
+        _mainWindow.DeviceTakeRequested += TakeDeviceCastToProgram;
+        _mainWindow.DeviceRevertRequested += RevertDeviceCastFromProgram;
+        _mainWindow.DeviceVideoHostResized += (w, h) =>
+        {
+            _deviceCastController?.ResizeDeviceSurface(w, h);
+        };
         _mainWindow.Show();
 
         _tray = new TrayIconController(_stateMachine);
@@ -280,205 +295,73 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _overlay?.HideOverlay();
             _previewWindow?.HideForIdleOutput();
             _audioTakeover.Restore();
-            // "断" must also stop an active device cast — without this, a CastReceiver keeps
-            // receiving/decoding/presenting to a now-hidden overlay indefinitely instead of being
-            // torn down. This does not send a cast_stop to the Caster — "断" is a local, immediate
-            // action and there's no reason to make it wait on a network send; the Caster instead
-            // notices via CastStatusMessage reports simply stopping (see LiveCastSession's
-            // "terminal went quiet" handling).
-            StopCasting();
+            _deviceCastController?.DropFromProgram(discardRestorePoint: true);
         }
+    }
+
+    private void OnCastSwitchChanged(bool on)
+    {
+        if (!on) _deviceCastController?.RetractForCastSwitchOff();
     }
 
     private void OnPairingRequested(PairingRequest request)
     {
         // Raised from DiscoveryService's background receive loop — a modal dialog must be shown
-        // from the UI thread.
+        // from the UI thread. One dialog at a time: each request used to open its own modal dialog
+        // from inside the previous one's message loop, so a burst of requests stacked dialogs the
+        // operator had to click away one by one (audit A-22). Later requests wait their turn.
         _uiContext.Post(_ =>
         {
-            _mainWindow.ShowPairingRequest(request);
-            using var dialog = new PairingConfirmationDialog(request);
-            dialog.ShowDialog();
-            _discovery.RespondToPairing(request.RequestId, dialog.Accepted, dialog.TrustMode, dialog.AllowCast, dialog.AllowMonitor);
-            _mainWindow.ClearPairingRequest(request.RequestId);
+            _pairingQueue.Enqueue(request);
+            if (_pairingDialogOpen) return;
+            _pairingDialogOpen = true;
+            try
+            {
+                while (_pairingQueue.TryDequeue(out var next))
+                {
+                    _mainWindow.ShowPairingRequest(next);
+                    using var dialog = new PairingConfirmationDialog(next);
+                    if (_overlay != null) OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, _overlay.Monitor);
+                    else OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, null);
+                    dialog.ShowDialog(_mainWindow);
+                    _discovery.RespondToPairing(next.RequestId, dialog.Accepted, dialog.TrustMode, dialog.AllowCast, dialog.AllowMonitor);
+                    _mainWindow.ClearPairingRequest(next.RequestId);
+                }
+            }
+            finally
+            {
+                _pairingDialogOpen = false;
+            }
         }, null);
     }
 
+    private readonly Queue<PairingRequest> _pairingQueue = new();
+    private bool _pairingDialogOpen;
+
     private void OnCastStartRequested(DiscoveryService.CastStartInfo info)
     {
-        // Raised from DiscoveryService's background receive loop — constructing CastReceiver
-        // touches the overlay window's HWND and drives the state machine, both of which expect the
-        // UI thread.
-        _uiContext.Post(_ =>
-        {
-            if (_overlay == null || _videoSurface == null)
-            {
-                info.CompleteStart(false, "终端机未绑定扩展显示器。");
-                return;
-            }
-
-            // Stop any local video playback FIRST — it shares _videoSurface's D3D11 device/swap
-            // chain with the CastReceiver about to be constructed, and the two must never present
-            // concurrently (see VideoSurface's doc comment). This does not touch OutputStateMachine.
-            _playback?.StopForDeviceCast();
-            // Device mirroring keeps its original full-output (Stretch) presentation; local media sets
-            // its own Fit/Fill each time it plays.
-            _videoSurface.ScaleMode = EveryStage.Rendering.VideoScaleMode.Stretch;
-
-            StopCasting();
-            try
-            {
-                _castReceiver = new CastReceiver(
-                    _videoSurface, info.Width, info.Height, DiscoveryProtocol.VideoRtpPort,
-                    info.HasAudio, info.AudioSampleRate, info.AudioChannels, DiscoveryProtocol.AudioRtpPort,
-                    info.AudioIsAac, info.PayloadType, info.AudioPayloadType,
-                    info.MediaSessionId, info.VideoKey, info.AudioKey, info.CasterEndPoint.Address);
-                _castReceiver.VideoPacketsMissing += missing =>
-                    _ = _discovery.SendCastNackAsync(info.CasterEndPoint, info.MediaSessionId, missing);
-                _castReceiver.Start();
-            }
-            catch (Exception ex)
-            {
-                // Same "don't crash, don't pretend it worked" reasoning as everywhere else in this
-                // repo lacking a dedicated cast-session log yet — leaves the Terminal at Idle rather
-                // than showing a video surface that will never receive a frame. A pure audio-side
-                // failure doesn't reach here — CastReceiver's own constructor already degrades to
-                // video-only on an audio construction failure (see its AudioError property), mirroring
-                // LiveCastSession's audio-is-best-effort handling on the Caster side; this catch is
-                // for video-side failures only, which do end the whole cast (there's no cast without
-                // video).
-                _castReceiver?.Dispose();
-                _castReceiver = null;
-                info.CompleteStart(false, ex.Message);
-                return;
-            }
-
-            _castingDeviceId = info.DeviceId;
-            _castingCasterEndPoint = info.CasterEndPoint;
-            _castStatusTickCount = 0;
-            _castStatusTimer.Start();
-            _overlay.ShowVideoSurface();
-            _stateMachine.AcceptDeviceCastRequest();
-            info.CompleteStart(true, null);
-        }, null);
+        _uiContext.Post(_ => _deviceCastController?.Connect(info), null);
     }
 
     private void OnCastStopRequested(Guid deviceId)
     {
-        _uiContext.Post(_ =>
-        {
-            // Ignore a stop from a device that wasn't the one currently casting — e.g. a stale/
-            // duplicated cast_stop arriving after a different device already took over the output.
-            if (_castReceiver == null || deviceId != _castingDeviceId) return;
-
-            StopCasting();
-            _stateMachine.Disconnect();
-        }, null);
+        _uiContext.Post(_ => _deviceCastController?.StopForDevice(deviceId), null);
     }
 
     private void OnLocalPlaybackStarting()
     {
-        // PlaybackEngine is about to present local content through the shared VideoSurface — any
-        // active device cast must stop first, for the same mutual-exclusion reason as
-        // OnCastStartRequested stopping local playback in the other direction. This intentionally
-        // does not call _stateMachine.Disconnect(): OutputStateMachine.State stays Active (local
-        // content is replacing device content, not ending output), and there is no cast_stop sent
-        // to the Caster telling it its stream is being ignored now — the Caster instead notices via
-        // CastStatusMessage reports simply stopping.
-        StopCasting();
+        _deviceCastController?.DropFromProgram(discardRestorePoint: true);
     }
 
-    /// <summary>Tears down whatever's currently receiving a device cast, if anything — the one
-    /// place that does so, so the status-report timer can never be left running with no
-    /// <see cref="_castReceiver"/> to report on (a bug that bit an earlier draft of this class: the
-    /// three call sites below used to each repeat "_castReceiver?.Dispose(); _castReceiver = null;"
-    /// inline, and it would have been easy to add the timer to two of the three and miss one).</summary>
-    private void StopCasting()
-    {
-        _castStatusTimer.Stop();
-        _castingCasterEndPoint = null;
-        _castReceiver?.Dispose();
-        _castReceiver = null;
-    }
+    private void TakeDeviceCastToProgram() => _deviceCastController?.TakeToProgram();
 
-    // Picked without any real-network measurement, same as every other timing constant in this
-    // repo lacking a Windows machine to tune against (see this project's README) — generous enough
-    // to survive a few seconds of network hiccup given there's no jitter buffer on either media
-    // stream, short enough that a genuinely-gone Caster doesn't leave a frozen frame on screen for
-    // an unreasonable amount of time.
-    private static readonly TimeSpan CastTimeout = TimeSpan.FromSeconds(10);
+    private void RevertDeviceCastFromProgram() => _deviceCastController?.RevertProgram();
 
-    private void CheckCastLiveness()
-    {
-        if (_castReceiver == null) return;
-        if (DateTime.UtcNow - _castReceiver.LastPacketReceivedAt < CastTimeout) return;
+    private void CheckCastLiveness() => _deviceCastController?.CheckLiveness();
 
-        // Neither video nor audio has produced a single packet in CastTimeout — the Caster is gone
-        // (crashed, lost network, or the process was killed before it could send CastStopMessage).
-        // Disconnect() also hides the overlay and restores audio takeover via
-        // OnOutputStateChanged's Idle branch, same as a manual "断" — a silently frozen last frame
-        // with the overlay still up would be worse than falling back to standby.
-        StopCasting();
-        _stateMachine.Disconnect();
-    }
+    private void CheckDecodeHealth() => _deviceCastController?.CheckDecodeHealth();
 
-    // Roughly 3 seconds' worth of access units at a typical 30fps encode — this was previously an
-    // open product-behavior question this repo explicitly hadn't decided (see this project's
-    // README's history): CastReceiver.LastError/AudioError got reported every second via
-    // SendCastStatus, but nothing on this side ever acted on persistent failure, so a decoder stuck
-    // failing every single frame (a corrupted decoder state, not a one-off bad access unit) would
-    // sit there forever showing a frozen/corrupted last frame while dutifully reporting "投屏出错"
-    // to a Caster that has no way to fix it remotely. Picked, like CastTimeout above, without any
-    // real-network/real-hardware measurement — generous enough that an isolated decode hiccup (a
-    // single dropped/corrupt access unit, which CastReceiver's own counters reset back to zero on
-    // the very next successful decode) can never trip this, short enough that a genuinely broken
-    // decode pipeline doesn't leave a bad frame on screen for an unreasonable amount of time.
-    private const int MaxConsecutiveDecodeErrorsBeforeDisconnect = 90;
-
-    private void CheckDecodeHealth()
-    {
-        if (_castReceiver == null) return;
-        if (_castReceiver.ConsecutiveVideoDecodeErrors < MaxConsecutiveDecodeErrorsBeforeDisconnect
-            && _castReceiver.ConsecutiveAudioPlaybackErrors < MaxConsecutiveDecodeErrorsBeforeDisconnect
-            && !_castReceiver.PresentLoopFailed
-            && !_castReceiver.DecodeLoopFailed)
-        {
-            return;
-        }
-
-        // Same StopCasting()+Disconnect() policy CheckCastLiveness already applies for a Caster
-        // that's gone silent — Terminal is meant to run unattended (PLANNING.md's whole framing), so
-        // there's nobody watching to notice a stuck decoder and manually hit "断"; falling back to
-        // standby on its own is better than staying "connected" to a stream it can no longer render.
-        // PresentLoopFailed alone (with both Consecutive* counters still low) means exactly that:
-        // decoding is still succeeding but nothing is presenting it anymore — see that property's own
-        // doc comment for why it needs its own un-racy signal instead of piggybacking on either
-        // counter above.
-        StopCasting();
-        _stateMachine.Disconnect();
-    }
-
-    private void SendCastStatus()
-    {
-        if (_castReceiver == null || _castingCasterEndPoint == null) return;
-        var casterEndPoint = _castingCasterEndPoint;
-
-        var status = new DiscoveryProtocol.CastStatusMessage
-        {
-            DeviceId = _identity.DeviceId,
-            SentAtUtc = DateTimeOffset.UtcNow,
-            FramesDecoded = _castReceiver.FramesDecoded,
-            VideoBytesReceived = _castReceiver.BytesReceived,
-            VideoError = _castReceiver.LastError,
-            HasAudio = _castReceiver.HasAudio,
-            AudioBytesReceived = _castReceiver.AudioBytesReceived,
-            AudioError = _castReceiver.AudioError,
-            PayloadTypeMismatches = _castReceiver.PayloadTypeMismatches,
-            EstimatedPacketLossPercent = _castReceiver.EstimatedPacketLossPercent,
-            VideoPacketsLost = _castReceiver.VideoPacketsLost,
-        };
-        _ = _discovery.SendCastStatusAsync(casterEndPoint, status);
-    }
+    private void SendCastStatus() => _deviceCastController?.SendStatus();
 
     /// <summary>Fills in PLANNING.md §14.4's "连接质量指标（丢包率/延迟）" for
     /// <see cref="DeviceConnectionLogger.LogQualityMetric"/> — a method that has existed since this
@@ -494,37 +377,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     /// on-disk log with what's meant to be a periodic summary.</summary>
     private async Task LogConnectionQualityAsync()
     {
-        // The `is not { } casterEndPoint` pattern both null-checks _castingCasterEndPoint and binds
-        // it to a properly non-null local in one step — plain `!= null` wouldn't let the compiler
-        // carry that narrowing to casterEndPoint below, since it's a field (mutable from elsewhere
-        // between statements, in the compiler's more conservative view of fields vs. locals).
-        if (_castReceiver == null || _castingCasterEndPoint is not { } casterEndPoint) return;
-
-        // Captured before the ping's own await, in case StopCasting()/a new cast start races in
-        // while this is in flight — logging against a Guid.Empty or the wrong device would be worse
-        // than not logging at all.
-        Guid deviceId = _castingDeviceId;
-        var castReceiver = _castReceiver;
-
-        TimeSpan? rtt;
-        try
-        {
-            rtt = await _discovery.PingAsync(casterEndPoint);
-        }
-        catch (Exception)
-        {
-            rtt = null; // best-effort, like every other discovery-protocol interaction in this repo.
-        }
-
-        // The cast this was measuring may have ended (or a different one started) while the ping was
-        // in flight — re-check rather than logging a quality metric for a device this Terminal is no
-        // longer casting with (or, worse, attributing it to whatever new device started meanwhile).
-        if (_castReceiver != castReceiver || _castingDeviceId != deviceId) return;
-
-        // Logs even a partial reading (only one of the two measured) rather than requiring both —
-        // see LogQualityMetric's own doc comment on why a missing measurement is passed as null
-        // rather than a misleading 0.
-        _connectionLog.LogQualityMetric(deviceId.ToString(), castReceiver.EstimatedPacketLossPercent, rtt?.TotalMilliseconds);
+        if (_deviceCastController != null) await _deviceCastController.LogConnectionQualityAsync();
     }
 
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
@@ -623,10 +476,13 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _tray.Dispose();
         _discovery.Dispose();
         _castStatusTimer.Dispose();
-        _castReceiver?.Dispose();
+        _deviceCastController?.Dispose();
         _previewWindow?.Dispose();
         _playback?.Dispose();
-        // _videoSurface after _playback/_castReceiver, never before — both present through it and
+        // Close every WPS/Office document and slide show (asking about unsaved edits) and wait for the
+        // applications to quit, so no WINWORD/POWERPNT/wps process outlives EveryStage.
+        EveryStage.Terminal.Documents.OfficeSessionManager.Shared.CloseAllAndWait(TimeSpan.FromSeconds(30));
+        // _videoSurface after _playback/_deviceCastController, never before — both present through it and
         // must be torn down first (see VideoSurface's doc comment).
         _videoSurface?.Dispose();
         _overlay?.Dispose();

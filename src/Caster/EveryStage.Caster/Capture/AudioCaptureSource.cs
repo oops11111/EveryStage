@@ -24,8 +24,14 @@ namespace EveryStage.Caster.Capture;
 public sealed class AudioCaptureSource : IDisposable
 {
     private readonly WasapiLoopbackCapture _capture;
+    private readonly int _mixChannels;
 
     public int SampleRate { get; }
+
+    /// <summary>Channels of the PCM <see cref="PcmCaptured"/> delivers: the loopback mix folded to
+    /// stereo when the output is multichannel (5.1 speakers, "virtual 7.1" headsets). The AAC encoder
+    /// only takes 1, 2 or 6 channels, and a stereo Terminal cannot open a 6-channel output at all
+    /// (audit B-20), so multichannel system audio used to mean a silent cast.</summary>
     public int Channels { get; }
 
     /// <summary>Raised on NAudio's own capture callback thread with one buffer of interleaved,
@@ -41,8 +47,10 @@ public sealed class AudioCaptureSource : IDisposable
     public AudioCaptureSource()
     {
         _capture = new WasapiLoopbackCapture();
-        SampleRate = _capture.WaveFormat.SampleRate;
-        Channels = _capture.WaveFormat.Channels;
+        _format = _capture.WaveFormat;
+        SampleRate = _format.SampleRate;
+        _mixChannels = _format.Channels;
+        Channels = EveryStage.Rendering.Audio.PcmDownmix.OutputChannels(_mixChannels);
 
         _capture.DataAvailable += OnDataAvailable;
         _capture.RecordingStopped += OnRecordingStopped;
@@ -56,7 +64,30 @@ public sealed class AudioCaptureSource : IDisposable
     {
         try
         {
-            byte[] pcm16 = ConvertFloatToPcm16(e.Buffer, e.BytesRecorded, _capture.WaveFormat);
+            // The format announced to the Terminal is the one read at construction; convert with that
+            // same format rather than re-reading it per callback (audit B-6). A buffer that ends inside a
+            // frame keeps the partial frame for the next callback instead of dropping it, which would
+            // shift every later sample across channels (audit C-4).
+            int block = _format.BlockAlign;
+            byte[] input = e.Buffer;
+            int length = e.BytesRecorded;
+            if (_carryLength > 0)
+            {
+                input = new byte[_carryLength + length];
+                Buffer.BlockCopy(_carry, 0, input, 0, _carryLength);
+                Buffer.BlockCopy(e.Buffer, 0, input, _carryLength, length);
+                length += _carryLength;
+                _carryLength = 0;
+            }
+            int whole = length - length % block;
+            if (whole < length)
+            {
+                _carryLength = length - whole;
+                Buffer.BlockCopy(input, whole, _carry, 0, _carryLength);
+            }
+            if (whole == 0) return; // loopback delivers empty buffers while nothing plays
+            byte[] pcm16 = ConvertFloatToPcm16(input, whole, _format);
+            pcm16 = EveryStage.Rendering.Audio.PcmDownmix.ToStereo(pcm16, _mixChannels);
             if (pcm16.Length > 0) PcmCaptured?.Invoke(pcm16);
         }
         catch (Exception ex)
@@ -64,6 +95,10 @@ public sealed class AudioCaptureSource : IDisposable
             CaptureFailed?.Invoke(ex);
         }
     }
+
+    private readonly WaveFormat _format;
+    private readonly byte[] _carry = new byte[64]; // < one frame (at most 8 channels x 4 bytes)
+    private int _carryLength;
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
     {

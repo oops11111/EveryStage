@@ -45,7 +45,10 @@ internal static class EncoderGuids
     // real gain in simplicity for a private protocol that a real RFC 3640 receiver wouldn't get to
     // make (that RTP payload format standardizes on raw access units precisely so per-frame headers
     // aren't repeated on the wire).
-    public static readonly Guid MF_MT_AAC_PAYLOAD_TYPE = new("bfbabe79-7434-4d1c-94f0-72a3b9e17491");
+    // The value used to end in ...e17491, which is not a Media Foundation key: the encoder silently kept
+    // its default raw framing while the decoder expected ADTS (audit A-26). Verified against
+    // Vortice.MediaFoundation.MediaTypeAttributeKeys.AacPayloadType.
+    public static readonly Guid MF_MT_AAC_PAYLOAD_TYPE = new("bfbabe79-7434-4d1c-94f0-72a3b9e17188");
 
     // --- MFT category / async-unlock (mfobjects.h / mftransform.h) ---
     // The "video encoder" MFT category GUID used with MFTEnumEx to find candidate transforms.

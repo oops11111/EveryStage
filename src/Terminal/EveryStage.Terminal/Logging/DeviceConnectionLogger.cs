@@ -43,4 +43,14 @@ public sealed class DeviceConnectionLogger
     /// is a worse lie for a diagnostic log to tell than an honest null.</summary>
     public void LogQualityMetric(string deviceId, double? packetLossPercent, double? latencyMs) =>
         _writer.Write("device_quality", new { deviceId, packetLossPercent, latencyMs });
+
+    /// <summary>A cast lost its audio mid-way (output device removed, persistent audio failure) and
+    /// continues as video only.</summary>
+    public void LogCastAudioLost(string deviceId, string reason) =>
+        _writer.Write("cast_audio_lost", new { deviceId, reason });
+
+    /// <summary>An authenticated control message was refused as a replay or as too old / from the future
+    /// (the two devices' clocks more than the allowed skew apart).</summary>
+    public void LogMessageRejected(string deviceId, string messageKind, string reason) =>
+        _writer.Write("message_rejected", new { deviceId, messageKind, reason });
 }

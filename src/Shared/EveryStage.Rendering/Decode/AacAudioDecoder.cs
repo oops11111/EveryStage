@@ -24,29 +24,34 @@ namespace EveryStage.Rendering.Decode;
 /// generic parameter actually mean" abstraction, for two files that are never edited together anyway.
 ///
 /// Expects ADTS-framed input (<c>MF_MT_AAC_PAYLOAD_TYPE</c> = 1, matching what
-/// <see cref="AacAudioEncoder"/> now emits) specifically because ADTS's self-describing per-frame
-/// header means this class needs no separate out-of-band <c>AudioSpecificConfig</c> at all — see
-/// that GUID's own doc comment in <c>EncoderGuids.cs</c>/this file for the full reasoning. Not wired
-/// into <c>Terminal.Receiving.CastReceiver</c> yet — see <see cref="AacAudioEncoder"/>'s doc comment
-/// and this repo's READMEs for what that still needs (an RTP depacketizer for this stream, and a
-/// <c>CastStartMessage</c> field to signal the codec). Validated only via
-/// <c>EveryStage.Caster.Encode.AacEncodeSelfTestRunner</c>'s in-process encode-then-decode round
-/// trip for now.
+/// <see cref="AacAudioEncoder"/> emits) specifically because ADTS's self-describing per-frame header
+/// means this class needs no separate out-of-band <c>AudioSpecificConfig</c> at all — see that GUID's
+/// own doc comment in <c>WellKnownGuids.cs</c>. Wired into <c>Terminal.Receiving.CastReceiver</c> for
+/// device casts with AAC audio (<c>CastStartMessage.AudioIsAac</c>), and verified against the real
+/// Microsoft AAC decoder on Windows 10 19045 by WindowsSelfTests' <c>CastAudioTests</c> (encode → decode
+/// round trip). That verification found the decoder synchronous (as assumed), without its own output
+/// samples, requiring <c>MF_MT_USER_DATA</c> on the input type, and offering 32-bit float before
+/// 16-bit PCM — all handled below (audit A-6 / A-26).
 /// </summary>
 public sealed class AacAudioDecoder : IDisposable
 {
     // The standard AAC frame size (samples per channel) — used only to synthesize a nominal
-    // SetSampleTime/SetSampleDuration for each submitted access unit (see SubmitAccessUnit), since
-    // this class has no other source of per-frame timing for a live, sync-only stream. Real
-    // multi-second drift accumulation from this being a nominal value rather than a measured one
-    // doesn't matter for what this class is validated for today (a synchronous round-trip self-test,
-    // not a played-back timeline), but would matter if this were ever wired into a real playback
-    // clock later.
+    // SetSampleTime/SetSampleDuration for each submitted access unit (see SubmitAccessUnit). The
+    // decoded PCM is played as a byte stream; output sample times are not used for timing (the
+    // receiver paces on its own clock and the RTP timestamps), so a nominal value is enough here.
     private const int SamplesPerFrame = 1024;
 
     private readonly IMFTransform _decoder;
     private readonly long _frameDurationTicks; // 100ns units, per SamplesPerFrame's worth of audio.
     private long _nextSampleTime;
+
+    // What PcmDecoded promises (the stream's announced format) vs what the decoder currently outputs;
+    // they differ when the decoder reports a different or changed format (HE-AAC doubling its rate).
+    private readonly int _channels;
+    private readonly int _sampleRate;
+    private int _outputChannels;
+    private int _outputRate;
+    private readonly bool _providesSamples;
 
     /// <summary>Raised (from whichever thread calls <see cref="SubmitAccessUnit"/> — see that
     /// method) with one chunk of decoded interleaved 16-bit PCM.</summary>
@@ -60,6 +65,8 @@ public sealed class AacAudioDecoder : IDisposable
     public AacAudioDecoder(int sampleRate, int channels)
     {
         _frameDurationTicks = (long)(SamplesPerFrame / (double)sampleRate * 10_000_000L);
+        _channels = channels;
+        _sampleRate = sampleRate;
 
         _decoder = ActivateFirstAacDecoder();
 
@@ -77,7 +84,8 @@ public sealed class AacAudioDecoder : IDisposable
             // Input type must be set before enumerating output types — same order (and same reasoning)
             // as AacAudioEncoder.ConfigureOutputType's doc comment gives for the encode direction.
             ConfigureInputType(_decoder, sampleRate, channels);
-            ConfigureOutputType(_decoder);
+            (_outputChannels, _outputRate) = ConfigureOutputType(_decoder);
+            _providesSamples = EveryStage.Rendering.MediaFoundationHelpers.ProvidesOutputSamples(_decoder);
 
             // NOTE: same unverified exact enum member names as H264HardwareEncoder/AacAudioEncoder's
             // identical two calls.
@@ -143,28 +151,22 @@ public sealed class AacAudioDecoder : IDisposable
     {
         while (true)
         {
-            var outputBuffer = new OutputDataBuffer { StreamID = 0 };
-            // Same "treat any ProcessOutput failure as nothing-ready-yet" simplification
-            // H264HardwareEncoder.HandleHaveOutput/AacAudioEncoder.DrainOutput already use.
-            var result = _decoder.ProcessOutput(ProcessOutputFlags.None, 1, ref outputBuffer, out _);
-            if (result.Failure) return;
-
-            var sample = outputBuffer.Sample;
-            if (sample == null) return;
-
+            var status = EveryStage.Rendering.MediaFoundationHelpers.ProcessOneOutput(_decoder, _providesSamples, out var sample);
+            if (status == EveryStage.Rendering.TransformOutput.NeedMoreInput) return;
+            if (status == EveryStage.Rendering.TransformOutput.StreamChanged)
+            {
+                // The decoder's output format changed (e.g. SBR detected): set it again and keep going.
+                (_outputChannels, _outputRate) = ConfigureOutputType(_decoder);
+                continue;
+            }
             try
             {
-                using var contiguousBuffer = sample.ConvertToContiguousBuffer();
-                contiguousBuffer.Lock(out var data, out _, out var currentLength);
-                var pcm = new byte[currentLength];
-                System.Runtime.InteropServices.Marshal.Copy(data, pcm, 0, currentLength);
-                contiguousBuffer.Unlock();
-
-                PcmDecoded?.Invoke(pcm);
+                var pcm = EveryStage.Rendering.MediaFoundationHelpers.CopySampleData(sample!);
+                PcmDecoded?.Invoke(EveryStage.Rendering.Audio.PcmConverter.Convert(pcm, _outputChannels, _outputRate, _channels, _sampleRate));
             }
             finally
             {
-                sample.Dispose();
+                sample!.Dispose();
             }
         }
     }
@@ -202,10 +204,9 @@ public sealed class AacAudioDecoder : IDisposable
 
     private static void UnlockAsyncProcessingIfNeeded(IMFTransform decoder)
     {
-        // Same defensive-regardless-of-the-sync-assumption reasoning as
-        // AacAudioEncoder.UnlockAsyncProcessingIfNeeded's identical call.
-        using var attributes = decoder.Attributes;
-        attributes.Set(MF_TRANSFORM_ASYNC_UNLOCK, 1u);
+        // Same reasoning as AacAudioEncoder.UnlockAsyncProcessingIfNeeded: a synchronous transform may have
+        // no attribute store at all (E_NOTIMPL), which is not an error.
+        EveryStage.Rendering.MediaFoundationHelpers.UnlockAsyncIfSupported(decoder);
     }
 
     private static void ConfigureInputType(IMFTransform decoder, int sampleRate, int channels)
@@ -220,23 +221,30 @@ public sealed class AacAudioDecoder : IDisposable
             // ADTS — matches what AacAudioEncoder emits; see that class's and this file's own doc
             // comments for why this avoids needing a separate out-of-band AudioSpecificConfig.
             type.Set(MF_MT_AAC_PAYLOAD_TYPE, 1u);
+            // HEAACWAVEINFO after its WAVEFORMATEX: wPayloadType = 1 (ADTS), wAudioProfileLevelIndication =
+            // 0xFE (unspecified), wStructType = 0, wReserved1 = 0, dwReserved2 = 0. No AudioSpecificConfig
+            // follows — ADTS carries it in every frame. Required by the Microsoft AAC decoder (audit A-26).
+            type.SetBlob(MF_MT_USER_DATA, new byte[] { 1, 0, 0xFE, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
             decoder.SetInputType(0, type, 0);
         }
     }
 
-    /// <summary>Takes whichever PCM output type index 0 offers rather than constructing one
-    /// explicitly — same simplification <c>AacAudioEncoder.ConfigureOutputType</c> makes for the
-    /// encode direction's output type, and for the same reason: a decoder's set of valid output
-    /// types depends on the input type just negotiated by <see cref="ConfigureInputType"/>, so
-    /// there's nothing to gain here by hand-constructing a type the decoder might reject anyway.</summary>
-    private static void ConfigureOutputType(IMFTransform decoder)
+    /// <summary>Selects the decoder's 16-bit PCM output type and returns its channels/rate. The first
+    /// type offered is 32-bit float on the Microsoft AAC decoder (verified on Windows 10 19045): taking
+    /// index 0, as this used to, would hand float samples to a clock playing them as 16-bit — noise.</summary>
+    private static (int Channels, int SampleRate) ConfigureOutputType(IMFTransform decoder)
     {
-        // NOTE: same unverified GetOutputAvailableType signature caveat as
-        // AacAudioEncoder.ConfigureOutputType's identical call.
-        var type = decoder.GetOutputAvailableType(0, 0);
-        using (type)
+        for (int index = 0; ; index++)
         {
-            decoder.SetOutputType(0, type, 0);
+            IMFMediaType type;
+            try { type = decoder.GetOutputAvailableType(0, index); }
+            catch (Exception ex) { throw new NotSupportedException("AAC 解码器不提供 16 位 PCM 输出", ex); } // MF_E_NO_MORE_TYPES
+            using (type)
+            {
+                if (type.GetGUID(MF_MT_SUBTYPE) != MFAudioFormat_PCM || type.GetUInt32(MF_MT_AUDIO_BITS_PER_SAMPLE) != 16) continue;
+                decoder.SetOutputType(0, type, 0);
+                return ((int)type.GetUInt32(MF_MT_AUDIO_NUM_CHANNELS), (int)type.GetUInt32(MF_MT_AUDIO_SAMPLES_PER_SECOND));
+            }
         }
     }
 

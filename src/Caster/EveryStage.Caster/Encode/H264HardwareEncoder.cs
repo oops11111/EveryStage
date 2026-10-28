@@ -49,7 +49,7 @@ public sealed class H264HardwareEncoder : IDisposable
     // _pendingFrames.Count: SubmitFrame only calls Release when a drop did NOT happen (net queue
     // depth actually grew), since a drop-then-enqueue leaves the depth unchanged.
     private const int MaxPendingFrames = 3;
-    private readonly ConcurrentQueue<(ID3D11Texture2D Texture, int ArraySlice)> _pendingFrames = new();
+    private readonly ConcurrentQueue<(ID3D11Texture2D Texture, int ArraySlice, long? SampleTime)> _pendingFrames = new();
     private readonly SemaphoreSlim _frameAvailable = new(0);
     private int _framesDroppedForBackpressure;
     private readonly CancellationTokenSource _cts = new();
@@ -57,11 +57,19 @@ public sealed class H264HardwareEncoder : IDisposable
     private long _nextSampleTime;
     private int _disposed;
     private readonly object _lifecycleGate = new();
+    private readonly D3D11Device _gpu;
+    private int _encodeLoopFailed;
+
+    /// <summary>True once the encoder's event loop has died (MFT error event, lost GPU device): no access
+    /// unit will ever be produced again. The decoder's <c>DecodeLoopFailed</c> twin — without it the
+    /// capture loop kept capturing into a dead encoder forever, the cast looking "running" (audit A-21).</summary>
+    public bool EncodeLoopFailed => Volatile.Read(ref _encodeLoopFailed) != 0;
 
     /// <summary>Raised from the background event-loop thread with one Annex-B-framed encoded
     /// access unit — not yet split into RTP-sized packets, that's <c>AnnexBNalSplitter</c> +
-    /// <c>H264RtpPacketizer</c>'s job (EveryStage.Transport).</summary>
-    public event Action<byte[]>? AccessUnitEncoded;
+    /// <c>H264RtpPacketizer</c>'s job (EveryStage.Transport) — and the sample time (100 ns) of the frame
+    /// it encodes: the capture time passed to <see cref="SubmitFrame"/> when one was given.</summary>
+    public event Action<byte[], long>? AccessUnitEncoded;
 
     /// <summary>Frames dropped whole (GPU texture disposed, never handed to the encoder) because
     /// <see cref="_pendingFrames"/> was already <see cref="MaxPendingFrames"/> deep when
@@ -81,6 +89,7 @@ public sealed class H264HardwareEncoder : IDisposable
     public H264HardwareEncoder(D3D11Device gpu, int width, int height, int frameRateNumerator, int bitrateBps)
     {
         _sampleDurationTicks = 10_000_000L / frameRateNumerator;
+        _gpu = gpu;
 
         _encoder = ActivateFirstHardwareEncoder();
 
@@ -135,15 +144,20 @@ public sealed class H264HardwareEncoder : IDisposable
     /// to this encoder — do not dispose it yourself; the event loop disposes it after
     /// <c>ProcessInput</c> accepts it (or immediately, on shutdown, or on a backpressure drop, if it
     /// never gets that far). Called from the capture loop's thread (see <c>LiveCastSession.RunLoop</c>
-    /// / <c>EncodeSelfTestRunner.RunLoop</c>), never blocks.</summary>
-    public void SubmitFrame(ID3D11Texture2D texture, int arraySlice = 0)
+    /// / <c>EncodeSelfTestRunner.RunLoop</c>), never blocks. <paramref name="captureTime"/> (100 ns, the
+    /// session clock when the frame was captured) becomes the frame's sample time and comes back with its
+    /// access unit, so the RTP timestamp reflects capture rather than encode completion (audit A-2).</summary>
+    public void SubmitFrame(ID3D11Texture2D texture, int arraySlice = 0, long? captureTime = null)
     {
         lock (_lifecycleGate)
         {
             if (_disposed != 0)
             {
+                // Teardown is not an error — same as the decoder: a capture loop still running when a
+                // stop disposes the encoder used to leave "投屏出错: Cannot access a disposed object" on
+                // screen after an ordinary 停止投屏 (audit C-19).
                 texture.Dispose();
-                throw new ObjectDisposedException(nameof(H264HardwareEncoder));
+                return;
             }
             bool dropped = false;
             if (_pendingFrames.Count >= MaxPendingFrames && _pendingFrames.TryDequeue(out var stale))
@@ -153,7 +167,7 @@ public sealed class H264HardwareEncoder : IDisposable
                 Interlocked.Increment(ref _framesDroppedForBackpressure);
             }
 
-            _pendingFrames.Enqueue((texture, arraySlice));
+            _pendingFrames.Enqueue((texture, arraySlice, captureTime));
 
             // Only signal a net increase in queue depth — a drop-then-enqueue leaves depth (and
             // therefore how many permits HandleNeedInput should be able to Wait for) unchanged.
@@ -208,6 +222,7 @@ public sealed class H264HardwareEncoder : IDisposable
         }
         catch (Exception ex)
         {
+            Volatile.Write(ref _encodeLoopFailed, 1);
             EncodingFailed?.Invoke(ex);
         }
     }
@@ -231,6 +246,10 @@ public sealed class H264HardwareEncoder : IDisposable
         try
         {
             if (!_frameAvailable.Wait(NeedInputWaitTimeout, token)) return;
+            // A removed/reset GPU (driver update, TDR) makes every later encode fail or produce
+            // nothing; detect it per frame like the decoder does and end the loop (audit C-20).
+            if (_gpu.Device.DeviceRemovedReason.Failure)
+                throw new InvalidOperationException("显卡设备已丢失（驱动重置或更新），无法继续编码。");
         }
         catch (OperationCanceledException)
         {
@@ -276,9 +295,11 @@ public sealed class H264HardwareEncoder : IDisposable
                     // NOTE: written as method calls (matching IMFSample::SetSampleTime/
                     // SetSampleDuration's native shape) rather than guessed as C# properties —
                     // verify which form Vortice actually exposes.
-                    sample.SampleTime = _nextSampleTime;
+                    // A capture time, when given, must still increase strictly for the encoder.
+                    long sampleTime = frame.SampleTime is { } captured ? Math.Max(captured, _nextSampleTime) : _nextSampleTime;
+                    sample.SampleTime = sampleTime;
                     sample.SampleDuration = _sampleDurationTicks;
-                    _nextSampleTime += _sampleDurationTicks;
+                    _nextSampleTime = sampleTime + (frame.SampleTime == null ? _sampleDurationTicks : 1);
 
                     _encoder.ProcessInput(InputStreamId, sample, 0);
                 }
@@ -326,7 +347,7 @@ public sealed class H264HardwareEncoder : IDisposable
             System.Runtime.InteropServices.Marshal.Copy(data, accessUnit, 0, currentLength);
             contiguousBuffer.Unlock();
 
-            AccessUnitEncoded?.Invoke(accessUnit);
+            AccessUnitEncoded?.Invoke(accessUnit, ownedSample.SampleTime);
         }
         finally
         {

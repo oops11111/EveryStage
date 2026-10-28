@@ -66,6 +66,7 @@ public static class DiscoveryProtocol
     public sealed class BeaconMessage : Message
     {
         public int MediaAuthenticationVersion { get; set; }
+        public int PairingProtocolVersion { get; set; }
         public override string Type => "beacon";
         public Guid DeviceId { get; set; }
         public string DeviceName { get; set; } = "";
@@ -79,6 +80,27 @@ public static class DiscoveryProtocol
         public string RequestId { get; set; } = "";
         public Guid DeviceId { get; set; }
         public string DeviceName { get; set; } = "";
+        public int PairingProtocolVersion { get; set; }
+        public string? CasterPublicKey { get; set; }
+        public string? CasterNonceCommitment { get; set; }
+    }
+
+    /// <summary>Sent unicast, Terminal -> Caster, with the Terminal half of pairing v2.</summary>
+    public sealed class PairChallengeMessage : Message
+    {
+        public override string Type => "pair_challenge";
+        public string RequestId { get; set; } = "";
+        public Guid TerminalDeviceId { get; set; }
+        public string TerminalPublicKey { get; set; } = "";
+        public string TerminalNonce { get; set; } = "";
+    }
+
+    /// <summary>Sent unicast, Caster -> Terminal, revealing the nonce previously committed in pair_request.</summary>
+    public sealed class PairRevealMessage : Message
+    {
+        public override string Type => "pair_reveal";
+        public string RequestId { get; set; } = "";
+        public string CasterNonce { get; set; } = "";
     }
 
     /// <summary>Sent unicast, Terminal -> Caster, answering a <see cref="PairRequestMessage"/>.</summary>
@@ -88,10 +110,11 @@ public static class DiscoveryProtocol
         public string RequestId { get; set; } = "";
         public bool Accepted { get; set; }
         public string? Reason { get; set; }
-        /// <summary>Base64-encoded 256-bit device key issued only after the Terminal accepts pairing.
-        /// Null for a rejection. Subsequent authenticated control traffic uses this shared key.</summary>
+        /// <summary>Legacy v1 only. Pairing v2 never sends the key on the wire.</summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         public string? PairingKey { get; set; }
         public int PairingKeyFormatVersion { get; set; }
+        public string? KeyConfirmation { get; set; }
     }
 
     /// <summary>Sent unicast, Caster -> Terminal, right before a live RTP/H.264 stream begins —
@@ -190,6 +213,7 @@ public static class DiscoveryProtocol
         public DateTimeOffset SentAtUtc { get; set; }
 
         public long FramesDecoded { get; set; }
+        public bool OnProgram { get; set; }
         public long VideoBytesReceived { get; set; }
         public string? VideoError { get; set; }
         public bool HasAudio { get; set; }
@@ -216,7 +240,18 @@ public static class DiscoveryProtocol
         public override string Type => "cast_start_ack";
         public Guid MediaSessionId { get; set; }
         public bool Ready { get; set; }
+        public bool Pending { get; set; }
         public string? Error { get; set; }
+    }
+
+    /// <summary>Unsigned early rejection for cast_start when no usable pairing key exists yet.</summary>
+    public sealed class CastStartRejectedMessage : Message
+    {
+        public override string Type => "cast_start_rejected";
+        public Guid TerminalDeviceId { get; set; }
+        public Guid CasterDeviceId { get; set; }
+        public Guid MediaSessionId { get; set; }
+        public string Reason { get; set; } = "";
     }
 
     public sealed class CastStatusAckMessage : AuthenticatedMessage
@@ -319,9 +354,12 @@ public static class DiscoveryProtocol
         {
             "beacon" => doc.RootElement.Deserialize<BeaconMessage>(),
             "pair_request" => doc.RootElement.Deserialize<PairRequestMessage>(),
+            "pair_challenge" => doc.RootElement.Deserialize<PairChallengeMessage>(),
+            "pair_reveal" => doc.RootElement.Deserialize<PairRevealMessage>(),
             "pair_response" => doc.RootElement.Deserialize<PairResponseMessage>(),
             "cast_start" => doc.RootElement.Deserialize<CastStartMessage>(),
             "cast_start_ack" => doc.RootElement.Deserialize<CastStartAckMessage>(),
+            "cast_start_rejected" => doc.RootElement.Deserialize<CastStartRejectedMessage>(),
             "cast_stop" => doc.RootElement.Deserialize<CastStopMessage>(),
             "cast_status" => doc.RootElement.Deserialize<CastStatusMessage>(),
             "cast_status_ack" => doc.RootElement.Deserialize<CastStatusAckMessage>(),

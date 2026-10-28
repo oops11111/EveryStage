@@ -382,7 +382,8 @@ internal sealed class ActivityRowView : Control
     private static string FileMeta(MediaFile file)
     {
         if (file.IsBackgroundAudio) return "背景音频 · 叠加循环";
-        if (file.Kind == MediaKind.Document && WpsDocumentController.IsOfficeDocument(file.SourcePath)) return "WPS 打开 · 手动切换";
+        if (file.Kind == MediaKind.Document && (file.Document != null || EveryStage.Terminal.Documents.DocumentFormats.IsOffice(file.SourcePath)))
+            return DocumentSettingsDialog.Summarize(file);
         if (file.Kind is MediaKind.Image or MediaKind.Document)
             return file.StayDuration is { } stay ? $"停留 {stay.TotalSeconds:0} 秒" : "手动翻页";
         return file.OnCompletion switch

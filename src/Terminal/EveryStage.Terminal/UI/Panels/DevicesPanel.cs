@@ -125,7 +125,8 @@ public sealed class DevicesPanel : UserControl
     {
         ArgumentNullException.ThrowIfNull(request);
         _displayedPairingRequest = request;
-        _requestLabel.Text = $"●  {request.DeviceName}  ·  {request.RemoteAddress}  ·  等待确认";
+        string code = request.VerificationCode.Length == 6 ? request.VerificationCode.Insert(3, " ") : request.VerificationCode;
+        _requestLabel.Text = $"●  {request.DeviceName}  ·  配对码 {code}  ·  等待确认";
         _requestLabel.ForeColor = ModernUi.Warning;
         _requestCard.GlassTint = ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Accent, 0.14f);
         _requestCard.Invalidate();

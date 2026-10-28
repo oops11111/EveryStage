@@ -64,6 +64,15 @@ public sealed class VideoContentController : IDisposable
     private bool _muted;
     private float _fadeMultiplier = 1f;
 
+    // Silent continuation (audit A-24/B-20): when the audio output cannot be opened, or dies mid-play,
+    // the video keeps going on the wall clock, which then starts at _wallBaseTicks (the audio clock's
+    // last good position) instead of 0. _audioNote says why there is no sound.
+    private readonly object _clockGate = new();
+    private volatile bool _audioLost;
+    private long _wallBaseTicks;
+    private volatile string? _audioNote;
+    private volatile string? _performanceNote;
+
     /// <summary>Raised from the playback thread once the video stream (and any audio) has finished.</summary>
     public event Action? PlaybackCompleted;
 
@@ -74,12 +83,29 @@ public sealed class VideoContentController : IDisposable
     /// screen — the channel's Loading → Playing transition.</summary>
     public event Action? FirstFramePresented;
 
+    /// <summary>The audio output could not be opened or stopped mid-play; the video continues without
+    /// sound. Raised from the UI thread (open failure) or the playback thread (loss), with the reason.</summary>
+    public event Action<string>? AudioOutputLost;
+
+    /// <summary>Raised once per file from the playback thread when frames are being dropped because
+    /// decoding is slower than real time (the picture then updates at least every 250 ms).</summary>
+    public event Action<string>? DecodeTooSlow;
+
+    /// <summary>Set once decoding has been found too slow for this file; null otherwise.</summary>
+    public string? PerformanceNote => _performanceNote;
+
     public bool IsPlaying => _source != null;
     public bool IsPaused => _paused;
     public bool HasAudio => _source?.HasAudio ?? false;
     public string? VideoCodec => _source?.VideoCodec;
     public string? AudioCodec => _source?.AudioCodec;
-    public string? AudioUnavailableReason => _source?.AudioUnavailableReason;
+    public string? AudioUnavailableReason => _audioNote ?? _source?.AudioUnavailableReason;
+
+    /// <summary>Short note for the Preview heading when the video plays without sound although it has
+    /// (or should have) an audio track; null otherwise.</summary>
+    public string? AudioNote => _audioNote
+        ?? (_source is { HasAudio: false, AudioUnavailableReason: not null } source ? $"音频编码 {source.AudioCodec} 无法解码，无声播放" : null);
+
     public TimeSpan? Duration => _totalDuration;
 
     /// <summary>Current position within the file (zero when nothing is loaded).</summary>
@@ -88,8 +114,7 @@ public sealed class VideoContentController : IDisposable
         get
         {
             if (_source == null) return TimeSpan.Zero;
-            long clock = _audioClock != null ? _audioClock.PositionTicks : _wallClock.Elapsed.Ticks;
-            long ticks = _clockBaseTicks + clock;
+            long ticks = _clockBaseTicks + ClockTicks(_audioClock);
             if (_totalDuration is { } total && ticks > total.Ticks) ticks = total.Ticks;
             return TimeSpan.FromTicks(Math.Max(0, ticks));
         }
@@ -160,7 +185,7 @@ public sealed class VideoContentController : IDisposable
         if (_source == null || _paused) return;
         _paused = true;
         _audioClock?.Pause();
-        _wallClock.Stop();
+        lock (_clockGate) _wallClock.Stop();
     }
 
     public void Resume()
@@ -168,7 +193,7 @@ public sealed class VideoContentController : IDisposable
         if (_source == null || !_paused) return;
         _paused = false;
         _audioClock?.Resume();
-        _wallClock.Start();
+        lock (_clockGate) _wallClock.Start();
     }
 
     /// <summary>Jumps to <paramref name="position"/> (clamped to the file). Keeps the paused/playing
@@ -202,6 +227,8 @@ public sealed class VideoContentController : IDisposable
         _clockBaseTicks = 0;
         _seekTargetTicks = 0;
         _paused = false;
+        _audioNote = null;
+        _performanceNote = null;
     }
 
     private void StopPlaybackThreadAndClock()
@@ -214,12 +241,34 @@ public sealed class VideoContentController : IDisposable
 
         _audioClock?.Dispose();
         _audioClock = null;
-        _wallClock.Reset();
+        lock (_clockGate)
+        {
+            _wallClock.Reset();
+            _wallBaseTicks = 0;
+            _audioLost = false;
+        }
     }
 
     private void StartPlaybackThread(VideoDecodeSource source, bool firstStart)
     {
-        _audioClock = source.HasAudio ? new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels) : null;
+        _audioClock = null;
+        if (source.HasAudio)
+        {
+            try
+            {
+                _audioClock = new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
+            }
+            catch (Exception ex)
+            {
+                // No output device, or one that refuses the stream (audit B-20): the picture still plays,
+                // silently, the same way a video whose audio codec cannot be decoded does. Thrown here this
+                // used to refuse the whole file — or, on a seek, escape to the UI with playback stopped.
+                source.DisableAudio();
+                string reason = $"无法输出声音（{ex.Message.Trim()}），无声播放";
+                _audioNote = reason;
+                AudioOutputLost?.Invoke(reason);
+            }
+        }
         _fadeMultiplier = _fadeDuration.HasValue ? (float)ComputeFadeMultiplier(_clockBaseTicks) : 1f;
         ApplyVolume();
 
@@ -246,8 +295,11 @@ public sealed class VideoContentController : IDisposable
         }
     }
 
-    private long ClockTicks(AudioPlaybackClock? audioClock) =>
-        audioClock != null ? audioClock.PositionTicks : _wallClock.Elapsed.Ticks;
+    private long ClockTicks(AudioPlaybackClock? audioClock)
+    {
+        if (audioClock != null && !_audioLost) return audioClock.PositionTicks;
+        lock (_clockGate) return _wallBaseTicks + _wallClock.Elapsed.Ticks;
+    }
 
     private void RunPlaybackLoopCore(VideoDecodeSource source, AudioPlaybackClock? audioClock, bool firstStart, CancellationToken token)
     {
@@ -255,6 +307,16 @@ public sealed class VideoContentController : IDisposable
         bool videoDone = false;
         bool clockStarted = false;
         bool firstFrameShown = false;
+
+        // Every audio byte is lined up with the time it will actually play (audit B-22): gaps in the track
+        // become silence and late or overlapping audio is trimmed, so the clock's rendered-bytes position
+        // stays equal to file time and the picture paced on it stays in sync.
+        var timeline = audioClock != null ? new AudioTimeline(audioClock, source.AudioSampleRate, source.AudioChannels) : null;
+        void EnqueueAligned(byte[] pcm, long timestampTicks)
+        {
+            var aligned = PcmTrim.AlignTo(pcm, timestampTicks, _clockBaseTicks + timeline!.ScheduleTicks, source.AudioSampleRate, source.AudioChannels);
+            if (aligned != null) timeline.Enqueue(aligned);
+        }
 
         // Prefill the audio lead before starting the clock so playback doesn't begin with padded
         // silence; the first delivered sample's timestamp anchors file time to clock position 0.
@@ -268,7 +330,7 @@ public sealed class VideoContentController : IDisposable
                 var trimmed = PcmTrim.ToTarget(chunk.Value.Pcm, chunk.Value.TimestampTicks, _seekTargetTicks, source.AudioSampleRate, source.AudioChannels);
                 if (trimmed == null) continue; // entirely before the seek target
                 if (!anchored) { _clockBaseTicks = trimmed.Value.TimestampTicks; anchored = true; }
-                audioClock.Enqueue(trimmed.Value.Pcm);
+                EnqueueAligned(trimmed.Value.Pcm, trimmed.Value.TimestampTicks);
             }
         }
         if (token.IsCancellationRequested) return;
@@ -277,7 +339,7 @@ public sealed class VideoContentController : IDisposable
         {
             if (clockStarted) return;
             clockStarted = true;
-            if (audioClock != null)
+            if (audioClock != null && !_audioLost)
             {
                 // Not started while paused (start-then-pause races NAudio's playback thread; see
                 // AudioContentController.StartPlaybackThread). Resume() starts it.
@@ -285,13 +347,38 @@ public sealed class VideoContentController : IDisposable
             }
             else if (!_paused)
             {
-                _wallClock.Start();
+                lock (_clockGate) _wallClock.Start();
             }
+        }
+
+        // The audio output stopped on its own (endpoint removed — audit A-24): its position no longer
+        // moves, so pacing on it would hold this frame forever. Continue on the wall clock from where the
+        // sound stopped, drop the audio track, and say so. Reading PositionTicks is what detects the stop.
+        bool AudioLost()
+        {
+            if (_audioLost || audioClock == null) return _audioLost;
+            long position = audioClock.PositionTicks;
+            if (!audioClock.IsFaulted) return false;
+            lock (_clockGate)
+            {
+                _wallBaseTicks = position;
+                _wallClock.Reset();
+                if (clockStarted && !_paused) _wallClock.Start();
+                _audioLost = true;
+            }
+            audioDone = true;
+            source.DisableAudio();
+            string reason = $"声音输出已断开（{audioClock.FaultReason}），继续无声播放";
+            _audioNote = reason;
+            AudioOutputLost?.Invoke(reason);
+            return true;
         }
 
         void TopUpAudio()
         {
-            if (audioDone || audioClock == null) return;
+            // Fault check first: it must run even after the audio track has ended, or a loss during the
+            // video's silent tail would leave the pacing wait below on a frozen clock.
+            if (audioClock == null || AudioLost() || audioDone) return;
             while (!token.IsCancellationRequested && audioClock.BufferedDurationTicks < AudioLeadTicks)
             {
                 var chunk = source.ReadNextAudioChunk();
@@ -301,10 +388,11 @@ public sealed class VideoContentController : IDisposable
                     _fadeMultiplier = (float)ComputeFadeMultiplier(_clockBaseTicks + audioClock.PositionTicks);
                     ApplyVolume();
                 }
-                audioClock.Enqueue(chunk.Value.Pcm);
+                EnqueueAligned(chunk.Value.Pcm, chunk.Value.TimestampTicks);
             }
         }
 
+        var sinceLastPresent = Stopwatch.StartNew();
         while (!token.IsCancellationRequested)
         {
             TopUpAudio();
@@ -312,8 +400,9 @@ public sealed class VideoContentController : IDisposable
             if (videoDone)
             {
                 if (!audioDone) { Thread.Sleep(5); continue; }
-                // Let the audio tail finish playing before reporting completion.
-                while (!token.IsCancellationRequested && audioClock != null && audioClock.BufferedDurationTicks > 0)
+                // Let the audio tail finish playing before reporting completion — played, not merely taken
+                // by WASAPI, which is about one device period earlier (audit C-33).
+                while (!token.IsCancellationRequested && audioClock != null && !AudioLost() && timeline!.ContentTicks < timeline.EnqueuedContentTicks)
                     Thread.Sleep(10);
                 if (!token.IsCancellationRequested) PlaybackCompleted?.Invoke();
                 return;
@@ -321,6 +410,7 @@ public sealed class VideoContentController : IDisposable
 
             var frame = source.ReadNextVideoFrame();
             if (frame == null) { videoDone = true; StartClock(); continue; }
+            if (SimulatedDecodeDelay > TimeSpan.Zero) Thread.Sleep(SimulatedDecodeDelay);
 
             try
             {
@@ -344,19 +434,32 @@ public sealed class VideoContentController : IDisposable
                 if (token.IsCancellationRequested) return;
 
                 long behindTicks = ClockTicks(audioClock) - frameTicks;
-                if (behindTicks > FrameBudgetTicks) { FramesDropped++; continue; } // fell behind — drop instead of presenting stale video.
+                if (behindTicks > FrameBudgetTicks)
+                {
+                    // Fell behind — drop instead of presenting stale video. But dropping does not skip
+                    // decoding: when decode is slower than real time every later frame is late too, and
+                    // dropping them all froze the picture until the end while the sound played on (audit
+                    // B-24). Never let the picture stand still longer than MaxFrameGapTicks.
+                    if (sinceLastPresent.ElapsedTicks * TimeSpan.TicksPerSecond / Stopwatch.Frequency < MaxFrameGapTicks)
+                    {
+                        FramesDropped++;
+                        ReportIfTooSlow();
+                        continue;
+                    }
+                }
                 PresentFrame(frame.Value, behindTicks, audioClock);
             }
             finally
             {
-                frame.Value.Texture.Dispose();
+                frame.Value.Release(); // texture + the sample that keeps its decoder slot reserved
             }
 
             void PresentFrame(DecodedVideoFrame f, long skewTicks, AudioPlaybackClock? clock)
             {
                 _surface.PresentFrame(f.Texture, f.ArraySlice, f.Width, f.Height, vsync: false);
+                sinceLastPresent.Restart();
                 FramesPresented++;
-                if (clock != null && clockStarted)
+                if (clock != null && clockStarted && !_audioLost)
                     MaxAbsAvSkewMilliseconds = Math.Max(MaxAbsAvSkewMilliseconds, Math.Abs(skewTicks) / (double)TimeSpan.TicksPerMillisecond);
                 if (!firstFrameShown)
                 {
@@ -365,7 +468,23 @@ public sealed class VideoContentController : IDisposable
                 }
             }
         }
+
+        // Once per file: a third or more of the frames dropped means the machine cannot decode this
+        // file in real time — say so instead of leaving a jerky picture unexplained.
+        void ReportIfTooSlow()
+        {
+            if (_performanceNote != null || FramesDropped < 30 || FramesDropped * 3 < FramesPresented + FramesDropped) return;
+            string note = $"本机解码跟不上该视频（已丢弃 {FramesDropped} 帧），画面会跳帧";
+            _performanceNote = note;
+            DecodeTooSlow?.Invoke(note);
+        }
     }
+
+    // Longest the picture may stand still while frames are being dropped for lateness.
+    private static readonly long MaxFrameGapTicks = TimeSpan.FromMilliseconds(250).Ticks;
+
+    /// <summary>Test hook: extra time spent per decoded frame, simulating a machine too slow for the file.</summary>
+    internal static TimeSpan SimulatedDecodeDelay { get; set; }
 
     private void ApplyVolume()
     {

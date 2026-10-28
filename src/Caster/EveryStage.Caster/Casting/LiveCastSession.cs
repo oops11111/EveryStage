@@ -155,14 +155,14 @@ public sealed class LiveCastSession : IDisposable
     private readonly CaptureRateController _captureRateController = new();
     private int _captureFrameCounter;
 
-    // Set at the start of each OnPcmCaptured call, read/advanced by OnAacAccessUnitEncoded — see
-    // that method's own doc comment for why these need to be per-batch state rather than computed
-    // independently per access unit. Safe as plain fields (not Interlocked/volatile): both methods
-    // only ever run on the same thread, synchronously, within a single OnPcmCaptured call — never
-    // concurrently with themselves or each other (same single-capture-callback-thread invariant
-    // AudioCaptureSource's own doc comment already establishes).
-    private uint _aacBatchBaseTimestamp;
-    private int _aacSamplesEmittedInBatch;
+    // Audio timestamping (audit A-3): the AAC encoder buffers PCM across calls, so an access unit's
+    // audio usually began in an EARLIER capture buffer than the one that produced it; PcmTimeline maps
+    // each access unit to the capture time of its first sample. Touched only on the single capture
+    // callback thread (OnPcmCaptured, and OnAacAccessUnitEncoded which runs synchronously inside it).
+    private PcmTimeline? _pcmTimeline;
+
+    // This session's media id: NACKs carrying any other id belong to an earlier cast (audit B-1).
+    private Guid _mediaSessionId;
 
     /// <summary>True from <see cref="Start"/> until <see cref="StopInternal"/> nulls
     /// <see cref="_loopTask"/> back out — NOT the same as "the capture loop is actually still
@@ -236,6 +236,7 @@ public sealed class LiveCastSession : IDisposable
     // stats and can go stale if the Terminal stops reporting (see LastStatusReceivedAt/IsTerminalAlive).
 
     public long TerminalFramesDecoded { get; private set; }
+    public bool TerminalOnProgram { get; private set; }
     public long TerminalVideoBytesReceived { get; private set; }
     public string? TerminalVideoError { get; private set; }
     public bool TerminalHasAudio { get; private set; }
@@ -333,6 +334,7 @@ public sealed class LiveCastSession : IDisposable
         if (status.DeviceId != _terminal.DeviceId) return; // a report from some other terminal — not ours to track.
 
         TerminalFramesDecoded = status.FramesDecoded;
+        TerminalOnProgram = status.OnProgram;
         TerminalVideoBytesReceived = status.VideoBytesReceived;
         TerminalVideoError = status.VideoError;
         TerminalHasAudio = status.HasAudio;
@@ -351,9 +353,10 @@ public sealed class LiveCastSession : IDisposable
 
     private void OnCastNackReceived(DiscoveryProtocol.CastNackMessage nack)
     {
-        if (nack.DeviceId != _terminal.DeviceId || nack.MediaSessionId == Guid.Empty) return;
-        if (!IsRunning || _rtpSession == null) return;
-        _ = _rtpSession.RetransmitAsync(nack.MissingVideoSequences);
+        if (nack.DeviceId != _terminal.DeviceId || nack.MediaSessionId == Guid.Empty || nack.MediaSessionId != _mediaSessionId) return;
+        var rtpSession = _rtpSession; // read once: StopInternal may null the field concurrently
+        if (!IsRunning || rtpSession == null) return;
+        _ = rtpSession.RetransmitAsync(nack.MissingVideoSequences);
     }
 
     public async Task StartAsync()
@@ -371,7 +374,9 @@ public sealed class LiveCastSession : IDisposable
         AudioChunksDroppedForBackpressure = 0;
         _queuedAccessUnitCount = 0;
         _queuedAudioChunkCount = 0;
+        _pcmTimeline = null;
         TerminalFramesDecoded = 0;
+        TerminalOnProgram = false;
         TerminalVideoBytesReceived = 0;
         TerminalVideoError = null;
         TerminalHasAudio = false;
@@ -391,6 +396,7 @@ public sealed class LiveCastSession : IDisposable
         _discoveryClient.CastNackReceived += OnCastNackReceived;
 
         Guid mediaSessionId = Guid.NewGuid();
+        _mediaSessionId = mediaSessionId;
 
         try
         {
@@ -450,8 +456,23 @@ public sealed class LiveCastSession : IDisposable
         // The session owns cancellation so closing during startup cannot resurrect capture.
         _cts = new CancellationTokenSource();
         CancellationToken startupToken = _cts.Token;
-        await _discoveryClient.SendCastStartAsync(_terminal, _identity, Width, Height, PayloadType, audioInfo, mediaSessionId, startupToken);
-        startupToken.ThrowIfCancellationRequested();
+        try
+        {
+            await _discoveryClient.SendCastStartAsync(_terminal, _identity, Width, Height, PayloadType, audioInfo, mediaSessionId, startupToken);
+            startupToken.ThrowIfCancellationRequested();
+        }
+        catch (Exception ex)
+        {
+            // Not paired, no acknowledgement, terminal refused, or cancelled. Release everything built
+            // above here rather than leaving it to the caller (the DXGI duplication is exclusive per
+            // output — audit B-2), and tell the Terminal to stop in case it did start but its
+            // acknowledgement was lost (it would otherwise hold the output for its 10 s liveness timeout).
+            if (ex is not OperationCanceledException) LastError = ex.Message;
+            StopInternal();
+            _ = _discoveryClient.SendCastStopAsync(_terminal, _identity);
+            StatsUpdated?.Invoke();
+            throw;
+        }
 
         _clock.Restart();
         _loopTask = Task.Run(() => RunLoop(_gpu, _capture, _converter, _encoder, _cts.Token));
@@ -471,6 +492,10 @@ public sealed class LiveCastSession : IDisposable
         {
             while (!token.IsCancellationRequested)
             {
+                // The encoder's own loop died (its failure is already in LastError via
+                // OnEncodingFailed): stop capturing into it — the finally below then cancels the
+                // other loops, the same as a capture failure (audit A-21).
+                if (encoder.EncodeLoopFailed) break;
                 CapturedFrame? frame;
                 try
                 {
@@ -483,6 +508,9 @@ public sealed class LiveCastSession : IDisposable
                 }
 
                 if (frame == null) continue; // normal timeout — screen hasn't changed.
+                // Capture time, carried through the encoder to the RTP timestamp (audit A-2): taken
+                // here, not when encoding finishes up to ~100 ms later depending on load.
+                long captureTicks = _clock.Elapsed.Ticks;
 
                 using (frame)
                 {
@@ -494,7 +522,7 @@ public sealed class LiveCastSession : IDisposable
                     // Same reasoning as EncodeSelfTestRunner: the converter reuses one output
                     // texture across calls, so it must be copied before handing off to the
                     // encoder's async input queue.
-                    encoder.SubmitFrame(CopyTexture(gpu, nv12));
+                    encoder.SubmitFrame(CopyTexture(gpu, nv12), captureTime: captureTicks);
                     FramesCaptured++;
                 }
             }
@@ -550,7 +578,7 @@ public sealed class LiveCastSession : IDisposable
         return copy;
     }
 
-    private void OnAccessUnitEncoded(byte[] accessUnit)
+    private void OnAccessUnitEncoded(byte[] accessUnit, long captureTicks)
     {
         // Backpressure — the residual risk this project's README flagged for risk #25 ("Channel是
         // 无界的...没有背压或丢弃策略"): if RunSendLoop can't keep up with real network sends, drop
@@ -570,9 +598,14 @@ public sealed class LiveCastSession : IDisposable
             return;
         }
 
-        uint timestamp = RtpVideoClock.FromElapsed(_clock.Elapsed);
+        uint timestamp = RtpVideoClock.FromElapsed(TimeSpan.FromTicks(captureTicks));
         var nalUnits = AnnexBNalSplitter.Split(accessUnit).ToList();
+        // Nothing to send means nothing will ever decrement the queue count: counting it anyway leaked
+        // one slot per empty access unit until the queue read as permanently full and every later
+        // frame was dropped — video stopped for the rest of the cast (audit A-1).
+        if (nalUnits.Count == 0) return;
         Interlocked.Increment(ref _queuedAccessUnitCount); // decremented in RunSendLoop once sent.
+        bool lastWritten = false;
         for (int i = 0; i < nalUnits.Count; i++)
         {
             bool isLastNalOfAccessUnit = i == nalUnits.Count - 1;
@@ -580,8 +613,11 @@ public sealed class LiveCastSession : IDisposable
             // event-loop thread (see its doc comment), which must not block on network I/O.
             // RunSendLoop is the single reader that actually calls SendNalUnitAsync, in enqueue
             // order — see the field doc comment on _sendQueue for why order matters here.
-            _sendQueue.Writer.TryWrite((nalUnits[i], timestamp, isLastNalOfAccessUnit));
+            bool written = _sendQueue.Writer.TryWrite((nalUnits[i], timestamp, isLastNalOfAccessUnit));
+            if (isLastNalOfAccessUnit) lastWritten = written;
         }
+        // The queue is completed (stopping): the send loop will never see this unit's last NAL.
+        if (!lastWritten) Interlocked.Decrement(ref _queuedAccessUnitCount);
 
         AccessUnitsSent++;
         BytesSent += accessUnit.Length;
@@ -635,15 +671,15 @@ public sealed class LiveCastSession : IDisposable
         // section). This replaces an earlier draft that accumulated a sample counter from a random
         // RFC-3550-style initial value — sample-accurate within one stream, but with no relationship
         // to video's wall-clock timestamps whatsoever, which made it useless for cross-stream sync.
-        // Computed once per captured buffer (a "batch") — AacAudioEncoder.SubmitPcm below can raise
-        // OnAacAccessUnitEncoded zero or more times per call, each representing exactly
-        // AacSamplesPerFrame samples, so every access unit within this batch gets this same
-        // wall-clock anchor offset by however many samples came before it (see
-        // OnAacAccessUnitEncoded) rather than each one independently reading _clock.Elapsed — the
-        // latter would let a slow encode call mid-batch skew later access units' timestamps away
-        // from where they actually belong on the shared audio-sample timeline.
-        _aacBatchBaseTimestamp = RtpVideoClock.FromElapsed(_clock.Elapsed, (uint)_audioCapture!.SampleRate);
-        _aacSamplesEmittedInBatch = 0;
+        // Computed once per captured buffer (a "batch") and recorded in _pcmBuffers: this buffer's
+        // first sample sits at the current clock minus the buffer's own duration (the callback fires
+        // when the buffer is full). AacAudioEncoder buffers PCM across calls, so the access units this
+        // call produces mostly started in earlier buffers — OnAacAccessUnitEncoded looks each one's
+        // first sample up instead of stamping it with this batch's time (audit A-3).
+        int rate = _audioCapture!.SampleRate;
+        int frames = pcm.Length / (_audioCapture.Channels * 2);
+        long firstSampleTicks = _clock.Elapsed.Ticks - frames * TimeSpan.TicksPerSecond / rate;
+        (_pcmTimeline ??= new PcmTimeline(rate)).Record(frames, firstSampleTicks);
 
         // Synchronous, on this same NAudio capture callback thread — see AacAudioEncoder's own doc
         // comment on having no background thread of its own. Raises OnAacAccessUnitEncoded below
@@ -653,6 +689,9 @@ public sealed class LiveCastSession : IDisposable
 
     private void OnAacAccessUnitEncoded(byte[] accessUnit)
     {
+        // Advanced for every access unit, sent or dropped: timestamps follow the audio itself.
+        long timestampTicks = _pcmTimeline?.NextFrame(AacSamplesPerFrame) ?? _clock.Elapsed.Ticks;
+
         // Backpressure — same policy/reasoning as OnAccessUnitEncoded's, applied to audio: if
         // RunAudioSendLoop can't keep up, drop this entire access unit rather than let
         // _audioSendQueue grow without bound. Unlike H.264 NAL units, AAC access units have no
@@ -665,16 +704,21 @@ public sealed class LiveCastSession : IDisposable
             return;
         }
 
-        uint timestamp = _aacBatchBaseTimestamp + (uint)_aacSamplesEmittedInBatch;
-        _aacSamplesEmittedInBatch += AacSamplesPerFrame;
+        uint timestamp = RtpVideoClock.FromElapsed(TimeSpan.FromTicks(Math.Max(0, timestampTicks)), (uint)_audioCapture!.SampleRate);
 
         // Non-blocking enqueue — same reasoning as OnAccessUnitEncoded's _sendQueue.TryWrite: this
         // runs on NAudio's own capture callback thread (via OnPcmCaptured -> AacAudioEncoder.SubmitPcm
         // -> this method, all synchronous), which must not block on network I/O. No RTP fragmentation
         // needed here — see this class's own doc comment on why one AAC access unit safely fits a
         // single UDP payload the way a raw ~10ms PCM buffer used to threaten to.
-        _audioSendQueue.Writer.TryWrite((accessUnit, timestamp));
+        // Counted before the write, like video, so the send loop can never decrement first; undone when
+        // the queue is already completed (stopping) and the item will never be read (audit C-1).
         Interlocked.Increment(ref _queuedAudioChunkCount); // decremented in RunAudioSendLoop once sent.
+        if (!_audioSendQueue.Writer.TryWrite((accessUnit, timestamp)))
+        {
+            Interlocked.Decrement(ref _queuedAudioChunkCount);
+            return;
+        }
 
         AudioBytesSent += accessUnit.Length;
         StatsUpdated?.Invoke();
@@ -824,5 +868,8 @@ public sealed class LiveCastSession : IDisposable
         _audioRtpSession = null;
     }
 
-    public void Dispose() => StopInternal();
+    /// <summary>Also tells the Terminal the cast is over when it was running: closing the Caster window
+    /// (which only disposes) used to leave the Terminal holding the output until its 10 s liveness
+    /// timeout (audit B-3).</summary>
+    public void Dispose() => Stop();
 }

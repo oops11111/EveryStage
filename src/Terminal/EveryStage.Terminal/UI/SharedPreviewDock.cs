@@ -31,6 +31,7 @@ internal sealed class SharedPreviewDock : Panel
     private const int MinProgressWidth = 90;
     private const int ButtonHeight = 30;
     private const int SourceCardHeight = 46;
+    private const int DeviceCardExpandedHeight = 178;
     private const string IconFont = "Segoe MDL2 Assets";
 
     private readonly OutputStateMachine _stateMachine;
@@ -48,29 +49,50 @@ internal sealed class SharedPreviewDock : Panel
     private readonly RoundedActionButton _takeButton;
     private readonly RoundedActionButton _stopOutputButton;
     private readonly SourceCardView _localCard;
-    private readonly SourceCardView _deviceCard;
+    private readonly DeviceCastCard _deviceCard;
     private readonly ErrorCard _errorCard;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly ToolTip _toolTip = new();
     private PlaybackEngine? _preview;
     private PlaybackEngine? _program;
     private Bitmap? _placeholder;
+    private readonly GlassPanel _sourcesCard;
+    private readonly RowStyle _sourcesCardsRow;
+    private bool _deviceExpanded;
+    private string? _deviceName;
+    private bool _deviceConnected;
+    private bool _deviceOnProgram;
 
     /// <summary>The Preview channel's output surface (MainWindow builds the Preview engine on it).</summary>
     public PreviewSurface PreviewSurface { get; }
 
     /// <summary>Height of everything in the dock except the preview monitor itself — MainWindow sizes the
-    /// dock as this plus a monitor that grows with the window.</summary>
-    public int ChromeHeight { get; }
+    /// dock as this plus a monitor that grows with the window. Includes the document control row while
+    /// a document plays (<see cref="ChromeHeightChanged"/>).</summary>
+    public int ChromeHeight => _baseChromeHeight + (_deviceExpanded ? DeviceCardExpandedHeight - SourceCardHeight : 0)
+        + (_documentBarShown ? DocumentRowHeight : 0);
+
+    /// <summary>Raised when the document control row appears or disappears.</summary>
+    public event Action? ChromeHeightChanged;
+
+    private readonly int _baseChromeHeight;
+    private readonly TableLayoutPanel _layout;
+    private DocumentControlBar? _documentBar;
+    private bool _documentBarShown;
+    private const int DocumentRowHeight = ButtonHeight + 6;
 
     /// <summary>"投到屏幕": put the Preview content on the extended display.</summary>
     public event Action? TakeRequested;
 
     /// <summary>"停止输出": take whatever is on the extended display off air (Preview is unaffected).</summary>
     public event Action? StopProgramRequested;
+    public event Action? DeviceTakeRequested;
+    public event Action? DeviceRevertRequested;
+    public event Action<int, int>? DeviceVideoHostResized;
 
     /// <summary>Error card "从文件库移除".</summary>
     public event Action<MediaFile>? RemoveFromLibraryRequested;
+    public Control DeviceVideoHost => _deviceCard.VideoHost;
 
     public SharedPreviewDock(OutputStateMachine stateMachine)
     {
@@ -90,6 +112,7 @@ internal sealed class SharedPreviewDock : Panel
             Dock = DockStyle.Bottom, Padding = new Padding(10, 5, 10, 7), CornerRadius = 10,
             GlassTint = Color.FromArgb(190, 12, 29, 49),
         };
+        _sourcesCard = sourcesCard;
         var cardGap = new Panel { Dock = DockStyle.Bottom, Height = CardGap, BackColor = Color.Transparent };
 
         // Row heights come from the real fonts/control sizes, and every cell has a zero margin
@@ -97,15 +120,18 @@ internal sealed class SharedPreviewDock : Panel
         var titleFont = new Font("Segoe UI Semibold", 10.5F);
         var smallFont = new Font("Segoe UI", 9F);
         int titleHeight = TextRenderer.MeasureText("本地预览 Ag", titleFont).Height;
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 1, RowCount = 3, Padding = Padding.Empty, Margin = Padding.Empty };
+        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 1, RowCount = 4, Padding = Padding.Empty, Margin = Padding.Empty };
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, titleHeight + 10));      // heading
         layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));                    // monitor
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));                     // document controls (only while a document plays)
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute, ButtonHeight + 12));     // transport
+        _layout = layout;
         var sourcesLayout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 1, RowCount = 2, Padding = Padding.Empty, Margin = Padding.Empty };
         sourcesLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, titleHeight + 6));      // 信号源窗口 heading
-        sourcesLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, SourceCardHeight + 2)); // source cards
+        _sourcesCardsRow = new RowStyle(SizeType.Absolute, SourceCardHeight + 2);
+        sourcesLayout.RowStyles.Add(_sourcesCardsRow); // source cards
         sourcesCard.Height = sourcesCard.Padding.Vertical + (titleHeight + 6) + (SourceCardHeight + 2);
-        ChromeHeight = previewCard.Padding.Vertical + (titleHeight + 10) + (ButtonHeight + 12) + CardGap + sourcesCard.Height;
+        _baseChromeHeight = previewCard.Padding.Vertical + (titleHeight + 10) + (ButtonHeight + 12) + CardGap + sourcesCard.Height;
 
         // Heading: 「本地预览 / 播控窗口 ● 预览状态 …… 输出状态」.
         var heading = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
@@ -145,7 +171,7 @@ internal sealed class SharedPreviewDock : Panel
 
         Control[] cells = { _previousButton, _playPauseButton, _stopButton, _nextButton, _timecode, _progress, volumeIcon, _volume, _loopButton, _scaleButton, _takeButton, _stopOutputButton };
         for (int i = 0; i < cells.Length; i++) transport.Controls.Add(cells[i], i, 0);
-        layout.Controls.Add(transport, 0, 2);
+        layout.Controls.Add(transport, 0, 3);
 
         // The fixed-width columns take ~616px, which left the progress track only a few pixels wide at
         // the default window size. While the track would be shorter than MinProgressWidth, drop the
@@ -179,7 +205,11 @@ internal sealed class SharedPreviewDock : Panel
 
         var sources = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty, Padding = Padding.Empty };
         _localCard = new SourceCardView("本地预览 / 播控窗口");
-        _deviceCard = new SourceCardView("设备投屏窗口");
+        _deviceCard = new DeviceCastCard();
+        _deviceCard.TakeRequested += () => DeviceTakeRequested?.Invoke();
+        _deviceCard.RevertRequested += () => DeviceRevertRequested?.Invoke();
+        _deviceCard.VideoHost.SizeChanged += (_, _) => DeviceVideoHostResized?.Invoke(
+            Math.Max(1, _deviceCard.VideoHost.ClientSize.Width), Math.Max(1, _deviceCard.VideoHost.ClientSize.Height));
         sources.Controls.Add(_localCard.Card);
         sources.Controls.Add(_deviceCard.Card);
         sourcesLayout.Controls.Add(sources, 0, 1);
@@ -269,6 +299,23 @@ internal sealed class SharedPreviewDock : Panel
         RefreshNow();
     }
 
+    public void UpdateDeviceCast(string? deviceName, bool connected, bool onProgram)
+    {
+        _deviceName = deviceName;
+        _deviceConnected = connected;
+        _deviceOnProgram = onProgram;
+        bool expanded = connected;
+        if (_deviceExpanded != expanded)
+        {
+            _deviceExpanded = expanded;
+            int sourceHeight = expanded ? DeviceCardExpandedHeight : SourceCardHeight;
+            _sourcesCardsRow.Height = sourceHeight + 2;
+            _sourcesCard.Height = _sourcesCard.Padding.Vertical + (int)_sourcesCardsRow.Height + 28;
+            ChromeHeightChanged?.Invoke();
+        }
+        RefreshNow();
+    }
+
     private void OnPreviewStateChanged(PlaybackChannelState state)
     {
         if (state == PlaybackChannelState.Idle) ShowIdleSplash();
@@ -283,9 +330,35 @@ internal sealed class SharedPreviewDock : Panel
         PreviewSurface.ContentSurface.SetFrame(_placeholder);
     }
 
+    internal void RefreshTheme() => RefreshNow();
+
+    /// <summary>Adds the document control row (PDF / Word / presentation controls and Program sync).</summary>
+    public void BindDocumentSync(DocumentProgramSync sync)
+    {
+        _documentBar = new DocumentControlBar(sync, _toolTip, ButtonHeight) { Dock = DockStyle.Fill, Visible = false };
+        _documentBar.StopProgramRequested += () => StopProgramRequested?.Invoke();
+        _documentBar.Changed += RefreshNow;
+        _layout.Controls.Add(_documentBar, 0, 2);
+        sync.Preview.DocumentChanged += RefreshNow;
+        RefreshNow();
+    }
+
+    private void RefreshDocumentBar()
+    {
+        if (_documentBar == null) return;
+        _documentBar.RefreshState();
+        bool show = _documentBar.HasDocument;
+        if (show == _documentBarShown) return;
+        _documentBarShown = show;
+        _documentBar.Visible = show;
+        _layout.RowStyles[2].Height = show ? DocumentRowHeight : 0;
+        ChromeHeightChanged?.Invoke();
+    }
+
     private void RefreshNow()
     {
         if (IsDisposed) return;
+        RefreshDocumentBar();
         var preview = _preview;
         var file = preview?.CurrentFile;
         var state = preview?.State ?? PlaybackChannelState.Idle;
@@ -353,9 +426,8 @@ internal sealed class SharedPreviewDock : Panel
         } + (source == ProgramSource.LocalMedia ? " · 输出中" : " · 未投屏");
         _localCard.Update(source == ProgramSource.LocalMedia, localStatus,
             source == ProgramSource.LocalMedia ? ModernUi.Danger : state == PlaybackChannelState.Failed ? ModernUi.Danger : state == PlaybackChannelState.Idle ? ModernUi.Muted : ModernUi.Success);
-        _deviceCard.Update(source == ProgramSource.DeviceCast,
-            source == ProgramSource.DeviceCast ? "设备投屏中 · 输出中" : _program == null ? "未连接扩展屏" : "等待设备来投",
-            source == ProgramSource.DeviceCast ? ModernUi.Danger : ModernUi.Muted);
+        _deviceCard.Update(_deviceConnected, _deviceName ?? "设备投屏窗口", _deviceOnProgram,
+            _program == null ? "未连接扩展屏" : "等待设备来投", _program != null);
 
         // Error card.
         if (state == PlaybackChannelState.Failed && preview?.LastError is { } error)
@@ -432,10 +504,100 @@ internal sealed class SharedPreviewDock : Panel
         public void Update(bool selected, string status, Color color)
         {
             SetText(_state, "● " + status, color);
-            if (_selected == selected) return;
             _selected = selected;
-            Card.GlassTint = selected ? Color.FromArgb(235, 14, 52, 96) : ModernUi.SurfaceRaised;
-            _thumb.GlassTint = selected ? Color.FromArgb(205, 12, 46, 92) : ModernUi.Surface;
+            Card.GlassTint = selected
+                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Accent, 0.19f))
+                : ModernUi.Palette.GlassTint;
+            _thumb.GlassTint = selected
+                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Accent, 0.11f))
+                : ModernUi.Palette.GlassTint;
+            Card.Invalidate(true);
+        }
+    }
+
+    private sealed class DeviceCastCard
+    {
+        private readonly Label _title;
+        private readonly Label _state;
+        private readonly Label _caption;
+        private readonly RoundedActionButton _actionButton;
+        private readonly Panel _videoFrame;
+        private readonly Panel _labels;
+        private bool _onProgram;
+
+        public GlassPanel Card { get; }
+        public Control VideoHost { get; }
+        public event Action? TakeRequested;
+        public event Action? RevertRequested;
+
+        public DeviceCastCard()
+        {
+            Card = new GlassPanel
+            {
+                Width = 268, Height = SourceCardHeight, Margin = new Padding(0, 0, 10, 0),
+                Padding = new Padding(6, 5, 8, 5), CornerRadius = 9, GlassTint = ModernUi.SurfaceRaised,
+            };
+
+            _videoFrame = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black, Visible = false };
+            VideoHost = new Control { Dock = DockStyle.Fill, BackColor = Color.Black };
+            _ = VideoHost.Handle;
+            _caption = new Label
+            {
+                Dock = DockStyle.Bottom, Height = 30, BackColor = Color.FromArgb(210, 12, 29, 49),
+                ForeColor = ModernUi.Text, Font = new Font("Segoe UI", 8.5F),
+                TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 76, 0),
+                AutoEllipsis = true,
+            };
+            _actionButton = new RoundedActionButton
+            {
+                Text = "投屏", Width = 62, Height = 28, Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
+            };
+            ModernUi.StyleButton(_actionButton, primary: true);
+            _actionButton.Click += (_, _) =>
+            {
+                if (_onProgram) RevertRequested?.Invoke(); else TakeRequested?.Invoke();
+            };
+            _videoFrame.Controls.Add(VideoHost);
+            _videoFrame.Controls.Add(_caption);
+            _videoFrame.Controls.Add(_actionButton);
+            _videoFrame.Resize += (_, _) => _actionButton.Location = new Point(
+                Math.Max(4, _videoFrame.ClientSize.Width - _actionButton.Width - 8),
+                Math.Max(4, _videoFrame.ClientSize.Height - _actionButton.Height - 8));
+
+            _labels = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(6, 0, 0, 0) };
+            _title = new Label
+            {
+                Text = "设备投屏窗口", Dock = DockStyle.Top, Height = 19, ForeColor = ModernUi.Text,
+                Font = new Font("Segoe UI Semibold", 9F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
+            };
+            _state = new Label { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 8F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+            _labels.Controls.Add(_state);
+            _labels.Controls.Add(_title);
+            Card.Controls.Add(_labels);
+            Card.Controls.Add(_videoFrame);
+        }
+
+        public void Update(bool connected, string title, bool onProgram, string idleStatus, bool displayBound)
+        {
+            _onProgram = onProgram;
+            Card.Height = connected ? DeviceCardExpandedHeight : SourceCardHeight;
+            _videoFrame.Visible = connected;
+            _labels.Visible = !connected;
+            _title.Text = connected ? title : "设备投屏窗口";
+            _caption.Text = connected
+                ? $"{title} · {(onProgram ? "大屏中" : "预览中")}"
+                : "";
+            _state.Text = connected
+                ? (onProgram ? "● 大屏输出中" : "● 预览中（未上屏）")
+                : "● " + idleStatus;
+            _state.ForeColor = connected ? (onProgram ? ModernUi.Danger : ModernUi.Success) : ModernUi.Muted;
+            _actionButton.Text = onProgram ? "回退" : "投屏";
+            _actionButton.Enabled = connected && (displayBound || onProgram);
+            ModernUi.StyleButton(_actionButton, primary: !onProgram, danger: onProgram);
+            _actionButton.BringToFront();
+            Card.GlassTint = onProgram
+                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Accent, 0.19f))
+                : ModernUi.Palette.GlassTint;
             Card.Invalidate(true);
         }
     }

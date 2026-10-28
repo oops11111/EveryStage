@@ -65,30 +65,29 @@ public sealed class SettingsPanel : UserControl
         };
         var themeLabel = new Label
         {
-            Text = "界面主题",
+            Text = "主题",
             AutoSize = true,
             Location = new Point(16, 84),
             Font = new Font("Segoe UI Semibold", 10F),
             ForeColor = ModernUi.Text,
         };
         _themeComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Visible = false };
-        _themeComboBox.Items.AddRange(new object[] { "白色系", "黑色系", "高科技系" });
+        _themeComboBox.Items.AddRange(new object[] { "白色", "黑色", "蓝色" });
         _themeComboBox.SelectedIndex = Math.Clamp((int)settings.Theme, 0, _themeComboBox.Items.Count - 1);
         var themeCards = new FlowLayoutPanel
         {
             Location = new Point(16, 112),
             Size = new Size(570, 112),
             WrapContents = false,
-            BackColor = ModernUi.Background,
+            BackColor = Color.Transparent,
             Margin = Padding.Empty,
         };
-        string[] themeNames = { "白色系", "黑色系", "高科技系" };
+        string[] themeNames = { "白色", "黑色", "蓝色" };
         for (int i = 0; i < themeNames.Length; i++)
         {
-            int themeIndex = i;
             var card = new ThemePreviewCard(themeNames[i], i, () => _themeComboBox.SelectedIndex, index =>
             {
-                _themeComboBox.SelectedIndex = index;
+                SelectTheme(index);
                 foreach (Control control in themeCards.Controls) control.Invalidate();
             })
             {
@@ -200,10 +199,10 @@ public sealed class SettingsPanel : UserControl
 
         // --- 诊断 ---
         _diagnosticsLabel = new Label { AutoSize = true, Location = new Point(16, 16) };
-        var refreshDiagnosticsButton = new Button { Text = "刷新诊断", Location = new Point(16, 180), Width = 100 };
+        var refreshDiagnosticsButton = new Button { Text = "刷新诊断", Location = new Point(16, 204), Width = 100 };
         ModernUi.StyleButton(refreshDiagnosticsButton);
         refreshDiagnosticsButton.Click += (_, _) => RefreshDiagnostics();
-        var exportLogsButton = new Button { Text = "导出日志...", Location = new Point(124, 180), Width = 100 };
+        var exportLogsButton = new Button { Text = "导出日志...", Location = new Point(124, 204), Width = 100 };
         ModernUi.StyleButton(exportLogsButton);
         exportLogsButton.Click += OnExportLogsClick;
         var diagnosticsTab = new TabPage("诊断");
@@ -383,6 +382,28 @@ public sealed class SettingsPanel : UserControl
         _monitorComboBox.SelectedIndex = selectedIndex;
     }
 
+    private void SelectTheme(int index)
+    {
+        if (index == _themeComboBox.SelectedIndex) return;
+        var current = _settingsStore.Current;
+        var updated = new AppSettings
+        {
+            SchemaVersion = current.SchemaVersion,
+            Theme = (AppTheme)index,
+            CastSwitchDefaultOn = current.CastSwitchDefaultOn,
+            PreferredMonitorDeviceName = current.PreferredMonitorDeviceName,
+            DefaultStayDurationSeconds = current.DefaultStayDurationSeconds,
+        };
+        try { _settingsStore.Save(updated); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"主题未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        _themeComboBox.SelectedIndex = index;
+        _savedLabel.Text = "主题已保存，即时生效。";
+    }
+
     private void OnSaveSettingsClick(object? sender, EventArgs e)
     {
         var selectedMonitor = (MonitorComboItem?)_monitorComboBox.SelectedItem;
@@ -413,13 +434,19 @@ public sealed class SettingsPanel : UserControl
     private void RefreshDiagnostics()
     {
         long? logBytes = TryGetLogBytes();
+        using var process = Process.GetCurrentProcess();
+        long failedLogWrites = DailyRollingLogWriter.FailedWriteCount;
+        string logHealth = failedLogWrites == 0
+            ? "正常"
+            : $"⚠ {failedLogWrites} 条未能写入（最近：{DailyRollingLogWriter.LastFailure}）";
         _diagnosticsLabel.Text =
             $"应用版本：{Application.ProductVersion}\n" +
             $"运行时：{System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}\n" +
             $"操作系统：{System.Runtime.InteropServices.RuntimeInformation.OSDescription}\n" +
-            $"进程运行：{DateTime.Now - Process.GetCurrentProcess().StartTime:g}\n" +
+            $"进程运行：{DateTime.Now - process.StartTime:g}\n" +
             $"显示器数量：{Screen.AllScreens.Length}\n" +
             $"日志占用：{(logBytes.HasValue ? $"{logBytes.Value / 1024d / 1024d:F2} MB" : "无法读取")}\n" +
+            $"日志写入：{logHealth}\n" +
             $"日志目录：{LogPaths.DefaultRoot}";
     }
 
@@ -495,7 +522,9 @@ public sealed class SettingsPanel : UserControl
             _selectedIndex = selectedIndex;
             _select = select;
             Cursor = Cursors.Hand;
-            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
         }
 
         protected override void OnClick(EventArgs e)
@@ -511,14 +540,25 @@ public sealed class SettingsPanel : UserControl
             bool selected = _selectedIndex() == _index;
             var theme = UiPalette.For((AppTheme)_index);
             var bounds = Rectangle.Inflate(ClientRectangle, -1, -1);
-            using var cardFill = new SolidBrush(ModernUi.Surface);
+            using var cardFill = new SolidBrush(Color.FromArgb(202, ModernUi.Surface));
             using var border = new Pen(selected ? ModernUi.Accent : ModernUi.Border, selected ? 2F : 1F);
-            g.FillRectangle(cardFill, bounds);
-            g.DrawRectangle(border, bounds);
+            using var cardPath = new GraphicsPath();
+            int radius = 12;
+            int diameter = radius * 2;
+            cardPath.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
+            cardPath.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
+            cardPath.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
+            cardPath.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
+            cardPath.CloseFigure();
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.FillPath(cardFill, cardPath);
+            g.DrawPath(border, cardPath);
 
             var preview = new Rectangle(10, 10, Width - 20, 57);
             using (var previewFill = new SolidBrush(theme.Background)) g.FillRectangle(previewFill, preview);
             using (var railFill = new SolidBrush(theme.Rail)) g.FillRectangle(railFill, preview.X, preview.Y, 7, preview.Height);
+            using (var glassFill = new SolidBrush(theme.GlassTint))
+                g.FillRectangle(glassFill, preview.X + 13, preview.Y + 7, preview.Width - 20, preview.Height - 14);
             using (var textBrush = new SolidBrush(theme.Text))
             {
                 g.FillRectangle(textBrush, preview.X + 17, preview.Y + 12, 48, 5);

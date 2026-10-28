@@ -4,6 +4,7 @@ using EveryStage.Rendering.Decode;
 using EveryStage.Terminal.Display;
 using EveryStage.Transport;
 using Vortice.Direct3D11;
+using Vortice.MediaFoundation;
 
 namespace EveryStage.Terminal.Receiving;
 
@@ -71,7 +72,7 @@ public sealed class CastReceiver : IDisposable
     private static readonly long MaxWaitTicks = TimeSpan.TicksPerSecond; // 1 second.
 
     private readonly VideoSurface _surface;
-    private readonly H264HardwareDecoder _decoder;
+    private H264HardwareDecoder? _decoder;
     private readonly RtpReceiver _rtpReceiver;
     private readonly AccessUnitAssembler _accessUnitAssembler = new();
 
@@ -98,11 +99,27 @@ public sealed class CastReceiver : IDisposable
     // be in flight, which is an acceptable, realistically-bounded cost (single-frame hardware decode
     // latency) in exchange for closing a real, if narrow, use-after-free-shaped race.
     private readonly object _decoderLock = new();
+    private readonly object _programGate = new();
     private readonly object _audioLifetimeLock = new();
     private bool _audioStopped;
+    private VideoSurface? _programSurface;
 
     private readonly RawRtpReceiver? _audioRtpReceiver;
     private readonly AudioPlaybackClock? _audioClock;
+
+    // Channels the Caster sends. A Caster whose system audio is 5.1 sends 6; the clock is built stereo
+    // and the PCM folded down (audit B-20), since a 6-channel shared-mode stream on a stereo output fails.
+    private readonly int _sourceAudioChannels;
+
+    // Audio stopped mid-cast (output device removed, or audio writes failing persistently): the cast
+    // continues as video-only instead of being paced on a clock that no longer moves (audit A-24) or torn
+    // down entirely (audit A-16).
+    private volatile bool _audioOutputLost;
+    private const int MaxConsecutiveAudioErrors = 90;
+
+    // RTP timeline position of the audio packet being processed; read by EnqueueAudio, which runs
+    // synchronously inside its processing (the AAC decoder is synchronous) on the audio receive thread.
+    private long _pendingAudioTimelineTicks;
 
     // Non-null only when the Caster signaled AAC (DiscoveryProtocol.CastStartMessage.AudioIsAac) —
     // see OnAudioPayloadReceived for how this changes which path a received payload takes before
@@ -118,11 +135,18 @@ public sealed class CastReceiver : IDisposable
     private readonly RtpTimestampUnwrapper _videoTimestampUnwrapper = new();
 
     // Three queued frames plus the one currently presenting: latency and native ownership are bounded.
-    private readonly BoundedLatestQueue<PendingFrame> _pendingFrames = new(3, frame => frame.Texture.Dispose());
+    private readonly BoundedLatestQueue<PendingFrame> _pendingFrames = new(3, frame => frame.Release());
     private CancellationTokenSource? _presentCts;
     private Thread? _presentThread;
 
-    private readonly record struct PendingFrame(ID3D11Texture2D Texture, int ArraySlice, int Width, int Height, long PresentationTicks);
+    private readonly record struct PendingFrame(ID3D11Texture2D Texture, int ArraySlice, int Width, int Height, long PresentationTicks, IMFSample Sample)
+    {
+        public void Release()
+        {
+            Texture.Dispose();
+            Sample.Dispose();
+        }
+    }
 
     public int Width { get; }
     public int Height { get; }
@@ -178,7 +202,7 @@ public sealed class CastReceiver : IDisposable
 
     /// <summary>The decoder's own terminal-failure flag, the decode-side counterpart of
     /// <see cref="PresentLoopFailed"/>. See H264HardwareDecoder.DecodeLoopFailed.</summary>
-    public bool DecodeLoopFailed => _decoder.DecodeLoopFailed;
+    public bool DecodeLoopFailed => _decoder?.DecodeLoopFailed ?? false;
 
     /// <summary>Combined video+audio "gap events / (received + gap events)" ratio as a percentage —
     /// see <see cref="RtpReceiver.GapEvents"/>'s own doc comment for why this is an honest
@@ -223,11 +247,22 @@ public sealed class CastReceiver : IDisposable
     /// than routing it through the audio-paced presentation thread, since there's no audio clock left
     /// to pace against.</summary>
     public string? AudioError { get; private set; }
+    public bool AudioMuted { get; set; }
 
     /// <summary>Same role as <see cref="ConsecutiveVideoDecodeErrors"/>, for the audio side — counts
     /// consecutive <see cref="OnAudioPayloadReceived"/> failures (currently, only
-    /// <c>AudioPlaybackClock.Enqueue</c> throwing), reset to 0 by the next successful enqueue.</summary>
+    /// <c>AudioPlaybackClock.Enqueue</c> throwing), reset to 0 by the next successful enqueue. Reaching
+    /// <see cref="MaxConsecutiveAudioErrors"/> switches the cast to video-only (<see cref="AudioOutputLost"/>)
+    /// rather than disconnecting it.</summary>
     public int ConsecutiveAudioPlaybackErrors { get; private set; }
+
+    /// <summary>True once audio has been given up for the rest of this cast (output device gone, or
+    /// persistent audio failure); video keeps being presented, unpaced. <see cref="AudioError"/> says why.</summary>
+    public bool AudioOutputLost => _audioOutputLost;
+
+    /// <summary>Raised once when the cast switches to video-only mid-way, with the reason (for the
+    /// connection log). May be raised from the RTP, present or UI thread.</summary>
+    public event Action<string>? AudioDegraded;
 
     /// <summary>UTC time of the most recent video OR audio packet actually received — initialized
     /// to construction time (not <c>DateTime.MinValue</c>) so a brand-new receiver gets a grace
@@ -247,9 +282,6 @@ public sealed class CastReceiver : IDisposable
         Height = height;
 
         _surface = surface;
-        _decoder = new H264HardwareDecoder(_surface.Gpu, width, height);
-        _decoder.FrameDecoded += OnFrameDecoded;
-        _decoder.DecodingFailed += OnVideoDecodingFailed;
 
         // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
         // step one" shape as EveryStage.Rendering's D3D11Device/SwapChainPresenter/
@@ -266,22 +298,12 @@ public sealed class CastReceiver : IDisposable
         // H264HardwareDecoder's OWN constructor doesn't help here, since the decoder here already
         // finished constructing successfully; the leak this time is one level up, in whichever
         // sibling construction step runs after it.
-        try
-        {
-            // payloadType/audioPayloadType (see EveryStage.Transport's README) come from
-            // DiscoveryProtocol.CastStartMessage.PayloadType/AudioPayloadType — this is that
-            // field's first real consumer; previously it was received and stored in
-            // DiscoveryService.CastStartInfo but never passed any further.
-            _rtpReceiver = new RtpReceiver(listenPort, payloadType,
-                new MediaPacketAuthentication(videoKey, mediaSessionId), expectedAddress, RtpSession.DefaultFecPayloadType);
-        }
-        catch
-        {
-            _decoder.FrameDecoded -= OnFrameDecoded;
-            _decoder.DecodingFailed -= OnVideoDecodingFailed;
-            _decoder.Dispose();
-            throw;
-        }
+        // payloadType/audioPayloadType (see EveryStage.Transport's README) come from
+        // DiscoveryProtocol.CastStartMessage.PayloadType/AudioPayloadType — this is that
+        // field's first real consumer; previously it was received and stored in
+        // DiscoveryService.CastStartInfo but never passed any further.
+        _rtpReceiver = new RtpReceiver(listenPort, payloadType,
+            new MediaPacketAuthentication(videoKey, mediaSessionId), expectedAddress, RtpSession.DefaultFecPayloadType);
         _rtpReceiver.NalUnitReceived += OnNalUnitReceived;
         _rtpReceiver.PacketGapDetected += missing => VideoPacketsMissing?.Invoke(missing);
 
@@ -292,7 +314,9 @@ public sealed class CastReceiver : IDisposable
                 // Constructed here (not lazily on first packet) so a WASAPI failure is caught right
                 // away rather than surfacing later as an unhandled exception from inside
                 // OnAudioPayloadReceived on the RTP receive thread.
-                _audioClock = new AudioPlaybackClock(audioSampleRate, audioChannels);
+                _sourceAudioChannels = audioChannels;
+                _audioClock = new AudioPlaybackClock(audioSampleRate, PcmDownmix.OutputChannels(audioChannels));
+                _audioClock.Faulted += reason => DegradeAudio($"声音输出已断开（{reason}），投屏继续无声显示");
                 _audioSampleRate = (uint)audioSampleRate;
                 if (audioIsAac)
                 {
@@ -333,6 +357,20 @@ public sealed class CastReceiver : IDisposable
 
     public void Start()
     {
+        // Keep construction independent from the decoder MFT. This lets the controller establish
+        // the shared-surface ownership contract before the first frame, and makes the no-frame
+        // Attach/Detach smoke test exercise a real CastReceiver even on machines without an H.264
+        // hardware transform. A real cast still initializes the decoder before opening RTP loops;
+        // any MFT failure propagates through the existing Connect cleanup path.
+        lock (_decoderLock)
+        {
+            if (_decoder == null)
+            {
+                _decoder = new H264HardwareDecoder(_surface.Gpu, Width, Height);
+                _decoder.FrameDecoded += OnFrameDecoded;
+                _decoder.DecodingFailed += OnVideoDecodingFailed;
+            }
+        }
         _rtpReceiver.Start();
         if (HasAudio)
         {
@@ -347,6 +385,22 @@ public sealed class CastReceiver : IDisposable
                 Name = "EveryStage.CastPresent",
             };
             _presentThread.Start();
+        }
+    }
+
+    public void AttachProgram(VideoSurface surface)
+    {
+        lock (_programGate)
+        {
+            _programSurface = surface;
+        }
+    }
+
+    public void DetachProgram()
+    {
+        lock (_programGate)
+        {
+            _programSurface = null;
         }
     }
 
@@ -381,8 +435,18 @@ public sealed class CastReceiver : IDisposable
         // AAC's timestamps landing on AacSamplesPerFrame-sized boundaries instead of arbitrary ones.
         long audioTimelineTicks = RtpVideoClock.ToElapsedTicks(
             _audioTimestampUnwrapper.Unwrap(timestamp), _audioSampleRate);
-        long scheduledPlaybackTicks = _audioClock!.PositionTicks + _audioClock.BufferedDurationTicks;
-        _syncOffsetEstimator.Update(audioTimelineTicks, scheduledPlaybackTicks);
+        if (_audioOutputLost) return; // video-only from here on; packets still count as liveness above
+        _ = _audioClock!.PositionTicks;
+        if (_audioClock.IsFaulted)
+        {
+            // Reading the position is what notices a stopped output (the Faulted event can arrive late).
+            DegradeAudio($"声音输出已断开（{_audioClock.FaultReason}），投屏继续无声显示");
+            return;
+        }
+        // The offset is sampled when this packet's audio actually reaches the playback buffer (EnqueueAudio),
+        // not here: an AAC decoder outputs nothing for its first access units, and seeding the estimator
+        // from a packet that produced no audio started every cast with a skewed offset (audit B-8).
+        _pendingAudioTimelineTicks = audioTimelineTicks;
 
         if (_audioDecoder != null)
         {
@@ -401,9 +465,26 @@ public sealed class CastReceiver : IDisposable
         // than blocking, so a burst of late packets thins itself out instead of building unbounded
         // latency; a dropped/reordered RTP packet here just becomes an audible gap/glitch, the same
         // "no loss recovery" limitation the video side already has and documents.
+        EnqueueAudio(payload);
+    }
+
+    private void OnAacPcmDecoded(byte[] pcm)
+    {
+        // Raised synchronously from within _audioDecoder.SubmitAccessUnit, called above from
+        // OnAudioPayloadReceived — same calling-thread context (the audio RTP receive loop) the
+        // raw-PCM path's direct Enqueue already runs on.
+        EnqueueAudio(pcm);
+    }
+
+    private void EnqueueAudio(byte[] pcm)
+    {
+        if (_audioOutputLost) return;
         try
         {
-            _audioClock!.Enqueue(payload);
+            _syncOffsetEstimator.Update(_pendingAudioTimelineTicks, _audioClock!.PositionTicks + _audioClock.BufferedDurationTicks);
+            byte[] output = PcmDownmix.ToStereo(pcm, _sourceAudioChannels);
+            if (AudioMuted) Array.Clear(output);
+            _audioClock!.Enqueue(output);
             AudioError = null;
             ConsecutiveAudioPlaybackErrors = 0;
         }
@@ -416,26 +497,26 @@ public sealed class CastReceiver : IDisposable
             // decode failures, so it becomes a reportable AudioError instead of a silently dead
             // audio receive loop.
             AudioError = ex.Message;
-            ConsecutiveAudioPlaybackErrors++;
+            CountAudioError(ex.Message);
         }
     }
 
-    private void OnAacPcmDecoded(byte[] pcm)
+    private void CountAudioError(string message)
     {
-        // Raised synchronously from within _audioDecoder.SubmitAccessUnit, called above from
-        // OnAudioPayloadReceived — same calling-thread context (the audio RTP receive loop) the
-        // raw-PCM path's direct Enqueue already runs on.
-        try
-        {
-            _audioClock!.Enqueue(pcm);
-            AudioError = null;
-            ConsecutiveAudioPlaybackErrors = 0;
-        }
-        catch (Exception ex)
-        {
-            AudioError = ex.Message;
-            ConsecutiveAudioPlaybackErrors++;
-        }
+        if (++ConsecutiveAudioPlaybackErrors >= MaxConsecutiveAudioErrors)
+            DegradeAudio($"音频持续出错（{message}），投屏继续无声显示");
+    }
+
+    /// <summary>Gives up audio for the rest of this cast and keeps the video going unpaced. Used to be
+    /// either never noticed (a stopped output reads position 0 and throws nothing — the picture dropped to
+    /// about one frame per second, audit A-24) or a disconnect of the whole cast after ~90 audio errors
+    /// (audit A-16), contradicting the "audio is best effort" rule applied at setup.</summary>
+    private void DegradeAudio(string reason)
+    {
+        if (_audioOutputLost) return;
+        _audioOutputLost = true;
+        AudioError = reason;
+        try { AudioDegraded?.Invoke(reason); } catch (Exception) { }
     }
 
     /// <summary>The H.264 decoder now runs an asynchronous MFT event loop, so a decode failure
@@ -451,7 +532,7 @@ public sealed class CastReceiver : IDisposable
     private void OnAacDecodingFailed(Exception ex)
     {
         AudioError = ex.Message;
-        ConsecutiveAudioPlaybackErrors++;
+        CountAudioError(ex.Message);
     }
 
     private void OnNalUnitReceived(byte[] nalUnit, bool isLastNalOfAccessUnit, uint timestamp)
@@ -476,7 +557,7 @@ public sealed class CastReceiver : IDisposable
                 _videoTimestampUnwrapper.Unwrap(timestamp), RtpVideoClock.ClockRate);
             lock (_decoderLock)
             {
-                _decoder.SubmitAccessUnit(accessUnit, presentationTicks);
+                _decoder?.SubmitAccessUnit(accessUnit, presentationTicks);
             }
             // NOT cleared here any more. On the asynchronous decoder path SubmitAccessUnit only
             // enqueues, so reaching this line proves the access unit was accepted for decoding -
@@ -494,7 +575,7 @@ public sealed class CastReceiver : IDisposable
         }
     }
 
-    private void OnFrameDecoded(ID3D11Texture2D texture, int arraySlice, int width, int height, long presentationTicks)
+    private void OnFrameDecoded(ID3D11Texture2D texture, int arraySlice, int width, int height, long presentationTicks, IMFSample sample)
     {
         // A frame coming out of the decoder is the only real evidence the video pipeline works,
         // so this is where the failure count is cleared. Same thread as OnVideoDecodingFailed
@@ -502,20 +583,23 @@ public sealed class CastReceiver : IDisposable
         LastError = null;
         Interlocked.Exchange(ref _consecutiveVideoDecodeErrors, 0);
 
+        // The decoder surface is macroblock-aligned (1920x1088 for a 1920x1080 desktop): presenting all of
+        // it put the padding rows on the big screen and squeezed the picture (audit C-34). The Caster
+        // encodes at the size it announced in the cast start, so that is the picture.
+        if (Width > 0) width = Math.Min(width, Width);
+        if (Height > 0) height = Math.Min(height, Height);
+        var frame = new PendingFrame(texture, arraySlice, width, height, presentationTicks, sample);
+
         if (!HasAudio)
         {
             // No audio clock to pace against — present immediately, same as before this round.
-            using (texture)
-            {
-                _surface.PresentFrame(texture, arraySlice, width, height, vsync: false);
-            }
-            FramesDecoded++;
+            Present(frame);
             return;
         }
 
-        // Ownership of the texture's COM reference passes into the queue here — RunPresentLoop (or
-        // Dispose, on teardown) is now responsible for disposing it exactly once.
-        _pendingFrames.Enqueue(new PendingFrame(texture, arraySlice, width, height, presentationTicks));
+        // Ownership of the texture's COM reference (and of the sample reserving its decoder slot) passes
+        // into the queue here — RunPresentLoop (or Dispose, on teardown) releases it exactly once.
+        _pendingFrames.Enqueue(frame);
     }
 
     /// <summary>Entry point for <see cref="_presentThread"/> — a raw <see cref="Thread"/>, not a
@@ -562,13 +646,14 @@ public sealed class CastReceiver : IDisposable
                 continue;
             }
 
-            // The estimator is unavailable until the first audio packet arrives — a frame decoded
-            // before that point has no audio position to compare against yet. Presenting it
-            // immediately (rather than dropping it or blocking indefinitely) means a cast with a
-            // slow-starting audio path still shows video right away instead of a black/frozen
-            // screen; sync simply begins once the offset becomes available.
-            if (!_syncOffsetEstimator.TryGetOffset(out long offset))
+            // This loop only runs for casts WITH audio (video-only casts present straight from
+            // OnFrameDecoded and never queue). Within such a cast, the estimator is unavailable only
+            // in the short window before the first decoded audio reaches the playback buffer: frames
+            // decoded then are presented immediately rather than dropped or held, so video shows right
+            // away, and pacing begins once the offset exists (audit C-14).
+            if (_audioOutputLost || !_syncOffsetEstimator.TryGetOffset(out long offset))
             {
+                // Also once audio has been given up (DegradeAudio): nothing left to pace against.
                 Present(frame);
                 continue;
             }
@@ -577,24 +662,26 @@ public sealed class CastReceiver : IDisposable
 
             waitStopwatch.Restart();
             while (!token.IsCancellationRequested
+                   && !_audioOutputLost
                    && _audioClock!.PositionTicks < targetAudioPositionTicks - FrameBudgetTicks
                    && waitStopwatch.Elapsed.Ticks < MaxWaitTicks)
             {
+                if (_audioClock.IsFaulted) DegradeAudio($"声音输出已断开（{_audioClock.FaultReason}），投屏继续无声显示");
                 Thread.Sleep(1);
             }
 
             if (token.IsCancellationRequested)
             {
-                frame.Texture.Dispose();
+                frame.Release();
                 return;
             }
 
-            long behindByTicks = _audioClock!.PositionTicks - targetAudioPositionTicks;
+            long behindByTicks = _audioOutputLost ? 0 : _audioClock!.PositionTicks - targetAudioPositionTicks;
             if (behindByTicks > FrameBudgetTicks)
             {
                 // Fell far enough behind the audio clock that this frame is stale — drop it rather
                 // than present outdated video, same policy VideoContentController already applies.
-                frame.Texture.Dispose();
+                frame.Release();
                 continue;
             }
 
@@ -604,11 +691,24 @@ public sealed class CastReceiver : IDisposable
 
     private void Present(PendingFrame frame)
     {
-        using (frame.Texture)
+        try
         {
-            _surface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: false);
+            lock (_programGate)
+            {
+                _surface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: false);
+                _programSurface?.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: false);
+            }
         }
-        FramesDecoded++;
+        catch (Exception ex)
+        {
+            LastError = ex.Message;
+            PresentLoopFailed = true;
+        }
+        finally
+        {
+            frame.Release();
+        }
+        if (!PresentLoopFailed) FramesDecoded++;
     }
 
     public void Dispose()
@@ -616,16 +716,25 @@ public sealed class CastReceiver : IDisposable
         // Does NOT dispose _surface — shared with VideoContentController, owned by
         // TerminalApplicationContext (see VideoSurface's doc comment).
         _rtpReceiver.Dispose();
-        lock (_decoderLock)
-        {
-            _decoder.FrameDecoded -= OnFrameDecoded;
-            _decoder.DecodingFailed -= OnVideoDecodingFailed;
-            _decoder.Dispose();
-        }
 
+        // Consumer before producer (audit A-17): the present thread draws textures that belong to the
+        // decoder's DXVA allocator, so it must be stopped before the decoder (and with it the allocator
+        // and an MFStartup reference) goes away. Frames the decoder still delivers meanwhile are released
+        // by the already-disposed queue.
         _presentCts?.Cancel();
         _presentThread?.Join();
         _presentCts?.Dispose();
+
+        lock (_decoderLock)
+        {
+            if (_decoder != null)
+            {
+                _decoder.FrameDecoded -= OnFrameDecoded;
+                _decoder.DecodingFailed -= OnVideoDecodingFailed;
+                _decoder.Dispose();
+                _decoder = null;
+            }
+        }
 
         if (_audioRtpReceiver != null) _audioRtpReceiver.PayloadReceived -= OnAudioPayloadReceived;
         _audioRtpReceiver?.Dispose();

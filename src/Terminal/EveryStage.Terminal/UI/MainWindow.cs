@@ -2,6 +2,7 @@ using EveryStage.Discovery;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Devices;
 using EveryStage.Terminal.Display;
+using EveryStage.Terminal.Documents;
 using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
@@ -51,6 +52,7 @@ public sealed class MainWindow : GradientForm
     // Preview channel: always exists, renders into the dock's monitor, independent of the extended
     // display and the cast switch. _playback (above) is the Program channel.
     private readonly PlaybackEngine _preview;
+    private readonly DocumentProgramSync _documentSync;
     private readonly VideoSurface? _previewVideoSurface;
     private readonly ToastStack _toastStack;
     private readonly Label _statusLabel;
@@ -68,6 +70,10 @@ public sealed class MainWindow : GradientForm
     public void ShowPairingRequest(PairingRequest request) => _devicesPanel.ShowPairingRequest(request);
 
     public void ClearPairingRequest(string requestId) => _devicesPanel.ClearPairingRequest(requestId);
+    public Control DeviceCastVideoHost => _previewDock.DeviceVideoHost;
+    public event Action? DeviceTakeRequested;
+    public event Action? DeviceRevertRequested;
+    public event Action<int, int>? DeviceVideoHostResized;
 
     public MainWindow(
         OutputStateMachine stateMachine, PlaybackEngine? playback, FileLibraryStore library,
@@ -190,21 +196,33 @@ public sealed class MainWindow : GradientForm
         _previewDock.AttachProgram(playback);
         _previewDock.TakeRequested += TakePreviewToProgram;
         _previewDock.StopProgramRequested += StopProgramOutput;
+        _previewDock.DeviceTakeRequested += () => DeviceTakeRequested?.Invoke();
+        _previewDock.DeviceRevertRequested += () => DeviceRevertRequested?.Invoke();
+        _previewDock.DeviceVideoHostResized += (w, h) => DeviceVideoHostResized?.Invoke(w, h);
         _previewDock.RemoveFromLibraryRequested += RemoveFailedPreviewFileFromLibrary;
+        // PDF / Word / presentation controls and Preview → Program document sync (实时同步 / 冻结 / 更新大屏).
+        _documentSync = new DocumentProgramSync(_preview, () => _playback);
+        _previewDock.BindDocumentSync(_documentSync);
+        // Closing a Word document or presentation with unsaved edits asks here — never a WPS/Word dialog.
+        OfficeSessionManager.Shared.ConfirmSaveOnClose = session => (bool)Invoke(() =>
+            MessageBox.Show(this, $"“{Path.GetFileName(session.SourcePath)}”有未保存的修改，关闭前是否保存？", "保存文档",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes);
         contentLayout.Controls.Add(_panelHost, 0, 0);
         contentLayout.Controls.Add(_previewDock, 0, 1);
         _contentHost.Controls.Add(contentLayout);
 
         // 预览坞随窗口变高：效果图里「本地预览 / 播控窗口 + 信号源窗口」约占主区一半，预览画面是视觉主体。
         // 原先固定 214px 时，窗口多出来的高度全给了页面，预览画面只剩约 50px；现在预览按内容区高度的
-        // 比例增长（下限 96px、上限 300px），其余交给页面。
-        contentLayout.SizeChanged += (_, _) =>
+        // 比例增长（下限 96px、上限 300px），其余交给页面。文档控制行出现时坞随之加高。
+        void SizePreviewRow()
         {
             int chrome = _previewDock.ChromeHeight + _previewDock.Margin.Vertical;
             int preview = Math.Clamp((int)(contentLayout.ClientSize.Height * 0.44) - chrome, 96, 300);
             float rowHeight = chrome + preview;
             if (contentLayout.RowStyles[1].Height != rowHeight) contentLayout.RowStyles[1].Height = rowHeight;
-        };
+        }
+        contentLayout.SizeChanged += (_, _) => SizePreviewRow();
+        _previewDock.ChromeHeightChanged += SizePreviewRow;
 
         // One shared instance rather than a separate `new FileOperationLogger()` per panel: both
         // panels' loggers ultimately append to the same physical file
@@ -221,6 +239,20 @@ public sealed class MainWindow : GradientForm
         _filesPanel.PlaybackStopRequested += () => _preview.Stop();
         _filesPanel.StopProgramRequested += StopProgramOutput;
         _filesPanel.IsProgramLive = () => _stateMachine.State == OutputState.Active;
+
+        // 侧栏「音频独立播放区」（对齐效果图）：导航下方、标语上方。它是文件页音频播放条的第二个视图，
+        // 在任何页面都能控制同一首背景音乐。侧栏太矮时先去掉三行说明，仍放不下就隐藏。
+        var audioCard = new AudioSidebarCard(_filesPanel.AudioBar) { Bounds = new Rectangle(16, settingsButton.Bottom + 22, 218, 0) };
+        nav.Controls.Add(audioCard);
+        void PlaceAudioCard()
+        {
+            int room = tagline.Top - 12 - audioCard.Top;
+            audioCard.Compact = room < audioCard.FullHeight;
+            audioCard.Height = audioCard.Compact ? audioCard.CompactHeight : audioCard.FullHeight;
+            audioCard.Visible = room >= audioCard.Height;
+        }
+        nav.Layout += (_, _) => PlaceAudioCard();
+        PlaceAudioCard();
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);
         _activitiesPanel = new ActivitiesPanel(
@@ -318,8 +350,9 @@ public sealed class MainWindow : GradientForm
     /// <c>_filesPanel.FilePlayRequested += file => _playback?.RequestPlay(file);</c> above needs no
     /// equivalent fix-up: that lambda closes over the <see cref="_playback"/> FIELD (via the implicit
     /// <c>this</c> capture), so it already reads whatever the field currently holds on each invocation
-    /// — this method updating the field is all that closure needs.</summary>
-    /// <summary>Idempotent, and unsubscribes the previous engine first - the same guard
+    /// — this method updating the field is all that closure needs.
+    ///
+    /// Idempotent, and unsubscribes the previous engine first - the same guard
     /// FilesPanel.AttachPlaybackEngine already had and ActivitiesPanel has now. Program.cs only
     /// reaches this once today (OnDisplaySettingsChanged re-binds only while _overlay is still
     /// null, and _overlay stays non-null once bound), so a second call is currently unreachable;
@@ -340,6 +373,9 @@ public sealed class MainWindow : GradientForm
         _previewDock.AttachProgram(playback);
         UpdateStatusLabel();
     }
+
+    public void UpdateDeviceCast(string? deviceName, bool connected, bool onProgram)
+        => _previewDock.UpdateDeviceCast(deviceName, connected, onProgram);
 
     private void ShowPanel(Control panel)
     {
@@ -416,7 +452,7 @@ public sealed class MainWindow : GradientForm
             return false;
         }
         if (_stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.DeviceCast
-            && MessageBox.Show(this, "扩展屏正在输出设备来投的画面。\n切换为本地内容会结束这次设备投屏，是否继续？", "投到屏幕",
+            && MessageBox.Show(this, "扩展屏正在输出设备来投的画面。\n切换为本地内容后，设备画面将退回设备投屏窗口。是否继续？", "投到屏幕",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
             return false;
         if (!_stateMachine.CastSwitchOn)

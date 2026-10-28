@@ -1,6 +1,7 @@
 using EveryStage.Terminal.ContentEngine;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Display;
+using EveryStage.Terminal.Documents;
 using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.StateMachine;
 
@@ -53,17 +54,12 @@ namespace EveryStage.Terminal.Playback;
 /// <see cref="NextManual"/>/<see cref="PreviousManual"/>/<see cref="DocumentPageInfo"/>, PLANNING.md
 /// §3's PDF "翻页") — DO have real effect here, unlike the properties listed above.
 ///
-/// <see cref="MediaKind.Document"/> now splits into two entirely different renderers depending on
-/// the file extension (see <see cref="IsOfficeDocument"/>): a PDF still goes through
-/// <see cref="_pdfRenderer"/>'s rasterized-bitmap pipeline exactly as before, but a PPT/Word/Excel
-/// file goes through <see cref="WpsDocumentController"/> instead — PLANNING.md §14.1's WPS COM
-/// integration, this repository's single highest-remaining, least-verifiable risk. See that class's
-/// own doc comment for the full design (why the WPS window stays real/visible/separate rather than
-/// rendered into <see cref="_output"/>, and the specific product decisions confirmed with the user
-/// before writing it) and <see cref="PlayOfficeDocument"/>/<see cref="CloseWpsDocumentAndRestoreOverlay"/>
-/// for how it's wired into this class's own lifecycle.
+/// <see cref="MediaKind.Document"/> is played by the document half of this class
+/// (<c>PlaybackEngine.Documents.cs</c>): PDF in the internal continuous / single-page viewer
+/// (<see cref="Documents.PdfDocumentView"/>), Word in a live WPS/Word editor captured onto the output,
+/// presentations as a captured native slide show or as static slides — see that file's doc comment.
 /// </summary>
-public sealed class PlaybackEngine : IDisposable
+public sealed partial class PlaybackEngine : IDisposable
 {
     private readonly OutputStateMachine? _stateMachine; // Program channel only
     private readonly IPlaybackOutput _output;
@@ -78,17 +74,10 @@ public sealed class PlaybackEngine : IDisposable
     private readonly ScenarioStore _scenarioStore;
     private readonly ImageContentRenderer _imageRenderer = new();
     private int _contentLoadVersion;
-    private readonly PdfContentRenderer _pdfRenderer = new();
     private readonly PlaybackLogger _playbackLogger;
     private VideoContentController? _videoController;
     private AudioContentController? _audioController;
     private AudioContentController? _backgroundAudioController;
-
-    // Unlike _videoController/_audioController (lazily created once, reused indefinitely),
-    // constructed fresh per open and torn down per close — see WpsDocumentController's own doc
-    // comment on why each WPS document gets its own Application instance rather than one shared
-    // across unrelated opens. Null whenever no Office document is currently showing.
-    private WpsDocumentController? _wpsController;
 
     // The MediaFile currently (or most recently) handed to _backgroundAudioController — distinct
     // from _currentFile, which a background-audio file never becomes (see class doc comment).
@@ -97,6 +86,9 @@ public sealed class PlaybackEngine : IDisposable
     // stopped", the same staleness-guard pattern _currentFile itself already uses throughout this
     // class (e.g. OnImageOrDocumentFailed's own ReferenceEquals check).
     private MediaFile? _backgroundAudioFile;
+    private DateTime _backgroundAudioStartedAt;
+    // A looping background track whose pass was shorter than this is treated as broken (audit A-12).
+    private static readonly TimeSpan MinBackgroundLoopPass = TimeSpan.FromSeconds(1);
 
     private Activity? _currentActivity;
     private int _currentFileIndex = -1;
@@ -179,29 +171,16 @@ public sealed class PlaybackEngine : IDisposable
     public bool IsPaused { get; private set; }
 
     /// <summary>
-    /// A static frame for the floating preview window to mirror (PLANNING.md §8.3's "缩略画面预览").
-    /// Only available for image/PDF, whose current frame already exists as an in-memory
-    /// <see cref="System.Drawing.Bitmap"/> — for video this returns null rather than a stale or
-    /// fake thumbnail, since producing one for real would mean a GPU-downsampled copy out of the
-    /// zero-copy pipeline, which doesn't exist yet (see this project's README). Also null for an
-    /// Office document (see <see cref="IsOfficeDocument"/>) — <see cref="_pdfRenderer"/> was never
-    /// given that file at all (see <see cref="PlayFile"/>'s Document-kind branch), so its
-    /// <c>CurrentFrame</c> would otherwise be null or (worse) a stale frame left over from whatever
-    /// PDF played before it; there is nothing to preview anyway since the real content is showing in
-    /// WPS's own separate window, not anything this process rendered.
+    /// A static frame for the floating preview window to mirror (PLANNING.md §8.3's "缩略画面预览"):
+    /// the image, the PDF page on screen, or the latest captured editor / slide-show frame. Null for
+    /// video (no CPU copy of the zero-copy pipeline exists). Borrowed: copy it before the next UI tick.
     /// </summary>
     public System.Drawing.Bitmap? CurrentThumbnail => _currentFile?.Kind switch
     {
         MediaKind.Image => _imageRenderer.CurrentFrame,
-        MediaKind.Document when !IsOfficeDocument(_currentFile!) => _pdfRenderer.CurrentFrame,
+        MediaKind.Document => _pdfView?.CurrentPageBitmap ?? _officeFrame?.Bitmap ?? _audioVisualFrame,
         _ => null,
     };
-
-    /// <summary>Extension-based check shared by <see cref="CurrentThumbnail"/>/
-    /// <see cref="DocumentPageInfo"/>/<see cref="TryTurnDocumentPage"/>/<see cref="PlayFile"/> — see
-    /// <see cref="WpsDocumentController.IsOfficeDocument"/>'s own doc comment for why
-    /// <see cref="MediaKind.Document"/> alone isn't enough to tell a PDF from a PPT/Word/Excel file.</summary>
-    private static bool IsOfficeDocument(MediaFile file) => WpsDocumentController.IsOfficeDocument(file.SourcePath);
 
     // ───────────── Channel & shared state model (Preview / Program) ─────────────
 
@@ -278,11 +257,14 @@ public sealed class PlaybackEngine : IDisposable
     public string? CurrentVideoCodec => _currentFile?.Kind == MediaKind.Video ? _videoController?.VideoCodec : null;
     public bool CurrentVideoHasAudio => _currentFile?.Kind == MediaKind.Video && (_videoController?.HasAudio ?? false);
 
-    /// <summary>Short note for the Preview heading: "仅显示首帧/首页" (animated GIF / multi-page TIFF) or the WPS hint for an Office document previewed by its cover; else null.</summary>
+    /// <summary>Short note for the Preview heading: "仅显示首帧/首页" (animated GIF / multi-page TIFF), why a
+    /// video plays without sound, or the document's state (static-slide limits, read-only, editor dialog,
+    /// window disconnected…); else null.</summary>
     public string? CurrentContentNote => _currentFile switch
     {
         { Kind: MediaKind.Image } => _imageRenderer.FirstFrameOnlyNote,
-        { Kind: MediaKind.Document } f when IsOfficeDocument(f) && !_output.CanHostExternalDocumentWindow => "投到屏幕后在 WPS 中打开编辑",
+        { Kind: MediaKind.Video } => JoinNotes(_videoController?.AudioNote, _videoController?.PerformanceNote),
+        { Kind: MediaKind.Document } => Document?.Notice,
         _ => null,
     };
 
@@ -290,29 +272,48 @@ public sealed class PlaybackEngine : IDisposable
     public (long Presented, long Dropped) VideoFrameStats =>
         _videoController == null ? (0, 0) : (_videoController.FramesPresented, _videoController.FramesDropped);
 
-    /// <summary>Jumps within the current audio/video file; keeps the paused/playing state.</summary>
+    private static string? JoinNotes(string? first, string? second) =>
+        first == null ? second : second == null ? first : first + "；" + second;
+
+    /// <summary>Jumps within the current audio/video file; keeps the paused/playing state. A failure to
+    /// restart after the jump (e.g. the audio output vanished meanwhile) ends in an error card, never in
+    /// an exception escaping to the UI handler that asked for the seek (audit B-21).</summary>
     public bool SeekTo(TimeSpan position)
     {
         if (!CanSeek || _currentFile == null) return false;
         IsCompleted = false;
-        return _currentFile.Kind == MediaKind.Video
-            ? _videoController?.TrySeekTo(position) ?? false
-            : _audioController?.TrySeekTo(position) ?? false;
+        var file = _currentFile;
+        try
+        {
+            return file.Kind == MediaKind.Video
+                ? _videoController?.TrySeekTo(position) ?? false
+                : _audioController?.TrySeekTo(position) ?? false;
+        }
+        catch (Exception ex)
+        {
+            Fail(file, ex);
+            return false;
+        }
     }
 
     public bool SeekRelative(TimeSpan delta) => SeekTo(Position + delta);
 
-    /// <summary>What Take needs to continue this channel's content on the other channel.</summary>
-    public readonly record struct Snapshot(MediaFile File, Activity? Activity, int FileIndex, TimeSpan Position, bool Paused);
+    /// <summary>What Take needs to continue this channel's content on the other channel: for documents
+    /// also the PDF view position (page + offset + zoom + mode) and the slide.</summary>
+    public readonly record struct Snapshot(MediaFile File, Activity? Activity, int FileIndex, TimeSpan Position, bool Paused,
+        PdfViewportState? PdfState = null, int? Slide = null);
 
     public Snapshot? CaptureSnapshot() =>
-        _currentFile == null ? null : new Snapshot(_currentFile, _currentActivity, _currentFileIndex, Position, IsPaused);
+        _currentFile == null ? null : new Snapshot(_currentFile, _currentActivity, _currentFileIndex, Position, IsPaused,
+            _pdfView?.State, _officeSession is SlideShowSession show ? BrowsedSlide : null);
 
     /// <summary>Starts <paramref name="snapshot"/>'s content on this channel at its position (Take).
     /// Returns false if this channel refused it (Program with output disabled).</summary>
     public bool RequestPlay(Snapshot snapshot, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
     {
         _pendingStartPosition = snapshot.Position;
+        _pendingPdfState = snapshot.PdfState;
+        _pendingSlide = snapshot.Slide;
         try
         {
             if (snapshot.Activity != null && snapshot.FileIndex >= 0 && snapshot.FileIndex < snapshot.Activity.Files.Count
@@ -324,6 +325,8 @@ public sealed class PlaybackEngine : IDisposable
         finally
         {
             _pendingStartPosition = TimeSpan.Zero;
+            _pendingPdfState = null;
+            _pendingSlide = null;
         }
         return ReferenceEquals(_currentFile, snapshot.File);
     }
@@ -348,11 +351,12 @@ public sealed class PlaybackEngine : IDisposable
         _audioController?.Stop();
         StopBackgroundAudio();
         StopWaveformTimer();
-        CloseWpsDocumentAndRestoreOverlay();
         _output.ShowImageSurface();
         _output.ContentSurface.SetFrame(null);
+        ReleaseDocumentNow();
         LastError = null;
         SetState(PlaybackChannelState.Idle);
+        RaiseDocumentChanged();
     }
 
     private void SetState(PlaybackChannelState state)
@@ -378,6 +382,7 @@ public sealed class PlaybackEngine : IDisposable
             $"[{Channel}] stage={error.Stage} ext={error.Extension}{(codecs.Length > 0 ? " codec=" + codecs : "")}: {ex.Message}");
         _output.ContentSurface.SetFrame(null);
         _output.ShowImageSurface();
+        ReleaseDocumentNow();
         SetState(PlaybackChannelState.Failed);
         RaisePlaybackAbnormallyInterrupted(file, ex.Message);
         // Program is unattended: keep the show moving. Preview has an operator looking at the error card
@@ -485,7 +490,14 @@ public sealed class PlaybackEngine : IDisposable
         if (_audioController == null) return; // nothing has ever played — no position to seek from.
 
         var target = _audioController.CurrentPosition + delta;
-        if (_audioController.TrySeekTo(target) && IsPaused) _audioController.Pause();
+        try
+        {
+            if (_audioController.TrySeekTo(target) && IsPaused) _audioController.Pause();
+        }
+        catch (Exception ex)
+        {
+            Fail(_currentFile, ex); // never escape to the play bar's click handler (audit B-21)
+        }
     }
 
     /// <summary>"点文件" from within an activity's file list — establishes the auto-advance/manual-
@@ -540,7 +552,7 @@ public sealed class PlaybackEngine : IDisposable
     /// context (and no further page to turn to).</summary>
     public bool NextManual()
     {
-        if (TryTurnDocumentPageAsync(1)) return true;
+        if (TryStepDocument(1)) return true;
         return TryAdvance(1, PlaybackTrigger.ManualSkip);
     }
 
@@ -549,52 +561,14 @@ public sealed class PlaybackEngine : IDisposable
     /// page to turn back to).</summary>
     public bool PreviousManual()
     {
-        if (TryTurnDocumentPageAsync(-1)) return true;
+        if (TryStepDocument(-1)) return true;
         return TryAdvance(-1, PlaybackTrigger.ManualSkip);
     }
 
-    /// <summary>Starts a background PDF page turn before considering playlist navigation.
-    /// Repeated clicks while rendering are handled without skipping the document. Office files
-    /// retain their external WPS navigation. Completion is accepted only for the same playback generation.</summary>
-    private bool TryTurnDocumentPageAsync(int direction)
-    {
-        if (_currentFile?.Kind != MediaKind.Document || IsOfficeDocument(_currentFile)) return false;
-        if (_pdfRenderer.IsTurningPage) return true;
-        int target = _pdfRenderer.CurrentPageIndex + direction;
-        if (target < 0 || target >= _pdfRenderer.PageCount) return false;
-        _ = TurnDocumentPageAsync(direction, _currentFile, _contentLoadVersion);
-        return true;
-    }
-
-    private async Task TurnDocumentPageAsync(int direction, MediaFile file, int version)
-    {
-        try
-        {
-            bool turned = await _pdfRenderer.TurnPageAsync(direction);
-            if (turned && version == _contentLoadVersion && ReferenceEquals(file, _currentFile))
-                _output.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
-        }
-        catch (Exception ex)
-        {
-            if (version == _contentLoadVersion && ReferenceEquals(file, _currentFile))
-                OnImageOrDocumentFailed(file, ex);
-        }
-    }
-
-    /// <summary>Null unless the current file is a Document with more than one page — the floating
-    /// preview window uses this to show a "第X页/共Y页" indicator only when page-turning is actually
-    /// possible right now, since <see cref="NextManual"/>/<see cref="PreviousManual"/> silently
-    /// changed meaning for this case (page-turn instead of playlist-advance) and a user watching the
-    /// same two buttons do something different without any visible indicator would be confusing.
-    /// 1-based for display (<c>CurrentPage</c> starting at 1, not <see cref="IContentRenderer"/>'s
-    /// own 0-based <c>CurrentPageIndex</c>). Also null for an Office document — same reasoning as
-    /// <see cref="TryTurnDocumentPageAsync"/>'s own Office check: <see cref="_pdfRenderer"/>'s
-    /// <c>PageCount</c> would otherwise reflect whatever unrelated PDF it last loaded, not this
-    /// file.</summary>
+    /// <summary>Null unless the current document has more than one page / slide — the floating
+    /// preview window shows "第X页/共Y页" only when 上一项/下一项 turn pages. 1-based.</summary>
     public (int CurrentPage, int PageCount)? DocumentPageInfo =>
-        _currentFile?.Kind == MediaKind.Document && !IsOfficeDocument(_currentFile!) && _pdfRenderer.PageCount > 1
-            ? (_pdfRenderer.CurrentPageIndex + 1, _pdfRenderer.PageCount)
-            : null;
+        Document is { PageCount: > 1 } doc ? (Math.Max(1, doc.Page), doc.PageCount) : null;
 
     /// <summary>Walks <see cref="_currentActivity"/>'s file list by <paramref name="delta"/> at a
     /// time, transparently passing over any background-audio file it lands on — see class doc
@@ -691,8 +665,12 @@ public sealed class PlaybackEngine : IDisposable
     /// there's no default to fall back to beyond <see cref="PlayMode.SequentialAuto"/> itself — which
     /// is moot anyway since <see cref="TryAdvance"/> already refuses to advance with
     /// <see cref="_currentActivity"/> null, regardless of play mode.</summary>
-    private PlayMode EffectivePlayMode(MediaFile file) =>
-        file.PlayModeOverride ?? _currentActivity?.DefaultPlayMode ?? PlayMode.SequentialAuto;
+    private PlayMode EffectivePlayMode(MediaFile file)
+    {
+        var mode = file.PlayModeOverride ?? _currentActivity?.DefaultPlayMode ?? PlayMode.SequentialAuto;
+        // A number outside the enum (damaged or hand-edited store) behaves as the default (audit C-5).
+        return Enum.IsDefined(mode) ? mode : PlayMode.SequentialAuto;
+    }
 
     private void PlayFile(MediaFile file, PlaybackTrigger trigger)
     {
@@ -708,20 +686,22 @@ public sealed class PlaybackEngine : IDisposable
         // no-op when nothing was playing (AudioContentController.Stop() guards every field with ?.).
         _audioController?.Stop();
         StopWaveformTimer();
-        // Same "always tear down whatever was previously showing first" reasoning as
-        // _audioController?.Stop() right above — an open Office document is a real, separate WPS
-        // window sitting on the extended monitor (see WpsDocumentController's class doc comment), so
-        // switching to ANY new file must close it and hand the monitor back to _output, exactly like
-        // leaving standalone audio always stops it regardless of what plays next.
-        CloseWpsDocumentAndRestoreOverlay();
 
         // Only the Program channel is gated: the cast switch controls what reaches the extended display,
         // never whether the operator can preview ("投屏开关只控制 Program 输出").
-        if (Channel == PlaybackChannel.Program && !_stateMachine!.RequestLocalFilePlayback())
+        if (Channel == PlaybackChannel.Program
+            && !(trigger == PlaybackTrigger.DeviceRestore
+                ? _stateMachine!.RestoreLocalFilePlayback()
+                : _stateMachine!.RequestLocalFilePlayback()))
         {
             PlaybackDeclinedByCastSwitch?.Invoke(file);
             return;
         }
+
+        // The previous document (PDF view, editor / slide-show session, captured frame) keeps drawing
+        // until the next picture is ready; a next document releases it when its first frame is on screen,
+        // anything else releases it right away (below).
+        RetireDocument();
 
         // Program only: a device cast (if any) is about to be preempted by local content — see this
         // event's doc comment and VideoSurface's for why this has to happen before ShowImageSurface/
@@ -735,6 +715,7 @@ public sealed class PlaybackEngine : IDisposable
         TimeSpan startAt = _pendingStartPosition;
         _playbackLogger.LogPlaybackStarted(file.Id, file.SourcePath, trigger);
         SetState(PlaybackChannelState.Loading);
+        if (file.Kind != MediaKind.Document) CompleteDocumentRetirement();
 
         switch (file.Kind)
         {
@@ -746,18 +727,7 @@ public sealed class PlaybackEngine : IDisposable
 
             case MediaKind.Document:
                 _videoController?.Stop();
-                if (IsOfficeDocument(file))
-                {
-                    // Only the extended display can hand its monitor to WPS's real window; Preview
-                    // shows the document's embedded cover instead.
-                    if (_output.CanHostExternalDocumentWindow) PlayOfficeDocument(file);
-                    else ShowOfficeDocumentPreview(file);
-                }
-                else
-                {
-                    _output.ShowImageSurface();
-                    _ = PlayDocumentAsync(file);
-                }
+                PlayDocument(file);
                 break;
 
             case MediaKind.Video:
@@ -774,11 +744,16 @@ public sealed class PlaybackEngine : IDisposable
                     VideoController.PlaybackFailed += OnVideoFailed;
                     VideoController.FirstFramePresented -= OnVideoFirstFrame;
                     VideoController.FirstFramePresented += OnVideoFirstFrame;
+                    VideoController.AudioOutputLost -= OnVideoAudioOutputLost;
+                    VideoController.AudioOutputLost += OnVideoAudioOutputLost;
+                    VideoController.DecodeTooSlow -= OnVideoDecodeTooSlow;
+                    VideoController.DecodeTooSlow += OnVideoDecodeTooSlow;
                     VideoController.Volume = _pendingAudioVolume;
                     VideoController.Muted = _muted;
                     // Local media keeps its aspect ratio (Fit/Fill); device cast mirroring on the shared
                     // Program surface sets Stretch when it starts.
                     _videoSurface!.ScaleMode = _videoScaleMode;
+                    _videoSurface.ColorMatrix = EveryStage.Rendering.VideoColorMatrix.Auto; // a cast may have left BT.601
                     // Opening the file happens synchronously here (missing file, unsupported codec);
                     // OnVideoFailed only covers failures after playback has started.
                     VideoController.Play(file.SourcePath, FadeDurationFor(file), startAt);
@@ -819,66 +794,6 @@ public sealed class PlaybackEngine : IDisposable
         }
     }
 
-    private async Task PlayDocumentAsync(MediaFile file)
-    {
-        int version = _contentLoadVersion;
-        try
-        {
-            _output.ContentSurface.SetFrame(null);
-            _pdfRenderer.SetTargetSize(PdfTargetSize());
-            await _pdfRenderer.LoadAsync(file.SourcePath);
-            if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile)) return;
-            _output.ContentSurface.SetFrame(_pdfRenderer.CurrentFrame);
-            SetState(IsPaused ? PlaybackChannelState.Paused : PlaybackChannelState.Playing);
-            ArmStayDurationTimer(file);
-        }
-        catch (Exception ex)
-        {
-            if (version == _contentLoadVersion) OnImageOrDocumentFailed(file, ex);
-        }
-    }
-
-    /// <summary>The Office half of <see cref="MediaKind.Document"/> — see
-    /// <see cref="WpsDocumentController"/>'s own class doc comment for the whole feature's design and
-    /// risk disclosure. Deliberately plain/synchronous, NOT <c>async Task</c> like
-    /// <see cref="PlayImageAsync"/>/<see cref="PlayDocumentAsync"/> right above: those two are only
-    /// "async" in signature (their underlying <c>LoadAsync</c> calls happen to complete synchronously
-    /// today per those renderers' own doc comments) — <see cref="WpsDocumentController.Open"/> is
-    /// GENUINELY synchronous/blocking (a real, possibly slow COM automation call, launching an entire
-    /// external application), and there is no cheap way to move it off the UI thread without
-    /// introducing cross-thread marshaling this class has never needed before (every other renderer
-    /// here already runs its real work on the UI thread — see class doc comment). Accepted, disclosed
-    /// trade-off: opening (or closing, see <see cref="WpsDocumentController.Close"/>'s own doc comment)
-    /// an Office document can visibly freeze the whole EveryStage UI for as long as WPS takes, or
-    /// indefinitely if WPS is stuck on a dialog — not a new risk this method introduces, the exact
-    /// same one <c>Poc/WpsComInteropSpike</c> already flagged for its own synchronous probe.
-    ///
-    /// Unlike <see cref="PlayImageAsync"/>/<see cref="PlayDocumentAsync"/>, does not call
-    /// <see cref="ArmStayDurationTimer(MediaFile)"/> — deliberate: an auto-advance timer silently
-    /// switching away mid-edit (which would call <see cref="CloseWpsDocumentAndRestoreOverlay"/>,
-    /// itself possibly blocking on WPS's own unsaved-changes prompt — see
-    /// <see cref="WpsDocumentController.Close"/>) is a worse outcome than simply never auto-advancing
-    /// away from an open Office document at all. It stays open until the operator navigates away
-    /// manually (or completion-driven auto-advance, if PLANNING.md ever wants that for this kind, is
-    /// deliberately not built here).</summary>
-    private void PlayOfficeDocument(MediaFile file)
-    {
-        try
-        {
-            _output.YieldToExternalWindow(); // cede the extended monitor to WPS's own real window — see WpsDocumentController's class doc comment.
-            _wpsController = new WpsDocumentController();
-            _wpsController.Open(file.SourcePath, _output.ExternalDocumentBounds);
-            SetState(PlaybackChannelState.Playing);
-        }
-        catch (Exception ex)
-        {
-            _wpsController?.Close();
-            _wpsController = null;
-            _output.ReclaimFromExternalWindow(); // the open attempt failed — nothing is covering the monitor, so don't leave it hidden.
-            OnImageOrDocumentFailed(file, ex);
-        }
-    }
-
     /// <summary>Shared by <see cref="PlayImageAsync"/>/<see cref="PlayDocumentAsync"/> — until this
     /// existed, a <see cref="ImageContentRenderer.LoadAsync"/>/<see cref="PdfContentRenderer.LoadAsync"/>
     /// failure (the file was deleted/moved/corrupted since being added to an activity — a real,
@@ -907,9 +822,7 @@ public sealed class PlaybackEngine : IDisposable
     /// synchronous <c>AudioContentController.Play</c> construction failure — see that method's doc
     /// comment for why this wasn't worth a rename for one more caller whose actual needs (clear
     /// <c>ContentSurface</c>, log, raise <see cref="PlaybackAbnormallyInterrupted"/>) are identical.
-    /// Now also called from <see cref="PlayOfficeDocument"/>'s own catch — clearing
-    /// <c>ContentSurface</c> there is a harmless no-op (an Office document never draws into it in the
-    /// first place), so nothing about this method needed changing for that third caller either.</summary>
+    /// Also the failure path of every document pipeline (PDF, conversion, WPS/Office session).</summary>
     private void OnImageOrDocumentFailed(MediaFile file, Exception ex)
     {
         if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
@@ -1019,6 +932,7 @@ public sealed class PlaybackEngine : IDisposable
     private void PlayBackgroundAudio(MediaFile file)
     {
         _backgroundAudioFile = file;
+        _backgroundAudioStartedAt = DateTime.UtcNow;
         // -= before += every time: same "avoid stacking subscriptions across plays" reasoning as
         // every other controller this class subscribes to.
         BackgroundAudioController.PlaybackCompleted -= OnBackgroundAudioCompleted;
@@ -1063,7 +977,21 @@ public sealed class PlaybackEngine : IDisposable
             if (!ReferenceEquals(file, _backgroundAudioFile)) return; // stale — replaced/stopped since.
             _playbackLogger.LogPlaybackEnded(file.Id, file.OnCompletion.ToString());
             if (file.OnCompletion == CompletionAction.Loop)
+            {
+                // A pass that ended almost at once (empty or header-only file) must not restart
+                // immediately: that was a tight loop of decoder opens, threads and log lines saturating
+                // the UI thread of an unattended device (audit A-12). Same guard idea as the main
+                // sequence's ArmFailureAdvanceTimer: stop, and say why.
+                if (DateTime.UtcNow - _backgroundAudioStartedAt < MinBackgroundLoopPass)
+                {
+                    _backgroundAudioFile = null;
+                    const string reason = "背景音频播放后立即结束（文件可能为空或已损坏），已停止循环";
+                    _playbackLogger.LogAbnormalInterruption(file.Id, reason);
+                    RaisePlaybackAbnormallyInterrupted(file, reason);
+                    return;
+                }
                 PlayBackgroundAudio(file);
+            }
             else
                 _backgroundAudioFile = null;
         }));
@@ -1258,6 +1186,11 @@ public sealed class PlaybackEngine : IDisposable
 
     private void ArmStayDurationTimer(MediaFile file, TimeSpan duration, bool isFreshStart)
     {
+        // Replace, never orphan, a timer already running (audit C-7) — the failure-advance timer above
+        // already does this; an orphaned timer would still fire HandleCompletion for this file.
+        _stayDurationTimer?.Stop();
+        _stayDurationTimer?.Dispose();
+        _stayDurationTimer = null;
         if (duration <= TimeSpan.Zero)
         {
             if (isFreshStart) return; // no stay duration configured at all — nothing to arm.
@@ -1283,10 +1216,11 @@ public sealed class PlaybackEngine : IDisposable
     /// button that silently does nothing.</summary>
     public bool CanPause => _currentFile != null && !IsCompleted
         && State is PlaybackChannelState.Playing or PlaybackChannelState.Paused
-        && (_currentFile.Kind is MediaKind.Audio or MediaKind.Video || _stayDurationTimer != null || IsPaused);
+        && (_currentFile.Kind is MediaKind.Audio or MediaKind.Video || _stayDurationTimer != null || _documentAutoTimer != null || IsPaused);
 
     /// <summary>Pauses in place: audio/video stop their clock; images/PDF pages freeze the stay-duration
-    /// auto-advance timer.</summary>
+    /// auto-advance timer. A background-audio track keeps playing — it is an overlay independent of the
+    /// foreground item (see the class doc comment; audit B-11 asked for this choice to be stated here).</summary>
     public void Pause()
     {
         if (IsPaused || _currentFile == null) return;
@@ -1305,6 +1239,14 @@ public sealed class PlaybackEngine : IDisposable
         if (_currentFile.Kind == MediaKind.Video)
         {
             _videoController?.Pause();
+            IsPaused = true;
+            SetState(PlaybackChannelState.Paused);
+            return;
+        }
+
+        // Documents with automatic progress (scrolling, page interval, slide steps) pause that.
+        if (_currentFile.Kind == MediaKind.Document && PauseDocumentAuto())
+        {
             IsPaused = true;
             SetState(PlaybackChannelState.Paused);
             return;
@@ -1349,6 +1291,8 @@ public sealed class PlaybackEngine : IDisposable
             return;
         }
 
+        if (_currentFile.Kind == MediaKind.Document && ResumeDocumentAuto()) return;
+
         _stayDurationTimer?.Dispose();
         _stayDurationTimer = null;
         ArmStayDurationTimer(_currentFile, _remainingOnPause, isFreshStart: false);
@@ -1363,18 +1307,6 @@ public sealed class PlaybackEngine : IDisposable
         // Raised from VideoContentController's background playback thread — marshal to the UI
         // thread before touching timers/overlay state.
         _output.Post(new Action(() => HandleCompletion(file)));
-    }
-
-    /// <summary>Render pages at the size they will actually be drawn: the full width when the surface fills
-    /// its width (Preview — otherwise a page fitted to a short, wide area gets upscaled and blurry), the
-    /// whole surface otherwise (extended display).</summary>
-    private System.Drawing.Size PdfTargetSize()
-    {
-        var size = _output.ContentSurface.ClientSize;
-        int width = Math.Max(1, size.Width);
-        return _output.ContentSurface.ScaleMode == EveryStage.Rendering.VideoScaleMode.FitWidth
-            ? new System.Drawing.Size(width, width * 8) // height effectively unbounded: FitPage scales by width
-            : new System.Drawing.Size(width, Math.Max(1, size.Height));
     }
 
     private void OnVideoFirstFrame()
@@ -1412,6 +1344,23 @@ public sealed class PlaybackEngine : IDisposable
         {
             Fail(file, ex);
         }
+    }
+
+    /// <summary>The video keeps playing without sound (output device missing or removed mid-play). Logged
+    /// once per occurrence; the Preview heading shows the reason through <see cref="CurrentContentNote"/>.
+    /// Raised from the UI thread (open) or the playback thread (loss).</summary>
+    private void OnVideoAudioOutputLost(string reason)
+    {
+        var file = _currentFile;
+        if (file != null) _playbackLogger.LogAudioOutputLost(file.Id, reason);
+    }
+
+    /// <summary>This machine decodes the current video slower than real time (frames dropped, picture
+    /// still updated every 250 ms at least). Logged once per file; shown via <see cref="CurrentContentNote"/>.</summary>
+    private void OnVideoDecodeTooSlow(string note)
+    {
+        var file = _currentFile;
+        if (file != null) _playbackLogger.LogDecodeTooSlow(file.Id, note);
     }
 
     private void OnVideoFailed(Exception ex)
@@ -1490,6 +1439,12 @@ public sealed class PlaybackEngine : IDisposable
                 break;
             case CompletionAction.HoldOnLastFrame:
                 break; // leave the current frame/video's last frame displayed.
+            default:
+                // A value outside the enum (hand-edited or damaged store: the JSON converter accepts any
+                // number) used to match nothing and stop the activity with no record (audit C-5).
+                // Treated as HoldOnLastFrame, and logged.
+                _playbackLogger.LogAbnormalInterruption(file.Id, $"未知的完成动作 {(int)file.OnCompletion}，按“停留在最后画面”处理");
+                break;
         }
 
         // Nothing further started (no next item / hold): the file is finished and held on screen.
@@ -1506,14 +1461,13 @@ public sealed class PlaybackEngine : IDisposable
     /// presenting through the shared <see cref="VideoSurface"/> — called by
     /// <c>TerminalApplicationContext</c> before constructing a <c>CastReceiver</c>. Unlike
     /// <see cref="OnOutputStateChanged"/>'s Idle handling, this deliberately does NOT go through
-    /// <c>OutputStateMachine</c> at all: PLANNING.md treats an incoming device cast as continuing to
-    /// output (§9.1 "设备投屏请求不受此开关影响"), not a transition back to Idle, so the state
-    /// machine's state must stay Active — only the video surface's owner is changing. Safe to call
+    /// <c>OutputStateMachine</c> at all: the device-cast controller has already accepted this request,
+    /// so the state machine's state must stay Active — only the video surface's owner is changing.
+    /// Safe to call
     /// when nothing is currently playing. Also stops the background-audio overlay track, if one is
     /// playing — PLANNING.md's "叠加在其他视觉内容之上播放" only makes sense while local content is
     /// what's actually on the extended display; once a device cast owns that display, there is
-    /// nothing left for it to overlay. Also closes any open Office document (see
-    /// <see cref="CloseWpsDocumentAndRestoreOverlay"/>) for the same reason, and — unlike
+    /// nothing left for it to overlay. Also releases the current document for the same reason, and — unlike
     /// <see cref="OnOutputStateChanged"/>'s Idle branch below — explicitly needs the overlay-restoring
     /// variant: <c>OutputStateMachine.AcceptDeviceCastRequest</c> is a no-op re-affirmation when the
     /// state is already Active (which it is here, or an Office document couldn't have been open in
@@ -1551,12 +1505,18 @@ public sealed class PlaybackEngine : IDisposable
         _audioController?.Stop();
         StopBackgroundAudio();
         StopWaveformTimer();
-        CloseWpsDocumentAndRestoreOverlay();
+        ReleaseDocumentNow();
+        RaiseDocumentChanged();
     }
 
     private void OnOutputStateChanged(OutputState state)
     {
         if (state != OutputState.Idle) return;
+        // Same cleanup as StopForDeviceCast (audit A-10): bump the load version so in-flight loads
+        // cannot draw afterwards, drop the frame the surface holds (its owner may dispose it), and
+        // dispose the stay timer rather than only stopping it.
+        ++_contentLoadVersion;
+        _output.ContentSurface.SetFrame(null);
         IsPaused = false;
         IsCompleted = false;
         SetState(PlaybackChannelState.Idle);
@@ -1573,16 +1533,15 @@ public sealed class PlaybackEngine : IDisposable
             _currentFile = null;
         }
         _stayDurationTimer?.Stop();
+        _stayDurationTimer?.Dispose();
+        _stayDurationTimer = null;
         _videoController?.Stop();
         _audioController?.Stop();
         StopBackgroundAudio();
         StopWaveformTimer();
-        // CloseWpsDocumentIfOpen, NOT CloseWpsDocumentAndRestoreOverlay — this branch runs as part of
-        // "断" going Idle, whose whole point is hiding everything; TerminalApplicationContext's own
-        // separate StateChanged subscriber calls OverlayWindow.HideOverlay() for exactly this
-        // transition, and re-showing it from here would fight that (order between the two subscribers
-        // is not this class's to rely on either way — see this method's own doc comment history).
-        CloseWpsDocumentIfOpen();
+        // Program is off air: release its document (a slide show still used by Preview stays open there).
+        ReleaseDocumentNow();
+        RaiseDocumentChanged();
     }
 
     private void StopBackgroundAudio()
@@ -1593,43 +1552,6 @@ public sealed class PlaybackEngine : IDisposable
         _backgroundAudioFile = null;
     }
 
-    /// <summary>Pure cleanup, no <see cref="OverlayWindow"/> interaction — see
-    /// <see cref="CloseWpsDocumentAndRestoreOverlay"/>'s own doc comment for when each of this pair is
-    /// the right one to call. No-op when nothing is open.</summary>
-    private void CloseWpsDocumentIfOpen()
-    {
-        if (_wpsController is not { IsOpen: true }) return;
-        _wpsController.Close();
-        _wpsController = null;
-    }
-
-    /// <summary><see cref="PlayFile"/>'s own "always tear down whatever was previously showing before
-    /// switching to something new" step (mirrors <c>_audioController?.Stop()</c> right next to its
-    /// call site) and <see cref="StopForDeviceCast"/>'s equivalent — both cases where local playback
-    /// keeps going (just as something else), so the <see cref="OverlayWindow"/> that an open Office
-    /// document had hidden (see <see cref="PlayOfficeDocument"/>) needs to come back for whatever
-    /// plays next. Deliberately NOT used by <see cref="OnOutputStateChanged"/>'s Idle branch or
-    /// <see cref="Dispose"/> — those two want the overlay left however their own, separate teardown
-    /// path leaves it (hidden, or simply going away), never re-shown by this class — see
-    /// <see cref="CloseWpsDocumentIfOpen"/> for that half.</summary>
-    private void CloseWpsDocumentAndRestoreOverlay()
-    {
-        if (_wpsController is not { IsOpen: true }) return;
-        _wpsController.Close();
-        _wpsController = null;
-        _output.ReclaimFromExternalWindow();
-    }
-
-    /// <summary>Floating-preview-window "保存" button — PLANNING.md §14.1 names 保存 as one of the
-    /// four things "文档可编辑" requires direct WPS object-model control for (打开/翻页/编辑/保存);
-    /// 打开 happens in <see cref="PlayOfficeDocument"/>, 翻页/编辑 were confirmed with the user to be
-    /// left entirely to WPS's own real, visible window (see <see cref="WpsDocumentController"/>'s
-    /// class doc comment), leaving this as the one piece of the four still worth wiring through
-    /// EveryStage's own UI. An operator can always use WPS's own Ctrl+S directly too — this is a
-    /// convenience, not the only way to save. False (never throws) whenever nothing is open, or on
-    /// any <see cref="WpsDocumentController.TrySave"/> failure — see that method's own doc comment for
-    /// why this can fail silently against a real WPS install this has never been tested against.</summary>
-    public bool TrySaveCurrentOfficeDocument() => _wpsController?.TrySave() ?? false;
 
     public void Dispose()
     {
@@ -1639,10 +1561,9 @@ public sealed class PlaybackEngine : IDisposable
         StopWaveformTimer();
         _audioVisualFrame?.Dispose();
         _imageRenderer.Dispose();
-        _pdfRenderer.Dispose();
         _videoController?.Dispose();
         _audioController?.Dispose();
         _backgroundAudioController?.Dispose();
-        CloseWpsDocumentIfOpen();
+        ReleaseDocumentNow();
     }
 }

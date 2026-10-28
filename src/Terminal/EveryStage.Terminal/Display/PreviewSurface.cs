@@ -86,10 +86,7 @@ public sealed class PreviewSurface : Control, IPlaybackOutput
         BeginInvoke(action);
     }
 
-    public bool CanHostExternalDocumentWindow => false;
-    public Rectangle ExternalDocumentBounds => Rectangle.Empty;
-    public void YieldToExternalWindow() { }
-    public void ReclaimFromExternalWindow() { }
+    public Rectangle? OutputScreenBounds => null;
 
     protected override void OnLayout(LayoutEventArgs levent)
     {

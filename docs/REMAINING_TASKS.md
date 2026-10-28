@@ -31,6 +31,10 @@
 - [ ] 60 分钟 GPU、内存和音画同步浸泡测试
 - [ ] 不同 GPU、驱动、显示器热插拔与全屏应用测试
 - [ ] 双机弱网、断网、重连和长时间投屏测试
+- [ ] B-15 双机验收：先看 `docs/B15-FIELD-HANDOFF.md`，再按 `docs/WINDOWS_ACCEPTANCE.md` 的 B-15 表执行首次配对、抓包、已配对直连、设备窗口、投屏/回退、第二台设备、操作屏位置、开关边界和旧版兼容
+- [x] B-15 设备源窗口截图交付：当前本机已生成 contact sheet，并已通过会话图片发出给用户确认；`lody_upload_images` 工具本环境不可用
+- [x] B-15 本机自动化补充：`Run-B15LocalVerification.ps1` 可复跑 Core/Windows/严格构建/UI smoke；补充 WindowsSelfTests 覆盖未签名 `cast_start_rejected:not_paired` 删除 stale pairing 并转入重新配对、`not_allowed` 不删除密钥；`Reset-B15PairingState.ps1` 可在真机验收前备份并清旧配对；`Prepare-B15AcceptancePackage.ps1` 可生成双机验收包、SHA256 清单、现场交接单和带入口/文件数字段的 `manifest.json`；`Verify-B15AcceptancePackage.ps1` / `Test-B15AcceptanceArchive.ps1` 可在现场校验包完整性，并断言 manifest 计数、实际文件数和清单行数一致；`Collect-B15AcceptanceEvidence.ps1` 可采集现场证据 zip，且包校验失败时保留证据并非 0 退出；最新输出见 `docs/B15-FIELD-HANDOFF.md` 与 `docs/WINDOWS_ACCEPTANCE.md`
+- [ ] B-15 状态记忆更新：待可写 memory 工具可用后更新 `everystage-audit-state`；当前写入草稿见 `docs/EVERYSTAGE-AUDIT-STATE-MEMORY-DRAFT.md`
 - [x] WPS Writer、Spreadsheet、Presentation 编辑保存及进程退出测试
 
 ## 6. 产品与发布收尾

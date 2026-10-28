@@ -37,7 +37,7 @@ public sealed class TrayIconController : IDisposable
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(exitItem);
 
-        _productIcon = ProductIcon.LoadIcon();
+        _productIcon = ProductIcon.LoadIcon(SystemInformation.SmallIconSize);
         _notifyIcon = new NotifyIcon
         {
             Icon = _productIcon,

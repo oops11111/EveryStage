@@ -74,6 +74,13 @@ public static class TransportSelfTest
         if (nackFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, nackFailure);
 
+        foreach (bool useFec in new[] { false, true })
+        {
+            string? pacedFailure = await RunPacedLossRecoveryCheckAsync(useFec);
+            if (pacedFailure != null)
+                return new Result(false, testPayloads.Count, receivedCount, pacedFailure);
+        }
+
         string? resilienceFailure = await RunDispatchExceptionResilienceCheckAsync();
         if (resilienceFailure != null)
             return new Result(false, testPayloads.Count, receivedCount, resilienceFailure);
@@ -215,6 +222,93 @@ public static class TransportSelfTest
             : $"Authenticated NACK UDP check: retransmission was counted as loss ({receiver.PacketsLost}/{receiver.GapEvents}).";
     }
 
+    /// <summary>Audit A-20: the loss-recovery tests above only exercise the moment where recovery is not
+    /// needed (no gap ever observed). This one paces packets like real traffic through a lossy relay and
+    /// expects a REAL gap — then recovery: NACK while the gap is held open (A-18) for one access unit, and
+    /// end-of-access-unit FEC parity (A-19) for another, both at a static-screen-like 15 ms per packet.</summary>
+    private static async Task<string?> RunPacedLossRecoveryCheckAsync(bool useFec)
+    {
+        const byte payloadType = 96;
+        const byte fecPayloadType = RtpSession.DefaultFecPayloadType;
+        int receiverPort = GetLikelyFreeUdpPort();
+        byte[] key = Enumerable.Range(0, 32).Select(value => (byte)(value * 13 + 1)).ToArray();
+        Guid sessionId = Guid.NewGuid();
+        using var receiverAuth = new MediaPacketAuthentication(key, sessionId);
+        using var receiver = new RtpReceiver(receiverPort, payloadType, receiverAuth, IPAddress.Loopback, useFec ? fecPayloadType : null);
+        var nals = new List<byte[]>();
+        var gate = new object();
+        receiver.NalUnitReceived += (nal, _, _) => { lock (gate) nals.Add(nal); };
+
+        using var relay = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        var relayEndpoint = (IPEndPoint)relay.Client.LocalEndPoint!;
+        var receiverEndpoint = new IPEndPoint(IPAddress.Loopback, receiverPort);
+        using var senderAuth = new MediaPacketAuthentication(key, sessionId);
+        using var sender = new RtpSession(relayEndpoint, payloadType, authentication: senderAuth, fecPayloadType: useFec ? fecPayloadType : null);
+        int nackRequests = 0;
+        receiver.PacketGapDetected += missing =>
+        {
+            Interlocked.Increment(ref nackRequests);
+            _ = sender.RetransmitAsync(missing); // the Terminal → Caster NACK round trip, minus the network
+        };
+        receiver.Start();
+
+        // The relay drops the first copy of two chosen media packets; everything else (parity, and the
+        // retransmission) goes through.
+        using var inspector = new MediaPacketAuthentication(key, sessionId);
+        var dropOnce = new HashSet<int> { 1, 5 }; // indices among media packets, in send order
+        int mediaIndex = 0;
+        var seenSequences = new HashSet<ushort>();
+        using var relayStop = new CancellationTokenSource();
+        var relayLoop = Task.Run(async () =>
+        {
+            while (!relayStop.IsCancellationRequested)
+            {
+                UdpReceiveResult datagram;
+                try { datagram = await relay.ReceiveAsync(relayStop.Token); }
+                catch (OperationCanceledException) { return; }
+                if (inspector.TryUnprotect(datagram.Buffer, out var raw) && RtpPacket.TryDecode(raw, out var packet)
+                    && packet.PayloadType == payloadType && seenSequences.Add(packet.SequenceNumber))
+                {
+                    if (dropOnce.Contains(mediaIndex++)) continue;
+                }
+                await relay.SendAsync(datagram.Buffer, datagram.Buffer.Length, receiverEndpoint);
+            }
+        });
+
+        // Access units: four single-packet frames, then a three-fragment frame, then two single frames.
+        // Media index 1 = the second small frame (recovered by NACK or by its one-packet parity);
+        // media index 5 = the middle fragment of the large frame (recovered from the 3-packet parity).
+        var sent = new List<byte[]>();
+        for (int frame = 0; frame < 7; frame++)
+        {
+            byte[] nal = frame == 4
+                ? Enumerable.Range(0, 3000).Select(i => (byte)(i * 7 + frame)).Prepend((byte)0x65).ToArray()
+                : new byte[] { 0x65, (byte)frame, 0x11, 0x22 };
+            sent.Add(nal);
+            await sender.SendNalUnitAsync(nal, (uint)(9000 + frame * 3000), isLastNalOfAccessUnit: true);
+            await Task.Delay(15);
+        }
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (DateTime.UtcNow < deadline) { lock (gate) if (nals.Count >= sent.Count) break; await Task.Delay(10); }
+        relayStop.Cancel();
+        try { await relayLoop; } catch (Exception) { }
+
+        lock (gate)
+        {
+            if (nals.Count != sent.Count)
+                return $"Paced loss recovery (fec={useFec}): {nals.Count} of {sent.Count} NAL units delivered (lost packets were not recovered).";
+            for (int i = 0; i < sent.Count; i++)
+                if (!nals[i].AsSpan().SequenceEqual(sent[i]))
+                    return $"Paced loss recovery: NAL #{i} was delivered out of order or corrupted.";
+        }
+        if (!useFec && Volatile.Read(ref nackRequests) == 0)
+            return "Paced loss recovery: no NACK was raised for a real gap.";
+        if (receiver.PacketsLost != 0 || receiver.GapEvents != 0)
+            return $"Paced loss recovery: (fec={useFec}) the stream still gave up on packets ({receiver.PacketsLost} lost, {receiver.GapEvents} gaps).";
+        return null;
+    }
+
     private static string? RunJitterAndWraparoundCheck()
     {
         static RtpPacket Packet(ushort sequence, uint timestamp = 0) => new()
@@ -264,22 +358,36 @@ public static class TransportSelfTest
 
     private static string? RunAvSyncOffsetEstimatorCheck()
     {
-        var estimator = new AvSyncOffsetEstimator(smoothingFactor: 0.5, maxCorrectionPerUpdate: TimeSpan.FromMilliseconds(1));
+        var estimator = new AvSyncOffsetEstimator(smoothingFactor: 0.5, maxCorrectionPerUpdate: TimeSpan.FromMilliseconds(1), warmupUpdates: 0);
         if (estimator.TryGetOffset(out _)) return "A/V sync estimator reported an offset before its first sample.";
-        estimator.Update(remoteTimelineTicks: 10_000_000, localScheduledPlaybackTicks: 9_000_000);
+        estimator.Update(remoteTimelineTicks: 10_000_000, localScheduledPlaybackTicks: 9_000_000, nowMilliseconds: 0);
         if (!estimator.TryGetOffset(out long initial) || initial != 1_000_000)
             return "A/V sync estimator did not initialize from its first timeline sample.";
 
-        estimator.Update(remoteTimelineTicks: 10_100_000, localScheduledPlaybackTicks: 9_000_000);
+        estimator.Update(remoteTimelineTicks: 10_100_000, localScheduledPlaybackTicks: 9_000_000, nowMilliseconds: 20);
         estimator.TryGetOffset(out long corrected);
         if (corrected != initial + TimeSpan.FromMilliseconds(1).Ticks)
             return "A/V sync estimator failed to rate-limit a large correction.";
 
         for (int i = 0; i < 100; i++)
-            estimator.Update(remoteTimelineTicks: 10_100_000, localScheduledPlaybackTicks: 9_000_000);
+            estimator.Update(remoteTimelineTicks: 10_100_000, localScheduledPlaybackTicks: 9_000_000, nowMilliseconds: 40 + i * 20);
         estimator.TryGetOffset(out long converged);
         if (Math.Abs(converged - 1_100_000) > 2)
             return "A/V sync estimator did not converge to a persistent clock offset.";
+
+        // Audit B-8: a seed that is 100 ms off must be worked off within the first second (~47 packets),
+        // not over two seconds of 1 ms steps.
+        var warm = new AvSyncOffsetEstimator();
+        warm.Update(remoteTimelineTicks: 0, localScheduledPlaybackTicks: 1_000_000, nowMilliseconds: 0); // seeded 100 ms off
+        for (int i = 1; i <= 47; i++) warm.Update(remoteTimelineTicks: i * 213_333L, localScheduledPlaybackTicks: i * 213_333L, nowMilliseconds: i * 21);
+        warm.TryGetOffset(out long warmed);
+        if (Math.Abs(warmed) > TimeSpan.FromMilliseconds(5).Ticks)
+            return $"A/V sync estimator was still {warmed / 10_000.0:F1} ms off after a second of warm-up.";
+
+        // Audit B-9: after a silent gap the next sample re-seeds instead of crawling back at 1 ms per packet.
+        warm.Update(remoteTimelineTicks: 50_000_000, localScheduledPlaybackTicks: 49_000_000, nowMilliseconds: 5_000);
+        warm.TryGetOffset(out long reseeded);
+        if (reseeded != 1_000_000) return "A/V sync estimator did not re-seed after a gap in the audio.";
         return null;
     }
 

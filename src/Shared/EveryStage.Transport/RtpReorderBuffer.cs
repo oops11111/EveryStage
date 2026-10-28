@@ -1,15 +1,25 @@
 namespace EveryStage.Transport;
 
 /// <summary>Small bounded jitter buffer for one RTP SSRC. It restores sequence order, handles the
-/// 16-bit sequence wrap naturally, and eventually advances across a confirmed gap.</summary>
+/// 16-bit sequence wrap naturally, and eventually advances across a confirmed gap.
+///
+/// Missing sequence numbers are reported (<see cref="TakeNewlyMissing"/>) the moment a gap is SEEN — a
+/// later packet arrives — while the gap is still held open for up to the hold time. Reporting them only
+/// when the buffer gave up and advanced (as it used to) made NACK useless: every retransmission arrived
+/// behind the play point and was discarded as late (audit A-18).</summary>
 public sealed class RtpReorderBuffer
 {
     public readonly record struct Delivery(RtpPacket Packet, int PacketsLostBefore,
         IReadOnlyList<ushort>? MissingSequenceNumbers = null);
 
+    // NACK messages carry at most this many sequence numbers; a larger gap is beyond recovery anyway.
+    private const int MaxNackPerGap = 64;
+
     private readonly int _maxBufferedPackets;
     private readonly TimeSpan _maxHoldTime;
     private readonly Dictionary<ushort, (RtpPacket Packet, DateTimeOffset ArrivedAt)> _pending = new();
+    private readonly HashSet<ushort> _requested = new();
+    private readonly List<ushort> _newlyMissing = new();
     private ushort? _expected;
     private long _packetsLost;
     private long _packetsReordered;
@@ -39,6 +49,8 @@ public sealed class RtpReorderBuffer
         int distance = ForwardDistance(_expected.Value, packet.SequenceNumber);
         if (distance == 0)
         {
+            // Arriving after later packets did means it came out of order (or was retransmitted).
+            if (_pending.Count > 0) Interlocked.Increment(ref _packetsReordered);
             _pending[packet.SequenceNumber] = (packet, arrivedAt);
             Drain(output, 0);
         }
@@ -50,8 +62,12 @@ public sealed class RtpReorderBuffer
             }
             else
             {
+                // Filling a hole that later packets had already passed is reordering; a packet that
+                // merely arrives after a gap is not — counting those made the counter measure loss
+                // (audit C-17).
+                if (_requested.Contains(packet.SequenceNumber)) Interlocked.Increment(ref _packetsReordered);
                 _pending.Add(packet.SequenceNumber, (packet, arrivedAt));
-                Interlocked.Increment(ref _packetsReordered);
+                ReportGapBefore(packet.SequenceNumber);
                 if (_pending.Count > _maxBufferedPackets)
                     AdvanceToNearest(output);
             }
@@ -61,14 +77,46 @@ public sealed class RtpReorderBuffer
             Interlocked.Increment(ref _duplicatesOrLate);
         }
 
+        PruneRequested();
         return output;
+    }
+
+    /// <summary>Sequence numbers newly found missing (each reported once), to be NACKed now while the
+    /// gap is still being waited on.</summary>
+    public IReadOnlyList<ushort> TakeNewlyMissing()
+    {
+        if (_newlyMissing.Count == 0) return Array.Empty<ushort>();
+        var missing = _newlyMissing.ToArray();
+        _newlyMissing.Clear();
+        return missing;
     }
 
     public IReadOnlyList<Delivery> FlushExpired(DateTimeOffset now)
     {
         var output = new List<Delivery>();
         FlushExpired(now, output);
+        PruneRequested();
         return output;
+    }
+
+    private void ReportGapBefore(ushort arrived)
+    {
+        int gap = ForwardDistance(_expected!.Value, arrived);
+        int reported = 0;
+        for (int offset = 0; offset < gap && reported < MaxNackPerGap; offset++)
+        {
+            ushort sequence = unchecked((ushort)(_expected.Value + offset));
+            if (_pending.ContainsKey(sequence) || !_requested.Add(sequence)) continue;
+            _newlyMissing.Add(sequence);
+            reported++;
+        }
+    }
+
+    // Requests behind the play point can no longer be filled.
+    private void PruneRequested()
+    {
+        if (_expected == null || _requested.Count == 0) return;
+        _requested.RemoveWhere(sequence => ForwardDistance(_expected.Value, sequence) >= short.MaxValue);
     }
 
     private void FlushExpired(DateTimeOffset now, List<Delivery> output)

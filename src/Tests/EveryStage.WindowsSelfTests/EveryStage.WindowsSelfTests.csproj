@@ -12,4 +12,14 @@
     <PackageReference Include="PdfiumViewer.Native.x86_64.v8-xfa" Version="2018.4.8.256" />
     <ProjectReference Include="../../Terminal/EveryStage.Terminal/EveryStage.Terminal.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The Caster's AAC encoder, for the encode -> decode round trip of the cast audio path. -->
+    <Compile Include="../../Caster/EveryStage.Caster/Encode/AacAudioEncoder.cs" Link="Caster/AacAudioEncoder.cs" />
+    <Compile Include="../../Caster/EveryStage.Caster/Encode/EncoderGuids.cs" Link="Caster/EncoderGuids.cs" />
+    <!-- Lightweight Caster discovery client pieces, for an end-to-end pairing test against Terminal's DiscoveryService. -->
+    <Compile Include="../../Caster/EveryStage.Caster/Discovery/DiscoveredTerminal.cs" Link="Caster/DiscoveredTerminal.cs" />
+    <Compile Include="../../Caster/EveryStage.Caster/Discovery/PairedTerminal.cs" Link="Caster/PairedTerminal.cs" />
+    <Compile Include="../../Caster/EveryStage.Caster/Discovery/PairedTerminalStore.cs" Link="Caster/PairedTerminalStore.cs" />
+    <Compile Include="../../Caster/EveryStage.Caster/Discovery/TerminalDiscoveryClient.cs" Link="Caster/TerminalDiscoveryClient.cs" />
+  </ItemGroup>
 </Project>

@@ -23,4 +23,30 @@ internal static class PcmTrim
         if (skipBytes <= 0) return (pcm, timestampTicks);
         return (pcm[(int)skipBytes..], timestampTicks + skipBytes * TimeSpan.TicksPerSecond / bytesPerSecond);
     }
+
+    // Timestamp jitter below this is normal (codec frame rounding) and left alone.
+    private static readonly long AlignToleranceTicks = TimeSpan.FromMilliseconds(30).Ticks;
+
+    // Larger gaps are not filled: the clock's buffer holds 5 s, and a jump that big is a broken
+    // timestamp rather than real silence.
+    private static readonly long MaxFilledGapTicks = TimeSpan.FromSeconds(4).Ticks;
+
+    /// <summary>Lines a chunk up with <paramref name="scheduleTicks"/>, the time (same base as its timestamp)
+    /// at which the next enqueued byte will play (audit B-22). A chunk that starts later — a gap in the
+    /// track — gets the gap prepended as silence; one that starts earlier — an overlap, or audio arriving
+    /// after its play time following a stall — loses the part that is already due. Null when nothing of
+    /// the chunk is left.</summary>
+    public static byte[]? AlignTo(byte[] pcm, long timestampTicks, long scheduleTicks, int sampleRate, int channels)
+    {
+        if (sampleRate <= 0 || channels <= 0) return pcm;
+        long offset = timestampTicks - scheduleTicks;
+        if (offset < -AlignToleranceTicks) return ToTarget(pcm, timestampTicks, scheduleTicks, sampleRate, channels)?.Pcm;
+        if (offset <= AlignToleranceTicks || offset > MaxFilledGapTicks) return pcm;
+        int block = channels * 2;
+        long silenceBytes = offset * sampleRate * block / TimeSpan.TicksPerSecond;
+        silenceBytes -= silenceBytes % block;
+        var padded = new byte[silenceBytes + pcm.Length];
+        Buffer.BlockCopy(pcm, 0, padded, (int)silenceBytes, pcm.Length);
+        return padded;
+    }
 }

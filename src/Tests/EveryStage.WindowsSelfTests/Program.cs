@@ -1,6 +1,12 @@
 using System.Collections.Concurrent;
 using System.Drawing.Imaging;
+using System.Net;
+using System.Net.Sockets;
+using EveryStage.Caster.Discovery;
+using EveryStage.Discovery;
 using EveryStage.Terminal.ContentEngine;
+using EveryStage.Terminal.Devices;
+using EveryStage.Terminal.Logging;
 
 // Run continuations on a single owning thread, as the WinForms renderer callers do.
 using var context = new TestContext();
@@ -84,8 +90,281 @@ static async Task RunTests()
         Console.WriteLine("PASS: native PDF rendering, async page boundaries, replacement during paging, disposal during paging/load, file release");
         TestAudioLayout(directory);
         PreviewProgramTests.Run(directory);
+        await TestPairingV2DiscoveryServiceUdpAsync(directory);
+        DocumentTests.Run(directory);
+        CastAudioTests.Run();
     }
     finally { Directory.Delete(directory, true); }
+}
+
+static async Task TestPairingV2DiscoveryServiceUdpAsync(string directory)
+{
+    string identityPath = Path.Combine(directory, "terminal-identity.json");
+    string pairedPath = Path.Combine(directory, "paired-devices.json");
+    string logRoot = Path.Combine(directory, "logs");
+    var identity = DeviceIdentity.LoadOrCreate("terminal-test", identityPath);
+    identity.DeviceName = "B15 Terminal";
+    identity.Save();
+    var paired = new PairedDeviceStore(pairedPath);
+    var logger = new DeviceConnectionLogger(logRoot);
+
+    DiscoveryService service;
+    try { service = new DiscoveryService(identity, paired, logger, portOverride: 0); }
+    catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse || ex.SocketErrorCode == SocketError.AccessDenied)
+    {
+        Console.WriteLine($"SKIP: DiscoveryService UDP pairing v2 smoke ({DiscoveryProtocol.Port} unavailable: {ex.SocketErrorCode})");
+        return;
+    }
+    using (service)
+    using (var client = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0)))
+    using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12)))
+    {
+        client.Connect(IPAddress.Loopback, service.LocalPort);
+        service.Start();
+
+        string oldRequestId = Guid.NewGuid().ToString("N");
+        var oldRequest = new DiscoveryProtocol.PairRequestMessage
+        {
+            RequestId = oldRequestId,
+            DeviceId = Guid.NewGuid(),
+            DeviceName = "Old Caster",
+        };
+        var oldResponse = await SendUntilPairResponseAsync(client, oldRequest, oldRequestId, timeout.Token);
+        Require(!oldResponse.Accepted && oldResponse.Reason?.Contains("版本过旧") == true,
+            "Legacy pairing request was not rejected with the update reason.");
+
+        string requestId = Guid.NewGuid().ToString("N");
+        Guid casterId = Guid.NewGuid();
+        using var caster = new CasterPairingHandshake(requestId, casterId, identity.DeviceId);
+        var pairingShown = new TaskCompletionSource<PairingRequest>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.PairingRequested += request => pairingShown.TrySetResult(request);
+        var pairRequest = new DiscoveryProtocol.PairRequestMessage
+        {
+            RequestId = requestId,
+            DeviceId = casterId,
+            DeviceName = "Caster With A Very Long Name That Still Reaches The Pairing UI",
+            PairingProtocolVersion = PairingHandshake.ProtocolVersion,
+            CasterPublicKey = caster.CasterPublicKey,
+            CasterNonceCommitment = caster.CasterNonceCommitment,
+        };
+
+        var challenge = await SendUntilPairChallengeAsync(client, pairRequest, requestId, timeout.Token);
+        Require(challenge.TerminalDeviceId == identity.DeviceId, "Pair challenge used the wrong Terminal identity.");
+        var casterResult = caster.ProcessChallenge(challenge.TerminalPublicKey, challenge.TerminalNonce);
+        var reveal = new DiscoveryProtocol.PairRevealMessage
+        {
+            RequestId = requestId,
+            CasterNonce = caster.CasterNonce,
+        };
+        while (!pairingShown.Task.IsCompleted)
+        {
+            await SendDiscoveryAsync(client, reveal, timeout.Token);
+            var finished = await Task.WhenAny(pairingShown.Task, Task.Delay(TimeSpan.FromMilliseconds(250), timeout.Token));
+            if (finished == pairingShown.Task) break;
+        }
+
+        var request = await pairingShown.Task.WaitAsync(timeout.Token);
+        Require(request.RequestId == requestId && request.DeviceId == casterId, "Pairing UI request did not preserve the request/device id.");
+        Require(request.VerificationCode == casterResult.VerificationCode, "Terminal pairing code did not match Caster pairing code.");
+        service.RespondToPairing(requestId, accept: true, TrustMode.Trusted, allowCast: true, allowMonitor: false);
+        var response = await ReceivePairResponseAsync(client, requestId, timeout.Token);
+        Require(response.Accepted && response.PairingKey == null, "Pair response accepted with a wire PairingKey.");
+        Require(caster.VerifyKeyConfirmation(response.KeyConfirmation), "Pair response key confirmation did not verify.");
+        var stored = paired.Find(casterId);
+        Require(stored != null
+            && stored.AllowCast
+            && !stored.AllowMonitor
+            && stored.PairingKeyFormatVersion == PairingSecurity.CurrentKeyFormatVersion
+            && stored.PairingKey == casterResult.PairingKey,
+            "Terminal did not persist the derived v2 pairing key and permissions.");
+
+        var cached = await SendUntilPairResponseAsync(client, reveal, requestId, timeout.Token);
+        Require(cached.Accepted
+            && cached.PairingKey == null
+            && cached.KeyConfirmation == response.KeyConfirmation,
+            "Duplicate pair_reveal did not receive the cached key confirmation response.");
+
+        string casterIdentityPath = Path.Combine(directory, "caster-identity.json");
+        string casterStorePath = Path.Combine(directory, "caster-paired-terminals.json");
+        var casterIdentity = DeviceIdentity.LoadOrCreate("caster-test", casterIdentityPath);
+        casterIdentity.DeviceName = "B15 Caster";
+        casterIdentity.Save();
+        var casterStore = new PairedTerminalStore(casterStorePath);
+        using var casterClient = new TerminalDiscoveryClient(casterIdentity, casterStore, listenPortOverride: 0, terminalPortOverride: service.LocalPort);
+        casterClient.Start();
+        bool oldTerminalCodeShown = false;
+        var oldTerminalResponse = await casterClient.RequestPairingAsync(
+            new DiscoveredTerminal(Guid.NewGuid(), "Old Terminal", IPAddress.Loopback, DateTimeOffset.UtcNow,
+                MediaAuthenticationVersion: 1, PairingProtocolVersion: 0),
+            casterIdentity, _ => oldTerminalCodeShown = true,
+            timeout: TimeSpan.FromMilliseconds(200), cancellationToken: timeout.Token);
+        Require(oldTerminalResponse?.Accepted == false
+            && oldTerminalResponse.Reason == "需要更新程序"
+            && !oldTerminalCodeShown,
+            "Caster client did not reject an old Terminal before starting pairing.");
+        await TestCasterRejectsMismatchedPairChallengeAsync(casterIdentity, casterStore, timeout.Token);
+        string? casterCode = null;
+        PairingRequest? terminalRequest = null;
+        service.PairingRequested += request =>
+        {
+            if (request.DeviceId != casterIdentity.DeviceId) return;
+            terminalRequest = request;
+            service.RespondToPairing(request.RequestId, accept: true, TrustMode.Trusted, allowCast: true, allowMonitor: false);
+        };
+        var discovered = new DiscoveredTerminal(identity.DeviceId, identity.DeviceName, IPAddress.Loopback, DateTimeOffset.UtcNow,
+            MediaAuthenticationVersion: 1, PairingProtocolVersion: PairingHandshake.ProtocolVersion);
+        var casterResponse = await casterClient.RequestPairingAsync(
+            discovered, casterIdentity, code => casterCode = code,
+            timeout: TimeSpan.FromSeconds(12), cancellationToken: timeout.Token);
+        if (casterResponse == null || !casterResponse.Accepted)
+            throw new InvalidOperationException($"Caster client pairing failed: {casterResponse?.Reason ?? "no response"}");
+        Require(PairingSecurity.IsSupportedKey(casterResponse.PairingKey, casterResponse.PairingKeyFormatVersion),
+            "Caster client did not return a supported local v2 pairing key.");
+        Require(terminalRequest != null && terminalRequest.VerificationCode == casterCode,
+            "Caster client and Terminal service did not show the same verification code.");
+        var terminalStoredForClient = paired.Find(casterIdentity.DeviceId);
+        Require(terminalStoredForClient?.PairingKey == casterResponse.PairingKey,
+            "Terminal service and Caster client did not persist/return the same derived pairing key.");
+        await TestCasterHandlesUnsignedCastStartRejectionsAsync(directory, casterIdentity, timeout.Token);
+    }
+    Console.WriteLine("PASS: DiscoveryService/Caster pairing v2 UDP handshake, old-version rejection, cached reveal response and Caster client pairing");
+}
+
+static async Task TestCasterRejectsMismatchedPairChallengeAsync(DeviceIdentity casterIdentity, PairedTerminalStore casterStore, CancellationToken token)
+{
+    Guid expectedTerminalId = Guid.NewGuid();
+    using var fakeTerminal = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+    int fakeTerminalPort = ((IPEndPoint)fakeTerminal.Client.LocalEndPoint!).Port;
+    using var casterClient = new TerminalDiscoveryClient(casterIdentity, casterStore, listenPortOverride: 0, terminalPortOverride: fakeTerminalPort);
+    casterClient.Start();
+    bool codeShown = false;
+    var discovered = new DiscoveredTerminal(expectedTerminalId, "Mismatched Terminal", IPAddress.Loopback, DateTimeOffset.UtcNow,
+        MediaAuthenticationVersion: 1, PairingProtocolVersion: PairingHandshake.ProtocolVersion);
+    var pairingTask = casterClient.RequestPairingAsync(
+        discovered, casterIdentity, _ => codeShown = true,
+        timeout: TimeSpan.FromSeconds(3), cancellationToken: token);
+    var requestMessage = await ReceiveDiscoveryAsync(fakeTerminal, token);
+    if (requestMessage is not DiscoveryProtocol.PairRequestMessage request)
+        throw new InvalidOperationException($"Expected a pair_request, got {requestMessage.GetType().Name}.");
+    await SendDiscoveryToAsync(fakeTerminal, new DiscoveryProtocol.PairChallengeMessage
+    {
+        RequestId = request.RequestId,
+        TerminalDeviceId = Guid.NewGuid(),
+        TerminalPublicKey = Convert.ToBase64String(new byte[] { 1, 2, 3 }),
+        TerminalNonce = Convert.ToBase64String(new byte[PairingHandshake.NonceSizeBytes]),
+    }, new IPEndPoint(IPAddress.Loopback, casterClient.LocalPort), token);
+    var response = await pairingTask.WaitAsync(token);
+    Require(response?.Accepted == false
+        && response.Reason?.Contains("身份不一致") == true
+        && !codeShown,
+        "Caster client did not reject a pair_challenge from a different Terminal identity.");
+}
+
+static async Task TestCasterHandlesUnsignedCastStartRejectionsAsync(string directory, DeviceIdentity casterIdentity, CancellationToken token)
+{
+    await Run("not_paired", shouldRemovePairing: true, expectedError: "重新配对");
+    await Run("not_allowed", shouldRemovePairing: false, expectedError: "未允许");
+
+    async Task Run(string reason, bool shouldRemovePairing, string expectedError)
+    {
+        using var fakeTerminal = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0));
+        int fakeTerminalPort = ((IPEndPoint)fakeTerminal.Client.LocalEndPoint!).Port;
+        string storePath = Path.Combine(directory, $"{reason}-paired-terminals.json");
+        var store = new PairedTerminalStore(storePath);
+        Guid terminalId = Guid.NewGuid();
+        string staleKey = PairingSecurity.GenerateKey();
+        store.Upsert(new PairedTerminal(terminalId, $"Terminal Rejecting {reason}", DateTimeOffset.UtcNow, staleKey, PairingSecurity.CurrentKeyFormatVersion));
+        using var casterClient = new TerminalDiscoveryClient(casterIdentity, store, listenPortOverride: 0, terminalPortOverride: fakeTerminalPort);
+        casterClient.Start();
+        Guid sessionId = Guid.NewGuid();
+        var terminal = new DiscoveredTerminal(terminalId, $"Terminal Rejecting {reason}", IPAddress.Loopback, DateTimeOffset.UtcNow,
+            MediaAuthenticationVersion: 1, PairingProtocolVersion: PairingHandshake.ProtocolVersion);
+        var startTask = casterClient.SendCastStartAsync(terminal, casterIdentity, 1280, 720, payloadType: 96, audio: null, sessionId, token);
+        var request = await ReceiveDiscoveryAsync(fakeTerminal, token);
+        Require(request is DiscoveryProtocol.CastStartMessage start
+                && start.MediaSessionId == sessionId
+                && PairingSecurity.Verify(start, staleKey),
+            $"Caster did not send an authenticated cast_start before {reason}.");
+        await SendDiscoveryToAsync(fakeTerminal, new DiscoveryProtocol.CastStartRejectedMessage
+        {
+            TerminalDeviceId = terminalId,
+            CasterDeviceId = casterIdentity.DeviceId,
+            MediaSessionId = sessionId,
+            Reason = reason,
+        }, new IPEndPoint(IPAddress.Loopback, casterClient.LocalPort), token);
+        bool rejected = false;
+        try { await startTask.WaitAsync(token); }
+        catch (InvalidOperationException ex) when (ex.Message.Contains(expectedError, StringComparison.Ordinal))
+        {
+            rejected = true;
+        }
+        Require(rejected, $"Unsigned {reason} rejection did not surface the expected error.");
+        bool stillPaired = store.Find(terminalId) != null;
+        Require(stillPaired == !shouldRemovePairing, $"Caster pairing removal after {reason} was wrong.");
+    }
+}
+
+static async Task<DiscoveryProtocol.PairChallengeMessage> SendUntilPairChallengeAsync(
+    UdpClient client, DiscoveryProtocol.Message message, string requestId, CancellationToken token)
+{
+    while (true)
+    {
+        await SendDiscoveryAsync(client, message, token);
+        var received = await ReceiveDiscoveryOrNullAsync(client, TimeSpan.FromMilliseconds(250), token);
+        if (received is DiscoveryProtocol.PairChallengeMessage challenge && challenge.RequestId == requestId) return challenge;
+    }
+}
+
+static async Task<DiscoveryProtocol.PairResponseMessage> SendUntilPairResponseAsync(
+    UdpClient client, DiscoveryProtocol.Message message, string requestId, CancellationToken token)
+{
+    while (true)
+    {
+        await SendDiscoveryAsync(client, message, token);
+        var received = await ReceiveDiscoveryOrNullAsync(client, TimeSpan.FromMilliseconds(250), token);
+        if (received is DiscoveryProtocol.PairResponseMessage response && response.RequestId == requestId) return response;
+    }
+}
+
+static async Task SendDiscoveryAsync(UdpClient client, DiscoveryProtocol.Message message, CancellationToken token)
+{
+    byte[] payload = DiscoveryProtocol.Encode(message);
+    token.ThrowIfCancellationRequested();
+    await client.SendAsync(payload, payload.Length);
+}
+
+static async Task SendDiscoveryToAsync(UdpClient client, DiscoveryProtocol.Message message, IPEndPoint destination, CancellationToken token)
+{
+    byte[] payload = DiscoveryProtocol.Encode(message);
+    token.ThrowIfCancellationRequested();
+    await client.SendAsync(payload, payload.Length, destination);
+}
+
+static async Task<DiscoveryProtocol.PairResponseMessage> ReceivePairResponseAsync(UdpClient client, string requestId, CancellationToken token)
+{
+    while (true)
+    {
+        var message = await ReceiveDiscoveryAsync(client, token);
+        if (message is DiscoveryProtocol.PairResponseMessage response && response.RequestId == requestId) return response;
+    }
+}
+
+static async Task<DiscoveryProtocol.Message?> ReceiveDiscoveryOrNullAsync(UdpClient client, TimeSpan timeout, CancellationToken token)
+{
+    using var attemptTimeout = new CancellationTokenSource(timeout);
+    using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, attemptTimeout.Token);
+    try { return await ReceiveDiscoveryAsync(client, linked.Token); }
+    catch (OperationCanceledException) when (!token.IsCancellationRequested) { return null; }
+}
+
+static async Task<DiscoveryProtocol.Message> ReceiveDiscoveryAsync(UdpClient client, CancellationToken token)
+{
+    while (true)
+    {
+        var result = await client.ReceiveAsync(token);
+        var message = DiscoveryProtocol.Decode(result.Buffer);
+        if (message != null) return message;
+    }
 }
 
 static void TestBoundedQueue()
@@ -151,7 +430,24 @@ static void TestAudioLayout(string directory)
             var type = typeof(ImageContentRenderer).Assembly.GetType("EveryStage.Terminal.UI.Panels.AudioPlayerBar", throwOnError: true)!;
             using var bar = (Control)Activator.CreateInstance(type, library,
                 new EveryStage.Terminal.Logging.FileOperationLogger(directory), null)!;
+            // No audio: the bar stays visible as an「导入音频」placeholder instead of hiding.
+            type.GetMethod("SetAudioFiles")!.Invoke(bar, new object[] { Array.Empty<EveryStage.Terminal.Data.MediaFile>() });
+            var actionButton = bar.Controls.OfType<Button>().Single();
+            Require(bar.Visible && actionButton.Text.Contains("导入音频"), "Empty audio bar did not show its import placeholder.");
+            int importRequests = 0;
+            Action onImport = () => importRequests++;
+            type.GetEvent("ImportRequested")!.AddEventHandler(bar, onImport);
+            actionButton.PerformClick();
+            Require(importRequests == 1, "Empty audio bar button did not request an audio import.");
+            type.GetEvent("ImportRequested")!.RemoveEventHandler(bar, onImport);
             type.GetMethod("SetAudioFiles")!.Invoke(bar, new object[] { new[] { audio } });
+            Require(actionButton.Text.Contains("加入活动音轨"), "Audio bar action is not「加入活动音轨」.");
+            EveryStage.Terminal.Data.MediaFile? trackRequest = null;
+            Action<EveryStage.Terminal.Data.MediaFile> onTrack = file => trackRequest = file;
+            type.GetEvent("AddToActivityTrackRequested")!.AddEventHandler(bar, onTrack);
+            actionButton.PerformClick();
+            Require(trackRequest?.Id == audio.Id, "「加入活动音轨」did not request the bound audio file.");
+            type.GetEvent("AddToActivityTrackRequested")!.RemoveEventHandler(bar, onTrack);
             foreach (int width in new[] { 900, 576, 400, 900 })
             {
                 bar.Width = width;
@@ -187,6 +483,32 @@ static void TestAudioLayout(string directory)
             keyHandler.Invoke(bar, new object[] { new KeyEventArgs(Keys.L) });
             Require(audio.OnCompletion == EveryStage.Terminal.Data.CompletionAction.NextItem, "Keyboard could not disable looping.");
             type.GetEvent("PlayRequested")!.RemoveEventHandler(bar, onPlay);
+
+            // Several audio files: the bar shows the first until the operator picks another in the
+            // file-name selector, and the pick survives the periodic live refresh.
+            var second = library.Import("layout-test-2.mp3")!;
+            type.GetMethod("SetAudioFiles")!.Invoke(bar, new object[] { new[] { audio, second } });
+            EveryStage.Terminal.Data.MediaFile? Bound() => (EveryStage.Terminal.Data.MediaFile?)type.GetProperty("BoundFile")!.GetValue(bar);
+            Require(Bound()?.Id == audio.Id, "Audio bar did not start on the first audio file.");
+            int stateChanges = 0;
+            Action onState = () => stateChanges++;
+            type.GetEvent("StateChanged")!.AddEventHandler(bar, onState);
+            type.GetMethod("SelectFile")!.Invoke(bar, new object[] { second });
+            type.GetMethod("RefreshLiveState")!.Invoke(bar, null);
+            Require(Bound()?.Id == second.Id, "Audio selector pick was not kept across a live refresh.");
+            Require(stateChanges >= 2, "Audio bar did not announce its state changes.");
+            type.GetEvent("StateChanged")!.RemoveEventHandler(bar, onState);
+
+            // The sidebar「音频独立播放区」card is a second view of the same bar.
+            var cardType = type.Assembly.GetType("EveryStage.Terminal.UI.Panels.AudioSidebarCard", throwOnError: true)!;
+            using var card = (Control)Activator.CreateInstance(cardType, bar)!;
+            foreach (bool compact in new[] { false, true })
+            {
+                cardType.GetProperty("Compact")!.SetValue(card, compact);
+                card.Size = new Size(218, (int)cardType.GetProperty(compact ? "CompactHeight" : "FullHeight")!.GetValue(card)!);
+                using var cardBitmap = new Bitmap(card.Width, card.Height);
+                card.DrawToBitmap(cardBitmap, card.ClientRectangle);
+            }
         }
         catch (Exception ex) { failure = ex; }
     });
@@ -194,7 +516,7 @@ static void TestAudioLayout(string directory)
     thread.Start();
     if (!thread.Join(TimeSpan.FromSeconds(20))) throw new TimeoutException("Audio layout test did not finish.");
     if (failure != null) throw new InvalidOperationException("Audio layout test failed.", failure);
-    Console.WriteLine("PASS: audio bar layout, offscreen painting, keyboard playback, modifier isolation and loop persistence");
+    Console.WriteLine("PASS: audio bar layout, offscreen painting, keyboard playback, modifier isolation, loop persistence, track selection and sidebar card");
 }
 
 static void WritePdfFixture(string path)

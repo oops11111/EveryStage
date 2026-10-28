@@ -6,7 +6,7 @@ namespace EveryStage.Discovery;
 public static class PairingSecurity
 {
     public const int KeySizeBytes = 32;
-    public const int CurrentKeyFormatVersion = 1;
+    public const int CurrentKeyFormatVersion = 2;
 
     public static string GenerateKey() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(KeySizeBytes));
 

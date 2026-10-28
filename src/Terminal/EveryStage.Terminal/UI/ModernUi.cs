@@ -17,6 +17,8 @@ internal static class ModernUi
     public static Color Text => _palette.Text;
     public static Color Muted => _palette.Muted;
     public static Color Accent => _palette.Accent;
+    public static Color AccentForeground => _currentTheme == EveryStage.Terminal.Data.AppTheme.Tech
+        ? Color.FromArgb(5, 22, 35) : Color.White;
     public static Color Danger => _palette.Danger;
     public static Color Warning => _palette.Warning;
     public static Color Success => _palette.Success;
@@ -33,7 +35,7 @@ internal static class ModernUi
         button.FlatAppearance.BorderSize = primary ? 0 : 1;
         button.FlatAppearance.BorderColor = danger ? Danger : Border;
         button.BackColor = primary ? (danger ? Danger : Accent) : Surface;
-        button.ForeColor = Text;
+        button.ForeColor = primary ? (danger ? Color.White : AccentForeground) : Text;
         button.Cursor = Cursors.Hand;
         button.Font = new Font("Segoe UI", 10F, FontStyle.Regular);
         button.Padding = new Padding(8, 0, 8, 0);
@@ -467,7 +469,8 @@ internal sealed class PillButton : Control
             : ModernUi.Border);
         e.Graphics.FillPath(fill, path);
         e.Graphics.DrawPath(border, path);
-        TextRenderer.DrawText(e.Graphics, Text, Font, rect, Enabled ? ModernUi.Text : ModernUi.Muted,
+        TextRenderer.DrawText(e.Graphics, Text, Font, rect,
+            Enabled ? (Selected ? ModernUi.AccentForeground : ModernUi.Text) : ModernUi.Muted,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(rect, -6, -6));
     }
@@ -551,6 +554,13 @@ internal sealed class AppTitleBar : Panel
 
 internal sealed class RoundedActionButton : Button
 {
+    /// <summary>Optional Segoe MDL2 Assets glyph drawn before the text (the reference buttons carry a
+    /// line icon, e.g. upload / add). Null keeps the plain text button.</summary>
+    public string? IconGlyph { get; set; }
+
+    /// <summary>Draws a trailing chevron, for buttons that open a drop-down menu.</summary>
+    public bool ShowDropDownArrow { get; set; }
+
     public RoundedActionButton()
     {
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
@@ -558,6 +568,19 @@ internal sealed class RoundedActionButton : Button
         FlatStyle = FlatStyle.Flat;
         FlatAppearance.BorderSize = 1;
     }
+
+    /// <summary>Width that fits the icon, text and chevron with the button's horizontal padding.</summary>
+    public int PreferredContentWidth()
+    {
+        int width = TextRenderer.MeasureText(Text, Font).Width + Padding.Horizontal + 12;
+        if (IconGlyph != null)
+            using (var iconFont = IconFont())
+                width += TextRenderer.MeasureText(IconGlyph, iconFont, Size.Empty, TextFormatFlags.NoPadding).Width + 8;
+        if (ShowDropDownArrow) width += 22;
+        return width;
+    }
+
+    private Font IconFont() => new("Segoe MDL2 Assets", Font.SizeInPoints + 1F);
 
     protected override void OnPaintBackground(PaintEventArgs pevent) { }
 
@@ -577,9 +600,37 @@ internal sealed class RoundedActionButton : Button
             using var border = new Pen(Enabled ? FlatAppearance.BorderColor : ModernUi.Border, FlatAppearance.BorderSize);
             e.Graphics.DrawPath(border, path);
         }
-        TextRenderer.DrawText(e.Graphics, Text, Font, bounds,
-            Enabled ? ForeColor : ModernUi.Muted,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        Color textColor = Enabled ? ForeColor : ModernUi.Muted;
+        var textBounds = bounds;
+        if (ShowDropDownArrow)
+        {
+            // Chevron at the right edge; the text stays left-aligned like the reference drop-down.
+            int cx = bounds.Right - 16, cy = bounds.Top + bounds.Height / 2;
+            using var chevron = new Pen(textColor, 1.6F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            e.Graphics.DrawLines(chevron, new[] { new PointF(cx - 5, cy - 2.5f), new PointF(cx, cy + 2.5f), new PointF(cx + 5, cy - 2.5f) });
+            textBounds = Rectangle.FromLTRB(bounds.Left + Padding.Left + 4, bounds.Top, bounds.Right - 28, bounds.Bottom);
+            TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, textColor,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        }
+        else if (IconGlyph != null)
+        {
+            // Icon + text centered as one group.
+            using var iconFont = IconFont();
+            var iconSize = TextRenderer.MeasureText(IconGlyph, iconFont, Size.Empty, TextFormatFlags.NoPadding);
+            int textWidth = Math.Min(TextRenderer.MeasureText(Text, Font).Width, Math.Max(0, bounds.Width - iconSize.Width - 20));
+            int left = bounds.Left + Math.Max(4, (bounds.Width - iconSize.Width - 8 - textWidth) / 2);
+            TextRenderer.DrawText(e.Graphics, IconGlyph, iconFont,
+                new Rectangle(left, bounds.Top, iconSize.Width, bounds.Height), textColor,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(e.Graphics, Text, Font,
+                new Rectangle(left + iconSize.Width + 8, bounds.Top, textWidth, bounds.Height), textColor,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        }
+        else
+        {
+            TextRenderer.DrawText(e.Graphics, Text, Font, bounds, textColor,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        }
         if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(bounds, -5, -5));
     }
 
@@ -751,7 +802,7 @@ internal sealed class NavItem : Control
             g.FillPath(fill, path);
         }
 
-        Color fg = Selected ? Color.White : ModernUi.Muted;
+        Color fg = Selected ? ModernUi.AccentForeground : ModernUi.Muted;
         int iconSize = LogicalToDeviceUnits(20);
         int iconLeft = rect.Left + LogicalToDeviceUnits(14);
         var iconRect = new Rectangle(iconLeft, rect.Top + (rect.Height - iconSize) / 2, iconSize, iconSize);

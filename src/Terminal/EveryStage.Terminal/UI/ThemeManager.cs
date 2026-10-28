@@ -10,8 +10,8 @@ public static class ThemeManager
         var previous = ModernUi.Palette;
         var palette = UiPalette.For(theme);
         ModernUi.SetPalette(palette, theme);
-        int glassOpacity = root.FindForm() is GradientForm { IsMicaBackdropActive: true } ? 224 : 255;
-        ApplyRecursive(root, palette, previous, glassOpacity);
+        if (root.FindForm() is Form form) WindowsAppearance.ApplyTitleBarTheme(form, theme != AppTheme.Light);
+        ApplyRecursive(root, palette, previous);
         RefreshThemeAwareControls(root);
         ThemeScrollbars(root);
         root.Invalidate(true);
@@ -28,8 +28,7 @@ public static class ThemeManager
         ThemeScrollbars(root);
         var palette = ModernUi.Palette;
         if (themedWith == palette) return;
-        int glassOpacity = root.FindForm() is GradientForm { IsMicaBackdropActive: true } ? 224 : 255;
-        ApplyRecursive(root, palette, themedWith, glassOpacity);
+        ApplyRecursive(root, palette, themedWith);
         RefreshThemeAwareControls(root);
         root.Invalidate(true);
     }
@@ -56,14 +55,15 @@ public static class ThemeManager
     private static void RefreshThemeAwareControls(Control control)
     {
         if (control is EveryStage.Terminal.UI.Panels.ActivitiesPanel activities) activities.RefreshTheme();
+        if (control is SharedPreviewDock previewDock) previewDock.RefreshTheme();
         foreach (Control child in control.Controls) RefreshThemeAwareControls(child);
     }
 
-    private static void ApplyRecursive(Control control, UiPalette palette, UiPalette previous, int glassOpacity)
+    private static void ApplyRecursive(Control control, UiPalette palette, UiPalette previous)
     {
         control.ForeColor = MapForeground(control.ForeColor, palette, previous);
         if (control is GlassPanel glassPanel)
-            glassPanel.GlassTint = Color.FromArgb(glassOpacity, palette.GlassTint);
+            glassPanel.GlassTint = palette.GlassTint;
         control.BackColor = control switch
         {
             PillButton => Color.Transparent,
@@ -83,6 +83,7 @@ public static class ThemeManager
             Panel panel when panel.BackColor == previous.Rail => palette.Rail,
             Panel panel when panel.BackColor == previous.Surface => palette.Surface,
             Panel panel when panel.BackColor == previous.SurfaceRaised => palette.SurfaceRaised,
+            Control other when other.BackColor == Color.Transparent => Color.Transparent,
             Control other when other.BackColor == previous.Accent => palette.Accent,
             Control other when other.BackColor == previous.Danger => palette.Danger,
             Control other when other.BackColor == previous.Warning => palette.Warning,
@@ -93,12 +94,14 @@ public static class ThemeManager
         };
         if (control is Button button)
         {
+            if (button.BackColor == palette.Accent || button.BackColor == palette.Danger)
+                button.ForeColor = button.BackColor == palette.Accent ? ModernUi.AccentForeground : Color.White;
             button.FlatStyle = FlatStyle.Flat;
             button.FlatAppearance.BorderColor = button.FlatAppearance.BorderColor == previous.Danger
                 ? palette.Danger
                 : button.FlatAppearance.BorderColor == previous.Border ? palette.Border : palette.Accent;
         }
-        foreach (Control child in control.Controls) ApplyRecursive(child, palette, previous, glassOpacity);
+        foreach (Control child in control.Controls) ApplyRecursive(child, palette, previous);
     }
 
     private static Color MapForeground(Color current, UiPalette palette, UiPalette previous)

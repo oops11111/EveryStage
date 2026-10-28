@@ -109,6 +109,7 @@ public sealed class MainForm : GradientForm
 
     private readonly Panel _pairedPanel;
     private readonly Label _pairedWithLabel;
+    private readonly Label _liveStateLabel;
     private readonly Label _elapsedLabel;
     private readonly Label _qualityLabel;
     private readonly Label _privacyReminderLabel;
@@ -164,7 +165,7 @@ public sealed class MainForm : GradientForm
     /// parameter, which passes it straight through to <see cref="ScreenCaptureSource"/>'s, so this
     /// never needs its own translation step between "what the picker shows" and "what capture
     /// actually uses" — same DXGI adapter-output index all the way through.</summary>
-    private sealed record MonitorComboItem(int OutputIndex, string Label)
+    private sealed record MonitorComboItem(int OutputIndex, string Label, string? DeviceName = null)
     {
         public override string ToString() => Label; // what the ComboBox actually renders.
     }
@@ -272,6 +273,11 @@ public sealed class MainForm : GradientForm
             _monitorComboBox, _startButton, _removePairingButton,
         });
         RefreshMonitorList();
+        // Displays plugged in or removed while this window waits: DXGI output indices are positional, so
+        // a stale list could make the chosen entry capture a different physical screen than the one the
+        // operator picked, under a line promising "当前正在共享所选显示器" (audit A-13). Re-list on every
+        // display change; SystemEvents may raise this on its own thread, hence BeginInvoke.
+        Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
         // --- 投屏中态：现在是真的在投屏（见类doc comment），不再是占位符 ---
         // 布局对齐设计图：左侧显示器图标，右侧上「终端名」下「计时」，再下一条质量行。
@@ -326,7 +332,7 @@ public sealed class MainForm : GradientForm
         ModernUi.Primary(_stopCastButton, danger: true);
 
         var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font("Segoe UI Semibold", 16F), AutoSize = true, Location = new Point(24, 30) };
-        var liveState = new Label { Text = "●  正在投屏", ForeColor = ModernUi.Danger, AutoSize = true, Location = new Point(392, 42) };
+        _liveStateLabel = new Label { Text = "●  已连接 · 等待终端投到大屏", ForeColor = ModernUi.Warning, AutoSize = true, Location = new Point(292, 42) };
 
         var diagnosticsNoteLabel = new Label
         {
@@ -428,7 +434,7 @@ public sealed class MainForm : GradientForm
         };
         _pairedPanel.Controls.AddRange(new Control[]
         {
-            castingTitle, liveState, liveCard, privacyCard,
+            castingTitle, _liveStateLabel, liveCard, privacyCard,
             _stopCastButton, diagnosticsToggle, diagnosticsPanel,
         });
 
@@ -832,8 +838,17 @@ public sealed class MainForm : GradientForm
     /// selected. Called once at construction and again from <see cref="ShowStandby"/>, not just
     /// once ever — the exact staleness mistake this project's README already flagged and fixed for
     /// the Terminal's own monitor picker.</summary>
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        try { BeginInvoke(new Action(() => { if (!IsDisposed) RefreshMonitorList(); })); }
+        catch (InvalidOperationException) { } // handle destroyed meanwhile (closing)
+    }
+
     private void RefreshMonitorList()
     {
+        // Restored by device name: output indices shift when a display is removed (audit A-13).
+        string? previousDevice = (_monitorComboBox.SelectedItem as MonitorComboItem)?.DeviceName;
         int? previousSelection = (_monitorComboBox.SelectedItem as MonitorComboItem)?.OutputIndex;
 
         IReadOnlyList<ScreenCaptureSource.MonitorCaptureOption> outputs;
@@ -860,7 +875,7 @@ public sealed class MainForm : GradientForm
         {
             string label = $"显示器 {output.OutputIndex}: {output.DeviceName} " +
                            $"({output.Bounds.Width}x{output.Bounds.Height} @ {output.Bounds.X},{output.Bounds.Y})";
-            _monitorComboBox.Items.Add(new MonitorComboItem(output.OutputIndex, label));
+            _monitorComboBox.Items.Add(new MonitorComboItem(output.OutputIndex, label, output.DeviceName));
         }
 
         if (_monitorComboBox.Items.Count == 0)
@@ -874,7 +889,8 @@ public sealed class MainForm : GradientForm
         int selectedIndex = 0;
         for (int i = 0; i < _monitorComboBox.Items.Count; i++)
         {
-            if (((MonitorComboItem)_monitorComboBox.Items[i]!).OutputIndex == previousSelection)
+            var item = (MonitorComboItem)_monitorComboBox.Items[i]!;
+            if (previousDevice != null ? item.DeviceName == previousDevice : item.OutputIndex == previousSelection)
             {
                 selectedIndex = i;
                 break;
@@ -913,6 +929,12 @@ public sealed class MainForm : GradientForm
                 "需要更新程序", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
+        if (terminal.PairingProtocolVersion != PairingHandshake.ProtocolVersion)
+        {
+            MessageBox.Show(this, "终端机程序版本过旧，需要更新程序后才能安全配对。",
+                "需要更新程序", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
         // Captured now rather than read again inside ShowPaired — the combo box only ever refreshes
         // from ShowStandby()/construction (not on a timer, unlike _terminalListBox), so there's no
         // real race to guard against here, but reading it once at the point of the user's actual
@@ -923,23 +945,14 @@ public sealed class MainForm : GradientForm
         _startButton.Text = "配对中...";
         try
         {
-            var response = await _discoveryClient.RequestPairingAsync(terminal, _identity);
-            if (response is { Accepted: true })
+            var existing = _pairedTerminals.Find(terminal.DeviceId);
+            if (existing != null && PairingSecurity.IsSupportedKey(existing.PairingKey, existing.PairingKeyFormatVersion))
             {
-                if (!PairingSecurity.IsSupportedKey(response.PairingKey, response.PairingKeyFormatVersion))
-                {
-                    MessageBox.Show(this, "终端机返回的配对密钥无效，请升级两端后重新配对。",
-                        "配对失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                await ShowPairedAsync(terminal, outputIndex, response.PairingKey!, response.PairingKeyFormatVersion);
+                await ShowPairedAsync(terminal, outputIndex, existing.PairingKey!, existing.PairingKeyFormatVersion);
+                return;
             }
-            else
-            {
-                MessageBox.Show(this,
-                    response == null ? "终端机未响应（超时）。" : $"终端机拒绝了配对请求：{response.Reason ?? "未说明原因"}",
-                    "配对失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
+
+            await RequestPairingAndShowAsync(terminal, outputIndex);
         }
         finally
         {
@@ -958,7 +971,53 @@ public sealed class MainForm : GradientForm
         }
     }
 
-    private async Task ShowPairedAsync(DiscoveredTerminal terminal, int outputIndex, string pairingKey, int keyFormatVersion)
+    private async Task RequestPairingAndShowAsync(DiscoveredTerminal terminal, int outputIndex)
+    {
+        using var pairingCts = new CancellationTokenSource();
+        using var codeDialog = new PairingCodeDialog(terminal.DeviceName);
+        bool pairingFinished = false;
+        codeDialog.FormClosed += (_, _) =>
+        {
+            if (!pairingFinished) pairingCts.Cancel();
+        };
+        bool codeShown = false;
+        var response = await _discoveryClient.RequestPairingAsync(terminal, _identity, code =>
+        {
+            if (IsDisposed || Disposing) return;
+            BeginInvoke(() =>
+            {
+                if (codeDialog.IsDisposed) return;
+                codeDialog.SetCode(code);
+                if (!codeShown)
+                {
+                    codeShown = true;
+                    codeDialog.Show(this);
+                }
+            });
+        }, cancellationToken: pairingCts.Token);
+        bool cancelledByUser = pairingCts.IsCancellationRequested;
+        pairingFinished = true;
+        if (!codeDialog.IsDisposed) codeDialog.Close();
+        if (cancelledByUser) return;
+        if (response is { Accepted: true })
+        {
+            if (!PairingSecurity.IsSupportedKey(response.PairingKey, response.PairingKeyFormatVersion))
+            {
+                MessageBox.Show(this, "终端机返回的配对密钥无效，请升级两端后重新配对。",
+                    "配对失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            await ShowPairedAsync(terminal, outputIndex, response.PairingKey!, response.PairingKeyFormatVersion, allowPairingRecovery: false);
+        }
+        else
+        {
+            MessageBox.Show(this,
+                response == null ? "终端机未响应（超时）。" : $"终端机拒绝了配对请求：{response.Reason ?? "未说明原因"}",
+                "配对失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private async Task ShowPairedAsync(DiscoveredTerminal terminal, int outputIndex, string pairingKey, int keyFormatVersion, bool allowPairingRecovery = true)
     {
         // Remembered here, not just when the standby list was last built — this is the one point
         // where a pairing is actually confirmed successful, which is the right moment to persist it
@@ -990,6 +1049,13 @@ public sealed class MainForm : GradientForm
             _pairedPanel.Visible = false;
             _standbyPanel.Visible = true;
             if (IsDisposed || Disposing) return;
+            if (allowPairingRecovery && ex.Message.Contains("重新配对", StringComparison.Ordinal))
+            {
+                _pairedTerminals.Remove(terminal.DeviceId);
+                RefreshTerminalList();
+                await RequestPairingAndShowAsync(terminal, outputIndex);
+                return;
+            }
             MessageBox.Show(this, $"无法开始投屏：\n\n{ex.Message}",
                 "投屏启动失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
@@ -1042,6 +1108,12 @@ public sealed class MainForm : GradientForm
         string qualityLatency = _liveCastSession.RealRoundTripEstimate is { } liveRtt
             ? $"延迟 {liveRtt.TotalMilliseconds:F0} ms"
             : "延迟测量中";
+        _liveStateLabel.ForeColor = _liveCastSession.IsTerminalAlive
+            ? (_liveCastSession.TerminalOnProgram ? ModernUi.Danger : ModernUi.Warning)
+            : ModernUi.Warning;
+        _liveStateLabel.Text = _liveCastSession.IsTerminalAlive
+            ? (_liveCastSession.TerminalOnProgram ? "●  已连接 · 大屏显示中" : "●  已连接 · 等待终端投到大屏")
+            : "●  已连接 · 等待终端确认";
         _qualityLabel.ForeColor = _liveCastSession.IsTerminalAlive ? ModernUi.Success : ModernUi.Warning;
         _qualityLabel.Text = _liveCastSession.IsTerminalAlive
             ? $"●  {qualityLatency}  ·  终端在线"
@@ -1065,7 +1137,7 @@ public sealed class MainForm : GradientForm
             ? $"，音频已接收 {_liveCastSession.TerminalAudioBytesReceived} 字节"
             : "";
         string terminalLine = _liveCastSession.IsTerminalAlive
-            ? $"终端机确认: 已解码 {_liveCastSession.TerminalFramesDecoded} 帧，" +
+            ? $"终端机确认: {(_liveCastSession.TerminalOnProgram ? "大屏显示中" : "设备窗口预览中")}，已解码 {_liveCastSession.TerminalFramesDecoded} 帧，" +
               $"视频已接收 {_liveCastSession.TerminalVideoBytesReceived} 字节{terminalAudioNote}{latencyNote}" +
               (_liveCastSession.TerminalVideoError != null ? $"（终端机视频出错：{_liveCastSession.TerminalVideoError}）" : "") +
               (_liveCastSession.TerminalAudioError != null ? $"（终端机音频出错：{_liveCastSession.TerminalAudioError}）" : "") +
@@ -1297,6 +1369,7 @@ public sealed class MainForm : GradientForm
             // handler from firing BeginInvoke against a form that's mid-teardown, not a leak of
             // _discoveryClient itself.
             _discoveryClient.TerminalListChanged -= OnTerminalListChanged;
+            Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged; // static event: would keep this form alive
             _listRefreshTimer.Dispose();
             _captureStatsTimer.Dispose();
             _captureSelfTest.Dispose();

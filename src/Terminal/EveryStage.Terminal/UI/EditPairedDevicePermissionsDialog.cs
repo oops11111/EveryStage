@@ -64,7 +64,7 @@ public sealed class EditPairedDevicePermissionsDialog : Form
         };
         _trustCheckbox = new CheckBox
         {
-            Text = "信任此设备（以后自动接受，无需再次确认）",
+            Text = "标记为信任设备（自动接受尚未实现，每次仍需确认）", // honest label, audit B-14
             Checked = device.TrustMode == TrustMode.Trusted,
             Bounds = new Rectangle(12, 120, 296, 24),
         };

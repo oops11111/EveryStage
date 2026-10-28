@@ -21,6 +21,16 @@ public enum VideoScaleMode
     FitWidth,
 }
 
+/// <summary>YCbCr matrix used to convert decoded frames to RGB.</summary>
+public enum VideoColorMatrix
+{
+    /// <summary>BT.709 from 720 lines up, BT.601 below — the usual convention for files that do not say.</summary>
+    Auto,
+    /// <summary>Standard definition, and what the Caster's BGRA→NV12 conversion produces (D3D11's default).</summary>
+    Bt601,
+    Bt709,
+}
+
 /// <summary>
 /// Presents decoded NV12 DXVA output textures straight to the window's swap chain using the
 /// GPU video processor (ID3D11VideoProcessor), i.e. no ID3D11DeviceContext.Map / CPU readback and
@@ -45,6 +55,10 @@ public sealed class SwapChainPresenter : IDisposable
     private ID3D11VideoProcessorEnumerator? _enumerator;
     private ID3D11VideoProcessor? _processor;
     private int _inputWidth, _inputHeight, _outputWidth, _outputHeight;
+
+    /// <summary>How decoded YCbCr is converted (audit C-32). Takes effect on the next frame.</summary>
+    public VideoColorMatrix ColorMatrix { get; set; } = VideoColorMatrix.Auto;
+    private VideoColorMatrix _appliedColorMatrix;
 
     /// <summary>Applied on every <see cref="PresentFrame"/>; safe to change between frames.</summary>
     public VideoScaleMode ScaleMode { get; set; } = VideoScaleMode.Stretch;
@@ -112,21 +126,31 @@ public sealed class SwapChainPresenter : IDisposable
         _outputView = null;
         _backBuffer.Dispose();
 
-        _swapChain.ResizeBuffers(0, (uint)width, (uint)height, Format.Unknown, SwapChainFlags.None);
+        // The HRESULT used to be discarded although this method has already let go of the back buffer and
+        // output view (audit C-27). On failure the buffers keep their old size: take the back buffer back
+        // and keep the old dimensions so the presenter stays consistent, and report the failure from the
+        // next PresentFrame — whose callers turn it into an error card — rather than throwing into the UI
+        // handler that resized the window.
+        var result = _swapChain.ResizeBuffers(0, (uint)width, (uint)height, Format.Unknown, SwapChainFlags.None);
         _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
-        _outputWidth = width;
-        _outputHeight = height;
+        if (result.Success)
+        {
+            _outputWidth = width;
+            _outputHeight = height;
+        }
+        else
+        {
+            _pendingResizeFailure = result;
+        }
         CreateOutputView();
         // Output size changed -> processor/enumerator sized for the old target must be rebuilt.
         _processor?.Dispose();
-        // Same discarded-HRESULT problem as Present below. A failed resize is worse than a failed present,
-        // because this method has already disposed _backBuffer and _outputView by this point: continuing
-        // past it leaves the presenter holding a disposed back buffer and a null output view that the next
-        // PresentFrame would hand straight to VideoProcessorBlt.
         _processor = null;
         _enumerator?.Dispose();
         _enumerator = null;
     }
+
+    private SharpGen.Runtime.Result? _pendingResizeFailure;
 
     /// <summary>
     /// Blits one decoded frame (an NV12 texture-array slot from the DXVA decoder pool, identified
@@ -134,6 +158,11 @@ public sealed class SwapChainPresenter : IDisposable
     /// </summary>
     public void PresentFrame(ID3D11Texture2D decodedTexture, int arraySlice, int frameWidth, int frameHeight, bool vsync)
     {
+        if (_pendingResizeFailure is { } resizeFailure)
+        {
+            _pendingResizeFailure = null;
+            resizeFailure.CheckError();
+        }
         EnsureProcessor(frameWidth, frameHeight);
 
         using var inputView = CreateInputView(decodedTexture, arraySlice);
@@ -199,7 +228,7 @@ public sealed class SwapChainPresenter : IDisposable
 
     private void EnsureProcessor(int frameWidth, int frameHeight)
     {
-        if (_processor != null && _inputWidth == frameWidth && _inputHeight == frameHeight) return;
+        if (_processor != null && _inputWidth == frameWidth && _inputHeight == frameHeight && _appliedColorMatrix == ColorMatrix) return;
 
         _processor?.Dispose();
         _enumerator?.Dispose();
@@ -218,6 +247,20 @@ public sealed class SwapChainPresenter : IDisposable
         _processor = _videoDevice.CreateVideoProcessor(_enumerator, 0);
         _inputWidth = frameWidth;
         _inputHeight = frameHeight;
+
+        // Without this the processor converts with its default matrix, BT.601, while HD video files are
+        // BT.709: reds and greens visibly off on every HD file (audit C-32). Files do not say which matrix
+        // they use on this path, so Auto takes the convention players use when unspecified — BT.709 from 720
+        // lines up, BT.601 below. Device casts are converted to NV12 by the Caster with D3D11's default
+        // (BT.601) and must be read back the same way, whatever their size.
+        bool bt709 = ColorMatrix == VideoColorMatrix.Bt709 || (ColorMatrix == VideoColorMatrix.Auto && frameHeight >= 720);
+        _videoContext.VideoProcessorSetStreamColorSpace(_processor, 0, new VideoProcessorColorSpace
+        {
+            YCbCr_Matrix = bt709 ? 1u : 0u,
+            Nominal_Range = 1, // D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235
+        });
+        _videoContext.VideoProcessorSetOutputColorSpace(_processor, new VideoProcessorColorSpace { RGB_Range = 0 }); // 0-255
+        _appliedColorMatrix = ColorMatrix;
 
         // The enumerator now exists; (re)build the output view that CreateOutputView() deferred
         // in the constructor (and after every Resize()) while _enumerator was still null.

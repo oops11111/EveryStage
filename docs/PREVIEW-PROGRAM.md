@@ -48,7 +48,7 @@ Program.cs：只有绑定了扩展屏才创建 OverlayWindow / VideoSurface / Pl
   后续优化项：Program 复用 Preview 已解码帧（共享纹理）以省去第二次解码。
 * Take：Program 从 Preview 的当前文件/活动位置/播放位置接续播放；随后 Preview 暂停并保留画面与位置（可再次投出）。
 * Program 直播期间 Preview 自动静音，防止预监声音混入现场扩声；Program 停止后恢复。
-* 投屏开关只控制本地 Program；关闭时若本地内容正在输出则停止输出，Preview 不受影响。
+* 投屏开关只控制本地 Program；关闭时若本地内容正在输出则收回这一路投屏并恢复扩展屏原状态，Preview 不受影响。
 * 设备来投与本地 Program 互斥：设备来投前停止本地 Program 输出，Preview 保留。
 * "使用系统默认程序打开"只作为显式命令（文件右键菜单、错误卡片按钮）。
 
@@ -67,7 +67,7 @@ Program.cs：只有绑定了扩展屏才创建 OverlayWindow / VideoSurface / Pl
 | 输出抽象 | `Display/IPlaybackOutput.cs`（新）、`Display/OverlayWindow.cs` | 引擎只依赖「内容画布 + 视频宿主 + 投递到 UI 线程」；扩展屏窗口实现它 |
 | 预览画布 | `Display/PreviewSurface.cs`（新） | 主窗口内的预监器：内容横向铺满预览区（保持宽高比，纵向超出部分上下居中裁切，不足则上下留黑边）；视频默认「满宽」，可切换适应/填充；Office 文档显示内嵌封面；错误卡片覆盖层 |
 | 引擎 | `Playback/PlaybackEngine.cs`、`Playback/PlaybackState.cs`（新） | 同一类的两个实例（Preview/Program）；统一状态 Idle/Loading/Playing/Paused/Failed、位置/时长/跳转/循环/音量/静音/完成；Take 快照；统一失败处理与错误卡片数据；投屏开关只拦 Program |
-| 输出状态 | `StateMachine/OutputStateMachine.cs` | 新增当前输出源（本地媒体/设备来投）；关闭投屏开关只切断本地 Program，不影响设备来投 |
+| 输出状态 | `StateMachine/OutputStateMachine.cs` | 新增当前输出源（本地媒体/设备来投）；投屏开关只约束本地媒体，不管理网络内投屏机请求 |
 | 视频 | `ContentEngine/VideoContentController.cs`、`Rendering/Decode/VideoDecodeSource.cs`、`Rendering/SwapChainPresenter.cs`、`Display/VideoSurface.cs` | 音轨可选（无音轨按墙钟定速）；音频保持 250ms 预缓冲（原每帧只补一块 AAC 会欠载）；暂停/恢复/跳转（解码到目标点）/音量/静音/淡入淡出；视频适应/填充/拉伸；分阶段错误 + 编码信息 |
 | 音频 | `ContentEngine/AudioContentController.cs`、`Rendering/Decode/AudioDecodeSource.cs`、`ContentEngine/PcmTrim.cs`（新） | 时长与跳转改用强类型 MF 调用（原 `dynamic` 猜测的签名在 Vortice 3.6.2 上不存在，跳转与时长一直静默失效）；解码到目标点；静音；暂停中跳转不再竞态；**完成事件改为缓冲播完后才发出（原来提前约 1 秒，顺序播放会切掉每首最后一秒）** |
 | 图片 | `ContentEngine/ImageContentRenderer.cs`、`Data/FileLibraryStore.cs` | GIF/多页 TIFF 标注「仅显示首帧/首页」；WebP 移出导入白名单（GDI+ 无 WebP 解码器） |
@@ -76,6 +76,18 @@ Program.cs：只有绑定了扩展屏才创建 OverlayWindow / VideoSurface / Pl
 | 测试 | `Tests/EveryStage.WindowsSelfTests/PreviewProgramTests.cs`、`MediaFixtures.cs`（新） | 用 Windows 自带编码器现场生成样本（无 FFmpeg、无二进制入库），静音运行、Program 窗口不显示 |
 
 交互约定：单击=选中；双击/「在本地预览」=在 Preview 播放；「投到屏幕」=Preview 当前内容（文件、活动位置、播放位置）接续到 Program，随后 Preview 暂停保留；「停止预览」只停 Preview；「停止输出」只停 Program，Preview 保留内容与位置；Program 在播时 Preview 自动静音；设备来投前停止本地 Program，Preview 不清空。
+
+### 设备投屏：预览 / 投屏 / 回退（2026-10-05）
+
+设备来投不再直接抢占 Program。已配对设备发起投屏后，终端先在主窗口「信号源」区域展开设备源卡片，卡片的视频区直接显示设备预览画面，右下角浮动「投屏」按钮；预览阶段音频静音，Program 原内容保持不变。
+
+点击「投屏」后，终端捕获 Program 回退点（当前文件、活动位置、PDF/PPT 页、播放位置和暂停状态；若 Program 原本空闲则记为空闲），停止本地 Program，设备流同时呈现到扩展屏并取消静音。设备卡片按钮切为「回退」，状态显示「大屏输出中」。
+
+点击「回退」、设备断开、接收 10 秒无包或解码/呈现坏死时，如果设备正在 Program 上，终端先 `DetachProgram()` 并重新静音设备预览，再恢复回退点：有快照则 `PlaybackEngine.RequestPlay(snapshot)`，必要时补 `Pause()`；原本空闲则断开输出。设备仍连接时会继续留在设备源窗口预览。
+
+本地「投到屏幕」、停止输出或扩展屏断开期间，如果设备画面正在 Program 上，只把设备流退回设备源窗口并丢弃回退点，不主动断开设备。投屏开关不管理网络内投屏机请求：关闭期间投屏机仍可请求进入设备源窗口；但开关关闭会收回已经上大屏的设备画面，并按回退点恢复设备投屏前的大屏内容或空闲状态。第二台设备请求投屏时，终端先回签名 `Pending=true`，弹出操作屏确认框；接受后断开旧设备并让新设备进入设备源窗口，仍需操作员按「投屏」才上大屏。
+
+实现上，设备投屏编排集中在 `DeviceCastController`。控制器只依赖 `IDeviceCastStream` 和 `IDeviceCastTransport`：生产路径用 `CastReceiverStream` 适配真实 `CastReceiver`，并由 `DiscoveryService` 负责状态、NACK、ping 和 CastStatus；测试路径使用 fake stream/transport，不占用发现端口即可验证预览、上屏、投屏开关不管理网络投屏机请求但会撤回已上大屏的设备流、CastStatus `OnProgram` / 终端 `DeviceId`、回退、同设备重连、本地 Take 接管、第二台设备 Pending/拒绝/接受、断开、10 秒无包和解码/呈现坏死状态转换。
 
 ## 5. 测试结果（Windows 10 Enterprise 19045，单显示器 1280×1024，Debug 与 Release 均通过）
 
@@ -88,9 +100,12 @@ Program.cs：只有绑定了扩展屏才创建 OverlayWindow / VideoSurface / Pl
 - 视频、音频：暂停/恢复/播放中跳转/暂停中跳转/循环
 - 音频完成在尾部播完之后（3.0 秒文件 3.10 秒完成）
 - 损坏/缺失文件：内部错误详情（阶段、扩展名、建议），不启动外部程序，下一个文件照常播放
-- 投屏开关关闭：只拦 Program，Preview 照常播放
+- 投屏开关关闭：只拦/收回本地 Program，恢复扩展屏原状态；Preview 照常播放
 - 投到屏幕：Program 从 Preview 当前位置接续；停止 Program 后 Preview 内容与位置不变
-- 设备来投与本地 Program 互斥；投屏开关不切断设备来投；Preview 始终不被清空
+- 设备来投与本地 Program 互斥；投屏开关不管理网络投屏机请求，但关闭时会把已上大屏的设备流退回静音预览，并恢复设备投屏前的大屏状态；Preview 始终不被清空
+- `DeviceCastController`：设备连接先留在设备源窗口预览且静音；按「投屏」才接入 Program 并取消静音；「回退」、设备断开、10 秒无包和解码/呈现坏死都会恢复投屏前内容并释放异常会话；同设备重连不弹确认、不闪回本地内容，直接替换流并保留原回退点；本地 Take 接管时设备退回静音预览且不断开；第二台设备先回 Pending，拒绝不影响当前设备，接受会恢复当前设备投屏前内容并让新设备只进预览；投屏前 Program 空闲时回退仍为空闲
+- CastStatus：设备只在预览窗口时 `OnProgram=false`，上大屏后 `OnProgram=true`，`DeviceId` 使用终端自身身份；Caster 据此显示「设备窗口预览中 / 大屏显示中」
+- `CastReceiver` shared-GPU 冒烟：两个 `VideoSurface` 共用同一个 `D3D11Device`，无帧时 `AttachProgram` / `DetachProgram` 应立即返回；视频解码器延迟到 `Start()` 初始化，因此测试可在无 H.264 硬件 MFT 的机器上实际构造接收器并验证无帧互斥
 - 「使用系统默认程序打开」只在显式调用时执行
 - 视频适应/填充/拉伸矩形计算
 
@@ -119,6 +134,6 @@ GitHub 托管 Windows 机器没有 GPU 视频处理能力和音频输出设备�
 1. Preview 与 Program 各自解码（两套 D3D11 设备/解码器/音频时钟）；后续可让 Program 复用 Preview 已解码帧。
 2. 未做真机双显示器验证（本机单显示器）：扩展屏实际输出、中途拔出扩展屏、Windows 11 均未实测；Program 通道的正确性目前由不可见窗口的自动测试覆盖。
 3. .mkv/.avi 未验证（见上）；HEVC 等依赖系统扩展的编码在未安装扩展的机器上会显示错误卡片。
-4. Preview 中的 Office 文档只显示内嵌封面卡片（WPS 真实窗口只能占用扩展屏）；PDF 在 Preview 中正常翻页。
+4. ~~Preview 中的 Office 文档只显示内嵌封面卡片~~ 已解决（2026-10-03）：PDF / Word / PPT 都在 Preview 与 Program 中真实呈现，见 [DOCUMENT-PLAYBACK.md](DOCUMENT-PLAYBACK.md)。
 5. WASAPI 暂停后报告位置约 50ms 后才稳定，时间码会一次性跳动约 0.05 秒。
 6. 活动页播放现在进入 Preview；上 Program 需点「投到屏幕」（快照包含活动与位置，Program 接着按活动顺序推进）。旧的悬浮预览窗仍跟随 Program 引擎。

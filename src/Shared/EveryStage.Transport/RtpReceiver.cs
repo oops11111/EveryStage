@@ -187,12 +187,19 @@ public sealed class RtpReceiver : IDisposable
 
     private void Dispatch(IReadOnlyList<RtpReorderBuffer.Delivery> deliveries)
     {
+            // NACK what is missing now, while the reorder buffer still holds the gap open — a
+            // retransmission can then still fill it (audit A-18). Requesting only once the buffer had
+            // advanced past the gap (the old trigger) meant every retransmission arrived too late.
+            var missingNow = _reorderBuffer.TakeNewlyMissing();
+            if (missingNow.Count > 0)
+            {
+                try { PacketGapDetected?.Invoke(missingNow); }
+                catch (Exception) { Interlocked.Increment(ref _dispatchExceptions); }
+            }
             foreach (var delivery in deliveries)
             {
                 try
                 {
-                    if (delivery.MissingSequenceNumbers is { Count: > 0 } missing)
-                        PacketGapDetected?.Invoke(missing);
                     if (delivery.PacketsLostBefore > 0) _depacketizer.Reset();
                     var ordered = delivery.Packet;
                     var nalUnit = _depacketizer.Process(ordered.Payload);

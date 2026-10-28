@@ -4,4 +4,4 @@ namespace EveryStage.Terminal.Devices;
 /// ("首次需接收端确认（弹窗/PIN码）"). Hand this to whatever UI ends up showing that popup/PIN
 /// prompt; resolve it by calling <see cref="DiscoveryService.RespondToPairing"/> with this
 /// <see cref="RequestId"/>.</summary>
-public sealed record PairingRequest(string RequestId, Guid DeviceId, string DeviceName, string RemoteAddress);
+public sealed record PairingRequest(string RequestId, Guid DeviceId, string DeviceName, string RemoteAddress, string VerificationCode);

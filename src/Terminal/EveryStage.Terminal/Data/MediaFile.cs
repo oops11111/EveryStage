@@ -37,6 +37,10 @@ public sealed class MediaFile
     public bool IsBackgroundAudio { get; set; }
     public AudioVisual BackgroundAudioVisual { get; set; } = AudioVisual.DefaultBackgroundImage;
 
+    /// <summary>Document playback settings (PDF reading mode and range, Word editor, presentation mode…).
+    /// Only meaningful when Kind == Document; null means defaults.</summary>
+    public DocumentPlaybackSettings? Document { get; set; }
+
     /// <summary>Deep-copies every setting and, by default, assigns a fresh <see cref="Id"/> so an
     /// activity's copy stays independent from the library entry it came from. Set
     /// <paramref name="preserveId"/> only for an ephemeral playback queue that must keep log identity
@@ -59,5 +63,6 @@ public sealed class MediaFile
         AllowManualSkip = AllowManualSkip,
         IsBackgroundAudio = IsBackgroundAudio,
         BackgroundAudioVisual = BackgroundAudioVisual,
+        Document = Document?.Clone(),
     };
 }

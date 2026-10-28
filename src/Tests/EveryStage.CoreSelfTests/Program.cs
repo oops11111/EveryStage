@@ -37,7 +37,13 @@ await RunAsync("Output state machine", () => Task.FromResult(TestOutputStateMach
 await RunAsync("Media queue navigation", () => Task.FromResult(TestMediaQueue()));
 await RunAsync("Settings migration", () => Task.FromResult(TestSettingsMigration()));
 await RunAsync("Log export", () => Task.FromResult(TestLogExport()));
+await RunAsync("Cast audio frames carry their own capture time (A-3)", () => Task.FromResult(TestPcmTimeline()));
+await RunAsync("Log writer: daily retention, write failures counted, folder recreated, export while writing", () => Task.FromResult(TestDailyRollingLogWriter()));
 await RunAsync("Unreadable stores preserve original data", () => Task.FromResult(TestUnreadableStores()));
+await RunAsync("PDF viewport layout (resize keeps content position)", () => Task.FromResult(TestPdfViewport()));
+await RunAsync("Document playback settings persist and clone", () => Task.FromResult(TestDocumentSettings()));
+await RunAsync("Multichannel PCM folds to stereo without clipping (5.1 / 7.1 / quad)", () => Task.FromResult(TestPcmDownmix()));
+await RunAsync("PCM converts a mid-stream format change back to the clock format (A-25)", () => Task.FromResult(TestPcmConverter()));
 await RunAsync("RTP idle gap timeout", TestIdleGapTimeout);
 await RunAsync("H.264 payload format robustness", () => Task.FromResult(TestPayloadFormatRobustness()));
 await RunAsync("Access unit assembly", () => Task.FromResult(TestAccessUnitAssembly()));
@@ -52,17 +58,22 @@ await RunAsync("Authenticated cast-start acknowledgement", () =>
     Guid terminal = Guid.NewGuid();
     foreach (bool ready in new[] { true, false })
     {
+        bool pending = !ready;
         var ack = new DiscoveryProtocol.CastStartAckMessage
-        { MediaSessionId = session, Ready = ready, Error = ready ? null : "display unavailable" };
+        { MediaSessionId = session, Ready = ready, Pending = pending, Error = ready ? null : "display unavailable" };
         PairingSecurity.Sign(ack, terminal, key);
         var decoded = DiscoveryProtocol.Decode(DiscoveryProtocol.Encode(ack)) as DiscoveryProtocol.CastStartAckMessage;
         if (decoded == null || decoded.MediaSessionId != session || decoded.SenderDeviceId != terminal
-            || decoded.Ready != ready || decoded.Error != ack.Error || !PairingSecurity.Verify(decoded, key))
+            || decoded.Ready != ready || decoded.Pending != pending || decoded.Error != ack.Error || !PairingSecurity.Verify(decoded, key))
             return Task.FromResult<(bool, string?)>((false, "Start acknowledgement lost fields or authentication."));
         decoded.Ready = !ready;
         if (PairingSecurity.Verify(decoded, key))
             return Task.FromResult<(bool, string?)>((false, "Tampered readiness was accepted."));
         decoded.Ready = ready;
+        decoded.Pending = !pending;
+        if (PairingSecurity.Verify(decoded, key))
+            return Task.FromResult<(bool, string?)>((false, "Tampered pending state was accepted."));
+        decoded.Pending = pending;
         decoded.MediaSessionId = Guid.NewGuid();
         if (PairingSecurity.Verify(decoded, key))
             return Task.FromResult<(bool, string?)>((false, "Acknowledgement could be moved to another session."));
@@ -339,7 +350,12 @@ async Task<(bool, string?)> TestAuthenticatedDelivery()
     // issued outside the clock-skew window must still be refused on that same path.
     var fresh = Message(now);
     if (!ReplayGuard.IsFresh(fresh, now)) return (false, "A message issued now was judged stale.");
-    if (!ReplayGuard.IsFresh(fresh, now)) return (false, "IsFresh is not idempotent - a retry of a fresh message was refused.");
+    // The retry path depends on IsFresh ignoring what the replay guard has already recorded (audit C-15:
+    // this used to repeat the line above, which cannot fail independently).
+    var seenGuard = new ReplayGuard();
+    if (!seenGuard.TryAccept(fresh, now)) return (false, "The replay guard refused a fresh message.");
+    if (seenGuard.TryAccept(fresh, now)) return (false, "The replay guard accepted a duplicate.");
+    if (!ReplayGuard.IsFresh(fresh, now)) return (false, "IsFresh refused a retry the replay guard had already recorded - an idempotent cast_start retry would be dropped.");
 
     var stale = Message(now - ReplayGuard.DefaultAllowedClockSkew - TimeSpan.FromSeconds(1));
     if (ReplayGuard.IsFresh(stale, now))
@@ -569,9 +585,20 @@ async Task RunAsync(string name, Func<Task<(bool Success, string? FailureReason)
     machine.SetCastSwitch(false);
     if (machine.RequestLocalFilePlayback()) return (false, "Local playback bypassed the disabled cast switch.");
     if (!machine.AcceptDeviceCastRequest()) return (false, "Device cast was rejected while the switch was off.");
+    machine.SetCastSwitch(true);
+    if (!machine.RequestLocalFilePlayback()) return (false, "Local playback was rejected while the cast switch was on.");
+    machine.SetCastSwitch(false);
+    if (machine.State != OutputState.Idle || machine.Source != ProgramSource.None)
+        return (false, "Turning the cast switch off did not retract local Program output.");
+    if (!machine.AcceptDeviceCastRequest()) return (false, "Device cast was rejected while the switch was off after local retraction.");
+    machine.SetCastSwitch(true);
+    machine.SetCastSwitch(false);
+    if (machine.State != OutputState.Active || machine.Source != ProgramSource.DeviceCast)
+        return (false, "Turning the cast switch off interrupted a device cast.");
     machine.Disconnect();
     if (machine.State != OutputState.Idle || machine.CastSwitchOn) return (false, "Disconnect changed an independent state axis.");
-    if (!observed.SequenceEqual(new[] { OutputState.Active, OutputState.Idle })) return (false, "State events were missing after a subscriber threw.");
+    if (!observed.SequenceEqual(new[] { OutputState.Active, OutputState.Idle, OutputState.Active, OutputState.Idle }))
+        return (false, "State events were missing after a subscriber threw.");
     return (true, null);
 }
 
@@ -632,4 +659,231 @@ async Task RunAsync(string name, Func<Task<(bool Success, string? FailureReason)
     {
         Directory.Delete(directory, recursive: true);
     }
+}
+
+(bool, string?) TestPdfViewport()
+{
+    var pages = Enumerable.Range(0, 120).Select(i => i % 7 == 3 ? new System.Drawing.SizeF(842, 595) : new System.Drawing.SizeF(595, 842)).ToArray();
+    // Same content position in different window sizes: the page and the offset inside it survive.
+    var state = new EveryStage.Terminal.Documents.PdfViewportState(57, 0.42);
+    foreach (var size in new[] { new System.Drawing.Size(1280, 720), new System.Drawing.Size(640, 300), new System.Drawing.Size(1920, 1080), new System.Drawing.Size(333, 777) })
+    {
+        var layout = new EveryStage.Terminal.Documents.PdfLayout(pages, size, state);
+        var back = layout.StateAt(layout.ScrollOffset);
+        if (back.PageIndex != 57 || Math.Abs(back.PageOffset - 0.42) > 0.002)
+            return (false, $"Viewport {size}: state {state} came back as {back}.");
+        var (first, last) = layout.VisiblePages(layout.ScrollOffset, preload: 2);
+        if (last - first > 8) return (false, $"Viewport {size}: {last - first + 1} pages scheduled — should be the visible few plus preload.");
+        if (first > 57 || last < 57) return (false, $"Viewport {size}: page 57 not among the rendered pages {first}..{last}.");
+    }
+    // Scrolling through the whole document visits every page in order.
+    var walk = new EveryStage.Terminal.Documents.PdfLayout(pages, new System.Drawing.Size(800, 600), EveryStage.Terminal.Documents.PdfViewportState.Start);
+    int previous = -1;
+    for (double y = 0; y <= walk.MaxScroll; y += 97)
+    {
+        int page = walk.StateAt(y).PageIndex;
+        if (page < previous || page > previous + 1) return (false, $"Scrolling skipped from page {previous} to {page}.");
+        previous = page;
+    }
+    if (previous < 118) return (false, $"Scrolling to the end only reached page {previous}.");
+    // Single-page mode lays out only the current page; zoom modes behave as named.
+    var single = new EveryStage.Terminal.Documents.PdfLayout(pages, new System.Drawing.Size(800, 600),
+        new EveryStage.Terminal.Documents.PdfViewportState(10, 0, EveryStage.Terminal.Documents.PdfDisplayMode.SinglePage, EveryStage.Terminal.Documents.PdfZoomMode.FitPage));
+    if (single.FirstLaidOutPage != 10 || single.LastLaidOutPage != 10) return (false, "Single-page mode laid out more than one page.");
+    var fit = single.PageRect(10, single.ScrollOffset);
+    if (fit.Height > 600 || fit.Width > 800 || (fit.Height < 560 && fit.Width < 760)) return (false, $"Fit-page rectangle {fit} does not fit the 800x600 view.");
+    var actual = new EveryStage.Terminal.Documents.PdfLayout(pages, new System.Drawing.Size(800, 600),
+        new EveryStage.Terminal.Documents.PdfViewportState(0, 0, ZoomMode: EveryStage.Terminal.Documents.PdfZoomMode.ActualSize));
+    if (Math.Abs(actual.RenderSize(0).Width - 793) > 2) return (false, $"Actual size rendered A4 at {actual.RenderSize(0).Width}px, expected ~793px at 96 dpi.");
+    var clamped = new EveryStage.Terminal.Documents.PdfViewportState(500, 7, CustomZoom: 99).Normalize(120);
+    if (clamped.PageIndex != 119 || clamped.PageOffset >= 1 || clamped.CustomZoom > EveryStage.Terminal.Documents.PdfLayout.MaxZoom) return (false, "Out-of-range state was not clamped.");
+    return (true, null);
+}
+
+(bool, string?) TestDocumentSettings()
+{
+    string directory = Path.Combine(Path.GetTempPath(), "EveryStage-DocSettingsTests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var store = new ScenarioStore();
+        var scenario = new Scenario { Name = "doc" };
+        var activity = new Activity { Name = "a" };
+        var file = new MediaFile
+        {
+            SourcePath = @"C:\docs\deck.pptx", Kind = MediaKind.Document,
+            Document = new DocumentPlaybackSettings
+            {
+                PresentationMode = PresentationMode.Static, StartPage = 3, EndPage = 9, Loop = true, SecondsPerPage = 7.5,
+                ReadingMode = EveryStage.Terminal.Documents.PdfDisplayMode.SinglePage, StartOffset = 0.25, LiveSync = false,
+                OpenMode = OfficeOpenMode.MicrosoftOffice, AllowEdit = false, InitialScrollPercent = 40,
+            },
+        };
+        activity.Files.Add(file);
+        scenario.Activities.Add(activity);
+        store.Scenarios.Add(scenario);
+        string path = Path.Combine(directory, "scenarios.json");
+        new ScenarioRepository(path).Save(store);
+        var loaded = new ScenarioRepository(path).Load().Scenarios.Single().Activities.Single().Files.Single().Document;
+        if (loaded is not { PresentationMode: PresentationMode.Static, StartPage: 3, EndPage: 9, Loop: true, SecondsPerPage: 7.5, LiveSync: false,
+                OpenMode: OfficeOpenMode.MicrosoftOffice, AllowEdit: false, InitialScrollPercent: 40 }
+            || loaded.ReadingMode != EveryStage.Terminal.Documents.PdfDisplayMode.SinglePage || Math.Abs(loaded.StartOffset - 0.25) > 1e-9)
+            return (false, "Document settings did not survive save/load.");
+        var copy = file.Clone();
+        copy.Document!.StartPage = 99;
+        if (file.Document.StartPage != 3) return (false, "Clone shares the document settings object with the original.");
+        var initial = file.Document.InitialPdfState();
+        if (initial.PageIndex != 2 || initial.DisplayMode != EveryStage.Terminal.Documents.PdfDisplayMode.SinglePage) return (false, "Initial PDF state ignores the start page / reading mode.");
+        return (true, null);
+    }
+    finally { Directory.Delete(directory, recursive: true); }
+}
+
+(bool, string?) TestPcmDownmix()
+{
+    static byte[] Frame(params short[] samples)
+    {
+        var bytes = new byte[samples.Length * 2];
+        for (int i = 0; i < samples.Length; i++) { bytes[i * 2] = (byte)samples[i]; bytes[i * 2 + 1] = (byte)(samples[i] >> 8); }
+        return bytes;
+    }
+    static (short L, short R) Stereo(byte[] pcm, int frame) =>
+        ((short)(pcm[frame * 4] | (pcm[frame * 4 + 1] << 8)), (short)(pcm[frame * 4 + 2] | (pcm[frame * 4 + 3] << 8)));
+
+    var stereo = Frame(1000, -1000);
+    if (!ReferenceEquals(EveryStage.Rendering.Audio.PcmDownmix.ToStereo(stereo, 2), stereo)) return (false, "Stereo input was copied instead of passed through.");
+    if (EveryStage.Rendering.Audio.PcmDownmix.OutputChannels(1) != 1 || EveryStage.Rendering.Audio.PcmDownmix.OutputChannels(6) != 2)
+        return (false, "Output channel count wrong for mono / 5.1.");
+
+    // 5.1 order FL FR FC LFE BL BR; normalisation 1 / (1 + 2 x 0.7071) = 0.4142.
+    var fiveOne = Frame(10000, 0, 0, 30000, 0, 0,   // front-left only (+ LFE, which is dropped)
+                        0, 0, 10000, 0, 0, 0,        // centre only
+                        0, 0, 0, 0, 0, 10000,        // back-right only
+                        32767, 32767, 32767, 32767, 32767, 32767); // everything at full scale
+    var folded = EveryStage.Rendering.Audio.PcmDownmix.ToStereo(fiveOne, 6);
+    if (folded.Length != 4 * 4) return (false, $"5.1 -> stereo produced {folded.Length} bytes for 4 frames.");
+    var (l0, r0) = Stereo(folded, 0);
+    var (l1, r1) = Stereo(folded, 1);
+    var (l2, r2) = Stereo(folded, 2);
+    var (l3, r3) = Stereo(folded, 3);
+    if (Math.Abs(l0 - 4142) > 2 || r0 != 0) return (false, $"Front-left (with LFE) folded to {l0}/{r0}, expected ~4142/0 (LFE must be dropped).");
+    if (Math.Abs(l1 - 2929) > 2 || l1 != r1) return (false, $"Centre folded to {l1}/{r1}, expected ~2929 on both sides.");
+    if (l2 != 0 || Math.Abs(r2 - 2929) > 2) return (false, $"Back-right folded to {l2}/{r2}, expected 0/~2929.");
+    if (l3 < 32000 || r3 < 32000) return (false, $"Full-scale 5.1 folded to {l3}/{r3}: normalisation too strong.");
+
+    // 7.1 and quad keep their frame counts; a trailing partial frame is dropped.
+    var sevenOne = new byte[8 * 2 * 3 + 5];
+    if (EveryStage.Rendering.Audio.PcmDownmix.ToStereo(sevenOne, 8).Length != 3 * 4) return (false, "7.1 frame count wrong (partial frame must be dropped).");
+    var quad = Frame(0, 0, 10000, 0);
+    var (ql, qr) = Stereo(EveryStage.Rendering.Audio.PcmDownmix.ToStereo(quad, 4), 0);
+    if (ql <= 0 || qr != 0) return (false, $"Quad back-left folded to {ql}/{qr}, expected left only.");
+    return (true, null);
+}
+
+(bool, string?) TestPcmConverter()
+{
+    static byte[] Samples(params short[] s)
+    {
+        var b = new byte[s.Length * 2];
+        for (int i = 0; i < s.Length; i++) { b[i * 2] = (byte)s[i]; b[i * 2 + 1] = (byte)(s[i] >> 8); }
+        return b;
+    }
+    static short At(byte[] b, int i) => (short)(b[i * 2] | (b[i * 2 + 1] << 8));
+
+    var same = Samples(1, 2, 3, 4);
+    if (!ReferenceEquals(EveryStage.Rendering.Audio.PcmConverter.Convert(same, 2, 48000, 2, 48000), same)) return (false, "Matching formats were copied.");
+
+    var mono = EveryStage.Rendering.Audio.PcmConverter.Convert(Samples(100, -300), 1, 48000, 2, 48000);
+    if (mono.Length != 8 || At(mono, 0) != 100 || At(mono, 1) != 100 || At(mono, 2) != -300 || At(mono, 3) != -300) return (false, "Mono -> stereo did not duplicate samples.");
+
+    var down = EveryStage.Rendering.Audio.PcmConverter.Convert(Samples(1000, 3000), 2, 48000, 1, 48000);
+    if (down.Length != 2 || At(down, 0) != 2000) return (false, "Stereo -> mono did not average.");
+
+    // The AC-3 case: the clock was opened 2ch/44.1k, the decoder now delivers 6ch/44.1k (audit A-25).
+    var sixToStereo = EveryStage.Rendering.Audio.PcmConverter.Convert(new byte[6 * 2 * 441], 6, 44100, 2, 44100);
+    if (sixToStereo.Length != 2 * 2 * 441) return (false, $"6ch -> stereo kept {sixToStereo.Length} bytes for 441 frames.");
+
+    // HE-AAC SBR case: rate doubles mid-stream; 10 ms at 48k must come out as 10 ms at 24k (and back).
+    var up = EveryStage.Rendering.Audio.PcmConverter.Convert(new byte[480 * 4], 2, 48000, 2, 24000);
+    var back = EveryStage.Rendering.Audio.PcmConverter.Convert(new byte[240 * 4], 2, 24000, 2, 48000);
+    if (up.Length != 240 * 4 || back.Length != 480 * 4) return (false, $"Resampling changed the duration ({up.Length / 4} / {back.Length / 4} frames).");
+    var ramp = EveryStage.Rendering.Audio.PcmConverter.Convert(Samples(0, 1000), 1, 24000, 1, 48000);
+    if (ramp.Length != 8 || At(ramp, 1) != 500) return (false, "Linear interpolation midpoint wrong.");
+    return (true, null);
+}
+
+(bool, string?) TestDailyRollingLogWriter()
+{
+    string directory = Path.Combine(Path.GetTempPath(), "EveryStage-LogWriterTests", Guid.NewGuid().ToString("N"));
+    try
+    {
+        var now = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Local);
+        Directory.CreateDirectory(directory);
+        string stale = Path.Combine(directory, "playback-20260905.log"); // 31 days before 2026-10-06
+        File.WriteAllText(stale, "{}\n");
+        var writer = new EveryStage.Terminal.Logging.DailyRollingLogWriter(directory, "playback", TimeSpan.FromDays(30), () => now);
+        writer.Write("first", new { value = 1 });
+        string day1 = Path.Combine(directory, "playback-20261001.log");
+        if (!File.Exists(day1) || !File.ReadAllText(day1).Contains("\"value\":1")) return (false, "The first line was not written to the day's file.");
+        if (!File.Exists(stale)) return (false, "A file inside the retention window was deleted.");
+
+        // A-4: retention must also run while the process keeps running, not only at construction.
+        now = new DateTime(2026, 10, 6, 9, 0, 0, DateTimeKind.Local);
+        writer.Write("later");
+        if (File.Exists(stale)) return (false, "A file past retention survived a day change (cleanup only ran at construction).");
+        if (!File.Exists(Path.Combine(directory, "playback-20261006.log"))) return (false, "The new day did not roll to a new file.");
+
+        // B-4: a fields object that cannot be serialized must not throw into the caller; A-5: it is counted.
+        long failedBefore = EveryStage.Terminal.Logging.DailyRollingLogWriter.FailedWriteCount;
+        writer.Write("broken", new ThrowingFields());
+        if (EveryStage.Terminal.Logging.DailyRollingLogWriter.FailedWriteCount != failedBefore + 1
+            || EveryStage.Terminal.Logging.DailyRollingLogWriter.LastFailure?.Contains("playback") != true)
+            return (false, "A failed log write was not recorded in the writer health.");
+
+        // The log folder vanishes while running: the next write recreates it.
+        Directory.Delete(directory, recursive: true);
+        writer.Write("after-delete");
+        if (!File.Exists(Path.Combine(directory, "playback-20261006.log"))) return (false, "Writing after the log folder was removed did not recreate it.");
+
+        // C-3: export while a writer holds a log open, and over an existing export.
+        string zip = Path.Combine(directory, "export", "logs.zip");
+        Directory.CreateDirectory(Path.GetDirectoryName(zip)!);
+        File.WriteAllText(zip, "previous export");
+        using (new FileStream(Path.Combine(directory, "playback-20261006.log"), FileMode.Append, FileAccess.Write, FileShare.Read))
+        {
+            if (LogExporter.Export(zip, directory) != 1) return (false, "Export failed while a log was being written.");
+        }
+        using (var archive = ZipFile.OpenRead(zip))
+            if (archive.Entries.Count != 1) return (false, "Export over an existing file did not produce a fresh archive.");
+        if (Directory.GetFiles(Path.GetDirectoryName(zip)!).Length != 1) return (false, "Export left its temporary file behind.");
+        return (true, null);
+    }
+    finally { try { Directory.Delete(directory, true); } catch (IOException) { } }
+}
+
+(bool, string?) TestPcmTimeline()
+{
+    // 48 kHz, 10 ms (480-sample) capture buffers, 1024-sample AAC frames.
+    long Ms(double ms) => (long)(ms * TimeSpan.TicksPerMillisecond);
+    var timeline = new EveryStage.Caster.Casting.PcmTimeline(48000);
+    timeline.Record(480, Ms(0));
+    timeline.Record(480, Ms(10));
+    timeline.Record(480, Ms(20));
+    if (timeline.NextFrame(1024) != Ms(0)) return (false, "First frame not stamped with its first sample's capture time.");
+    // Frame 2 starts at sample 1024, 64 samples into the third buffer — not at the time of the buffer
+    // whose submission happened to produce it (audit A-3).
+    long? second = timeline.NextFrame(1024);
+    if (second == null || Math.Abs(second.Value - Ms(20 + 64 / 48.0)) > 2) return (false, $"Second frame stamped {second / 10_000.0} ms, expected ~21.33 ms.");
+    // Silence: loopback delivers nothing for ~5 s; the next buffers keep their real capture times.
+    timeline.Record(480, Ms(5000));
+    timeline.Record(480, Ms(5010));
+    timeline.Record(480, Ms(5020));
+    long? third = timeline.NextFrame(1024); // sample 2048: 128 samples into the buffer captured at 5010 ms
+    if (third == null || Math.Abs(third.Value - Ms(5010 + 128 / 48.0)) > 2) return (false, $"Frame after a silent gap stamped {third / 10_000.0} ms, expected ~5012.67 ms.");
+    return (true, null);
+}
+
+sealed class ThrowingFields
+{
+    public string Value => throw new InvalidOperationException("getter failed");
 }

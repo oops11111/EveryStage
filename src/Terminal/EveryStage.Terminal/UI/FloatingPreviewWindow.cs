@@ -73,14 +73,9 @@ public sealed class FloatingPreviewWindow : Form
     private readonly Label _positionLabel;
     private readonly Button _seekForwardButton;
 
-    /// <summary>PLANNING.md §14.1's "编辑/保存" — only enabled while an Office document
-    /// (<see cref="WpsDocumentController.IsOfficeDocument"/>) is the current file, i.e. while its own
-    /// real WPS window is what's actually showing on the extended display. Calls
-    /// <see cref="PlaybackEngine.TrySaveCurrentOfficeDocument"/> — a convenience, not the only way to
-    /// save: the operator can always use WPS's own Ctrl+S directly in that same window (see
-    /// <see cref="WpsDocumentController"/>'s own doc comment on why 翻页/编辑 are left entirely to
-    /// WPS's real UI; 保存 is the one piece of PLANNING.md's "打开/翻页/编辑/保存" still worth wiring
-    /// here). No dedicated feedback UI beyond a brief flash of <see cref="_pageLabel"/>'s text — this
+    /// <summary>PLANNING.md §14.1's "编辑/保存" — only enabled while an Office document is the current
+    /// file. Calls <see cref="PlaybackEngine.SaveDocumentAsync"/> (the operator can also press Ctrl+S in
+    /// the WPS/Word editor window itself). No dedicated feedback UI beyond a brief flash of <see cref="_pageLabel"/>'s text — this
     /// window's existing style is lightweight labels/buttons, not modal confirmation dialogs (see
     /// <see cref="_volumeDownButton"/>'s own doc comment on preferring the simplest control that
     /// already exists here over a new one).</summary>
@@ -213,9 +208,9 @@ public sealed class FloatingPreviewWindow : Form
         _seekForwardButton.Click += (_, _) => { _playback.SeekAudioRelative(TimeSpan.FromSeconds(10)); RefreshFromEngine(); };
         // Flashes a brief result into _pageLabel — see _saveButton's own doc comment on why there's
         // no dedicated confirmation UI. RefreshFromEngine's own 500ms poll overwrites this with the
-        // normal "内容显示在独立的WPS窗口中" text on its very next tick either way, so this is
+        // normal "在 WPS/Office 编辑窗口中编辑" text on its very next tick either way, so this is
         // necessarily transient regardless of what it says.
-        _saveButton.Click += (_, _) => _pageLabel.Text = _playback.TrySaveCurrentOfficeDocument() ? "已保存" : "保存失败（见README已知风险）";
+        _saveButton.Click += async (_, _) => _pageLabel.Text = await _playback.SaveDocumentAsync() ? "已保存" : (_playback.CurrentContentNote ?? "保存失败");
 
         _refreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _refreshTimer.Tick += (_, _) => RefreshFromEngine();
@@ -284,6 +279,11 @@ public sealed class FloatingPreviewWindow : Form
 
     private void ReplacePreview(Bitmap? source)
     {
+        // Rescaling runs every 500 ms on the UI thread: from a 48 MP photo that took ~140 ms each time
+        // (audit C-29), so only when the frame actually changed. Frames are replaced, never redrawn in place.
+        if (source != null && ReferenceEquals(source, _previewSource) && _thumbnail.Image != null) return;
+        _previewSource = source;
+
         // Own the preview bitmap: the renderer may replace/dispose its frame between timer ticks.
         Image? next = null;
         if (source != null)
@@ -295,6 +295,8 @@ public sealed class FloatingPreviewWindow : Form
         _thumbnail.Image = next;
         previous?.Dispose();
     }
+
+    private Bitmap? _previewSource;
 
     private void RefreshFromEngine()
     {
@@ -319,7 +321,7 @@ public sealed class FloatingPreviewWindow : Form
         ReplacePreview(_playback.CurrentThumbnail);
 
         bool isStandaloneAudio = file.Kind == MediaKind.Audio && !file.IsBackgroundAudio;
-        bool isOfficeDocument = file.Kind == MediaKind.Document && WpsDocumentController.IsOfficeDocument(file.SourcePath);
+        bool isOfficeDocument = file.Kind == MediaKind.Document && EveryStage.Terminal.Documents.DocumentFormats.IsOffice(file.SourcePath);
 
         // Pause is meaningful for image/PDF (freezes the stay-duration clock), standalone audio, and
         // now video too (all three now have real pause-in-place — see PlaybackEngine.Pause's doc
@@ -351,14 +353,11 @@ public sealed class FloatingPreviewWindow : Form
         _seekForwardButton.Enabled = isStandaloneAudio;
         _positionLabel.Text = isStandaloneAudio ? FormatPosition(_playback.AudioPosition, _playback.AudioDuration) : "";
 
-        // Repurposed for an Office document — see WpsDocumentController's class doc comment on why
-        // there's nothing here to page-turn or preview at all (the real content is in WPS's own
-        // separate window); this at least explains the otherwise-blank thumbnail rather than looking
-        // like a bug. Otherwise null (empty text) for anything that isn't a multi-page PDF — see this
+        // For an Office document: where editing happens. Otherwise null (empty text) for anything that isn't a multi-page PDF — see this
         // class's and PlaybackEngine.DocumentPageInfo's own doc comments on why that only shows up
         // when 上一项/下一项 actually mean "turn a page" right now.
         _pageLabel.Text = isOfficeDocument
-            ? "内容显示在独立的WPS窗口中"
+            ? "在 WPS/Office 编辑窗口中编辑"
             : _playback.DocumentPageInfo is { } page ? $"第{page.CurrentPage}页/共{page.PageCount}页" : "";
     }
 

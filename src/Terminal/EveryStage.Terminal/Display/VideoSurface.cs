@@ -42,9 +42,12 @@ namespace EveryStage.Terminal.Display;
 public sealed class VideoSurface : IDisposable
 {
     private readonly object _lock = new();
+    private readonly bool _ownsGpu;
 
     public D3D11Device Gpu { get; }
-    public SwapChainPresenter Presenter { get; }
+    // Private so every access goes through the lock (audit C-22: public, "use the wrappers" was only a convention).
+    private SwapChainPresenter Presenter { get; }
+    private bool _disposed;
 
     public VideoSurface(IntPtr hostHandle, int width, int height)
     {
@@ -61,6 +64,7 @@ public sealed class VideoSurface : IDisposable
         // has no way to reach into a constructor that never returned an object to clean up the GPU
         // device that constructor's first line already created.
         Gpu = new D3D11Device();
+        _ownsGpu = true;
         try
         {
             Presenter = new SwapChainPresenter(Gpu, hostHandle, width, height);
@@ -72,6 +76,13 @@ public sealed class VideoSurface : IDisposable
         }
     }
 
+    public VideoSurface(D3D11Device sharedGpu, IntPtr hostHandle, int width, int height)
+    {
+        Gpu = sharedGpu ?? throw new ArgumentNullException(nameof(sharedGpu));
+        _ownsGpu = false;
+        Presenter = new SwapChainPresenter(Gpu, hostHandle, width, height);
+    }
+
     /// <summary>Fit/Fill/Stretch for local media; device cast mirroring keeps the default Stretch.</summary>
     public VideoScaleMode ScaleMode
     {
@@ -79,9 +90,16 @@ public sealed class VideoSurface : IDisposable
         set { lock (_lock) Presenter.ScaleMode = value; }
     }
 
+    /// <summary>Auto for local media; BT.601 for device casts (how the Caster converts to NV12).</summary>
+    public VideoColorMatrix ColorMatrix
+    {
+        get { lock (_lock) return Presenter.ColorMatrix; }
+        set { lock (_lock) Presenter.ColorMatrix = value; }
+    }
+
     public void Resize(int width, int height)
     {
-        lock (_lock) Presenter.Resize(width, height);
+        lock (_lock) { if (!_disposed) Presenter.Resize(width, height); }
     }
 
     /// <summary>Thread-safe wrapper <see cref="ContentEngine.VideoContentController"/> and
@@ -91,12 +109,24 @@ public sealed class VideoSurface : IDisposable
     /// concurrently with <see cref="Resize"/>) is unsafe.</summary>
     public void PresentFrame(ID3D11Texture2D decodedTexture, int arraySlice, int frameWidth, int frameHeight, bool vsync)
     {
-        lock (_lock) Presenter.PresentFrame(decodedTexture, arraySlice, frameWidth, frameHeight, vsync);
+        lock (_lock)
+        {
+            if (_disposed) return; // a late frame during teardown is not an error
+            Presenter.PresentFrame(decodedTexture, arraySlice, frameWidth, frameHeight, vsync);
+        }
     }
 
+    /// <summary>Takes the same lock as every other access (audit C-22): the most destructive operation
+    /// used to be the only one that bypassed it, safe today only because callers stop all presenting
+    /// threads first.</summary>
     public void Dispose()
     {
-        Presenter.Dispose();
-        Gpu.Dispose();
+        lock (_lock)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            Presenter.Dispose();
+            if (_ownsGpu) Gpu.Dispose();
+        }
     }
 }

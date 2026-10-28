@@ -65,7 +65,11 @@ public sealed class ImageContentRenderer : IContentRenderer
                     label = dimension == System.Drawing.Imaging.FrameDimension.Page.Guid ? "仅显示首页" : "仅显示首帧";
                 }
             }
-            return (new Bitmap(loaded), frames, label);
+            // Phone photos: landscape pixels + an EXIF Orientation tag GDI+ ignores (audit B-23).
+            var copy = CopyAtMostDisplaySize(loaded);
+            try { copy.RotateFlip(ExifOrientation.Of(loaded)); }
+            catch { copy.Dispose(); throw; }
+            return (copy, frames, label);
         });
         if (_disposed || version != _loadVersion)
         {
@@ -79,6 +83,35 @@ public sealed class ImageContentRenderer : IContentRenderer
 
     public bool NextPage() => false;
     public bool PreviousPage() => false;
+
+    // Longest side kept: enough for a 4K output in either orientation.
+    private const int MaxDisplayEdge = 3840;
+
+    /// <summary>The first frame as a standalone bitmap, scaled down (once, off the UI thread) when larger
+    /// than any output needs. A 48 MP phone photo used to be kept at full size — 183 MB per channel, Preview
+    /// and Program each holding one — and rescaled from that on every repaint (audit C-29).</summary>
+    private static Bitmap CopyAtMostDisplaySize(Image loaded)
+    {
+        int longest = Math.Max(loaded.Width, loaded.Height);
+        if (longest <= MaxDisplayEdge) return new Bitmap(loaded);
+        double scale = MaxDisplayEdge / (double)longest;
+        var scaled = new Bitmap(Math.Max(1, (int)Math.Round(loaded.Width * scale)), Math.Max(1, (int)Math.Round(loaded.Height * scale)));
+        try
+        {
+            using var g = Graphics.FromImage(scaled);
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            using var attributes = new System.Drawing.Imaging.ImageAttributes();
+            attributes.SetWrapMode(System.Drawing.Drawing2D.WrapMode.TileFlipXY); // no dark seam at the edges
+            g.DrawImage(loaded, new Rectangle(0, 0, scaled.Width, scaled.Height), 0, 0, loaded.Width, loaded.Height, GraphicsUnit.Pixel, attributes);
+            return scaled;
+        }
+        catch
+        {
+            scaled.Dispose();
+            throw;
+        }
+    }
 
     public void Dispose()
     {

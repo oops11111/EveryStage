@@ -97,4 +97,27 @@ public sealed class ScenarioRepository
     }
 
     private static ScenarioStore CreateDefaultStore() => new();
+
+    /// <summary>Replaces <paramref name="store"/>'s contents, in place, with what is on disk — the undo
+    /// after a failed save, so the screen never shows edits that were not saved. False (store left as it
+    /// is) when the file cannot be read.</summary>
+    public bool TryReloadInto(ScenarioStore store)
+    {
+        try
+        {
+            ScenarioStore? loaded;
+            using (var stream = File.OpenRead(_storePath))
+                loaded = JsonSerializer.Deserialize<ScenarioStore>(stream, JsonOptions);
+            if (loaded == null) return false;
+            store.Scenarios.Clear();
+            store.Scenarios.AddRange(loaded.Scenarios);
+            store.CurrentScenarioId = loaded.CurrentScenarioId;
+            _loadFailed = false; // memory now matches the real file again
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return false;
+        }
+    }
 }

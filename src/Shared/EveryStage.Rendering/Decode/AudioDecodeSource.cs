@@ -20,8 +20,16 @@ namespace EveryStage.Rendering.Decode;
 public sealed class AudioDecodeSource : IDisposable
 {
     private readonly IMFSourceReader _reader;
-    public int AudioChannels { get; }
-    public int AudioSampleRate { get; }
+
+    /// <summary>Channels/rate of the PCM <see cref="ReadNextChunk"/> returns — what the playback clock
+    /// must be built with. Fixed for this source's life: more than two decoded channels are folded to
+    /// stereo (audit B-20), and a mid-stream format change is converted back to this (audit A-25).</summary>
+    public int AudioChannels { get; private set; }
+    public int AudioSampleRate { get; private set; }
+
+    // What the decoder currently delivers; changes when MF reports CURRENTMEDIATYPECHANGED.
+    private int _decodedChannels;
+    private int _decodedRate;
 
     /// <summary>Native (compressed) format name, e.g. "MP3" / "AAC"; null if unreadable.</summary>
     public string? AudioCodec { get; }
@@ -59,10 +67,12 @@ public sealed class AudioDecodeSource : IDisposable
                 _reader.SetCurrentMediaType(SourceReaderIndex.FirstAudioStream, audioType);
 
                 using var actualAudioType = _reader.GetCurrentMediaType(SourceReaderIndex.FirstAudioStream);
-                uint bits = actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioBitsPerSample);
+                var (bits, channels, rate) = MediaReaderInfo.PcmFormat(actualAudioType);
                 if (bits != 16) throw new NotSupportedException($"解码器输出 {bits} 位 PCM，播放链路需要 16 位");
-                AudioChannels = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioNumChannels);
-                AudioSampleRate = (int)actualAudioType.GetUInt32(MediaTypeAttributeKeys.AudioSamplesPerSecond);
+                _decodedChannels = channels;
+                _decodedRate = rate;
+                AudioChannels = EveryStage.Rendering.Audio.PcmDownmix.OutputChannels(channels);
+                AudioSampleRate = rate;
             }
             catch (Exception ex)
             {
@@ -105,10 +115,33 @@ public sealed class AudioDecodeSource : IDisposable
         {
             var sample = _reader.ReadSample(SourceReaderIndex.FirstAudioStream, SourceReaderControlFlag.None, out _, out var streamFlags, out timestamp);
             if ((streamFlags & SourceReaderFlag.EndOfStream) != 0) return null;
+            // The sample returned WITH this flag is already in the new format (audit A-25).
+            if ((streamFlags & SourceReaderFlag.CurrentMediaTypeChanged) != 0) OnCurrentMediaTypeChanged(sample);
             if (sample != null) return sample;
         }
         timestamp = 0;
         return null;
+    }
+
+    private void OnCurrentMediaTypeChanged(IMFSample? sample)
+    {
+        int bits, channels, rate;
+        try
+        {
+            using var type = _reader.GetCurrentMediaType(SourceReaderIndex.FirstAudioStream);
+            (bits, channels, rate) = MediaReaderInfo.PcmFormat(type);
+        }
+        catch (Exception)
+        {
+            return; // keep the previous format rather than kill playback over an unreadable type
+        }
+        if (bits != 16 || channels <= 0 || rate <= 0)
+        {
+            sample?.Dispose();
+            throw new MediaOpenException(MediaFailureStage.Decode, $"音频格式在播放中变为 {bits} 位 {channels} 声道 {rate} Hz，无法继续播放", null, audioCodec: AudioCodec);
+        }
+        _decodedChannels = channels;
+        _decodedRate = rate;
     }
 
     /// <summary>Returns null once the audio stream reports end-of-stream (a mid-stream empty read is
@@ -126,7 +159,8 @@ public sealed class AudioDecodeSource : IDisposable
             var pcm = new byte[currentLength];
             System.Runtime.InteropServices.Marshal.Copy(data, pcm, 0, currentLength);
             buffer.Unlock();
-            return new DecodedAudioChunk(pcm, timestamp);
+            var converted = EveryStage.Rendering.Audio.PcmConverter.Convert(pcm, _decodedChannels, _decodedRate, AudioChannels, AudioSampleRate);
+            return new DecodedAudioChunk(converted, timestamp);
         }
     }
 

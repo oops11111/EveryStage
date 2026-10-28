@@ -57,6 +57,10 @@ public sealed class OverlayWindow : Form, IPlaybackOutput
 
         VideoHost = new Control { Dock = DockStyle.Fill, BackColor = System.Drawing.Color.Black };
         ContentSurface = new ContentSurface();
+        // Program output never shows a mouse pointer.
+        ContentSurface.HideCursor = true;
+        VideoHost.Cursor = ContentSurface.Cursor;
+        Cursor = ContentSurface.Cursor;
         // Both added up front — Control.Handle (needed to attach a swap chain) only exists once a
         // control has been created, and adding it to the form's Controls collection is what
         // triggers that, well before any content actually needs to display.
@@ -85,10 +89,7 @@ public sealed class OverlayWindow : Form, IPlaybackOutput
 
     // IPlaybackOutput — the Program channel draws here.
     public void Post(Action action) => BeginInvoke(action);
-    public bool CanHostExternalDocumentWindow => true;
-    public System.Drawing.Rectangle ExternalDocumentBounds => Monitor.Bounds;
-    public void YieldToExternalWindow() => HideOverlay();
-    public void ReclaimFromExternalWindow() => ShowOverlay();
+    public System.Drawing.Rectangle? OutputScreenBounds => Monitor.Bounds;
 
     /// <summary>Rebinds this (already-created) overlay to a different physical monitor, e.g. after
     /// a display-configuration change is detected. Does not hide/show — caller decides that.</summary>

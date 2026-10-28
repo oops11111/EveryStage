@@ -24,12 +24,15 @@ public sealed class TerminalDiscoveryClient : IDisposable
     private readonly UdpClient _socket;
     private readonly DeviceIdentity _identity;
     private readonly PairedTerminalStore _pairedTerminals;
+    private readonly int _terminalPort;
+    private readonly int _localPort;
     private readonly ReplayGuard _replayGuard = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly object _gate = new();
     private readonly Dictionary<(Guid Device, Guid Session), TaskCompletionSource<DiscoveryProtocol.CastStartAckMessage>> _pendingStarts = new();
     private readonly Dictionary<Guid, DiscoveredTerminal> _terminals = new();
     private readonly Dictionary<string, TaskCompletionSource<DiscoveryProtocol.PairResponseMessage>> _pendingPairRequests = new();
+    private readonly Dictionary<string, TaskCompletionSource<DiscoveryProtocol.PairChallengeMessage>> _pendingPairChallenges = new();
 
     // Same correlation-by-RequestId pattern as _pendingPairRequests, for PingAsync/HandlePong — see
     // PingMessage's own doc comment for why this exists alongside CastStatusMessage.SentAtUtc's
@@ -41,6 +44,8 @@ public sealed class TerminalDiscoveryClient : IDisposable
 
     private Task? _receiveLoop;
     private int _disposed;
+
+    public int LocalPort => _localPort;
 
     /// <summary>Raised (from a background task — marshal to the UI thread before touching UI) when
     /// a terminal is newly seen, changes name, or is pruned as expired.</summary>
@@ -65,15 +70,18 @@ public sealed class TerminalDiscoveryClient : IDisposable
     // the constructor throwing before it ever finishes, so the caller never receives an instance
     // and can never call Dispose() — the UdpClient just constructed above leaks for the rest of the
     // process's lifetime.
-    public TerminalDiscoveryClient(DeviceIdentity identity, PairedTerminalStore pairedTerminals)
+    public TerminalDiscoveryClient(DeviceIdentity identity, PairedTerminalStore pairedTerminals, int? listenPortOverride = null, int? terminalPortOverride = null)
     {
         _identity = identity;
         _pairedTerminals = pairedTerminals;
+        _terminalPort = terminalPortOverride ?? DiscoveryProtocol.Port;
+        int listenPort = listenPortOverride ?? DiscoveryProtocol.Port;
         var socket = new UdpClient();
         try
         {
             socket.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-            socket.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryProtocol.Port));
+            socket.Client.Bind(new IPEndPoint(IPAddress.Any, listenPort));
+            _localPort = ((IPEndPoint)socket.Client.LocalEndPoint!).Port;
             socket.EnableBroadcast = true;
         }
         catch
@@ -111,11 +119,28 @@ public sealed class TerminalDiscoveryClient : IDisposable
     /// <see cref="DefaultPairingRequestTimeout"/>'s own comment for why a much shorter one used to
     /// undermine that Terminal-side generosity entirely.</summary>
     public async Task<DiscoveryProtocol.PairResponseMessage?> RequestPairingAsync(
-        DiscoveredTerminal terminal, DeviceIdentity myIdentity, TimeSpan? timeout = null)
+        DiscoveredTerminal terminal, DeviceIdentity myIdentity, Action<string>? verificationCodeAvailable = null,
+        TimeSpan? timeout = null, CancellationToken cancellationToken = default)
     {
+        if (terminal.PairingProtocolVersion != PairingHandshake.ProtocolVersion)
+        {
+            return new DiscoveryProtocol.PairResponseMessage
+            {
+                RequestId = "",
+                Accepted = false,
+                Reason = "需要更新程序",
+            };
+        }
+
         string requestId = Guid.NewGuid().ToString("N");
         var tcs = new TaskCompletionSource<DiscoveryProtocol.PairResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
-        lock (_gate) _pendingPairRequests[requestId] = tcs;
+        var challengeTcs = new TaskCompletionSource<DiscoveryProtocol.PairChallengeMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handshake = new CasterPairingHandshake(requestId, myIdentity.DeviceId, terminal.DeviceId);
+        lock (_gate)
+        {
+            _pendingPairRequests[requestId] = tcs;
+            _pendingPairChallenges[requestId] = challengeTcs;
+        }
 
         try
         {
@@ -124,14 +149,45 @@ public sealed class TerminalDiscoveryClient : IDisposable
                 RequestId = requestId,
                 DeviceId = myIdentity.DeviceId,
                 DeviceName = myIdentity.DeviceName,
+                PairingProtocolVersion = PairingHandshake.ProtocolVersion,
+                CasterPublicKey = handshake.CasterPublicKey,
+                CasterNonceCommitment = handshake.CasterNonceCommitment,
             };
-            byte[] payload = DiscoveryProtocol.Encode(request);
-            await _socket.SendAsync(payload, payload.Length, new IPEndPoint(terminal.Address, DiscoveryProtocol.Port));
 
             using var timeoutCts = new CancellationTokenSource(timeout ?? DefaultPairingRequestTimeout);
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(timeoutCts.Token, cancellationToken, _cts.Token);
             try
             {
-                return await tcs.Task.WaitAsync(timeoutCts.Token);
+                while (!challengeTcs.Task.IsCompleted)
+                {
+                    await SendRawAsync(request, new IPEndPoint(terminal.Address, _terminalPort));
+                    var finished = await Task.WhenAny(challengeTcs.Task, Task.Delay(TimeSpan.FromSeconds(1), linkedCts.Token));
+                    if (finished == challengeTcs.Task) break;
+                }
+
+                var challenge = await challengeTcs.Task.WaitAsync(linkedCts.Token);
+                if (challenge.TerminalDeviceId != terminal.DeviceId)
+                    return new DiscoveryProtocol.PairResponseMessage { RequestId = requestId, Accepted = false, Reason = "终端机身份不一致，请重新发现后再试。" };
+
+                var result = handshake.ProcessChallenge(challenge.TerminalPublicKey, challenge.TerminalNonce);
+                verificationCodeAvailable?.Invoke(result.VerificationCode);
+                var reveal = new DiscoveryProtocol.PairRevealMessage { RequestId = requestId, CasterNonce = handshake.CasterNonce };
+                while (!tcs.Task.IsCompleted)
+                {
+                    await SendRawAsync(reveal, new IPEndPoint(terminal.Address, _terminalPort));
+                    var finished = await Task.WhenAny(tcs.Task, Task.Delay(TimeSpan.FromSeconds(2), linkedCts.Token));
+                    if (finished == tcs.Task) break;
+                }
+
+                var response = await tcs.Task.WaitAsync(linkedCts.Token);
+                if (response.Accepted)
+                {
+                    if (!handshake.VerifyKeyConfirmation(response.KeyConfirmation))
+                        return new DiscoveryProtocol.PairResponseMessage { RequestId = requestId, Accepted = false, Reason = "配对确认失败，请确认两端数字一致后重试。" };
+                    response.PairingKey = result.PairingKey;
+                    response.PairingKeyFormatVersion = PairingSecurity.CurrentKeyFormatVersion;
+                }
+                return response;
             }
             catch (OperationCanceledException)
             {
@@ -140,7 +196,11 @@ public sealed class TerminalDiscoveryClient : IDisposable
         }
         finally
         {
-            lock (_gate) _pendingPairRequests.Remove(requestId);
+            lock (_gate)
+            {
+                _pendingPairRequests.Remove(requestId);
+                _pendingPairChallenges.Remove(requestId);
+            }
         }
     }
 
@@ -163,7 +223,7 @@ public sealed class TerminalDiscoveryClient : IDisposable
             var ping = new DiscoveryProtocol.PingMessage { RequestId = requestId };
             byte[] payload = DiscoveryProtocol.Encode(ping);
             stopwatch.Start(); // started as close to the actual send as practical, not at method entry.
-            await _socket.SendAsync(payload, payload.Length, new IPEndPoint(terminal.Address, DiscoveryProtocol.Port));
+            await _socket.SendAsync(payload, payload.Length, new IPEndPoint(terminal.Address, _terminalPort));
 
             using var timeoutCts = new CancellationTokenSource(timeout ?? TimeSpan.FromSeconds(3));
             try
@@ -228,10 +288,16 @@ public sealed class TerminalDiscoveryClient : IDisposable
         try
         {
             bool received = await AcknowledgedMessageRetry.SendUntilAcknowledgedAsync(
-                () => SendRawAsync(request, new IPEndPoint(terminal.Address, DiscoveryProtocol.Port)),
+                () => SendRawAsync(request, new IPEndPoint(terminal.Address, _terminalPort)),
                 pending.Task, maxAttempts: 5, attemptTimeout: TimeSpan.FromSeconds(2), cancellationToken: linked.Token);
-            if (!received) throw new TimeoutException("终端机未确认就绪，请检查终端版本、显示器绑定和网络。");
+            if (!received) throw new TimeoutException("终端机未确认就绪，请检查终端版本、显示器绑定和网络；两台设备的系统时间相差超过 2 分钟时终端也会拒绝投屏，请核对两边的时间。"); // clock skew named too (audit A-14)
             var response = await pending.Task;
+            if (response.Pending)
+            {
+                var final = new TaskCompletionSource<DiscoveryProtocol.CastStartAckMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+                lock (_gate) _pendingStarts[key] = final;
+                response = await final.Task.WaitAsync(TimeSpan.FromSeconds(75), linked.Token);
+            }
             if (!response.Ready) throw new InvalidOperationException(response.Error ?? "终端机无法开始接收投屏。");
         }
         finally { lock (_gate) _pendingStarts.Remove(key); }
@@ -254,9 +320,10 @@ public sealed class TerminalDiscoveryClient : IDisposable
                 PairingSecurity.Sign(authenticated, _identity.DeviceId, key!);
             }
             byte[] payload = DiscoveryProtocol.Encode(message);
-            await _socket.SendAsync(payload, payload.Length, new IPEndPoint(terminal.Address, DiscoveryProtocol.Port));
+            await _socket.SendAsync(payload, payload.Length, new IPEndPoint(terminal.Address, _terminalPort));
         }
         catch (SocketException) { } // best-effort — same reasoning as every other send in this class.
+        catch (ObjectDisposedException) { } // the client closed meanwhile (a cast_stop sent while the window closes)
     }
 
     private async Task ReceiveLoopAsync(CancellationToken token)
@@ -311,11 +378,17 @@ public sealed class TerminalDiscoveryClient : IDisposable
                 case DiscoveryProtocol.PairResponseMessage response:
                     HandlePairResponse(response);
                     break;
+                case DiscoveryProtocol.PairChallengeMessage challenge:
+                    HandlePairChallenge(challenge);
+                    break;
                 case DiscoveryProtocol.CastStatusMessage status:
                     HandleCastStatus(status, remoteEndPoint);
                     break;
                 case DiscoveryProtocol.CastStartAckMessage startAck:
                     HandleStartAck(startAck);
+                    break;
+                case DiscoveryProtocol.CastStartRejectedMessage rejected:
+                    HandleStartRejected(rejected);
                     break;
                 case DiscoveryProtocol.CastNackMessage nack:
                     HandleCastNack(nack);
@@ -368,6 +441,33 @@ public sealed class TerminalDiscoveryClient : IDisposable
             if (_pendingStarts.TryGetValue((ack.SenderDeviceId, ack.MediaSessionId), out var pending)) pending.TrySetResult(ack);
     }
 
+    private void HandleStartRejected(DiscoveryProtocol.CastStartRejectedMessage rejected)
+    {
+        if (rejected.TerminalDeviceId == Guid.Empty || rejected.CasterDeviceId != _identity.DeviceId
+            || rejected.MediaSessionId == Guid.Empty) return;
+        TaskCompletionSource<DiscoveryProtocol.CastStartAckMessage>? pending;
+        lock (_gate)
+            _pendingStarts.TryGetValue((rejected.TerminalDeviceId, rejected.MediaSessionId), out pending);
+        if (pending == null) return;
+
+        string error = rejected.Reason switch
+        {
+            "not_paired" => "终端机要求重新配对。",
+            "not_allowed" => "终端机未允许此设备投屏。",
+            _ => "终端机拒绝了投屏请求。",
+        };
+        if (rejected.Reason == "not_paired")
+            _pairedTerminals.Remove(rejected.TerminalDeviceId);
+        pending.TrySetResult(new DiscoveryProtocol.CastStartAckMessage
+        {
+            SenderDeviceId = rejected.TerminalDeviceId,
+            MediaSessionId = rejected.MediaSessionId,
+            Ready = false,
+            Error = error,
+        });
+        if (rejected.Reason == "not_paired") TerminalListChanged?.Invoke();
+    }
+
     private void HandleCastStatus(DiscoveryProtocol.CastStatusMessage status, IPEndPoint remoteEndPoint)
     {
         var paired = _pairedTerminals.Find(status.DeviceId);
@@ -401,7 +501,8 @@ public sealed class TerminalDiscoveryClient : IDisposable
 
     /// <summary>Sends directly to an already-known <see cref="IPEndPoint"/> (a ping's own sender
     /// address+port) rather than through <see cref="SendControlMessageAsync"/>, which only knows how
-    /// to address a <see cref="DiscoveredTerminal"/> (always at <see cref="DiscoveryProtocol.Port"/>)
+    /// to address a <see cref="DiscoveredTerminal"/> (normally at <see cref="DiscoveryProtocol.Port"/>;
+    /// tests may override the port while keeping production behavior unchanged)
     /// — a reply must go back to the exact port the request actually arrived from, which happens to
     /// be the same port here but isn't guaranteed to be in general.</summary>
     private async Task SendRawAsync(DiscoveryProtocol.Message message, IPEndPoint destination)
@@ -420,11 +521,12 @@ public sealed class TerminalDiscoveryClient : IDisposable
         lock (_gate)
         {
             var updated = new DiscoveredTerminal(beacon.DeviceId, beacon.DeviceName, remoteEndPoint.Address, DateTimeOffset.Now,
-                beacon.MediaAuthenticationVersion);
+                beacon.MediaAuthenticationVersion, beacon.PairingProtocolVersion);
             changed = !_terminals.TryGetValue(beacon.DeviceId, out var existing)
                 || existing.DeviceName != updated.DeviceName
                 || !existing.Address.Equals(updated.Address)
-                || existing.MediaAuthenticationVersion != updated.MediaAuthenticationVersion;
+                || existing.MediaAuthenticationVersion != updated.MediaAuthenticationVersion
+                || existing.PairingProtocolVersion != updated.PairingProtocolVersion;
             _terminals[beacon.DeviceId] = updated;
         }
         if (changed) TerminalListChanged?.Invoke();
@@ -435,6 +537,13 @@ public sealed class TerminalDiscoveryClient : IDisposable
         TaskCompletionSource<DiscoveryProtocol.PairResponseMessage>? tcs;
         lock (_gate) _pendingPairRequests.TryGetValue(response.RequestId, out tcs);
         tcs?.TrySetResult(response);
+    }
+
+    private void HandlePairChallenge(DiscoveryProtocol.PairChallengeMessage challenge)
+    {
+        TaskCompletionSource<DiscoveryProtocol.PairChallengeMessage>? tcs;
+        lock (_gate) _pendingPairChallenges.TryGetValue(challenge.RequestId, out tcs);
+        tcs?.TrySetResult(challenge);
     }
 
     private void HandlePong(DiscoveryProtocol.PongMessage pong)

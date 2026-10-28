@@ -78,13 +78,15 @@ public sealed class H264HardwareDecoder : IDisposable
     /// <summary>Raised once per decoded frame the MFT produces. On the asynchronous path - the
     /// normal one for a hardware MFT - this comes from the event-loop thread, NOT from the caller's
     /// thread inside SubmitAccessUnit as it used to, so handlers must be thread-safe with respect
-    /// to their own state. Texture ownership passes to the handler, which must dispose it once done
-    /// presenting.
+    /// to their own state. Ownership of the texture AND of the output sample (the last argument, which
+    /// keeps the texture's decoder slot reserved) passes to the handler, which must dispose both once
+    /// done presenting.
     ///
     /// The long comes from the decoded output sample's own Media Foundation SampleTime. Reading the
     /// output metadata directly is essential: a decoder may buffer, drop, or reorder frames, so a
-    /// separate input-order FIFO cannot reliably identify an output frame.</summary>
-    public event Action<ID3D11Texture2D, int, int, int, long>? FrameDecoded;
+    /// separate input-order FIFO cannot reliably identify an output frame. The two ints after the slice
+    /// are the decoder surface's size, which includes alignment padding (1088 rows for 1080p).</summary>
+    public event Action<ID3D11Texture2D, int, int, int, long, IMFSample>? FrameDecoded;
 
     /// <summary>Raised when the decode pipeline fails. On the asynchronous path a failure surfaces
     /// on the event-loop thread with no caller to throw at, so it is reported here instead - the
@@ -338,7 +340,18 @@ public sealed class H264HardwareDecoder : IDisposable
             int arraySlice = (int)dxgiBuffer.SubresourceIndex;
             var desc = texture.Description;
             long sampleTimeTicks = ownedSample.SampleTime;
-            FrameDecoded?.Invoke(texture, arraySlice, (int)desc.Width, (int)desc.Height, sampleTimeTicks);
+            var handler = FrameDecoded;
+            if (handler == null)
+            {
+                texture.Dispose();
+                return true;
+            }
+            // The sample goes with the texture: releasing it hands this texture-array slice back to the
+            // decoder, which may decode the next frame into it while the receiver still holds this one for
+            // up to a second of A/V pacing (audit C-28). The handler releases both after presenting.
+            var sample = ownedSample;
+            ownedSample = null;
+            handler(texture, arraySlice, (int)desc.Width, (int)desc.Height, sampleTimeTicks, sample);
             return true;
         }
         finally
