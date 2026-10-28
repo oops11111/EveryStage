@@ -90,6 +90,11 @@ internal sealed class OfficeApplicationController
     private readonly OfficeSuite _suite;
     private readonly OfficeAppKind _kind;
     private HashSet<int> _preexistingPids = new();
+    // Processes that appeared while this controller created its application: the ones it may terminate.
+    // Null until creation returns (a hung creation falls back to "anything newer than _preexistingPids").
+    // Diffing against _preexistingPids alone at cleanup time also matched processes started later by
+    // another EveryStage session or by the operator (their own Word window), and killed them.
+    private volatile HashSet<int>? _startedPids;
     private dynamic? _app;
     private dynamic? _document;
     private dynamic? _showWindow;
@@ -154,6 +159,7 @@ internal sealed class OfficeApplicationController
         {
             throw Fail(OfficeStage.StartApplication, $"无法启动 {SuiteName}：{ex.Message}", ex);
         }
+        _startedPids = Process.GetProcessesByName(ProcessName).Select(p => p.Id).Where(id => !_preexistingPids.Contains(id)).ToHashSet();
         try { Version = $"{_app!.Name} {_app.Version} ({TryGet(() => (object)_app.Build)})"; }
         catch (Exception) { Version = null; }
     }
@@ -555,8 +561,12 @@ internal sealed class OfficeApplicationController
         }
     }
 
-    private IEnumerable<Process> LingeringProcesses() =>
-        Process.GetProcessesByName(ProcessName).Where(p => !_preexistingPids.Contains(p.Id));
+    private IEnumerable<Process> LingeringProcesses()
+    {
+        var started = _startedPids;
+        return Process.GetProcessesByName(ProcessName)
+            .Where(p => started != null ? started.Contains(p.Id) : !_preexistingPids.Contains(p.Id));
+    }
 
     private void RestoreWriterOptions()
     {

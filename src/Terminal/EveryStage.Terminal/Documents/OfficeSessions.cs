@@ -210,7 +210,13 @@ public abstract class OfficeSession
                 return true;
             }, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
         }
-        catch (Exception ex) { _log.LogFailure(OfficeOperationException.StageName(OfficeStage.Close), SourcePath, SuiteName, Version, ex); }
+        catch (Exception ex)
+        {
+            _log.LogFailure(OfficeOperationException.StageName(OfficeStage.Close), SourcePath, SuiteName, Version, ex);
+            // Same as a hung open: a blocked application (a dialog inside WPS/Office) would otherwise
+            // outlive EveryStage and keep the file locked, so the next open comes up read-only.
+            if (ex is TimeoutException) Controller.KillStartedProcesses();
+        }
         _health.Dispose();
         Dispatcher.Dispose();
         SharedFrame? last;
