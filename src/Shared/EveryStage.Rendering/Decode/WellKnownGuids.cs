@@ -74,7 +74,8 @@ internal static class WellKnownGuids
     // exercise it even once, so there's nothing here to fall back on if the raw value itself turns
     // out wrong beyond "GetPresentationAttribute returns some other, equally wrong duration" —
     // exactly the same failure mode as any other bit-for-bit-wrong GUID, not a new risk category.
-    public static readonly Guid MF_PD_DURATION = new("6c990d33-bb8e-477a-8598-0d5d96fcd8d2");
+    // Last byte was 0xd2; checked against mfidl.h. Unused: MediaReaderInfo reads Vortice's own key.
+    public static readonly Guid MF_PD_DURATION = new("6c990d33-bb8e-477a-8598-0d5d96fcd88a");
 
     // --- MFT category (mfobjects.h) — used by AacAudioDecoder to find the built-in AAC decoder MFT,
     // mirroring EveryStage.Caster.Encode.EncoderGuids.MFT_CATEGORY_AUDIO_ENCODER's identical role
