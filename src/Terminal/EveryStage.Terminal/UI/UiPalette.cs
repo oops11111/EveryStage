@@ -21,7 +21,7 @@ internal sealed record UiPalette(
     Color Success,
     Color GlassTint)
 {
-    public static UiPalette For(AppTheme theme) => theme switch
+    public static UiPalette For(AppTheme theme) => ThemeManager.Resolve(theme) switch
     {
         AppTheme.Light => new(
             Color.FromArgb(246, 248, 251), Color.FromArgb(250, 252, 255), Color.FromArgb(255, 255, 255),

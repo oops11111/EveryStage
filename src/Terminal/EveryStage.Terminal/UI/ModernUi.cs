@@ -278,10 +278,15 @@ public class GradientForm : Form
 {
     private Size _logicalMinimumSize;
     protected Size NormalWindowAspectRatio { get; set; }
-    internal bool IsMicaBackdropActive { get; set; }
 
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct SizingRect { public int Left, Top, Right, Bottom; }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct MinMaxInfo
+    {
+        public Point Reserved, MaxSize, MaxPosition, MinTrackSize, MaxTrackSize;
+    }
 
     public GradientForm()
     {
@@ -342,7 +347,6 @@ public class GradientForm : Form
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        if (IsMicaBackdropActive) return;
         using var background = new LinearGradientBrush(ClientRectangle,
             ModernUi.Background, ModernUi.Surface, 32F);
         e.Graphics.FillRectangle(background, ClientRectangle);
@@ -369,6 +373,18 @@ public class GradientForm : Form
             else rect.Bottom = rect.Top + size.Height;
             System.Runtime.InteropServices.Marshal.StructureToPtr(rect, m.LParam, false);
             m.Result = new IntPtr(1);
+            return;
+        }
+        if (m.Msg == 0x24 && FormBorderStyle == FormBorderStyle.None) // WM_GETMINMAXINFO
+        {
+            // A borderless window maximizes to the whole monitor, covering the task bar. Limit it to
+            // the work area of the monitor it is on (position is relative to that monitor).
+            base.WndProc(ref m);
+            var screen = Screen.FromHandle(Handle);
+            var info = System.Runtime.InteropServices.Marshal.PtrToStructure<MinMaxInfo>(m.LParam);
+            info.MaxPosition = new Point(screen.WorkingArea.Left - screen.Bounds.Left, screen.WorkingArea.Top - screen.Bounds.Top);
+            info.MaxSize = new Point(screen.WorkingArea.Width, screen.WorkingArea.Height);
+            System.Runtime.InteropServices.Marshal.StructureToPtr(info, m.LParam, false);
             return;
         }
         if (m.Msg == 0x84 && WindowState == FormWindowState.Normal)
@@ -515,14 +531,15 @@ internal sealed class AppTitleBar : Panel
             Padding = new Padding(4, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = ModernUi.Text, Font = new Font("Segoe UI Semibold", 10F),
         };
-        var close = ChromeButton("×");
-        var maximize = ChromeButton("□");
-        var minimize = ChromeButton("—");
+        var close = new CaptionButton(CaptionButton.CloseGlyph, isClose: true);
+        var maximize = new CaptionButton(CaptionButton.MaximizeGlyph);
+        var minimize = new CaptionButton(CaptionButton.MinimizeGlyph);
         close.Click += (_, _) => _form.Close();
         maximize.Click += (_, _) => ToggleMaximize();
         minimize.Click += (_, _) => _form.WindowState = FormWindowState.Minimized;
-        close.MouseEnter += (_, _) => close.BackColor = Color.FromArgb(196, 43, 51);
-        close.MouseLeave += (_, _) => close.BackColor = BackColor;
+        // Win11 swaps the maximize glyph for "restore" while the window is maximized.
+        _form.Resize += (_, _) => maximize.Glyph = _form.WindowState == FormWindowState.Maximized
+            ? CaptionButton.RestoreGlyph : CaptionButton.MaximizeGlyph;
 
         Controls.Add(title);
         // Dock=Right stacks so that the LAST-added control ends up right-most. Windows order left→
@@ -534,18 +551,6 @@ internal sealed class AppTitleBar : Panel
         MouseDown += DragWindow;
         title.DoubleClick += (_, _) => ToggleMaximize();
         DoubleClick += (_, _) => ToggleMaximize();
-    }
-
-    private Button ChromeButton(string text)
-    {
-        var button = new Button
-        {
-            Text = text, Dock = DockStyle.Right, Width = 46,
-            FlatStyle = FlatStyle.Flat, BackColor = BackColor, ForeColor = ModernUi.Muted,
-            Font = new Font("Segoe UI Symbol", 11F), TabStop = false,
-        };
-        button.FlatAppearance.BorderSize = 0;
-        return button;
     }
 
     private void DragWindow(object? sender, MouseEventArgs e)
@@ -901,5 +906,97 @@ internal static class VectorIcons
         path.CloseFigure();
         g.DrawPath(pen, path);
         g.DrawEllipse(pen, cx - inner, cy - inner, inner * 2, inner * 2);
+    }
+}
+
+/// <summary>A Windows 11 caption button: Segoe Fluent Icons glyph (Segoe MDL2 Assets on Windows 10, the
+/// same code points), 46 px wide, a faint text-coloured fill on hover/press and the system red behind a
+/// white glyph for close. Painted from the current palette, so theme switches need no remapping.</summary>
+internal sealed class CaptionButton : Control
+{
+    public const string MinimizeGlyph = "\uE921", MaximizeGlyph = "\uE922", RestoreGlyph = "\uE923", CloseGlyph = "\uE8BB";
+
+    private static readonly string IconFontFamily = PickIconFont();
+    private readonly bool _isClose;
+    private string _glyph;
+    private bool _hot, _pressed;
+
+    public CaptionButton(string glyph, bool isClose = false)
+    {
+        _glyph = glyph;
+        _isClose = isClose;
+        Dock = DockStyle.Right;
+        Width = 46;
+        TabStop = false;
+        BackColor = Color.Transparent;
+        Font = new Font(IconFontFamily, 7.5F);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+            | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+        SetStyle(ControlStyles.Selectable, false);
+    }
+
+    public string Glyph
+    {
+        get => _glyph;
+        set { if (_glyph != value) { _glyph = value; Invalidate(); } }
+    }
+
+    private static string PickIconFont()
+    {
+        using var installed = new System.Drawing.Text.InstalledFontCollection();
+        var names = installed.Families.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return names.Contains("Segoe Fluent Icons") ? "Segoe Fluent Icons"
+            : names.Contains("Segoe MDL2 Assets") ? "Segoe MDL2 Assets" : "Segoe UI Symbol";
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hot = true; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hot = false; _pressed = false; Invalidate(); }
+    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Button == MouseButtons.Left) { _pressed = true; Invalidate(); } }
+    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); _pressed = false; Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var background = Parent?.BackColor ?? ModernUi.Rail;
+        Color fill = background, ink = ModernUi.Text;
+        if (_isClose && (_hot || _pressed))
+        {
+            fill = _pressed ? Color.FromArgb(148, 22, 15) : Color.FromArgb(196, 43, 28);
+            ink = Color.White;
+        }
+        else if (_pressed) fill = Mix(background, ModernUi.Text, 0.06);
+        else if (_hot) fill = Mix(background, ModernUi.Text, 0.09);
+        using (var brush = new SolidBrush(fill)) e.Graphics.FillRectangle(brush, ClientRectangle);
+        TextRenderer.DrawText(e.Graphics, IconFontFamily == "Segoe UI Symbol" ? FallbackText() : _glyph, Font, ClientRectangle,
+            Enabled ? ink : ModernUi.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+    }
+
+    private string FallbackText() => _glyph switch
+    {
+        CloseGlyph => "×", MinimizeGlyph => "—", RestoreGlyph => "❐", _ => "□",
+    };
+
+    private static Color Mix(Color a, Color b, double amount) => Color.FromArgb(
+        (int)(a.R + (b.R - a.R) * amount), (int)(a.G + (b.G - a.G) * amount), (int)(a.B + (b.B - a.B) * amount));
+}
+
+/// <summary>The app's themed menu renderer (palette colours via <see cref="Panels.FilesPanel.FileMenuColorTable"/>)
+/// plus Windows 11 small rounded corners on every menu window it draws, submenus included.</summary>
+internal sealed class ThemedMenuRenderer : ToolStripProfessionalRenderer
+{
+    public ThemedMenuRenderer() : base(new Panels.FilesPanel.FileMenuColorTable()) { }
+
+    protected override void Initialize(ToolStrip toolStrip)
+    {
+        base.Initialize(toolStrip);
+        if (!WindowsAppearance.IsWindows11) return;
+        if (toolStrip is ToolStripDropDown dropDown) dropDown.Opened += (_, _) => WindowsAppearance.UseMenuCorners(dropDown);
+        foreach (ToolStripItem item in toolStrip.Items) HookSubmenu(item);
+        toolStrip.ItemAdded += (_, e) => HookSubmenu(e.Item);
+    }
+
+    private static void HookSubmenu(ToolStripItem? item)
+    {
+        if (item is ToolStripDropDownItem owner)
+            owner.DropDownOpened += (_, _) => WindowsAppearance.UseMenuCorners(owner.DropDown);
     }
 }

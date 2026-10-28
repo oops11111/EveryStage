@@ -1,12 +1,34 @@
 using System.Runtime.CompilerServices;
 using EveryStage.Terminal.Data;
+using Microsoft.Win32;
 
 namespace EveryStage.Terminal.UI;
 
 public static class ThemeManager
 {
+    /// <summary>The concrete theme for a configured one: "跟随系统" becomes Light or Dark from Windows'
+    /// app mode at the time of the call.</summary>
+    public static AppTheme Resolve(AppTheme theme) => theme == AppTheme.System
+        ? (WindowsAppearance.SystemUsesLightTheme() ? AppTheme.Light : AppTheme.Dark)
+        : theme;
+
+    /// <summary>Re-applies through <paramref name="reapply"/> when Windows switches between light and dark
+    /// while the configured theme is "跟随系统". Unsubscribes when <paramref name="owner"/> is disposed —
+    /// <see cref="SystemEvents"/> is static and would otherwise keep the window alive.</summary>
+    public static void FollowSystemTheme(Control owner, Func<AppTheme> configured, Action reapply)
+    {
+        UserPreferenceChangedEventHandler handler = (_, e) =>
+        {
+            if (e.Category != UserPreferenceCategory.General || configured() != AppTheme.System) return;
+            if (owner.IsHandleCreated && !owner.IsDisposed) owner.BeginInvoke(reapply);
+        };
+        SystemEvents.UserPreferenceChanged += handler;
+        owner.Disposed += (_, _) => SystemEvents.UserPreferenceChanged -= handler;
+    }
+
     public static void Apply(Control root, AppTheme theme)
     {
+        theme = Resolve(theme);
         var previous = ModernUi.Palette;
         var palette = UiPalette.For(theme);
         ModernUi.SetPalette(palette, theme);

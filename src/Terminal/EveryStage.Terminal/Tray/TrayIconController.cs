@@ -32,6 +32,7 @@ public sealed class TrayIconController : IDisposable
         var exitItem = new ToolStripMenuItem("退出", null, (_, _) => ExitRequested?.Invoke());
 
         var menu = new ContextMenuStrip();
+        menu.Opened += (_, _) => EveryStage.Terminal.UI.WindowsAppearance.UseMenuCorners(menu);
         menu.Items.Add(openMainWindowItem);
         menu.Items.Add(_castSwitchItem);
         menu.Items.Add(new ToolStripSeparator());

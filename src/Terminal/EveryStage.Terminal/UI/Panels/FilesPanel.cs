@@ -460,7 +460,7 @@ public sealed class FilesPanel : UserControl
             ShowImageMargin = false,
             BackColor = ModernUi.Background,
             ForeColor = ModernUi.Text,
-            Renderer = new ToolStripProfessionalRenderer(new FileMenuColorTable()),
+            Renderer = new ThemedMenuRenderer(),
         };
         // Everything above the last separator stays inside EveryStage (Preview / Program). The only
         // hand-off to Windows is the explicit last item — never a side effect of playing.
@@ -522,7 +522,7 @@ public sealed class FilesPanel : UserControl
             ShowImageMargin = false,
             BackColor = ModernUi.Surface,
             ForeColor = ModernUi.Text,
-            Renderer = new ToolStripProfessionalRenderer(new FileMenuColorTable()),
+            Renderer = new ThemedMenuRenderer(),
         };
         menu.Items.Add("导入文件...", null, (_, _) => ImportViaDialog());
         menu.Items.Add(new ToolStripSeparator());
@@ -576,7 +576,7 @@ public sealed class FilesPanel : UserControl
             ShowCheckMargin = true,
             BackColor = ModernUi.Surface,
             ForeColor = ModernUi.Text,
-            Renderer = new ToolStripProfessionalRenderer(new FileMenuColorTable()),
+            Renderer = new ThemedMenuRenderer(),
         };
         var doubleClick = new ToolStripMenuItem("双击播放") { Checked = true };
         var singleClick = new ToolStripMenuItem("单击播放");
@@ -656,8 +656,10 @@ public sealed class FilesPanel : UserControl
     internal sealed class FileMenuColorTable : ProfessionalColorTable
     {
         public override Color ToolStripDropDownBackground => ModernUi.Surface;
-        public override Color MenuBorder => ModernUi.Border;
-        public override Color MenuItemBorder => ModernUi.Accent;
+        // Windows 11 draws its own outline around a rounded menu window; a square inner border would
+        // show at the corners. Hover is a soft fill without an accent outline, as in Win11 menus.
+        public override Color MenuBorder => WindowsAppearance.IsWindows11 ? ModernUi.Surface : ModernUi.Border;
+        public override Color MenuItemBorder => ModernUi.SurfaceRaised;
         public override Color MenuItemSelected => ModernUi.SurfaceRaised;
         public override Color MenuItemSelectedGradientBegin => ModernUi.SurfaceRaised;
         public override Color MenuItemSelectedGradientEnd => ModernUi.SurfaceRaised;

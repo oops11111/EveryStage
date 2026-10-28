@@ -8,8 +8,13 @@ internal static class WindowsAppearance
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
     private const int DwaUseImmersiveDarkMode = 20;
-    private const int DwaSystemBackdropType = 38;
-    private const int DwmSystemBackdropMainWindow = 2;
+    private const int DwaWindowCornerPreference = 33;
+    private const int DwaBorderColor = 34;
+    private const int CornerRound = 2, CornerRoundSmall = 3;
+
+    /// <summary>Windows 11 (build 22000+): rounded corners and a coloured window border are available
+    /// from DWM. On Windows 10 every Win11-only call below is skipped.</summary>
+    public static bool IsWindows11 => OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000);
 
     public static void UseDarkTitleBar(Form form)
     {
@@ -25,31 +30,47 @@ internal static class WindowsAppearance
         // Windows 10 20H1+ uses 20; older Windows 10 builds use 19.
         if (DwmSetWindowAttribute(form.Handle, DwaUseImmersiveDarkMode, ref enabled, sizeof(int)) != 0)
             DwmSetWindowAttribute(form.Handle, 19, ref enabled, sizeof(int));
+        if (IsWindows11)
+        {
+            // The 1px window outline in the palette's border colour, as Win11 draws it for its own apps.
+            int border = ColorTranslator.ToWin32(ModernUi.Border);
+            DwmSetWindowAttribute(form.Handle, DwaBorderColor, ref border, sizeof(int));
+        }
     }
 
-    /// <summary>Requests the system Mica backdrop on Windows 11 22H2+. On older Windows versions,
-    /// or if DWM rejects the attribute, the form keeps its normal painted background.</summary>
-    public static void EnableMica(GradientForm form)
+    /// <summary>Windows 11 rounded corners for a borderless window with its own title bar (DWM rounds
+    /// framed windows by itself, but not borderless ones). Never used for the full-screen output
+    /// window: a rounded corner on the LED/projector image would cut off content.</summary>
+    public static void UseRoundedCorners(Form form)
     {
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621)) return;
+        if (!IsWindows11) return;
+        form.HandleCreated += (_, _) => SetCorner(form.Handle, CornerRound);
+        if (form.IsHandleCreated) SetCorner(form.Handle, CornerRound);
+    }
 
-        void ApplyMica()
+    /// <summary>Small Windows 11 corners for a menu window (context menus, submenus, overflow).</summary>
+    public static void UseMenuCorners(ToolStripDropDown dropDown)
+    {
+        if (IsWindows11 && dropDown.IsHandleCreated) SetCorner(dropDown.Handle, CornerRoundSmall);
+    }
+
+    private static void SetCorner(IntPtr handle, int preference)
+    {
+        try { DwmSetWindowAttribute(handle, DwaWindowCornerPreference, ref preference, sizeof(int)); }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+    }
+
+    /// <summary>Windows "应用模式" (Settings → Personalization → Colors): true for light. Missing value
+    /// (older builds) reads as light, Windows' own default.</summary>
+    public static bool SystemUsesLightTheme()
+    {
+        try
         {
-            try
-            {
-                int backdrop = DwmSystemBackdropMainWindow;
-                form.IsMicaBackdropActive = DwmSetWindowAttribute(
-                    form.Handle, DwaSystemBackdropType, ref backdrop, sizeof(int)) == 0;
-            }
-            catch (DllNotFoundException) { form.IsMicaBackdropActive = false; }
-            catch (EntryPointNotFoundException) { form.IsMicaBackdropActive = false; }
-            if (form.IsMicaBackdropActive)
-                ThemeManager.Apply(form, ModernUi.CurrentTheme);
-            form.Invalidate(true);
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is not int value || value != 0;
         }
-
-        form.HandleCreated += (_, _) => ApplyMica();
-        if (form.IsHandleCreated) ApplyMica();
+        catch (Exception) { return true; }
     }
 
     [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]

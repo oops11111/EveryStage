@@ -246,6 +246,7 @@ public sealed class FloatingPreviewWindow : Form
             Hide();
         };
         ThemeManager.Apply(this, settingsStore.Current.Theme);
+        ThemeManager.FollowSystemTheme(this, () => settingsStore.Current.Theme, () => ThemeManager.Apply(this, settingsStore.Current.Theme));
     }
 
     private void OnSettingsChanged(AppSettings settings) => ThemeManager.Apply(this, settings.Theme);

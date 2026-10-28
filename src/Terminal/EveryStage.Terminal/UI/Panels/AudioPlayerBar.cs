@@ -231,7 +231,7 @@ internal sealed class AudioPlayerBar : GlassPanel
             ShowCheckMargin = true,
             BackColor = ModernUi.Surface,
             ForeColor = ModernUi.Text,
-            Renderer = new ToolStripProfessionalRenderer(new FilesPanel.FileMenuColorTable()),
+            Renderer = new ThemedMenuRenderer(),
         };
         foreach (var file in _audioFiles)
         {

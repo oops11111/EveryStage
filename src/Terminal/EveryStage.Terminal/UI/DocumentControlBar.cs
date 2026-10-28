@@ -64,7 +64,7 @@ internal sealed class DocumentControlBar : Panel
         ShowImageMargin = false,
         BackColor = ModernUi.Surface,
         ForeColor = ModernUi.Text,
-        Renderer = new ToolStripProfessionalRenderer(new Panels.FilesPanel.FileMenuColorTable()),
+        Renderer = new ThemedMenuRenderer(),
     };
 
     private PlaybackEngine? Target => _sync.Target;

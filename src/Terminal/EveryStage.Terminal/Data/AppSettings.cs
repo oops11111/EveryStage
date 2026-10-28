@@ -52,4 +52,6 @@ public sealed class AppSettings
     public int? DefaultStayDurationSeconds { get; set; }
 }
 
-public enum AppTheme { Light, Dark, Tech }
+/// <summary>Stored as its number. <see cref="System"/> (appended, so existing files keep their meaning)
+/// follows Windows' app mode and is resolved to Light or Dark by <c>ThemeManager.Resolve</c>.</summary>
+public enum AppTheme { Light, Dark, Tech, System }

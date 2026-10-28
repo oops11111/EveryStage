@@ -240,7 +240,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             ShowImageMargin = false,
             BackColor = ModernUi.Surface,
             ForeColor = ModernUi.Text,
-            Renderer = new ToolStripProfessionalRenderer(new FilesPanel.FileMenuColorTable()),
+            Renderer = new ThemedMenuRenderer(),
         };
         _editMenu.Items.AddRange(new ToolStripItem[]
         {

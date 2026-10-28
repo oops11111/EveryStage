@@ -72,7 +72,7 @@ public sealed class SettingsPanel : UserControl
             ForeColor = ModernUi.Text,
         };
         _themeComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Visible = false };
-        _themeComboBox.Items.AddRange(new object[] { "白色", "黑色", "蓝色" });
+        _themeComboBox.Items.AddRange(new object[] { "白色", "黑色", "蓝色", "跟随系统" });
         _themeComboBox.SelectedIndex = Math.Clamp((int)settings.Theme, 0, _themeComboBox.Items.Count - 1);
         var themeCards = new FlowLayoutPanel
         {
@@ -82,7 +82,7 @@ public sealed class SettingsPanel : UserControl
             BackColor = Color.Transparent,
             Margin = Padding.Empty,
         };
-        string[] themeNames = { "白色", "黑色", "蓝色" };
+        string[] themeNames = { "白色", "黑色", "蓝色", "跟随系统" };
         for (int i = 0; i < themeNames.Length; i++)
         {
             var card = new ThemePreviewCard(themeNames[i], i, () => _themeComboBox.SelectedIndex, index =>
@@ -91,8 +91,9 @@ public sealed class SettingsPanel : UserControl
                 foreach (Control control in themeCards.Controls) control.Invalidate();
             })
             {
-                Size = new Size(174, 100),
-                Margin = new Padding(0, 0, 12, 0),
+                // Four cards in the 570 px row (the fourth, 跟随系统, follows Windows' light/dark mode).
+                Size = new Size(132, 100),
+                Margin = new Padding(0, 0, 10, 0),
             };
             themeCards.Controls.Add(card);
         }
@@ -555,20 +556,38 @@ public sealed class SettingsPanel : UserControl
             g.DrawPath(border, cardPath);
 
             var preview = new Rectangle(10, 10, Width - 20, 57);
+            if ((AppTheme)_index == AppTheme.System)
+            {
+                // 跟随系统: the light preview with its right half in dark, split on the diagonal.
+                DrawThemePreview(g, preview, UiPalette.For(AppTheme.Light));
+                using var darkHalf = new GraphicsPath();
+                darkHalf.AddPolygon(new[] { new Point(preview.Right, preview.Top), new Point(preview.Right, preview.Bottom),
+                    new Point(preview.Left + preview.Width / 3, preview.Bottom), new Point(preview.Left + preview.Width * 2 / 3, preview.Top) });
+                var clip = g.Clip;
+                g.SetClip(darkHalf, CombineMode.Intersect);
+                DrawThemePreview(g, preview, UiPalette.For(AppTheme.Dark));
+                g.Clip = clip;
+            }
+            else DrawThemePreview(g, preview, theme);
+
+            TextRenderer.DrawText(g, _title, Font, new Rectangle(10, 72, Width - 20, 20),
+                ModernUi.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+        }
+
+        private static void DrawThemePreview(Graphics g, Rectangle preview, UiPalette theme)
+        {
             using (var previewFill = new SolidBrush(theme.Background)) g.FillRectangle(previewFill, preview);
             using (var railFill = new SolidBrush(theme.Rail)) g.FillRectangle(railFill, preview.X, preview.Y, 7, preview.Height);
             using (var glassFill = new SolidBrush(theme.GlassTint))
                 g.FillRectangle(glassFill, preview.X + 13, preview.Y + 7, preview.Width - 20, preview.Height - 14);
             using (var textBrush = new SolidBrush(theme.Text))
             {
-                g.FillRectangle(textBrush, preview.X + 17, preview.Y + 12, 48, 5);
-                g.FillRectangle(textBrush, preview.X + 17, preview.Y + 24, 75, 4);
+                // Proportional, so the mock text never runs into the accent swatch on the narrower cards.
+                g.FillRectangle(textBrush, preview.X + 17, preview.Y + 12, preview.Width * 35 / 100, 5);
+                g.FillRectangle(textBrush, preview.X + 17, preview.Y + 24, preview.Width * 45 / 100, 4);
             }
             using (var accentBrush = new SolidBrush(theme.Accent))
                 g.FillRectangle(accentBrush, preview.Right - 43, preview.Y + 17, 31, 17);
-
-            TextRenderer.DrawText(g, _title, Font, new Rectangle(10, 72, Width - 20, 20),
-                ModernUi.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
         }
     }
 

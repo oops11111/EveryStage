@@ -98,7 +98,7 @@ public sealed class MainWindow : GradientForm
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.None;
         WindowsAppearance.UseDarkTitleBar(this);
-        WindowsAppearance.EnableMica(this);
+        WindowsAppearance.UseRoundedCorners(this);
         // Keep the client area fully app-painted. Windows 10's legacy acrylic/blur accent policy
         // composites through transparent WinForms children as a flat gray surface (not the design
         // palette), even when each GlassPanel has an opaque tint. GlassPanel supplies the visual
@@ -320,6 +320,7 @@ public sealed class MainWindow : GradientForm
         UpdateStatusLabel();
         ShowPanel(_filesPanel);
         ApplyTheme(settingsStore.Current.Theme);
+        ThemeManager.FollowSystemTheme(this, () => settingsStore.Current.Theme, () => ApplyTheme(settingsStore.Current.Theme));
         ModernUi.SetNavActive(navButtons, filesButton);
 
         // Terminal is meant to run unattended in the background (PLANNING.md's whole framing) —
