@@ -123,6 +123,18 @@ public class GradientForm : Form
             ClientSize.Width, ClientSize.Height);
     }
 
+    /// <summary>WinForms leaves WS_MINIMIZEBOX off a borderless form, so clicking the task-bar button
+    /// could not minimize the Caster window. (The window has no maximize, see AppTitleBar.)</summary>
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            if (FormBorderStyle == FormBorderStyle.None && MinimizeBox) cp.Style |= 0x00020000; // WS_MINIMIZEBOX
+            return cp;
+        }
+    }
+
     protected override void WndProc(ref Message m)
     {
         if (m.Msg == 0x84 && WindowState == FormWindowState.Normal)

@@ -401,7 +401,85 @@ public class GradientForm : Form
             if (t) { m.Result = new IntPtr(12); return; }
             if (b) { m.Result = new IntPtr(15); return; }
         }
+        if (HandleSnapMaximizeButton(ref m)) return;
         base.WndProc(ref m);
+    }
+
+    /// <summary>WinForms leaves the minimize/maximize box styles off a borderless form. Without
+    /// WS_MINIMIZEBOX clicking the task-bar button cannot minimize the window, and without
+    /// WS_MAXIMIZEBOX Windows 11 does not treat the window as having a maximize button for Snap
+    /// Layouts. Neither style draws anything on a window without a caption.</summary>
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            if (FormBorderStyle == FormBorderStyle.None)
+            {
+                if (MinimizeBox) cp.Style |= 0x00020000; // WS_MINIMIZEBOX
+                if (MaximizeBox) cp.Style |= 0x00010000; // WS_MAXIMIZEBOX
+            }
+            return cp;
+        }
+    }
+
+    // ── Windows 11 Snap Layouts on the custom maximize button ─────────────────────────────────────
+    // Windows 11 opens its snap-layout flyout when the pointer rests on a window's maximize button,
+    // which for a custom title bar means WM_NCHITTEST must answer HTMAXBUTTON there. The button (and
+    // the title bar under it) answer HTTRANSPARENT so the hit test reaches this form; the clicks and
+    // hover then arrive here as non-client messages, handled below rather than by DefWindowProc, which
+    // would paint a classic caption button over ours.
+
+    private const int HtMaxButton = 9;
+    private const int WmNcMouseMove = 0xA0, WmNcLButtonDown = 0xA1, WmNcLButtonUp = 0xA2, WmNcLButtonDblClk = 0xA3, WmNcMouseLeave = 0x2A2;
+    private bool _trackingNonClientLeave;
+
+    /// <summary>The title bar's maximize button, when it should offer Snap Layouts (set by AppTitleBar).</summary>
+    internal CaptionButton? SnapMaximizeButton { get; set; }
+
+    internal bool IsOverSnapMaximizeButton(Point screenPoint) =>
+        SnapMaximizeButton is { Visible: true, IsHandleCreated: true } button
+        && button.RectangleToScreen(button.ClientRectangle).Contains(screenPoint);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TrackMouseEventInfo { public int Size, Flags; public IntPtr Window; public int HoverTime; }
+
+    [DllImport("user32.dll")]
+    private static extern bool TrackMouseEvent(ref TrackMouseEventInfo info);
+
+    private bool HandleSnapMaximizeButton(ref Message m)
+    {
+        var button = SnapMaximizeButton;
+        if (button == null || !WindowsAppearance.IsWindows11) return false;
+        switch (m.Msg)
+        {
+            case 0x84 when IsOverSnapMaximizeButton(Cursor.Position):
+                m.Result = new IntPtr(HtMaxButton);
+                return true;
+            case WmNcMouseMove:
+                button.SetNonClientState(hot: m.WParam.ToInt32() == HtMaxButton, pressed: null);
+                if (!_trackingNonClientLeave)
+                {
+                    var track = new TrackMouseEventInfo { Size = Marshal.SizeOf<TrackMouseEventInfo>(), Flags = 0x2 | 0x10, Window = Handle };
+                    _trackingNonClientLeave = TrackMouseEvent(ref track); // TME_LEAVE | TME_NONCLIENT
+                }
+                return false; // DefWindowProc still sees the move (the flyout is driven by the hover)
+            case WmNcMouseLeave:
+                _trackingNonClientLeave = false;
+                button.SetNonClientState(hot: false, pressed: false);
+                return false;
+            case WmNcLButtonDown or WmNcLButtonDblClk when m.WParam.ToInt32() == HtMaxButton:
+                button.SetNonClientState(hot: true, pressed: true);
+                m.Result = IntPtr.Zero;
+                return true;
+            case WmNcLButtonUp when m.WParam.ToInt32() == HtMaxButton:
+                bool click = button.NonClientPressed;
+                button.SetNonClientState(hot: true, pressed: false);
+                if (click) button.RaiseClick();
+                m.Result = IntPtr.Zero;
+                return true;
+        }
+        return false;
     }
 
     protected override void OnResizeEnd(EventArgs e)
@@ -537,6 +615,11 @@ internal sealed class AppTitleBar : Panel
         close.Click += (_, _) => _form.Close();
         maximize.Click += (_, _) => ToggleMaximize();
         minimize.Click += (_, _) => _form.WindowState = FormWindowState.Minimized;
+        if (_form is GradientForm gradientForm)
+        {
+            maximize.PassHitTestToForm = true;
+            gradientForm.SnapMaximizeButton = maximize;
+        }
         // Win11 swaps the maximize glyph for "restore" while the window is maximized.
         _form.Resize += (_, _) => maximize.Glyph = _form.WindowState == FormWindowState.Maximized
             ? CaptionButton.RestoreGlyph : CaptionButton.MaximizeGlyph;
@@ -562,6 +645,18 @@ internal sealed class AppTitleBar : Panel
 
     private void ToggleMaximize() => _form.WindowState = _form.WindowState == FormWindowState.Maximized
         ? FormWindowState.Normal : FormWindowState.Maximized;
+
+    protected override void WndProc(ref Message m)
+    {
+        // Under the maximize button, let the hit test fall through to the form (Snap Layouts).
+        if (m.Msg == 0x84 && _form is GradientForm form && WindowsAppearance.IsWindows11
+            && form.IsOverSnapMaximizeButton(Cursor.Position))
+        {
+            m.Result = new IntPtr(-1); // HTTRANSPARENT
+            return;
+        }
+        base.WndProc(ref m);
+    }
 }
 
 internal sealed class RoundedActionButton : Button
@@ -940,6 +1035,33 @@ internal sealed class CaptionButton : Control
     {
         get => _glyph;
         set { if (_glyph != value) { _glyph = value; Invalidate(); } }
+    }
+
+    /// <summary>Answer HTTRANSPARENT to hit tests (Windows 11 only) so the form can report HTMAXBUTTON
+    /// for Snap Layouts; hover and clicks then come through <see cref="SetNonClientState"/>.</summary>
+    internal bool PassHitTestToForm { get; set; }
+
+    internal bool NonClientPressed => _pressed;
+
+    internal void SetNonClientState(bool hot, bool? pressed)
+    {
+        bool newPressed = pressed ?? _pressed;
+        if (_hot == hot && _pressed == newPressed) return;
+        _hot = hot;
+        _pressed = newPressed;
+        Invalidate();
+    }
+
+    internal void RaiseClick() => OnClick(EventArgs.Empty);
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x84 && PassHitTestToForm && WindowsAppearance.IsWindows11)
+        {
+            m.Result = new IntPtr(-1); // HTTRANSPARENT
+            return;
+        }
+        base.WndProc(ref m);
     }
 
     private static string PickIconFont()
