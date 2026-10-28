@@ -209,37 +209,21 @@ internal sealed class AppTitleBar : Panel
             Padding = new Padding(4, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = ModernUi.Text, Font = new Font("Segoe UI Semibold", 10F),
         };
-        var close = ChromeButton("×");
-        var maximize = ChromeButton("□");
-        var minimize = ChromeButton("—");
+        // Minimize and close only: this window has a fixed layout (MaximizeBox = false), so the old
+        // maximize button produced a screen-sized window of empty space.
+        var close = new CaptionButton(CaptionButton.CloseGlyph, isClose: true);
+        var minimize = new CaptionButton(CaptionButton.MinimizeGlyph);
         close.Click += (_, _) => _form.Close();
-        maximize.Click += (_, _) => _form.WindowState = _form.WindowState == FormWindowState.Maximized
-            ? FormWindowState.Normal : FormWindowState.Maximized;
         minimize.Click += (_, _) => _form.WindowState = FormWindowState.Minimized;
-        close.MouseEnter += (_, _) => close.BackColor = Color.FromArgb(196, 43, 51);
-        close.MouseLeave += (_, _) => close.BackColor = BackColor;
         Controls.Add(title);
         Controls.Add(appIcon);
         // Dock=Right stacks so that the LAST-added control ends up right-most. Windows order left→
         // right is minimize, maximize, close (close at the far right), so add in that same order.
         Controls.Add(minimize);
-        Controls.Add(maximize);
         Controls.Add(close);
         title.MouseDown += DragWindow;
         appIcon.MouseDown += DragWindow;
         MouseDown += DragWindow;
-    }
-
-    private Button ChromeButton(string text)
-    {
-        var button = new Button
-        {
-            Text = text, Dock = DockStyle.Right, Width = 46, FlatStyle = FlatStyle.Flat,
-            BackColor = BackColor, ForeColor = ModernUi.Muted,
-            Font = new Font("Segoe UI Symbol", 11F), TabStop = false,
-        };
-        button.FlatAppearance.BorderSize = 0;
-        return button;
     }
 
     private void DragWindow(object? sender, MouseEventArgs e)
@@ -248,4 +232,64 @@ internal sealed class AppTitleBar : Panel
         ReleaseCapture();
         SendMessage(_form.Handle, 0xA1, new IntPtr(2), IntPtr.Zero);
     }
+}
+
+/// <summary>A Windows 11 caption button: Segoe Fluent Icons glyph (Segoe MDL2 Assets on Windows 10, the
+/// same code points), 46 px wide, a faint fill on hover/press and the system red behind a white glyph
+/// for close. Mirrors the Terminal's CaptionButton (each app keeps its own copy).</summary>
+internal sealed class CaptionButton : Control
+{
+    public const string MinimizeGlyph = "\uE921", CloseGlyph = "\uE8BB";
+
+    private static readonly string IconFontFamily = PickIconFont();
+    private readonly string _glyph;
+    private readonly bool _isClose;
+    private bool _hot, _pressed;
+
+    public CaptionButton(string glyph, bool isClose = false)
+    {
+        _glyph = glyph;
+        _isClose = isClose;
+        Dock = DockStyle.Right;
+        Width = 46;
+        TabStop = false;
+        BackColor = Color.Transparent;
+        Font = new Font(IconFontFamily, 7.5F);
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+            | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+        SetStyle(ControlStyles.Selectable, false);
+    }
+
+    private static string PickIconFont()
+    {
+        using var installed = new System.Drawing.Text.InstalledFontCollection();
+        var names = installed.Families.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return names.Contains("Segoe Fluent Icons") ? "Segoe Fluent Icons"
+            : names.Contains("Segoe MDL2 Assets") ? "Segoe MDL2 Assets" : "Segoe UI Symbol";
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hot = true; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hot = false; _pressed = false; Invalidate(); }
+    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); if (e.Button == MouseButtons.Left) { _pressed = true; Invalidate(); } }
+    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); _pressed = false; Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var background = Parent?.BackColor ?? ModernUi.Background;
+        Color fill = background, ink = ModernUi.Text;
+        if (_isClose && (_hot || _pressed))
+        {
+            fill = _pressed ? Color.FromArgb(148, 22, 15) : Color.FromArgb(196, 43, 28);
+            ink = Color.White;
+        }
+        else if (_pressed) fill = Mix(background, ModernUi.Text, 0.06);
+        else if (_hot) fill = Mix(background, ModernUi.Text, 0.09);
+        using (var brush = new SolidBrush(fill)) e.Graphics.FillRectangle(brush, ClientRectangle);
+        string text = IconFontFamily == "Segoe UI Symbol" ? (_glyph == CloseGlyph ? "×" : "—") : _glyph;
+        TextRenderer.DrawText(e.Graphics, text, Font, ClientRectangle, ink,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+    }
+
+    private static Color Mix(Color a, Color b, double amount) => Color.FromArgb(
+        (int)(a.R + (b.R - a.R) * amount), (int)(a.G + (b.G - a.G) * amount), (int)(a.B + (b.B - a.B) * amount));
 }

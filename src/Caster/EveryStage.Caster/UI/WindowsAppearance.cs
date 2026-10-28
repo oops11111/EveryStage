@@ -7,11 +7,10 @@ internal static class WindowsAppearance
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
 
-    [DllImport("user32.dll")]
-    private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref CompositionData data);
-    [StructLayout(LayoutKind.Sequential)] private struct CompositionData { public int Attribute; public IntPtr Data; public int Size; }
-    [StructLayout(LayoutKind.Sequential)] private struct AccentPolicy { public int State, Flags, Color, Animation; }
-    private const int WcaAccentPolicy = 19, AccentEnableBlurBehind = 3, AccentEnableAcrylicBlurBehind = 4;
+    private const int DwaWindowCornerPreference = 33, DwaBorderColor = 34, CornerRound = 2;
+
+    /// <summary>Windows 11 (build 22000+), where DWM offers rounded corners and a coloured outline.</summary>
+    public static bool IsWindows11 => OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000);
 
     public static void UseDarkTitleBar(Form form)
     {
@@ -23,28 +22,27 @@ internal static class WindowsAppearance
         };
     }
 
+    /// <summary>Windows 11 frame for the borderless window: rounded corners and a 1px outline in the
+    /// border colour (DWM rounds framed windows itself, not borderless ones). This used to request
+    /// acrylic blur-behind through the undocumented SetWindowCompositionAttribute; the form paints an
+    /// opaque gradient over its whole client area, so the blur was never visible, while that API is
+    /// known to make dragging the window stutter on Windows 10 1903+ and Windows 11.</summary>
     public static void EnableGlass(Form form)
     {
-        if (!OperatingSystem.IsWindows()) return;
-        form.HandleCreated += (_, _) => ApplyGlass(form.Handle);
-        if (form.IsHandleCreated) ApplyGlass(form.Handle);
-    }
-
-    private static void ApplyGlass(IntPtr handle)
-    {
-        var policy = new AccentPolicy { State = AccentEnableAcrylicBlurBehind, Color = unchecked((int)0xB814263B) };
-        IntPtr memory = Marshal.AllocHGlobal(Marshal.SizeOf<AccentPolicy>());
-        try
+        if (!IsWindows11) return;
+        void Apply()
         {
-            Marshal.StructureToPtr(policy, memory, false);
-            var data = new CompositionData { Attribute = WcaAccentPolicy, Data = memory, Size = Marshal.SizeOf<AccentPolicy>() };
-            if (SetWindowCompositionAttribute(handle, ref data) == 0)
+            try
             {
-                policy.State = AccentEnableBlurBehind;
-                Marshal.StructureToPtr(policy, memory, false);
-                SetWindowCompositionAttribute(handle, ref data);
+                int corner = CornerRound;
+                DwmSetWindowAttribute(form.Handle, DwaWindowCornerPreference, ref corner, sizeof(int));
+                int border = ColorTranslator.ToWin32(ModernUi.Border);
+                DwmSetWindowAttribute(form.Handle, DwaBorderColor, ref border, sizeof(int));
             }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
         }
-        finally { Marshal.FreeHGlobal(memory); }
+        form.HandleCreated += (_, _) => Apply();
+        if (form.IsHandleCreated) Apply();
     }
 }
