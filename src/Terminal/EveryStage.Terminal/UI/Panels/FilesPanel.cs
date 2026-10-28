@@ -1068,7 +1068,18 @@ public sealed class FilesPanel : UserControl
                     if (cacheKey != null && _thumbnailCache.TryGetValue(cacheKey, out var cached))
                         thumbnail = (Image)cached.Clone();
                     else
-                        thumbnail = await Task.Run(() => BuildThumbnail(file), token);
+                        thumbnail = await Task.Run(() =>
+                        {
+                            // One unreadable file gets a warning tile; an exception type BuildThumbnail's
+                            // per-kind filters miss (e.g. InvalidDataException from a PDF with bad page
+                            // sizes) used to end this whole pass, leaving every later card blank.
+                            try { return BuildThumbnail(file); }
+                            catch (Exception ex)
+                            {
+                                System.Diagnostics.Trace.TraceError("Thumbnail for {0} failed: {1}", file.SourcePath, ex);
+                                return BuildKindTile("预览不可用", Color.FromArgb(120, 40, 46), Color.FromArgb(186, 55, 65));
+                            }
+                        }, token);
                 }
                 finally { _thumbnailWorker.Release(); }
                 using (thumbnail)
