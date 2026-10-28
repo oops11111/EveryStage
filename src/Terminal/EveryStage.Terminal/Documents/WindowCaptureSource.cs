@@ -181,7 +181,44 @@ public sealed class WindowCaptureSource : IDisposable
         _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(_winrtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, _poolSize);
         _session = _framePool.CreateCaptureSession(_item);
         try { _session.IsCursorCaptureEnabled = false; } catch (Exception) { } // Windows 10 2004+
+        HideCaptureBorder(_session);
         _session.StartCapture();
+    }
+
+    // Asked once per process; null until the first Windows 11 capture starts it.
+    private static Task<bool>? s_borderlessAccess;
+    private static readonly object s_borderlessGate = new();
+
+    /// <summary>Windows draws a yellow border around a window while it is being captured — around the
+    /// WPS/Office editor on the operator's screen for as long as it plays (DOCUMENT-PLAYBACK.md lists it
+    /// as a known limitation). Windows 11 lets an app turn it off once the user has granted
+    /// <see cref="GraphicsCaptureAccessKind.Borderless"/>; when access is denied, setting the property
+    /// is accepted but ignored, so this can never make capture fail. The access request is waited for
+    /// at most briefly: if it is not answered yet, this capture keeps its border and later ones use the
+    /// answer.</summary>
+    private static void HideCaptureBorder(GraphicsCaptureSession session)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return;
+        try
+        {
+            Task<bool> access;
+            lock (s_borderlessGate)
+                access = s_borderlessAccess ??= RequestBorderlessAccessAsync();
+            if (access.Wait(TimeSpan.FromSeconds(3)) && access.Result)
+                session.IsBorderRequired = false;
+        }
+        catch (Exception) { } // best effort: the border stays
+    }
+
+    private static async Task<bool> RequestBorderlessAccessAsync()
+    {
+        try
+        {
+            // ConfigureAwait(false): HideCaptureBorder may block the UI thread on this task.
+            var status = await GraphicsCaptureAccess.RequestAccessAsync(GraphicsCaptureAccessKind.Borderless).AsTask().ConfigureAwait(false);
+            return status == Windows.Security.Authorization.AppCapabilityAccess.AppCapabilityAccessStatus.Allowed;
+        }
+        catch (Exception) { return false; }
     }
 
     private Bitmap? PullGraphicsFrame()
