@@ -13,6 +13,30 @@ pwsh ./scripts/Build-ReleasePackages.ps1
 发布脚本会强制检查 `EveryStage-Terminal-win-x64/x64/pdfium.dll`，缺失时直接失败；清单同时记录
 Pdfium SHA-256，便于部署后核验。包为 framework-dependent，需要目标机安装 .NET 8 Windows Desktop Runtime x64。
 
+## 安装程序（setup.exe）
+
+面向现场的图形安装程序，一个文件同时包含终端机和投屏机，安装时勾选：
+
+```bash
+scripts/Build-Installer.sh 0.9.0          # Linux/macOS：需要 .NET 8 SDK 与 NSIS 3（apt-get install nsis）
+```
+
+```powershell
+./scripts/Build-Installer.ps1 -Version 0.9.0   # Windows：需要 .NET 8 SDK 与 NSIS 3（choco install nsis）
+```
+
+输出 `artifacts/installer/EveryStage-Setup-<版本>-win-x64.exe`（约 60 MB）。CI 每次提交也会产出同名构件
+`EveryStage-Setup-win-x64-<提交>`。脚本源文件：`deployment/installer/EveryStage.nsi`。
+
+- **自带 .NET 运行环境**（self-contained），目标机无需安装 .NET 8；要求 64 位 Windows 10 2004+ 或 Windows 11。
+- 与 `Install-EveryStage.ps1` 相同的安装位置和开机启动项名称，可直接覆盖升级脚本部署的机器；升级前会询问并关闭正在运行的程序。
+- 写入入站 UDP 47990–47992 防火墙规则（仅本地子网、所有网络类型），避免防火墙提示被忽略或场馆网络为“公用”时发现/投屏失败。
+- 终端机：未检测到 WPS 或 Microsoft Office 时提示（图片/视频/PDF/投屏不受影响，只是 Word/PPT 无法播放），不阻止安装。
+  WPS 授权仍按下文由部署负责人确认，安装程序不处理授权。
+- 静默安装：`EveryStage-Setup-….exe /S`（默认只装终端机 + 开机启动 + 桌面快捷方式）；静默卸载：`"%ProgramFiles%\EveryStage\Uninstall.exe" /S`。
+- 卸载在“设置 → 应用”中可见，保留 `%ProgramData%\EveryStage`（配置、内容索引、日志）。
+- 安装程序未做代码签名：首次运行时 SmartScreen 会提示，需点“更多信息 → 仍要运行”。正式分发前应使用代码签名证书签名。
+
 ## WPS 前置条件
 
 Terminal 需要安装并授权与试点验收版本一致的 WPS。自动部署不会购买、激活、复制或绕过 WPS License。

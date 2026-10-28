@@ -48,6 +48,23 @@ jobs:
       - name: Run Windows content self-tests
         run: dotnet run --project src/Tests/EveryStage.WindowsSelfTests/EveryStage.WindowsSelfTests.csproj --no-build --configuration Release
 
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and
+              -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          ./scripts/Build-Installer.ps1
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-Setup-win-x64-${{ github.sha }}
+          path: artifacts/installer/EveryStage-Setup-*.exe
+          if-no-files-found: error
+
       - name: Upload release packages
         uses: actions/upload-artifact@v6
         with:
