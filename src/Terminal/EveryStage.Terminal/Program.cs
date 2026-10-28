@@ -324,7 +324,12 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                     if (_overlay != null) OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, _overlay.Monitor);
                     else OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, null);
                     dialog.ShowDialog(_mainWindow);
-                    _discovery.RespondToPairing(next.RequestId, dialog.Accepted, dialog.TrustMode, dialog.AllowCast, dialog.AllowMonitor);
+                    bool answered = _discovery.RespondToPairing(next.RequestId, dialog.Accepted, dialog.TrustMode, dialog.AllowCast, dialog.AllowMonitor);
+                    // The Terminal drops a request after DiscoveryService.PendingRequestTimeout while
+                    // this dialog has no timeout of its own; an accept after that used to do nothing silently.
+                    if (!answered && dialog.Accepted)
+                        MessageBox.Show(_mainWindow, $"来自 \"{next.DeviceName}\" 的配对请求已超时，未完成配对。请在投屏机上重新发起配对。",
+                            "配对已超时", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     _mainWindow.ClearPairingRequest(next.RequestId);
                 }
             }

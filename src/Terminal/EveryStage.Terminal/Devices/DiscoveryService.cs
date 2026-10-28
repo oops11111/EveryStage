@@ -50,6 +50,7 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly object _pendingGate = new();
     private Guid _lastStartMessageId;
+    private Guid _lastStartDeviceId;
     private Task<CastStartResult>? _lastStartResult;
     private readonly Dictionary<string, PendingRequest> _pendingRequests = new();
     private readonly Dictionary<string, (DiscoveryProtocol.PairResponseMessage Response, IPEndPoint RemoteEndPoint, DateTimeOffset CreatedAt)> _pairResponseCache = new();
@@ -148,13 +149,14 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
     }
 
     /// <summary>Called by the pairing confirmation UI after the operator compares the v2 six-digit
-    /// verification code. No-op if <paramref name="requestId"/> is unknown or already expired/answered.</summary>
-    public void RespondToPairing(string requestId, bool accept, TrustMode trustMode, bool allowCast, bool allowMonitor)
+    /// verification code. Returns false (and does nothing) if <paramref name="requestId"/> is unknown or
+    /// already expired/answered, so the UI can tell an operator whose answer came too late.</summary>
+    public bool RespondToPairing(string requestId, bool accept, TrustMode trustMode, bool allowCast, bool allowMonitor)
     {
         PendingRequest? pending;
         lock (_pendingGate)
         {
-            if (!_pendingRequests.Remove(requestId, out pending)) return;
+            if (!_pendingRequests.Remove(requestId, out pending)) return false;
         }
         using (pending)
         {
@@ -194,6 +196,7 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
                 _connectionLog.LogDisconnected(pending.DeviceId.ToString(), "pairing_declined");
             }
         }
+        return true;
     }
 
     private async Task BeaconLoopAsync(CancellationToken token)
@@ -350,6 +353,7 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
         }
         if (!AcceptFresh(msg, "cast_start")) return;
         _lastStartMessageId = msg.MessageId;
+        _lastStartDeviceId = msg.SenderDeviceId;
         void Complete(bool ready, string? error, bool pending = false)
         {
             if (!pending && ready)
@@ -529,17 +533,27 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
     private void HandleCastStop(DiscoveryProtocol.CastStopMessage msg)
     {
         var device = _pairedDevices.Find(msg.SenderDeviceId);
-        if (device == null
+        if (msg.DeviceId != msg.SenderDeviceId
+            || device == null
             || !PairingSecurity.IsSupportedKey(device.PairingKey, device.PairingKeyFormatVersion)
             || !PairingSecurity.Verify(msg, device.PairingKey)
             || !AcceptFresh(msg, "cast_stop")) return;
         CastStopRequested?.Invoke(msg.DeviceId);
-        _activeCasterDeviceId = null;
-        _activeCasterKey = null;
+        // Only the sender's own session is retired. A second Caster whose cast_start was declined
+        // (or timed out) sends cast_stop on cleanup; clearing unconditionally dropped the key of
+        // the Caster still casting, which silenced its status reports and NACKs.
+        if (_activeCasterDeviceId == msg.SenderDeviceId)
+        {
+            _activeCasterDeviceId = null;
+            _activeCasterKey = null;
+        }
         // Retire the idempotent-retry memo with the session it belongs to. Leaving it armed kept
         // the fast path above answering replays of a cast_start whose cast had already ended.
-        _lastStartMessageId = Guid.Empty;
-        _lastStartResult = null;
+        if (_lastStartDeviceId == msg.SenderDeviceId)
+        {
+            _lastStartMessageId = Guid.Empty;
+            _lastStartResult = null;
+        }
     }
 
     // Pairing requests are the one unauthenticated entry point (there is no key yet), so they are bounded
