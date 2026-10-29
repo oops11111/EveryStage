@@ -158,15 +158,15 @@ internal sealed class DocumentControlBar : Panel
                     break;
                 case DocumentPlaybackMode.NativeShow:
                     AddButton("静态幻灯片", "切换为静态幻灯片（不含动画、转场和嵌入媒体）", () => Target?.SwitchPresentationMode(PresentationMode.Static), () => Target != null);
-                    AddButton(" 上一步", "上一个动画 / 上一张", () => Slide(s => s.PreviousStepAsync(), "上一步"), () => SessionReady);
-                    AddButton("下一步 ", "下一个动画；当前页动画播完后进入下一张", () => Slide(s => s.NextStepAsync(), "下一步"), () => SessionReady);
-                    AddButton("上一张", "上一张幻灯片", () => Slide(s => s.PreviousSlideAsync(), "上一张"), () => SessionReady);
-                    AddButton("下一张", "下一张幻灯片（跳过剩余动画）", () => Slide(s => s.NextSlideAsync(), "下一张"), () => SessionReady);
+                    AddButton(" 上一步", "上一个动画 / 上一张", () => Slide(s => s.PreviousStepAsync(), "上一步", SlideMove.PreviousStep), () => SessionReady);
+                    AddButton("下一步 ", "下一个动画；当前页动画播完后进入下一张", () => Slide(s => s.NextStepAsync(), "下一步", SlideMove.NextStep), () => SessionReady);
+                    AddButton("上一张", "上一张幻灯片", () => Slide(s => s.PreviousSlideAsync(), "上一张", SlideMove.PreviousSlide), () => SessionReady);
+                    AddButton("下一张", "下一张幻灯片（跳过剩余动画）", () => Slide(s => s.NextSlideAsync(), "下一张", SlideMove.NextSlide), () => SessionReady);
                     AddPageBox();
                     AddToggle("黑屏", "黑屏 / 恢复", () => SlideShow?.Position.Screen == SlideShowScreen.Black,
-                        () => Slide(s => s.ToggleScreenAsync(SlideShowScreen.Black), "黑屏"), () => SessionReady);
+                        () => Slide(s => s.ToggleScreenAsync(SlideShowScreen.Black), "黑屏", SlideMove.Screen), () => SessionReady);
                     AddToggle("白屏", "白屏 / 恢复", () => SlideShow?.Position.Screen == SlideShowScreen.White,
-                        () => Slide(s => s.ToggleScreenAsync(SlideShowScreen.White), "白屏"), () => SessionReady);
+                        () => Slide(s => s.ToggleScreenAsync(SlideShowScreen.White), "白屏", SlideMove.Screen), () => SessionReady);
                     AddToggle("暂停", "暂停自动放映 / 继续", () => SlideShow?.Position.Screen == SlideShowScreen.Paused,
                         () => Slide(s => s.ToggleScreenAsync(SlideShowScreen.Paused), "暂停"), () => SessionReady);
                     var end = AddButton("结束放映", "结束放映（大屏保持最后画面）/ 重新开始放映", () =>
@@ -247,10 +247,11 @@ internal sealed class DocumentControlBar : Panel
     private void GoTo(int page)
     {
         if (View is { } view) view.GoToPage(page);
-        else if (SlideShow != null) Slide(s => s.GoToSlideAsync(page), "跳转");
+        else if (SlideShow != null) Slide(s => s.GoToSlideAsync(page), "跳转", SlideMove.Jump);
     }
 
-    private void Slide(Func<SlideShowSession, Task> command, string what) => RunAsync(Target!.SlideCommandAsync(command, what));
+    private void Slide(Func<SlideShowSession, Task> command, string what, SlideMove move = SlideMove.None) =>
+        RunAsync(Target!.SlideCommandAsync(command, what, move));
 
     private void Act(Action action)
     {

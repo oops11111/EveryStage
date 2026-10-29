@@ -405,6 +405,32 @@ internal sealed class OfficeApplicationController
         catch (Exception) { return ""; }
     }
 
+    /// <summary>Removes the slides' own page transitions from the open presentation (in memory only: the
+    /// document is marked unchanged and never saved by a show), so EveryStage's transition is the only one.
+    /// Slides whose transition is 平滑 (Morph, PpEntryEffect 3953–3955) or that advance on a timer keep
+    /// theirs when asked. Returns the 1-based slides that kept their own transition.</summary>
+    public HashSet<int> StripSlideTransitions(bool keepMorph, bool keepAutoAdvance)
+    {
+        var kept = new HashSet<int>();
+        int count = SlideCount;
+        bool wasSaved = TryInt(() => _document!.Saved, -1) != 0;
+        for (int i = 1; i <= count; i++)
+        {
+            try
+            {
+                dynamic transition = _document!.Slides(i).SlideShowTransition;
+                int effect = TryInt(() => transition.EntryEffect);
+                bool morph = effect is >= 3953 and <= 3955;
+                bool timed = TryInt(() => transition.AdvanceOnTime) != 0;
+                if (keepMorph && morph || keepAutoAdvance && timed) { kept.Add(i); continue; }
+                if (effect != 0) transition.EntryEffect = 0; // ppEffectNone
+            }
+            catch (Exception) { kept.Add(i); } // could not read or change it: leave the slide as it is
+        }
+        if (wasSaved) try { _document!.Saved = -1; } catch (Exception) { } // msoTrue: not an edit
+        return kept;
+    }
+
     public void ExportSlide(int slide, string path, int width, int height) =>
         _document!.Slides(slide).Export(path, "PNG", width, height);
 

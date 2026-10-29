@@ -116,17 +116,93 @@ public sealed class ContentSurface : Control
         return new Cursor(blank.GetHicon());
     }
 
+    // ── Page transitions ─────────────────────────────────────────────────────────────────────────
+    // BeginTransition freezes what the surface shows now; until the transition ends every paint
+    // renders the live content offscreen and draws the step between the two (SlideTransitions).
+
+    private Bitmap? _transitionFrom;
+    private Bitmap? _transitionTo;
+    private SlideTransitionSpec _transition;
+    private readonly System.Diagnostics.Stopwatch _transitionClock = new();
+    private System.Windows.Forms.Timer? _transitionTimer;
+
+    /// <summary>True while a page transition is being drawn.</summary>
+    public bool InTransition => _transitionFrom != null;
+
+    /// <summary>Freezes the current picture; the content changed after this call is revealed with
+    /// <paramref name="spec"/>. Starting again mid-transition continues from what is on screen.</summary>
+    public void BeginTransition(SlideTransitionSpec spec)
+    {
+        if (Width < 2 || Height < 2 || IsDisposed) return;
+        var still = new Bitmap(Width, Height);
+        using (var g = Graphics.FromImage(still))
+        {
+            if (_transitionFrom != null) PaintTransitionFrame(g);
+            else PaintContent(g);
+        }
+        _transitionFrom?.Dispose();
+        _transitionFrom = still;
+        _transition = spec;
+        _transitionClock.Restart();
+        _transitionTimer ??= CreateTransitionTimer();
+        _transitionTimer.Start();
+        Invalidate();
+    }
+
+    private System.Windows.Forms.Timer CreateTransitionTimer()
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 15 };
+        timer.Tick += (_, _) => Invalidate();
+        return timer;
+    }
+
+    private void EndTransition()
+    {
+        _transitionTimer?.Stop();
+        _transitionFrom?.Dispose();
+        _transitionFrom = null;
+        _transitionTo?.Dispose();
+        _transitionTo = null;
+    }
+
+    private float TransitionProgress => (float)(_transitionClock.Elapsed.TotalMilliseconds / Math.Max(1, _transition.Milliseconds));
+
+    private void PaintTransitionFrame(Graphics g)
+    {
+        if (_transitionTo == null || _transitionTo.Size != ClientSize)
+        {
+            _transitionTo?.Dispose();
+            _transitionTo = new Bitmap(Math.Max(1, Width), Math.Max(1, Height));
+        }
+        using (var live = Graphics.FromImage(_transitionTo)) PaintContent(live);
+        SlideTransitions.Draw(g, ClientRectangle, _transitionFrom!, _transitionTo,
+            SlideTransitions.Ease(TransitionProgress), _transition.Effect, _transition.Direction);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
+    {
+        if (_transitionFrom != null)
+        {
+            if (TransitionProgress < 1f && _transitionFrom.Size == ClientSize)
+            {
+                PaintTransitionFrame(e.Graphics);
+                return;
+            }
+            EndTransition();
+        }
+        PaintContent(e.Graphics);
+    }
+
+    private void PaintContent(Graphics graphics)
     {
         if (_painter != null)
         {
-            _painter.Paint(e.Graphics, ClientRectangle);
+            _painter.Paint(graphics, ClientRectangle);
             return;
         }
-        e.Graphics.Clear(Color.Black);
+        graphics.Clear(Color.Black);
         if (_frame == null) return;
-
-        e.Graphics.InterpolationMode = _liveFrames ? InterpolationMode.HighQualityBilinear : InterpolationMode.HighQualityBicubic;
+        graphics.InterpolationMode = _liveFrames ? InterpolationMode.HighQualityBilinear : InterpolationMode.HighQualityBicubic;
 
         float scale = _scaleMode switch
         {
@@ -137,7 +213,7 @@ public sealed class ContentSurface : Control
         };
         if (_scaleMode == EveryStage.Rendering.VideoScaleMode.Stretch)
         {
-            DrawNoEdgeBleed(e.Graphics, new Rectangle(0, 0, Width, Height));
+            DrawNoEdgeBleed(graphics, new Rectangle(0, 0, Width, Height));
             return;
         }
         int drawWidth = (int)(_frame.Width * scale);
@@ -147,12 +223,12 @@ public sealed class ContentSurface : Control
         if (Math.Abs(scale - 1f) < 0.004f)
         {
             // 1:1 (a slide show captured at the output's own resolution): no filtering at all.
-            e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
-            e.Graphics.DrawImage(_frame, new Rectangle(x, y, _frame.Width, _frame.Height), 0, 0, _frame.Width, _frame.Height, GraphicsUnit.Pixel);
+            graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+            graphics.DrawImage(_frame, new Rectangle(x, y, _frame.Width, _frame.Height), 0, 0, _frame.Width, _frame.Height, GraphicsUnit.Pixel);
             return;
         }
 
-        DrawNoEdgeBleed(e.Graphics, new Rectangle(x, y, drawWidth, drawHeight));
+        DrawNoEdgeBleed(graphics, new Rectangle(x, y, drawWidth, drawHeight));
     }
 
     /// <summary>Scaled draw without the dark 1px seam GDI+'s bicubic filter otherwise blends into every
@@ -206,7 +282,12 @@ public sealed class ContentSurface : Control
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) ReleaseScaled();
+        if (disposing)
+        {
+            ReleaseScaled();
+            EndTransition();
+            _transitionTimer?.Dispose();
+        }
         base.Dispose(disposing);
     }
 }

@@ -19,7 +19,7 @@ public sealed class DocumentSettingsDialog : Form
     private readonly DocumentPlaybackSettings _settings;
     private readonly ComboBox? _readingMode, _zoomMode, _openMode, _presentationMode;
     private readonly NumericUpDown? _startPage, _startOffset, _endPage, _customZoom, _scroll;
-    private readonly CheckBox? _hasEnd, _allowEdit, _loop;
+    private readonly CheckBox? _hasEnd, _allowEdit, _loop, _keepTransitions;
     private readonly CheckBox _liveSync, _auto;
     private readonly NumericUpDown _autoSeconds;
 
@@ -94,6 +94,8 @@ public sealed class DocumentSettingsDialog : Form
                 (_hasEnd, _endPage) = EndRow(Row, "播放到第几张结束");
                 _loop = new CheckBox { Text = "循环放映", AutoSize = true, Checked = _settings.Loop };
                 Row("循环", _loop);
+                _keepTransitions = new CheckBox { Text = "保留这个 PPT 自带的翻页转场（不用设置里的统一过场）", AutoSize = true, Checked = _settings.KeepOriginalTransitions };
+                Row("翻页过场", _keepTransitions);
                 break;
         }
 
@@ -162,6 +164,7 @@ public sealed class DocumentSettingsDialog : Form
         if (_scroll != null) s.InitialScrollPercent = (double)_scroll.Value;
         if (_presentationMode != null) s.PresentationMode = (PresentationMode)_presentationMode.SelectedIndex;
         if (_loop != null) s.Loop = _loop.Checked;
+        if (_keepTransitions != null) s.KeepOriginalTransitions = _keepTransitions.Checked;
         s.SecondsPerPage = _auto.Checked && _auto.Enabled ? (double)_autoSeconds.Value : null;
         s.LiveSync = _liveSync.Checked;
         return s;

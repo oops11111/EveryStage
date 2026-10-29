@@ -58,7 +58,34 @@ public sealed class AppSettings
 
     /// <summary>Length of the 叠化 / 经黑场 transition.</summary>
     public int TransitionMilliseconds { get; set; } = 800;
+
+    // --- PPT 翻页过场 ---
+
+    /// <summary>True: every presentation page turn uses <see cref="SlideTransition"/> instead of the
+    /// deck's own transitions (static slides and the native show alike).</summary>
+    public bool UnifySlideTransitions { get; set; } = true;
+    public SlideTransitionEffect SlideTransition { get; set; } = SlideTransitionEffect.Fade;
+    public SlideTransitionDirection SlideTransitionDirection { get; set; } = SlideTransitionDirection.LeftToRight;
+    public int SlideTransitionMilliseconds { get; set; } = 800;
+
+    /// <summary>Slides whose own transition is 平滑 (Morph) keep it: it moves objects between slides.</summary>
+    public bool KeepMorphTransitions { get; set; } = true;
+
+    /// <summary>Slides that advance on a timer keep their own transition (the change cannot be anticipated).</summary>
+    public bool KeepAutoAdvanceTransitions { get; set; } = true;
+
+    /// <summary>Black / white screen and back also use the slide transition.</summary>
+    public bool TransitionOnBlackScreen { get; set; }
+
+    /// <summary>A copy to change and save (every field, so a new setting can never be dropped on save).</summary>
+    public AppSettings Clone() => (AppSettings)MemberwiseClone();
 }
+
+/// <summary>PPT 翻页过场: 渐隐渐显 / 翻页效果 / 雨点浸润.</summary>
+public enum SlideTransitionEffect { Fade, PageTurn, RainSoak }
+
+/// <summary>Which way a slide transition travels.</summary>
+public enum SlideTransitionDirection { TopToBottom, BottomToTop, LeftToRight, RightToLeft }
 
 /// <summary>Big-screen transition between items: 直切 / 叠化 / 经黑场.</summary>
 public enum TransitionStyle { Cut, Dissolve, DipToBlack }

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
+using EveryStage.Terminal.ContentEngine;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Display;
 using EveryStage.Terminal.Documents;
@@ -106,6 +107,62 @@ internal static class DocumentTests
         Require(reloaded.Playlists.Single() is { Name: "开场歌单", Mode: PlaylistMode.Shuffle, AutoPlayOnStartup: true, Tracks.Count: 2 }
             && Math.Abs(reloaded.Volume - 0.5f) < 0.001 && !reloaded.DuckForVideo, "Playlists did not round-trip.");
         Console.WriteLine("PASS: background-music playlists persist");
+
+        TestSlideTransitions();
+    }
+
+    /// <summary>PPT 翻页过场: every effect × direction starts on the old page, ends on the new one and
+    /// shows both halfway; the surface's transition layer paints and finishes.</summary>
+    private static void TestSlideTransitions()
+    {
+        const int w = 160, h = 90;
+        using var from = new Bitmap(w, h);
+        using var to = new Bitmap(w, h);
+        using (var g = Graphics.FromImage(from)) g.Clear(Color.FromArgb(220, 30, 30));
+        using (var g = Graphics.FromImage(to)) g.Clear(Color.FromArgb(30, 30, 220));
+        bool IsFrom(Color c) => c.R > 180 && c.B < 70;
+        bool IsTo(Color c) => c.B > 180 && c.R < 70;
+        foreach (SlideTransitionEffect effect in Enum.GetValues<SlideTransitionEffect>())
+            foreach (SlideTransitionDirection direction in Enum.GetValues<SlideTransitionDirection>())
+            {
+                using var frame = new Bitmap(w, h);
+                Color Sample(float t, int x, int y)
+                {
+                    using (var g = Graphics.FromImage(frame)) SlideTransitions.Draw(g, new Rectangle(0, 0, w, h), from, to, t, effect, direction);
+                    return frame.GetPixel(x, y);
+                }
+                Require(IsFrom(Sample(0f, w / 2, h / 2)), $"{effect}/{direction}: t=0 is not the old page.");
+                Require(IsTo(Sample(1f, w / 2, h / 2)), $"{effect}/{direction}: t=1 is not the new page.");
+                using (var g = Graphics.FromImage(frame)) SlideTransitions.Draw(g, new Rectangle(0, 0, w, h), from, to, 0.5f, effect, direction);
+                // Halfway: the start edge already shows the new page, the far edge still the old one.
+                (int sx, int sy, int ex, int ey) = direction switch
+                {
+                    SlideTransitionDirection.TopToBottom => (w / 2, 2, w / 2, h - 3),
+                    SlideTransitionDirection.BottomToTop => (w / 2, h - 3, w / 2, 2),
+                    SlideTransitionDirection.LeftToRight => (2, h / 2, w - 3, h / 2),
+                    _ => (w - 3, h / 2, 2, h / 2),
+                };
+                if (effect != SlideTransitionEffect.PageTurn)
+                    Require(IsTo(frame.GetPixel(sx, sy)) && IsFrom(frame.GetPixel(ex, ey)),
+                        $"{effect}/{direction}: halfway does not travel from the start edge ({frame.GetPixel(sx, sy)} / {frame.GetPixel(ex, ey)}).");
+                else
+                    Require(IsTo(frame.GetPixel(sx, sy)) && IsFrom(frame.GetPixel(ex, ey)),
+                        $"{effect}/{direction}: halfway the old page is not pushed toward the far edge.");
+            }
+
+        using var form = new Form { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ClientSize = new Size(w, h) };
+        var surface = new ContentSurface { Dock = DockStyle.Fill };
+        form.Controls.Add(surface);
+        form.Show();
+        surface.SetFrame(from);
+        Pump(50);
+        surface.BeginTransition(new SlideTransitionSpec(SlideTransitionEffect.RainSoak, SlideTransitionDirection.LeftToRight, 200));
+        surface.SetFrame(to);
+        Require(surface.InTransition, "The surface did not start a transition.");
+        using (var shot = new Bitmap(w, h)) surface.DrawToBitmap(shot, new Rectangle(0, 0, w, h));
+        Require(WaitFor(() => { surface.Refresh(); return !surface.InTransition; }, 3000), "The transition did not finish.");
+        form.Close();
+        Console.WriteLine("PASS: PPT page transitions (渐隐渐显 / 翻页效果 / 雨点浸润 × 4 directions) and the surface transition layer");
     }
 
     /// <summary>Renders every page in each theme at a large and a small window size into

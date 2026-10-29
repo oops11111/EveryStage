@@ -24,6 +24,9 @@ public enum DocumentPlaybackMode
     Cover,
 }
 
+/// <summary>What a slide-show command does to the picture (decides whether a page transition runs).</summary>
+public enum SlideMove { None, NextStep, PreviousStep, NextSlide, PreviousSlide, Jump, Screen }
+
 /// <summary>Snapshot of one channel's document state for the control bar and status line.</summary>
 public sealed record DocumentStatus(
     MediaFile File,
@@ -221,6 +224,11 @@ public sealed partial class PlaybackEngine
             return;
         }
         _pdfView = view;
+        if (_documentMode == DocumentPlaybackMode.StaticSlides)
+            view.PageTurning += (_, _) =>
+            {
+                if (ReferenceEquals(view, _pdfView) && SlideTransitionFor(file) is { } spec) _output.ContentSurface.BeginTransition(spec);
+            };
         view.StateChanged += (state, user) =>
         {
             if (!ReferenceEquals(view, _pdfView)) return;
@@ -306,6 +314,8 @@ public sealed partial class PlaybackEngine
         var bounds = _output.OutputScreenBounds;
         var session = OfficeSessions.AcquireSlideShow(file.SourcePath, suite, startSlide, settings.EndPage, settings.Loop,
             forProgram: bounds != null, programBounds: bounds ?? OfficeSessionManager.ParkingBounds);
+        var app = _settingsStore.Current;
+        session.TransitionPolicy = (SlideTransitionFor(file) != null, app.KeepMorphTransitions, app.KeepAutoAdvanceTransitions);
         try
         {
             await session.EnsureOpenAsync(settings);
@@ -423,6 +433,11 @@ public sealed partial class PlaybackEngine
         if (hold && !force) return;
         var frame = session.AcquireLatestFrame();
         if (frame == null) return;
+        if (!PassShowTransitionHold(session, frame))
+        {
+            frame.Release();
+            return;
+        }
         var previous = _officeFrame;
         _officeFrame = frame;
         if (_presenter != null)
@@ -621,11 +636,94 @@ public sealed partial class PlaybackEngine
         ? RunDocumentCommandAsync(writer.ReconnectAsync, "重新连接")
         : _officeSession is SlideShowSession show ? RunDocumentCommandAsync(() => show.ReloadAsync(saveEdits: false), "重新连接") : Task.FromResult(false);
 
-    public Task<bool> SlideCommandAsync(Func<SlideShowSession, Task> command, string what)
+    public Task<bool> SlideCommandAsync(Func<SlideShowSession, Task> command, string what, SlideMove move = SlideMove.None)
     {
         if (_officeSession is not SlideShowSession show) return Task.FromResult(false);
         _presenterBrowseSlide = 0;
-        return RunDocumentCommandAsync(() => command(show), what);
+        bool transition = Channel == PlaybackChannel.Program && _documentMode == DocumentPlaybackMode.NativeShow
+            && _currentFile != null && SlideTransitionFor(_currentFile) is not null && WillChangePicture(show, move);
+        if (transition) BeginShowTransitionHold(show, move);
+        var task = RunDocumentCommandAsync(() => command(show), what);
+        if (transition) _ = task.ContinueWith(_ => _output.Post(() => CompleteShowTransitionHold(show)), TaskScheduler.Default);
+        return task;
+    }
+
+    // ── Unified page transitions ─────────────────────────────────────────────────────────────────
+    // Static slides: the PDF view's PageTurning freezes the old page on the surface (above).
+    // Native show (Program): a command that will change the slide holds the output on the current
+    // frame; once the show reports the new slide and a fresh frame was captured, the surface freezes
+    // the old picture and reveals the new one with the transition. The deck's own transitions were
+    // removed when the show started (SlideShowSession.TransitionPolicy).
+
+    private static readonly TimeSpan ShowHoldLimit = TimeSpan.FromMilliseconds(1500);
+    private bool _showHold;
+    private int _showHoldFromSlide;
+    private SlideMove _showHoldMove;
+    private long _showHoldReleaseAfter = -1;   // release on the first frame newer than this
+    private bool _showHoldTransition;
+    private DateTime _showHoldDeadline;
+
+    /// <summary>The unified page transition for <paramref name="file"/>, or null when its own (or none) applies.</summary>
+    private SlideTransitionSpec? SlideTransitionFor(MediaFile file)
+    {
+        var settings = _settingsStore.Current;
+        if (!settings.UnifySlideTransitions || file.Document?.KeepOriginalTransitions == true) return null;
+        return SlideTransitionSpec.From(settings);
+    }
+
+    private bool WillChangePicture(SlideShowSession show, SlideMove move)
+    {
+        var p = show.Position;
+        return move switch
+        {
+            SlideMove.NextStep => p.Click >= p.Clicks && p.Slide < show.SlideCount,
+            SlideMove.PreviousStep => p.Click <= 0 && p.Slide > 1,
+            SlideMove.NextSlide => p.Slide < show.SlideCount,
+            SlideMove.PreviousSlide => p.Slide > 1,
+            SlideMove.Jump => true,
+            SlideMove.Screen => _settingsStore.Current.TransitionOnBlackScreen,
+            _ => false,
+        };
+    }
+
+    private void BeginShowTransitionHold(SlideShowSession show, SlideMove move)
+    {
+        _showHold = true;
+        _showHoldMove = move;
+        _showHoldFromSlide = show.Position.Slide;
+        _showHoldReleaseAfter = -1;
+        _showHoldTransition = false;
+        _showHoldDeadline = DateTime.UtcNow + ShowHoldLimit;
+        // Never stay frozen: re-check once the limit has passed even if no frame arrives.
+        _ = Task.Delay(ShowHoldLimit + TimeSpan.FromMilliseconds(50)).ContinueWith(_ => _output.Post(() => ShowLatestOfficeFrame(force: false)), TaskScheduler.Default);
+    }
+
+    /// <summary>The command finished (position refreshed): transition if the picture really changes.</summary>
+    private void CompleteShowTransitionHold(SlideShowSession show)
+    {
+        if (!_showHold || !ReferenceEquals(show, _officeSession)) return;
+        int slide = show.Position.Slide;
+        _showHoldTransition = _showHoldMove == SlideMove.Screen
+            || slide != _showHoldFromSlide && !show.SlidesWithOwnTransition.Contains(slide);
+        var latest = show.AcquireLatestFrame();
+        // Two frames after the command: the first may still have been captured before the change.
+        _showHoldReleaseAfter = (latest?.Sequence ?? 0) + 1;
+        latest?.Release();
+        if (!_showHoldTransition) _showHold = false;
+        ShowLatestOfficeFrame(force: false);
+    }
+
+    /// <summary>False while the output must keep its current frame (a transition waits for the new slide).</summary>
+    private bool PassShowTransitionHold(OfficeSession session, SharedFrame frame)
+    {
+        if (!_showHold) return true;
+        bool expired = DateTime.UtcNow >= _showHoldDeadline;
+        if (!expired && (_showHoldReleaseAfter < 0 || frame.Sequence <= _showHoldReleaseAfter)) return false;
+        _showHold = false;
+        if (_showHoldTransition && _currentFile != null && SlideTransitionFor(_currentFile) is { } spec && _officeFrame != null)
+            _output.ContentSurface.BeginTransition(spec);
+        _showHoldTransition = false;
+        return true;
     }
 
     /// <summary>"结束放映": ends the show; Program holds its last frame (no auto-advance).</summary>
@@ -736,7 +834,8 @@ public sealed partial class PlaybackEngine
             var p = show.Position;
             if (direction > 0 && p.Slide >= show.SlideCount && p.Click >= p.Clicks) return false;
             if (direction < 0 && p.Slide <= 1 && p.Click <= 0) return false;
-            _ = SlideCommandAsync(s => direction > 0 ? s.NextStepAsync() : s.PreviousStepAsync(), direction > 0 ? "下一步" : "上一步");
+            _ = SlideCommandAsync(s => direction > 0 ? s.NextStepAsync() : s.PreviousStepAsync(), direction > 0 ? "下一步" : "上一步",
+            direction > 0 ? SlideMove.NextStep : SlideMove.PreviousStep);
             return true;
         }
         return false;

@@ -57,6 +57,9 @@ public sealed class DocumentPlaybackSettings
     public PresentationMode PresentationMode { get; set; } = PresentationMode.Auto;
     public bool Loop { get; set; }
 
+    /// <summary>Presentation: keep this deck's own page transitions even when 设置 unifies them.</summary>
+    public bool KeepOriginalTransitions { get; set; }
+
     public DocumentPlaybackSettings Clone() => (DocumentPlaybackSettings)MemberwiseClone();
 
     public PdfViewportState InitialPdfState() => new(

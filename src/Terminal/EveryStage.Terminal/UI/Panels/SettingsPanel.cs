@@ -34,6 +34,11 @@ public sealed class SettingsPanel : UserControl
     private readonly Label _diagnosticsLabel;
     private readonly ComboBox _transitionComboBox;
     private readonly NumericUpDown _transitionMilliseconds;
+    private readonly ComboBox _slideTransitionSource;
+    private readonly SlideTransitionPicker _slideTransitionPicker;
+    private readonly CheckBox _keepMorph;
+    private readonly CheckBox _keepAutoAdvance;
+    private readonly CheckBox _transitionOnBlack;
 
     // Sentinel for the ComboBox's "自动选择" item — no real MonitorInfo.DeviceName is ever an empty
     // string, so this can't collide with an actual monitor.
@@ -129,6 +134,26 @@ public sealed class SettingsPanel : UserControl
             "保存后生效", amberEffect, _transitionComboBox, _transitionMilliseconds, new Label { Text = "毫秒", AutoSize = true, ForeColor = ModernUi.Muted });
         output.AddRow("PPT 没有扩展屏时", "原生放映（含动画）只在扩展屏上进行，避免占用本机屏幕；没有扩展屏时以静态幻灯片预览", null, null,
             new Label { Text = "静态幻灯片", AutoSize = true, ForeColor = ModernUi.Text });
+
+        // --- PPT 翻页过场 ---
+        _slideTransitionSource = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170 };
+        _slideTransitionSource.Items.AddRange(new object[] { "统一过场（推荐）", "保留 PPT 原转场" });
+        _slideTransitionSource.SelectedIndex = settings.UnifySlideTransitions ? 0 : 1;
+        ModernUi.StyleComboBox(_slideTransitionSource);
+        _slideTransitionPicker = new SlideTransitionPicker(settings.SlideTransition, settings.SlideTransitionDirection, settings.SlideTransitionMilliseconds);
+        _slideTransitionSource.SelectedIndexChanged += (_, _) => _slideTransitionPicker.Enabled = _slideTransitionSource.SelectedIndex == 0;
+        _slideTransitionPicker.Enabled = settings.UnifySlideTransitions;
+        _keepMorph = new CheckBox { Text = "保留", AutoSize = true, Checked = settings.KeepMorphTransitions };
+        _keepAutoAdvance = new CheckBox { Text = "保留", AutoSize = true, Checked = settings.KeepAutoAdvanceTransitions };
+        _transitionOnBlack = new CheckBox { Text = "使用", AutoSize = true, Checked = settings.TransitionOnBlackScreen };
+        var slides = Section("PPT 翻页过场", "保存后生效", amberEffect);
+        slides.AddRow("转场来源", "统一后，所有演示文稿的翻页动画一致（静态幻灯片和大屏原生放映都适用）；单个文件仍可在「文档播放设置」里改回原转场",
+            null, null, _slideTransitionSource);
+        slides.AddBlock(_slideTransitionPicker);
+        slides.AddRow("「平滑（Morph）」转场的页面", "平滑转场让同一物体在两页之间移动，属于内容本身，替换后画面会跳变", null, null, _keepMorph);
+        slides.AddRow("自动换片的页面", "PPT 里设置了「N 秒后自动换片」的页，换页时机无法提前得知，保留原转场更自然", null, null, _keepAutoAdvance);
+        slides.AddRow("黑屏 / 白屏切换", "按黑屏、白屏和恢复时，也用所选动画过渡", null, null, _transitionOnBlack);
+        slides.AddNote("页内动画（逐条出现的文字、图表）不受影响，仍按原 PPT 播放。");
 
         // --- 网络与设备 ---
         _deviceNameTextBox = new TextBox { Text = _identity.DeviceName, Width = 220 };
@@ -265,6 +290,7 @@ public sealed class SettingsPanel : UserControl
                     default:
                         item.Location = new Point(x, y + S(4));
                         if (kind == 3) item.Width = inner;
+                        if (item is SlideTransitionPicker picker) picker.FitToWidth(inner);
                         if (item is FlowLayoutPanel { WrapContents: true } wrapping)
                             wrapping.Size = new Size(inner, wrapping.GetPreferredSize(new Size(inner, 0)).Height);
                         y += item.Height + S(12);
@@ -400,17 +426,8 @@ public sealed class SettingsPanel : UserControl
     private void SelectTheme(int index)
     {
         if (index == _themeComboBox.SelectedIndex) return;
-        var current = _settingsStore.Current;
-        var updated = new AppSettings
-        {
-            SchemaVersion = current.SchemaVersion,
-            Theme = (AppTheme)index,
-            CastSwitchDefaultOn = current.CastSwitchDefaultOn,
-            PreferredMonitorDeviceName = current.PreferredMonitorDeviceName,
-            DefaultStayDurationSeconds = current.DefaultStayDurationSeconds,
-            Transition = current.Transition,
-            TransitionMilliseconds = current.TransitionMilliseconds,
-        };
+        var updated = _settingsStore.Current.Clone();
+        updated.Theme = (AppTheme)index;
         try { _settingsStore.Save(updated); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -424,19 +441,20 @@ public sealed class SettingsPanel : UserControl
     private void OnSaveSettingsClick(object? sender, EventArgs e)
     {
         var selectedMonitor = (MonitorComboItem?)_monitorComboBox.SelectedItem;
-        var updated = new AppSettings
-        {
-            Theme = (AppTheme)Math.Max(0, _themeComboBox.SelectedIndex),
-            CastSwitchDefaultOn = _castSwitchDefaultCheckbox.Checked,
-            PreferredMonitorDeviceName = selectedMonitor is { DeviceName: AutoSelectMonitor } or null
-                ? null
-                : selectedMonitor.DeviceName,
-            DefaultStayDurationSeconds = _defaultStayDurationEnabledCheckbox.Checked
-                ? (int)_defaultStayDurationSeconds.Value
-                : null,
-            Transition = (TransitionStyle)Math.Max(0, _transitionComboBox.SelectedIndex),
-            TransitionMilliseconds = (int)_transitionMilliseconds.Value,
-        };
+        var updated = _settingsStore.Current.Clone();
+        updated.Theme = (AppTheme)Math.Max(0, _themeComboBox.SelectedIndex);
+        updated.CastSwitchDefaultOn = _castSwitchDefaultCheckbox.Checked;
+        updated.PreferredMonitorDeviceName = selectedMonitor is { DeviceName: AutoSelectMonitor } or null ? null : selectedMonitor.DeviceName;
+        updated.DefaultStayDurationSeconds = _defaultStayDurationEnabledCheckbox.Checked ? (int)_defaultStayDurationSeconds.Value : null;
+        updated.Transition = (TransitionStyle)Math.Max(0, _transitionComboBox.SelectedIndex);
+        updated.TransitionMilliseconds = (int)_transitionMilliseconds.Value;
+        updated.UnifySlideTransitions = _slideTransitionSource.SelectedIndex == 0;
+        updated.SlideTransition = _slideTransitionPicker.Effect;
+        updated.SlideTransitionDirection = _slideTransitionPicker.Direction;
+        updated.SlideTransitionMilliseconds = _slideTransitionPicker.Milliseconds;
+        updated.KeepMorphTransitions = _keepMorph.Checked;
+        updated.KeepAutoAdvanceTransitions = _keepAutoAdvance.Checked;
+        updated.TransitionOnBlackScreen = _transitionOnBlack.Checked;
 
         // Same guard+message convention as FilesPanel's own saves: on the Terminal an unguarded save
         // throw only reaches the ThreadException handler, which logs to CrashLogger without any dialog —

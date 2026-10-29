@@ -66,7 +66,7 @@ public sealed class DocumentProgramSync
         {
             // Browsing the static slides in Preview moves the show when Program follows live.
             if (program.DocumentLiveSync && !program.DocumentFrozen)
-                _ = program.SlideCommandAsync(s => s.GoToSlideAsync(state.PageIndex + 1), "跳转");
+                _ = program.SlideCommandAsync(s => s.GoToSlideAsync(state.PageIndex + 1), "跳转", SlideMove.Jump);
             return;
         }
         if (program.DocumentLiveSync && !program.DocumentFrozen) program.ApplyPdfState(state);

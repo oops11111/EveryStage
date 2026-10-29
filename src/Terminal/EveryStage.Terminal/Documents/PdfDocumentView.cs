@@ -260,6 +260,10 @@ public sealed class PdfDocumentView : IContentPainter, IDisposable
     /// The bool is true when the operator caused it (wheel, keys, scrollbar) rather than code.</summary>
     public event Action<PdfViewportState, bool>? StateChanged;
 
+    /// <summary>Single-page mode only, raised just before the shown page changes (the old page is still
+    /// on screen), with the 0-based page indices: the page transition freezes the picture here.</summary>
+    public event Action<int, int>? PageTurning;
+
     /// <summary>Raised once the pages visible at the current position have sharp renders.</summary>
     public event Action? VisiblePagesReady;
 
@@ -353,6 +357,8 @@ public sealed class PdfDocumentView : IContentPainter, IDisposable
     {
         state = state.Normalize(PageCount);
         if (state == _state) return;
+        if (state.PageIndex != _state.PageIndex && state.DisplayMode == PdfDisplayMode.SinglePage && _state.DisplayMode == PdfDisplayMode.SinglePage)
+            PageTurning?.Invoke(_state.PageIndex, state.PageIndex);
         _state = state;
         _layout = null;
         RequestRenders();

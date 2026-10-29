@@ -339,6 +339,13 @@ public sealed class SlideShowSession : OfficeSession
     public bool ShowRunning { get; private set; }
     public IntPtr ShowWindow => _showWindow;
 
+    /// <summary>Unify the page transitions (strip the deck's own when the show starts), keeping Morph and
+    /// timed slides as asked. Set before the session opens; applies to every (re)start of the show.</summary>
+    public (bool Unify, bool KeepMorph, bool KeepAutoAdvance) TransitionPolicy { get; set; }
+
+    /// <summary>Slides that kept their own transition (1-based); EveryStage adds none going to them.</summary>
+    public IReadOnlySet<int> SlidesWithOwnTransition { get; private set; } = new HashSet<int>();
+
     /// <summary>Where the show window is placed before the first frame (set by the manager).</summary>
     internal Rectangle InitialBounds { get; set; }
     internal int InitialSlide { get; set; } = 1;
@@ -358,7 +365,17 @@ public sealed class SlideShowSession : OfficeSession
     private async Task StartShowAsync(int slide, Rectangle bounds)
     {
         _bounds = bounds;
-        var window = await Dispatcher.InvokeAsync(() => Controller.StartSlideShow(slide, EndSlide, Loop, bounds), CallTimeout).ConfigureAwait(false);
+        var policy = TransitionPolicy;
+        var window = await Dispatcher.InvokeAsync(() =>
+        {
+            if (policy.Unify)
+            {
+                try { SlidesWithOwnTransition = Controller.StripSlideTransitions(policy.KeepMorph, policy.KeepAutoAdvance); }
+                catch (Exception) { SlidesWithOwnTransition = new HashSet<int>(); }
+            }
+            else SlidesWithOwnTransition = Enumerable.Range(1, Math.Max(1, SlideCount)).ToHashSet();
+            return Controller.StartSlideShow(slide, EndSlide, Loop, bounds);
+        }, CallTimeout).ConfigureAwait(false);
         _showWindow = window;
         ShowRunning = true;
         StartCapture(window, null);
