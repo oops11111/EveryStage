@@ -11,21 +11,13 @@ using EveryStage.Terminal.UI.Panels;
 namespace EveryStage.Terminal.UI;
 
 /// <summary>
-/// PLANNING.md §8's operator-facing main window: fixed left nav (connection status card + the four
-/// panel icons) + a right content area that swaps between panels. Shown on
-/// whatever display the operator is actually sitting at — this is NOT the <c>OverlayWindow</c>,
-/// which covers the bound extended display with actual content output.
+/// PLANNING.md §8's operator-facing main window: a 72px icon rail (文件 / 流程 / 设备 / 设置) on the
+/// left, the selected page in the middle, and the collapsible 「监看」 column on the right
+/// (<see cref="SharedPreviewDock"/>: Preview monitor, 投到大屏, what is on the extended display). The
+/// output status sits in the title bar. Shown on whatever display the operator is actually sitting at —
+/// this is NOT the <c>OverlayWindow</c>, which covers the bound extended display with actual content output.
 ///
-/// All four §8.2 panels are real now: 文件/活动/设备 from earlier rounds, and 设置
-/// (<see cref="SettingsPanel"/>) from this one — see that class and this project's README for what
-/// its fields are and aren't (PLANNING.md only names the five category labels, not any field
-/// within them).
-///
-/// The nav deliberately doesn't repeat what the title bar and the shared preview dock
-/// (<see cref="SharedPreviewDock"/>) already show: no brand block (the title bar already reads
-/// "EveryStage Terminal"), no 投屏开关/断开投屏 pair (the dock has 断开输出; the cast switch itself
-/// stays reachable from the tray menu, <c>TrayIconController</c>), and no 显示预览窗 recall button
-/// (the dock's local preview covers it).
+/// The window has no fixed aspect ratio: extra width and height go to the page.
 ///
 /// Also hosts <see cref="ToastStack"/> (PLANNING.md §11's "右下角Toast通知栈"), pinned on top of
 /// whichever panel is currently showing — its only producer today is
@@ -48,6 +40,10 @@ public sealed class MainWindow : GradientForm
     private readonly Panel _contentHost;
     private readonly Panel _panelHost;
     private readonly SharedPreviewDock _previewDock;
+    private readonly Panel _rail;
+    private readonly Panel _monitorColumn;
+    private readonly RoundedActionButton _expandMonitorButton;
+    private bool _monitorCollapsed;
 
     // Preview channel: always exists, renders into the dock's monitor, independent of the extended
     // display and the cast switch. _playback (above) is the Program channel.
@@ -92,9 +88,10 @@ public sealed class MainWindow : GradientForm
 
         Text = "EveryStage Terminal";
         Icon = ProductIcon.LoadIcon();
-        NormalWindowAspectRatio = new Size(4, 3);
-        ClientSize = new Size(960, 720);
-        MinimumSize = new Size(800, 600);
+        // Free aspect ratio: the page area grows with the window (the file grid gains columns, the run
+        // sheet gains rows). FitToCurrentWorkingArea shrinks the default to small screens on show.
+        ClientSize = new Size(1440, 900);
+        MinimumSize = new Size(960, 600);
         BackColor = ModernUi.Background;
         Font = new Font(ModernUi.UiFont, 10F);
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -104,90 +101,49 @@ public sealed class MainWindow : GradientForm
         WindowsAppearance.UseRoundedCorners(this);
         // Keep the client area fully app-painted. Windows 10's legacy acrylic/blur accent policy
         // composites through transparent WinForms children as a flat gray surface (not the design
-        // palette), even when each GlassPanel has an opaque tint. GlassPanel supplies the visual
-        // treatment itself, so enabling DWM blur here only undermines the UI and thumbnail canvas.
+        // palette), so no DWM blur here.
 
-        var nav = new GlassPanel
+        // 72px icon rail: 文件 / 流程 / 设备 / 设置. Output status lives in the title bar.
+        var rail = new Panel { Dock = DockStyle.Left, BackColor = ModernUi.Rail };
+        var filesButton = ModernUi.RailButton(NavIcon.Files, "文件");
+        var activitiesButton = ModernUi.RailButton(NavIcon.Activities, "流程");
+        var devicesButton = ModernUi.RailButton(NavIcon.Devices, "设备");
+        var settingsButton = ModernUi.RailButton(NavIcon.Settings, "设置");
+        var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
+        rail.Controls.AddRange(navButtons);
+        rail.Layout += (_, _) =>
         {
-            Dock = DockStyle.Fill, Padding = new Padding(0), CornerRadius = 2, AutoScroll = false,
-            GlassTint = Color.FromArgb(178, 8, 23, 40),
+            int width = LogicalToDeviceUnits(60), height = LogicalToDeviceUnits(58), y = LogicalToDeviceUnits(12);
+            foreach (var button in navButtons)
+            {
+                button.Bounds = new Rectangle((rail.ClientSize.Width - width) / 2, y, width, height);
+                y += height + LogicalToDeviceUnits(6);
+            }
         };
+        rail.Paint += (_, e) => DrawEdge(e.Graphics, rail, right: true);
 
-        // 状态卡（对齐效果图）：导航栏顶部一张圆角卡，主屏幕输出 + 已连接状态。品牌区已去掉——标题栏已显示「EveryStage Terminal」。
-        var statusCard = new GlassPanel
-        {
-            Bounds = new Rectangle(16, 16, 218, 58), CornerRadius = 12, AutoScroll = false,
-            GlassTint = Color.FromArgb(240, 12, 40, 82),
-        };
-        var statusDot = new Label
-        {
-            Text = "●", ForeColor = ModernUi.Success, Font = new Font(ModernUi.UiFont, 8F),
-            AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Bounds = new Rectangle(14, 10, 14, 18),
-        };
-        var statusTitle = new Label
-        {
-            Text = "主屏幕输出", ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 10.5F),
-            AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, Bounds = new Rectangle(30, 8, 160, 22),
-        };
-        var statusChevron = new Label
-        {
-            Text = "›", ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 12F),
-            AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Bounds = new Rectangle(180, 6, 24, 22),
-        };
         _statusLabel = new Label
         {
-            ForeColor = ModernUi.Success, Font = new Font(ModernUi.UiFont, 8.5F),
-            AutoSize = false, AutoEllipsis = true, Bounds = new Rectangle(16, 32, 190, 17),
-            TextAlign = ContentAlignment.MiddleLeft,
-        };
-        statusCard.Controls.AddRange(new Control[] { statusDot, statusTitle, statusChevron, _statusLabel });
-
-        var filesButton = ModernUi.NavButton(NavIcon.Files, "文件", 92);
-        var activitiesButton = ModernUi.NavButton(NavIcon.Activities, "活动", 142);
-        var devicesButton = ModernUi.NavButton(NavIcon.Devices, "设备", 192);
-        var settingsButton = ModernUi.NavButton(NavIcon.Settings, "设置", 242);
-        var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
-
-        // 底部品牌标语（对齐效果图），停靠栏底。用 Dock 而不是「固定坐标 + Anchor=Bottom」：Anchor 的
-        // 底边距是在控件加入 nav 那一刻按 nav 当时的尺寸算的，而那时 nav 还是 WinForms 默认尺寸（约 100px 高），
-        // 于是 y=632 的标语被永久钉在可视区下方几百像素处、从未显示。Dock=Bottom 与父容器尺寸和 DPI 无关。
-        var tagline = new Label
-        {
-            Text = "让每个阶段\r\n都精彩呈现",
-            ForeColor = ModernUi.Muted,
-            Font = new Font(ModernUi.UiFont, 9.5F),
-            AutoSize = false,
-            TextAlign = ContentAlignment.TopLeft,
-            Dock = DockStyle.Bottom,
-            Height = 60,
-            Padding = new Padding(18, 0, 0, 16),
+            AutoSize = true, ForeColor = ModernUi.Success, Font = new Font(ModernUi.UiFont, 9F),
+            TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 8, 12, 0), BackColor = Color.Transparent,
         };
 
-        nav.Controls.AddRange(new Control[]
-        {
-            statusCard,
-            filesButton, activitiesButton, devicesButton, settingsButton,
-            tagline,
-        });
-
-        _contentHost = new GlassPanel
-        {
-            Dock = DockStyle.Fill, Padding = new Padding(12), CornerRadius = 12,
-            GlassTint = Color.FromArgb(160, 15, 35, 58),
-        };
-
-        var contentLayout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
-            ColumnCount = 1,
-            RowCount = 2,
-            Padding = Padding.Empty,
-        };
-        contentLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        contentLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 214F));
+        _contentHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(20, 16, 20, 12) };
         _panelHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
-        _previewDock = new SharedPreviewDock(stateMachine) { Margin = new Padding(0, 10, 0, 0) };
+        _contentHost.Controls.Add(_panelHost);
+
+        // 「监看」 right column: Preview monitor + transport, 投到大屏, Program status and controls.
+        // Collapses to a thin strip so the page can use the full width.
+        _monitorColumn = new Panel { Dock = DockStyle.Right, BackColor = ModernUi.Rail };
+        _monitorColumn.Paint += (_, e) => DrawEdge(e.Graphics, _monitorColumn, right: false);
+        _previewDock = new SharedPreviewDock(stateMachine) { Dock = DockStyle.Fill };
+        _expandMonitorButton = new RoundedActionButton { Text = "‹", Dock = DockStyle.Top, Visible = false };
+        ModernUi.StyleButton(_expandMonitorButton);
+        new ToolTip().SetToolTip(_expandMonitorButton, "展开监看栏");
+        _expandMonitorButton.Click += (_, _) => SetMonitorCollapsed(false);
+        _previewDock.CollapseRequested += () => SetMonitorCollapsed(true);
+        _monitorColumn.Controls.Add(_previewDock);
+        _monitorColumn.Controls.Add(_expandMonitorButton);
         _previewVideoSurface = TryCreateVideoSurface(_previewDock.PreviewSurface);
         _previewDock.PreviewSurface.VideoHostResized += (w, h) =>
         {
@@ -210,22 +166,6 @@ public sealed class MainWindow : GradientForm
         OfficeSessionManager.Shared.ConfirmSaveOnClose = session => (bool)Invoke(() =>
             MessageBox.Show(this, $"“{Path.GetFileName(session.SourcePath)}”有未保存的修改，关闭前是否保存？", "保存文档",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes);
-        contentLayout.Controls.Add(_panelHost, 0, 0);
-        contentLayout.Controls.Add(_previewDock, 0, 1);
-        _contentHost.Controls.Add(contentLayout);
-
-        // 预览坞随窗口变高：效果图里「本地预览 / 播控窗口 + 信号源窗口」约占主区一半，预览画面是视觉主体。
-        // 原先固定 214px 时，窗口多出来的高度全给了页面，预览画面只剩约 50px；现在预览按内容区高度的
-        // 比例增长（下限 96px、上限 300px），其余交给页面。文档控制行出现时坞随之加高。
-        void SizePreviewRow()
-        {
-            int chrome = _previewDock.ChromeHeight + _previewDock.Margin.Vertical;
-            int preview = Math.Clamp((int)(contentLayout.ClientSize.Height * 0.44) - chrome, 96, 300);
-            float rowHeight = chrome + preview;
-            if (contentLayout.RowStyles[1].Height != rowHeight) contentLayout.RowStyles[1].Height = rowHeight;
-        }
-        contentLayout.SizeChanged += (_, _) => SizePreviewRow();
-        _previewDock.ChromeHeightChanged += SizePreviewRow;
 
         // One shared instance rather than a separate `new FileOperationLogger()` per panel: both
         // panels' loggers ultimately append to the same physical file
@@ -243,19 +183,11 @@ public sealed class MainWindow : GradientForm
         _filesPanel.StopProgramRequested += StopProgramOutput;
         _filesPanel.IsProgramLive = () => _stateMachine.State == OutputState.Active;
 
-        // 侧栏「音频独立播放区」（对齐效果图）：导航下方、标语上方。它是文件页音频播放条的第二个视图，
-        // 在任何页面都能控制同一首背景音乐。侧栏太矮时先去掉三行说明，仍放不下就隐藏。
-        var audioCard = new AudioSidebarCard(_filesPanel.AudioBar) { Bounds = new Rectangle(16, settingsButton.Bottom + 22, 218, 0) };
-        nav.Controls.Add(audioCard);
-        void PlaceAudioCard()
-        {
-            int room = tagline.Top - 12 - audioCard.Top;
-            audioCard.Compact = room < audioCard.FullHeight;
-            audioCard.Height = audioCard.Compact ? audioCard.CompactHeight : audioCard.FullHeight;
-            audioCard.Visible = room >= audioCard.Height;
-        }
-        nav.Layout += (_, _) => PlaceAudioCard();
-        PlaceAudioCard();
+        // Background-music card under the 大屏 section: a second view of the file page's audio bar, so
+        // the same track can be controlled from every page. Shown while the column has room for it.
+        var audioCard = new AudioSidebarCard(_filesPanel.AudioBar) { Compact = true };
+        audioCard.Height = audioCard.CompactHeight;
+        _previewDock.SetFooter(audioCard);
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);
         _activitiesPanel = new ActivitiesPanel(
@@ -270,44 +202,29 @@ public sealed class MainWindow : GradientForm
         devicesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, devicesButton); ShowPanel(_devicesPanel); };
         settingsButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, settingsButton); ShowPanel(_settingsPanel); };
 
-        // Keep the rail close to the window edge, like the reference UI, while reserving a compact
-        // content gutter. A table layout is more stable than competing Left/Fill docking children
-        // when DPI scaling is enabled.
-        var body = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            BackColor = Color.Transparent,
-            Padding = new Padding(0, 6, 12, 12),
-            ColumnCount = 3,
-            RowCount = 1,
-        };
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 250F));
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 14F));
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        body.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        body.Controls.Add(nav, 0, 0);
-        body.Controls.Add(new Panel { BackColor = Color.Transparent }, 1, 0);
-        body.Controls.Add(_contentHost, 2, 0);
-        var titleBar = new AppTitleBar(this, "Terminal");
-        Controls.Add(body);
+        var titleBar = new AppTitleBar(this, "终端机");
+        titleBar.AddStatus(_statusLabel);
+        // WinForms docks the back-most control first: the title bar takes the full top edge, then the
+        // rail and the monitor column their sides, and the page area (front-most) fills the rest.
+        Controls.Add(_contentHost);
+        Controls.Add(_monitorColumn);
+        Controls.Add(rail);
         Controls.Add(titleBar);
-        // Observed WinForms docking: the BACK-most control docks FIRST and claims its edge; the
-        // FRONT-most gets the innermost remainder. So the title bar (top strip) must be sent to the
-        // back to own the full top edge, and the body brought to front to fill everything below it.
-        titleBar.SendToBack();
-        body.BringToFront();
+        _rail = rail;
+        ApplyFrameMetrics();
+        DpiChanged += (_, _) => ApplyFrameMetrics();
 
         // PLANNING.md §11 "异常提示"："右下角Toast通知栈" — added to Controls last (and pinned via
         // its own OnParentChanged/SizeChanged handling, see ToastStack's doc comment) so it renders
         // on top of _contentHost regardless of which panel is currently showing.
-        _toastStack = new ToastStack();
+        _toastStack = new ToastStack { RightInset = _monitorColumn.Width };
         Controls.Add(_toastStack);
         if (_playback != null) _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
 
         // See PlaybackEngine.PlaybackDeclinedByCastSwitch's own doc comment (README risk #9): a
         // "点文件" click while the cast switch is off used to be a completely silent no-op — this
-        // briefly overwrites _statusLabel (already visible on every panel, since it lives in the nav
-        // sidebar rather than inside any one panel) with an acknowledgment, then reverts to the
+        // briefly overwrites _statusLabel (visible on every page, since it lives in the title bar)
+        // with an acknowledgment, then reverts to the
         // normal state text after a few seconds. One-shot timer per declined click rather than a
         // running one: Interval is reset and the timer restarted on every new decline, so several
         // rapid declined clicks just keep extending the same message instead of racing each other.
@@ -380,6 +297,33 @@ public sealed class MainWindow : GradientForm
 
     public void UpdateDeviceCast(string? deviceName, bool connected, bool onProgram)
         => _previewDock.UpdateDeviceCast(deviceName, connected, onProgram);
+
+    /// <summary>Rail and monitor-column widths in device pixels for the current DPI.</summary>
+    private void ApplyFrameMetrics()
+    {
+        _rail.Width = LogicalToDeviceUnits(72);
+        _monitorColumn.Width = LogicalToDeviceUnits(_monitorCollapsed ? 36 : 360);
+        _monitorColumn.Padding = _monitorCollapsed ? new Padding(LogicalToDeviceUnits(4), LogicalToDeviceUnits(10), LogicalToDeviceUnits(4), 0) : Padding.Empty;
+        _expandMonitorButton.Height = LogicalToDeviceUnits(30);
+        if (_toastStack != null) _toastStack.RightInset = _monitorColumn.Width;
+    }
+
+    private void SetMonitorCollapsed(bool collapsed)
+    {
+        if (_monitorCollapsed == collapsed) return;
+        _monitorCollapsed = collapsed;
+        _previewDock.Visible = !collapsed;
+        _expandMonitorButton.Visible = collapsed;
+        ApplyFrameMetrics();
+    }
+
+    /// <summary>The 1px divider between the rail / monitor column and the page area.</summary>
+    private static void DrawEdge(Graphics g, Control control, bool right)
+    {
+        using var pen = new Pen(ModernUi.Mix(ModernUi.Rail, ModernUi.Border, 0.45f));
+        int x = right ? control.ClientSize.Width - 1 : 0;
+        g.DrawLine(pen, x, 0, x, control.ClientSize.Height);
+    }
 
     private void ShowPanel(Control panel)
     {
@@ -487,20 +431,20 @@ public sealed class MainWindow : GradientForm
 
     private void UpdateStatusLabel()
     {
-        // 单行：状态卡只有一行高（多行会被截掉第二行）。
         bool active = _stateMachine.State == OutputState.Active;
-        if (_playback == null)
-            _statusLabel.Text = active ? "● 输出中 · 设备来投" : "● 仅本地预览 · 未连接扩展屏";
-        else if (active)
-            _statusLabel.Text = _stateMachine.Source == ProgramSource.DeviceCast ? "● 输出中 · 设备来投" : "● 输出中 · 本地媒体";
-        else
-            _statusLabel.Text = _stateMachine.CastSwitchOn ? "○ 待机中 · 可投到屏幕" : "○ 待机中 · 投屏开关已关闭";
+        (_statusLabel.Text, _statusLabel.ForeColor) =
+            active && (_playback == null || _stateMachine.Source == ProgramSource.DeviceCast) ? ("● 大屏输出中 · 设备来投", ModernUi.Success)
+            : active ? ("● 大屏输出中", ModernUi.Success)
+            : _playback == null ? ("○ 未连接扩展屏 · 仅本地预览", ModernUi.Muted)
+            : _stateMachine.CastSwitchOn ? ("○ 大屏待机", ModernUi.Muted)
+            : ("○ 大屏待机 · 投屏开关已关闭", ModernUi.Warning);
         _filesPanel.SetOutputActive(active);
     }
 
     private void OnPlaybackDeclinedByCastSwitch(MediaFile file)
     {
-        _statusLabel.Text = $"⚠ 投屏开关已关闭 · 未投放：{Path.GetFileName(file.SourcePath)}"; // 单行，过长由 AutoEllipsis 截断。
+        _statusLabel.Text = $"⚠ 投屏开关已关闭 · 未投放：{Path.GetFileName(file.SourcePath)}";
+        _statusLabel.ForeColor = ModernUi.Warning;
         _declinedMessageTimer.Stop(); // restart rather than stack — see the timer's own construction comment.
         _declinedMessageTimer.Start();
     }

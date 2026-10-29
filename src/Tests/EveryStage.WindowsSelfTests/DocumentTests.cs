@@ -91,8 +91,58 @@ internal static class DocumentTests
         Pump(400);
         window.Size = new Size(1000, 760);
         Pump(200);
+        CaptureMainWindow(window, dir);
         window.Close();
         Console.WriteLine("PASS: main window starts, lays out and closes with the document controls");
+    }
+
+    /// <summary>Renders every page in each theme at a large and a small window size into
+    /// artifacts/screenshots (uploaded by CI) — the layout review for the UI redesign — and checks that
+    /// the 监看 column fits its controls at both sizes.</summary>
+    private static void CaptureMainWindow(MainWindow window, string dir)
+    {
+        string output = Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots");
+        Directory.CreateDirectory(output);
+        var type = typeof(MainWindow);
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var library = (FileLibraryStore)type.GetField("_library", flags)!.GetValue(window)!;
+        for (int i = 0; i < 9; i++)
+        {
+            string image = Path.Combine(dir, $"示例图片 {i + 1}.jpg");
+            using (var bitmap = new Bitmap(320, 200))
+            using (var g = Graphics.FromImage(bitmap))
+            {
+                g.Clear(Color.FromArgb(30 + i * 20, 80 + i * 10, 160 - i * 10));
+                bitmap.Save(image, ImageFormat.Jpeg);
+            }
+            library.Import(image);
+        }
+        var showPanel = type.GetMethod("ShowPanel", flags)!;
+        var applyTheme = type.GetMethod("ApplyTheme", flags)!;
+        var dock = type.GetField("_previewDock", flags)!.GetValue(window)!;
+        var stopOutput = (Control)dock.GetType().GetField("_stopOutputButton", flags)!.GetValue(dock)!;
+        string[] pages = { "_filesPanel", "_activitiesPanel", "_devicesPanel", "_settingsPanel" };
+        foreach (var size in new[] { new Size(1440, 900), new Size(1024, 640) })
+        {
+            window.Size = size;
+            Pump(150);
+            Require(stopOutput.Bottom <= ((Control)dock).ClientSize.Height,
+                $"监看 column controls overflow at {size.Width}×{size.Height}.");
+            foreach (var theme in new[] { AppTheme.Dark, AppTheme.Light, AppTheme.Tech })
+            {
+                applyTheme.Invoke(window, new object[] { theme });
+                foreach (string page in pages)
+                {
+                    showPanel.Invoke(window, new[] { type.GetField(page, flags)!.GetValue(window)! });
+                    Pump(150);
+                    using var shot = new Bitmap(window.Width, window.Height);
+                    window.DrawToBitmap(shot, new Rectangle(Point.Empty, window.Size));
+                    shot.Save(Path.Combine(output, $"{size.Width}x{size.Height}-{theme}-{page.TrimStart('_').Replace("Panel", "")}.png"), ImageFormat.Png);
+                }
+            }
+        }
+        applyTheme.Invoke(window, new object[] { AppTheme.Dark });
+        Console.WriteLine($"INFO: main window screenshots in {output}");
     }
 
     // ── PDF ──────────────────────────────────────────────────────────────────────────────────────

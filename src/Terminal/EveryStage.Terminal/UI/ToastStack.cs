@@ -74,10 +74,19 @@ public sealed class ToastStack : Panel
         }
     }
 
+    /// <summary>Space kept free at the parent's right edge (MainWindow's 监看 column), so toasts sit at
+    /// the bottom-right of the page area instead of over the monitor controls.</summary>
+    public int RightInset
+    {
+        get => _rightInset;
+        set { _rightInset = value; RepositionToBottomRight(); }
+    }
+    private int _rightInset;
+
     private void RepositionToBottomRight()
     {
         if (Parent == null) return;
-        Left = Parent.ClientSize.Width - EdgeMargin - Width;
+        Left = Parent.ClientSize.Width - _rightInset - EdgeMargin - Width;
         Top = Parent.ClientSize.Height - EdgeMargin - Height;
     }
 }

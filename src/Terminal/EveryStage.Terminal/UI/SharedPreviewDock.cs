@@ -8,34 +8,37 @@ using EveryStage.Terminal.StateMachine;
 namespace EveryStage.Terminal.UI;
 
 /// <summary>
-/// "本地预览 / 播控窗口" + "信号源窗口" beneath every main page — the Preview monitor and its transport,
-/// laid out after the design prototype (screen, then one transport row: ⏮ ⏯ ⏹ ⏭ · timecode · progress ·
-/// volume · loop · fit/fill · 投到屏幕 · 停止输出).
+/// 「监看」— the right-hand column beside every main page: the Preview monitor and its transport on
+/// top, the big 「投到大屏」 button, then what is on the extended display (大屏) and its controls.
 ///
-/// Everything here operates the Preview engine, which renders into <see cref="PreviewSurface"/> inside
-/// this dock and never touches the extended display. "投到屏幕" (<see cref="TakeRequested"/>) and
-/// "停止输出" (<see cref="StopProgramRequested"/>) are the only controls that affect Program; MainWindow
-/// owns both engines and performs them. The heading and the two source cards show Program's status and
-/// what is on air (local media vs. a device cast).
+/// Everything above 「投到大屏」 operates the Preview engine, which renders into <see cref="PreviewSurface"/>
+/// inside this column and never touches the extended display. 「投到大屏」 (<see cref="TakeRequested"/>),
+/// 暂停大屏 and 「停止输出」 (<see cref="StopProgramRequested"/>) are the only controls that affect
+/// Program; MainWindow owns both engines and performs take/stop. The 大屏 section shows Program's status
+/// and which source is on air (local media vs. a device cast).
 ///
 /// When the Preview engine fails, an error card covers the monitor with the file name, failure stage,
 /// container and codecs, a suggestion, and 重试 / 跳过 / 从文件库移除 / 用系统程序打开.
 ///
-/// As in the reference mockups, the two areas are two separate rounded cards stacked with a gap —
-/// 「本地预览 / 播控窗口」 (heading, monitor, transport) above 「信号源窗口」 (heading, source cards) —
-/// so this control itself is only a transparent container for them.
+/// Laid out by hand (<see cref="OnLayout"/>), top to bottom at the column's width: the monitor keeps
+/// 16:9 and gives up height first when the window is short; the optional footer (the background-music
+/// card) shows only while it fits.
 /// </summary>
 internal sealed class SharedPreviewDock : Panel
 {
-    private const int CardGap = 8;
     private const int MinProgressWidth = 90;
     private const int ButtonHeight = 30;
     private const int SourceCardHeight = 46;
-    private const int DeviceCardExpandedHeight = 178;
+    private const int Gap = 10;
     private const string IconFont = "Segoe MDL2 Assets";
 
     private readonly OutputStateMachine _stateMachine;
+    private readonly Label _title;
+    private readonly RoundedActionButton _collapseButton;
+    private readonly Badge _previewBadge;
     private readonly Label _previewState;
+    private readonly Panel _previewFrame;
+    private readonly Badge _programBadge;
     private readonly Label _programState;
     private readonly RoundedActionButton _previousButton;
     private readonly RoundedActionButton _playPauseButton;
@@ -43,10 +46,12 @@ internal sealed class SharedPreviewDock : Panel
     private readonly RoundedActionButton _nextButton;
     private readonly Label _timecode;
     private readonly MediaTrack _progress;
+    private readonly Label _volumeIcon;
     private readonly MediaTrack _volume;
     private readonly RoundedActionButton _loopButton;
     private readonly RoundedActionButton _scaleButton;
     private readonly RoundedActionButton _takeButton;
+    private readonly RoundedActionButton _programPauseButton;
     private readonly RoundedActionButton _stopOutputButton;
     private readonly SourceCardView _localCard;
     private readonly DeviceCastCard _deviceCard;
@@ -56,36 +61,24 @@ internal sealed class SharedPreviewDock : Panel
     private PlaybackEngine? _preview;
     private PlaybackEngine? _program;
     private Bitmap? _placeholder;
-    private readonly GlassPanel _sourcesCard;
-    private readonly RowStyle _sourcesCardsRow;
-    private bool _deviceExpanded;
     private string? _deviceName;
     private bool _deviceConnected;
     private bool _deviceOnProgram;
+    private DocumentControlBar? _documentBar;
+    private bool _documentBarShown;
+    private Control? _footer;
 
     /// <summary>The Preview channel's output surface (MainWindow builds the Preview engine on it).</summary>
     public PreviewSurface PreviewSurface { get; }
 
-    /// <summary>Height of everything in the dock except the preview monitor itself — MainWindow sizes the
-    /// dock as this plus a monitor that grows with the window. Includes the document control row while
-    /// a document plays (<see cref="ChromeHeightChanged"/>).</summary>
-    public int ChromeHeight => _baseChromeHeight + (_deviceExpanded ? DeviceCardExpandedHeight - SourceCardHeight : 0)
-        + (_documentBarShown ? DocumentRowHeight : 0);
-
-    /// <summary>Raised when the document control row appears or disappears.</summary>
-    public event Action? ChromeHeightChanged;
-
-    private readonly int _baseChromeHeight;
-    private readonly TableLayoutPanel _layout;
-    private DocumentControlBar? _documentBar;
-    private bool _documentBarShown;
-    private const int DocumentRowHeight = ButtonHeight + 6;
-
-    /// <summary>"投到屏幕": put the Preview content on the extended display.</summary>
+    /// <summary>"投到大屏": put the Preview content on the extended display.</summary>
     public event Action? TakeRequested;
 
     /// <summary>"停止输出": take whatever is on the extended display off air (Preview is unaffected).</summary>
     public event Action? StopProgramRequested;
+
+    /// <summary>「收起 ›」: MainWindow hides the column and gives the page the full width.</summary>
+    public event Action? CollapseRequested;
     public event Action? DeviceTakeRequested;
     public event Action? DeviceRevertRequested;
     public event Action<int, int>? DeviceVideoHostResized;
@@ -97,129 +90,56 @@ internal sealed class SharedPreviewDock : Panel
     public SharedPreviewDock(OutputStateMachine stateMachine)
     {
         _stateMachine = stateMachine;
-        Dock = DockStyle.Fill;
-        Padding = Padding.Empty;
+        Padding = new Padding(14, 12, 14, 12);
         BackColor = Color.Transparent;
+        DoubleBuffered = true;
 
-        // Two cards: the preview card fills; the 信号源窗口 card has a fixed height at the bottom.
-        var previewCard = new GlassPanel
-        {
-            Dock = DockStyle.Fill, Padding = new Padding(10, 7, 10, 7), CornerRadius = 10,
-            GlassTint = Color.FromArgb(190, 12, 29, 49),
-        };
-        var sourcesCard = new GlassPanel
-        {
-            Dock = DockStyle.Bottom, Padding = new Padding(10, 5, 10, 7), CornerRadius = 10,
-            GlassTint = Color.FromArgb(190, 12, 29, 49),
-        };
-        _sourcesCard = sourcesCard;
-        var cardGap = new Panel { Dock = DockStyle.Bottom, Height = CardGap, BackColor = Color.Transparent };
-
-        // Row heights come from the real fonts/control sizes, and every cell has a zero margin
-        // (TableLayoutPanel's default 3px cell margins used to clip the buttons and cards).
-        var titleFont = new Font(ModernUi.UiFontSemibold, 10.5F);
         var smallFont = new Font(ModernUi.UiFont, 9F);
-        int titleHeight = TextRenderer.MeasureText("本地预览 Ag", titleFont).Height;
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 1, RowCount = 4, Padding = Padding.Empty, Margin = Padding.Empty };
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, titleHeight + 10));      // heading
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));                    // monitor
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));                     // document controls (only while a document plays)
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute, ButtonHeight + 12));     // transport
-        _layout = layout;
-        var sourcesLayout = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 1, RowCount = 2, Padding = Padding.Empty, Margin = Padding.Empty };
-        sourcesLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, titleHeight + 6));      // 信号源窗口 heading
-        _sourcesCardsRow = new RowStyle(SizeType.Absolute, SourceCardHeight + 2);
-        sourcesLayout.RowStyles.Add(_sourcesCardsRow); // source cards
-        sourcesCard.Height = sourcesCard.Padding.Vertical + (titleHeight + 6) + (SourceCardHeight + 2);
-        _baseChromeHeight = previewCard.Padding.Vertical + (titleHeight + 10) + (ButtonHeight + 12) + CardGap + sourcesCard.Height;
+        _title = new Label { Text = "监看", AutoSize = false, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 11F), TextAlign = ContentAlignment.MiddleLeft };
+        _collapseButton = TextButton("收起 ›", "收起监看栏，文件区占满整个宽度");
+        _collapseButton.Font = new Font(ModernUi.UiFont, 8.5F);
+        _collapseButton.Click += (_, _) => CollapseRequested?.Invoke();
 
-        // Heading: 「本地预览 / 播控窗口 ● 预览状态 …… 输出状态」.
-        var heading = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
-        heading.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
-        heading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
-        heading.Controls.Add(new Label { Text = "本地预览 / 播控窗口", AutoSize = true, ForeColor = ModernUi.Text, Font = titleFont, Margin = new Padding(2, 2, 10, 0) }, 0, 0);
-        _previewState = new Label { Text = "● 待机", Dock = DockStyle.Fill, ForeColor = ModernUi.Muted, Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Margin = new Padding(0, 0, 8, 2) };
-        heading.Controls.Add(_previewState, 1, 0);
-        _programState = new Label { Text = "输出：未连接扩展屏", Dock = DockStyle.Fill, ForeColor = ModernUi.Muted, Font = smallFont, TextAlign = ContentAlignment.MiddleRight, AutoEllipsis = true, Margin = new Padding(0, 0, 2, 2) };
-        heading.Controls.Add(_programState, 2, 0);
-        layout.Controls.Add(heading, 0, 0);
-
+        _previewBadge = new Badge("预览");
+        _previewState = new Label { Text = "待机", ForeColor = ModernUi.Muted, Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+        _previewFrame = new Panel { BackColor = ModernUi.Border, Padding = new Padding(2) };
         PreviewSurface = new PreviewSurface { Dock = DockStyle.Fill, Margin = Padding.Empty };
-        layout.Controls.Add(PreviewSurface, 0, 1);
+        _previewFrame.Controls.Add(PreviewSurface);
 
-        // Transport: one row, the progress track takes the remaining width.
-        var transport = new TableLayoutPanel { Dock = DockStyle.Fill, BackColor = Color.Transparent, RowCount = 1, ColumnCount = 12, Margin = Padding.Empty, Padding = new Padding(0, 6, 0, 0) };
-        int[] columnWidths = { 34, 34, 34, 34, 92, -1, 22, 64, 34, 50, 92, 82 };
-        foreach (var width in columnWidths)
-            transport.ColumnStyles.Add(width < 0 ? new ColumnStyle(SizeType.Percent, 100) : new ColumnStyle(SizeType.Absolute, width + 4));
-
-        _previousButton = IconButton("\uE892", "上一项 / 上一页");
-        _playPauseButton = IconButton("\uE768", "播放 / 暂停");
-        _stopButton = IconButton("\uE71A", "停止预览");
-        _nextButton = IconButton("\uE893", "下一项 / 下一页");
-        _timecode = new Label { Text = "--:-- / --:--", Dock = DockStyle.Fill, ForeColor = ModernUi.Muted, Font = smallFont, TextAlign = ContentAlignment.MiddleCenter, Margin = Padding.Empty };
-        _progress = new MediaTrack { Dock = DockStyle.Fill, Margin = new Padding(6, 0, 10, 0) };
-        var volumeIcon = new Label { Text = "\uE767", Font = new Font(IconFont, 10F), Dock = DockStyle.Fill, ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleCenter, Margin = Padding.Empty };
-        _volume = new MediaTrack { Dock = DockStyle.Fill, Margin = new Padding(2, 0, 8, 0), Value = 1f };
-        _loopButton = IconButton("\uE8EE", "循环播放当前文件（不保存到文件设置）");
+        _previousButton = IconButton("", "上一项 / 上一页");
+        _playPauseButton = IconButton("", "播放 / 暂停");
+        _stopButton = IconButton("", "停止预览");
+        _nextButton = IconButton("", "下一项 / 下一页");
+        _timecode = new Label { Text = "--:-- / --:--", ForeColor = ModernUi.Muted, Font = smallFont, TextAlign = ContentAlignment.MiddleLeft };
+        _progress = new MediaTrack();
+        _volumeIcon = new Label { Text = "", Font = new Font(IconFont, 10F), ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleCenter };
+        _volume = new MediaTrack { Value = 1f };
+        _loopButton = IconButton("", "循环播放当前文件（不保存到文件设置）");
         _scaleButton = TextButton("满宽", "视频显示：满宽（横向铺满，上下可能裁切）→ 适应（完整显示）→ 填充（铺满裁切）");
-        _takeButton = TextButton("投到屏幕", "把预览中的内容投到扩展屏正式输出");
+
+        _takeButton = TextButton("投到大屏  ↓", "把预览中的内容投到扩展屏正式输出");
         ModernUi.StyleButton(_takeButton, primary: true);
-        _stopOutputButton = TextButton("停止输出", "停止扩展屏上的正式输出（预览保留）");
-        ModernUi.StyleButton(_stopOutputButton, danger: true);
+        _takeButton.Font = new Font(ModernUi.UiFontSemibold, 11F);
 
-        Control[] cells = { _previousButton, _playPauseButton, _stopButton, _nextButton, _timecode, _progress, volumeIcon, _volume, _loopButton, _scaleButton, _takeButton, _stopOutputButton };
-        for (int i = 0; i < cells.Length; i++) transport.Controls.Add(cells[i], i, 0);
-        layout.Controls.Add(transport, 0, 3);
-
-        // The fixed-width columns take ~616px, which left the progress track only a few pixels wide at
-        // the default window size. While the track would be shorter than MinProgressWidth, drop the
-        // least essential columns in order: the volume icon + slider, then the timecode, then the
-        // 满宽/适应/填充 button (video only). Default size drops just the volume; 800×600 drops all three.
-        int[][] droppable = { new[] { 6, 7 }, new[] { 4 }, new[] { 9 } };
-        int dropped = 0;
-        transport.Resize += (_, _) =>
-        {
-            int available = transport.ClientSize.Width - transport.Padding.Horizontal;
-            int fixedWidth = columnWidths.Where(w => w > 0).Sum(w => w + 4);
-            int drop = 0;
-            while (drop < droppable.Length && available - fixedWidth < MinProgressWidth)
-                fixedWidth -= droppable[drop++].Sum(column => columnWidths[column] + 4);
-            if (drop == dropped) return;
-            dropped = drop;
-            for (int group = 0; group < droppable.Length; group++)
-                foreach (int column in droppable[group])
-                {
-                    bool show = group >= drop;
-                    transport.ColumnStyles[column].Width = show ? columnWidths[column] + 4 : 0;
-                    cells[column].Visible = show;
-                }
-        };
-
-        // 「信号源窗口」: what is on the extended display right now.
-        var sourcesHeader = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty, Padding = new Padding(2, 2, 0, 0) };
-        sourcesHeader.Controls.Add(new Label { Text = "信号源窗口", AutoSize = true, ForeColor = ModernUi.Text, Font = titleFont, Margin = new Padding(0, 0, 12, 0) });
-        sourcesHeader.Controls.Add(new Label { Text = "扩展屏同一时间只输出一个来源（本地媒体与设备来投互斥）", AutoSize = true, ForeColor = ModernUi.Muted, Font = smallFont, Margin = new Padding(0, 3, 0, 0) });
-        sourcesLayout.Controls.Add(sourcesHeader, 0, 0);
-
-        var sources = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty, Padding = Padding.Empty };
-        _localCard = new SourceCardView("本地预览 / 播控窗口");
+        _programBadge = new Badge("大屏") { Danger = true };
+        _programState = new Label { Text = "未连接扩展屏", ForeColor = ModernUi.Muted, Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+        _localCard = new SourceCardView("本地媒体");
         _deviceCard = new DeviceCastCard();
         _deviceCard.TakeRequested += () => DeviceTakeRequested?.Invoke();
         _deviceCard.RevertRequested += () => DeviceRevertRequested?.Invoke();
         _deviceCard.VideoHost.SizeChanged += (_, _) => DeviceVideoHostResized?.Invoke(
             Math.Max(1, _deviceCard.VideoHost.ClientSize.Width), Math.Max(1, _deviceCard.VideoHost.ClientSize.Height));
-        sources.Controls.Add(_localCard.Card);
-        sources.Controls.Add(_deviceCard.Card);
-        sourcesLayout.Controls.Add(sources, 0, 1);
+        _programPauseButton = TextButton("暂停大屏", "暂停 / 继续扩展屏上的本地媒体");
+        _stopOutputButton = TextButton("停止输出", "停止扩展屏上的正式输出（预览保留）");
+        ModernUi.StyleButton(_stopOutputButton, danger: true);
 
-        previewCard.Controls.Add(layout);
-        sourcesCard.Controls.Add(sourcesLayout);
-        // Dock order: the last-added Bottom control sits lowest, so the sources card goes in last.
-        Controls.Add(previewCard);
-        Controls.Add(cardGap);
-        Controls.Add(sourcesCard);
+        Controls.AddRange(new Control[]
+        {
+            _title, _collapseButton, _previewBadge, _previewState, _previewFrame,
+            _previousButton, _playPauseButton, _stopButton, _nextButton, _volumeIcon, _volume, _loopButton, _scaleButton,
+            _timecode, _progress, _takeButton, _programBadge, _programState, _localCard.Card, _deviceCard.Card,
+            _programPauseButton, _stopOutputButton,
+        });
 
         _errorCard = new ErrorCard();
         _errorCard.Retry += () => _preview?.RetryCurrentFile();
@@ -256,6 +176,12 @@ internal sealed class SharedPreviewDock : Panel
             RefreshNow();
         };
         _takeButton.Click += (_, _) => TakeRequested?.Invoke();
+        _programPauseButton.Click += (_, _) =>
+        {
+            if (_program == null) return;
+            if (_program.IsPaused || _program.IsCompleted) _program.Resume(); else if (_program.CanPause) _program.Pause();
+            RefreshNow();
+        };
         _stopOutputButton.Click += (_, _) => StopProgramRequested?.Invoke();
 
         _timer = new System.Windows.Forms.Timer { Interval = 200 };
@@ -266,7 +192,7 @@ internal sealed class SharedPreviewDock : Panel
 
         RoundedActionButton IconButton(string glyph, string tip)
         {
-            var button = new RoundedActionButton { Text = glyph, Dock = DockStyle.Fill, Height = ButtonHeight, Margin = new Padding(0, 0, 4, 0), Padding = Padding.Empty };
+            var button = new RoundedActionButton { Text = glyph, Height = ButtonHeight, Margin = Padding.Empty, Padding = Padding.Empty };
             ModernUi.StyleButton(button);
             button.Font = new Font(IconFont, 10F);
             _toolTip.SetToolTip(button, tip);
@@ -275,10 +201,102 @@ internal sealed class SharedPreviewDock : Panel
 
         RoundedActionButton TextButton(string text, string tip)
         {
-            var button = new RoundedActionButton { Text = text, Dock = DockStyle.Fill, Height = ButtonHeight, Margin = new Padding(0, 0, 4, 0), Padding = Padding.Empty };
+            var button = new RoundedActionButton { Text = text, Height = ButtonHeight, Margin = Padding.Empty, Padding = Padding.Empty };
             ModernUi.StyleButton(button);
             _toolTip.SetToolTip(button, tip);
             return button;
+        }
+    }
+
+    /// <summary>A control pinned under the 大屏 section (the background-music card), shown while it fits.</summary>
+    public void SetFooter(Control footer)
+    {
+        if (_footer != null) Controls.Remove(_footer);
+        _footer = footer;
+        Controls.Add(footer);
+        PerformLayout();
+    }
+
+    protected override void OnLayout(LayoutEventArgs levent)
+    {
+        base.OnLayout(levent);
+        if (_stopOutputButton == null) return; // raised from the base constructor / Padding setter
+        int S(int v) => LogicalToDeviceUnits(v);
+        var area = DisplayRectangle;
+        area = new Rectangle(area.Left + S(Padding.Left) - Padding.Left, area.Top + S(Padding.Top) - Padding.Top,
+            Math.Max(1, area.Width - (S(Padding.Horizontal) - Padding.Horizontal)), Math.Max(1, area.Height - (S(Padding.Vertical) - Padding.Vertical)));
+        int x = area.Left, w = area.Width, gap = S(Gap), button = S(ButtonHeight), label = S(22);
+
+        // Everything but the monitor has a fixed height; the monitor gets 16:9 or what is left.
+        int deviceHeight = _deviceConnected ? Math.Max(S(SourceCardHeight), w * 9 / 16) : S(SourceCardHeight);
+        int documentHeight = _documentBarShown ? button + S(6) : 0;
+        int fixedHeight = S(28) + gap / 2 + label + S(4) + (button + S(6)) * 2 + documentHeight + gap
+            + S(44) + gap + label + S(4) + S(SourceCardHeight) + S(6) + deviceHeight + gap + button;
+        int monitor = Math.Clamp(area.Height - fixedHeight, S(90), (w - S(4)) * 9 / 16 + S(4));
+
+        int y = area.Top;
+        _collapseButton.Bounds = new Rectangle(area.Right - S(64), y + (S(28) - S(26)) / 2, S(64), S(26));
+        _title.Bounds = new Rectangle(x, y, w - S(70), S(28));
+        y += S(28) + gap / 2;
+
+        int badgeWidth = _previewBadge.PreferredWidth;
+        _previewBadge.Bounds = new Rectangle(x, y + (label - S(18)) / 2, badgeWidth, S(18));
+        _previewState.Bounds = new Rectangle(x + badgeWidth + S(6), y, w - badgeWidth - S(6), label);
+        y += label + S(4);
+        _previewFrame.Bounds = new Rectangle(x, y, w, monitor);
+        y += monitor + S(6);
+
+        // Transport row 1: ⏮ ⏯ ⏹ ⏭ · volume · loop · fit.
+        int icon = S(34), step = icon + S(4);
+        var row = new[] { _previousButton, _playPauseButton, _stopButton, _nextButton };
+        for (int i = 0; i < row.Length; i++) row[i].Bounds = new Rectangle(x + i * step, y, icon, button);
+        int scaleWidth = S(52);
+        _scaleButton.Bounds = new Rectangle(area.Right - scaleWidth, y, scaleWidth, button);
+        _loopButton.Bounds = new Rectangle(_scaleButton.Left - S(4) - icon, y, icon, button);
+        int volumeLeft = x + row.Length * step + S(2);
+        int volumeRight = _loopButton.Left - S(6);
+        bool volumeFits = volumeRight - volumeLeft >= S(70);
+        _volumeIcon.Visible = _volume.Visible = volumeFits;
+        _volumeIcon.Bounds = new Rectangle(volumeLeft, y, S(22), button);
+        _volume.Bounds = new Rectangle(volumeLeft + S(22), y + (button - S(24)) / 2, Math.Max(1, volumeRight - volumeLeft - S(22)), S(24));
+        y += button + S(6);
+
+        // Transport row 2: timecode · progress.
+        int timeWidth = TextRenderer.MeasureText("00:00:00 / 00:00:00", _timecode.Font).Width;
+        bool timeFits = w - timeWidth >= S(MinProgressWidth);
+        _timecode.Visible = timeFits;
+        _timecode.Bounds = new Rectangle(x, y, timeWidth, button);
+        int progressLeft = timeFits ? x + timeWidth + S(4) : x;
+        _progress.Bounds = new Rectangle(progressLeft, y + (button - S(24)) / 2, Math.Max(1, area.Right - progressLeft), S(24));
+        y += button + S(6);
+
+        if (_documentBar != null)
+        {
+            _documentBar.Bounds = new Rectangle(x, y, w, Math.Max(1, documentHeight));
+            y += documentHeight;
+        }
+        y += gap;
+        _takeButton.Bounds = new Rectangle(x, y, w, S(44));
+        y += S(44) + gap;
+
+        badgeWidth = _programBadge.PreferredWidth;
+        _programBadge.Bounds = new Rectangle(x, y + (label - S(18)) / 2, badgeWidth, S(18));
+        _programState.Bounds = new Rectangle(x + badgeWidth + S(6), y, w - badgeWidth - S(6), label);
+        y += label + S(4);
+        _localCard.Card.Bounds = new Rectangle(x, y, w, S(SourceCardHeight));
+        y += S(SourceCardHeight) + S(6);
+        _deviceCard.Card.Bounds = new Rectangle(x, y, w, deviceHeight);
+        y += deviceHeight + gap;
+        int half = (w - S(8)) / 2;
+        _programPauseButton.Bounds = new Rectangle(x, y, half, button);
+        _stopOutputButton.Bounds = new Rectangle(x + half + S(8), y, w - half - S(8), button);
+        y += button + gap;
+
+        if (_footer != null)
+        {
+            int footerHeight = _footer.Height;
+            _footer.Visible = area.Bottom - y >= footerHeight;
+            _footer.Bounds = new Rectangle(x, area.Bottom - footerHeight, w, footerHeight);
         }
     }
 
@@ -302,18 +320,11 @@ internal sealed class SharedPreviewDock : Panel
     public void UpdateDeviceCast(string? deviceName, bool connected, bool onProgram)
     {
         _deviceName = deviceName;
+        bool relayout = _deviceConnected != connected;
         _deviceConnected = connected;
         _deviceOnProgram = onProgram;
-        bool expanded = connected;
-        if (_deviceExpanded != expanded)
-        {
-            _deviceExpanded = expanded;
-            int sourceHeight = expanded ? DeviceCardExpandedHeight : SourceCardHeight;
-            _sourcesCardsRow.Height = sourceHeight + 2;
-            _sourcesCard.Height = _sourcesCard.Padding.Vertical + (int)_sourcesCardsRow.Height + 28;
-            ChromeHeightChanged?.Invoke();
-        }
         RefreshNow();
+        if (relayout) PerformLayout();
     }
 
     private void OnPreviewStateChanged(PlaybackChannelState state)
@@ -335,10 +346,10 @@ internal sealed class SharedPreviewDock : Panel
     /// <summary>Adds the document control row (PDF / Word / presentation controls and Program sync).</summary>
     public void BindDocumentSync(DocumentProgramSync sync)
     {
-        _documentBar = new DocumentControlBar(sync, _toolTip, ButtonHeight) { Dock = DockStyle.Fill, Visible = false };
+        _documentBar = new DocumentControlBar(sync, _toolTip, ButtonHeight) { Visible = false };
         _documentBar.StopProgramRequested += () => StopProgramRequested?.Invoke();
         _documentBar.Changed += RefreshNow;
-        _layout.Controls.Add(_documentBar, 0, 2);
+        Controls.Add(_documentBar);
         sync.Preview.DocumentChanged += RefreshNow;
         RefreshNow();
     }
@@ -351,8 +362,7 @@ internal sealed class SharedPreviewDock : Panel
         if (show == _documentBarShown) return;
         _documentBarShown = show;
         _documentBar.Visible = show;
-        _layout.RowStyles[2].Height = show ? DocumentRowHeight : 0;
-        ChromeHeightChanged?.Invoke();
+        PerformLayout();
     }
 
     private void RefreshNow()
@@ -365,32 +375,38 @@ internal sealed class SharedPreviewDock : Panel
         bool programLive = _stateMachine.State == OutputState.Active;
         var source = programLive ? _stateMachine.Source : ProgramSource.None;
 
-        // Heading: preview state + file.
-        string fileLabel = file == null ? "" : " · " + Path.GetFileName(file.SourcePath) + (file.IsBackgroundAudio ? "（背景音乐）" : "");
+        // 「预览」 line: file + state.
+        string fileLabel = file == null ? "" : Path.GetFileName(file.SourcePath) + (file.IsBackgroundAudio ? "（背景音乐）" : "") + " · ";
         (string text, Color color) = state switch
         {
-            PlaybackChannelState.Loading => ("● 加载中" + fileLabel, ModernUi.Warning),
-            PlaybackChannelState.Playing => ("● 预览中" + fileLabel, ModernUi.Success),
-            PlaybackChannelState.Paused when preview!.IsCompleted => ("● 播放完成" + fileLabel, ModernUi.Muted),
-            PlaybackChannelState.Paused => ("● 已暂停" + fileLabel, ModernUi.Warning),
-            PlaybackChannelState.Failed => ("● 播放失败" + fileLabel, ModernUi.Danger),
-            _ => ("● 待机 · 双击文件在此预览", ModernUi.Muted),
+            PlaybackChannelState.Loading => (fileLabel + "加载中", ModernUi.Warning),
+            PlaybackChannelState.Playing => (fileLabel + "预览中", ModernUi.Muted),
+            PlaybackChannelState.Paused when preview!.IsCompleted => (fileLabel + "播放完成", ModernUi.Muted),
+            PlaybackChannelState.Paused => (fileLabel + "已暂停", ModernUi.Warning),
+            PlaybackChannelState.Failed => (fileLabel + "播放失败", ModernUi.Danger),
+            _ => ("待机 · 单击文件在此预览", ModernUi.Muted),
         };
         if (preview?.CurrentContentNote is { } note && state == PlaybackChannelState.Playing) text += "（" + note + "）";
         if (preview?.Muted == true && state is PlaybackChannelState.Playing or PlaybackChannelState.Paused) text += " · 预监静音";
         SetText(_previewState, text, color);
+        bool previewHasContent = state is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed);
+        var frameColor = previewHasContent ? ModernUi.Accent : ModernUi.Border;
+        if (_previewFrame.BackColor != frameColor) _previewFrame.BackColor = frameColor;
+        _previewBadge.Active = previewHasContent;
 
         // Program status (independent of Preview).
         var programState = ProgramStatus.Compute(_program != null, programLive, _program?.State);
         (string programText, Color programColor) = programState switch
         {
-            ProgramOutputState.Disconnected => ("输出：未连接扩展屏", ModernUi.Muted),
-            ProgramOutputState.Failed => ("输出：播放失败", ModernUi.Danger),
-            ProgramOutputState.Live when source == ProgramSource.DeviceCast => ("● 输出中 · 设备来投", ModernUi.Danger),
-            ProgramOutputState.Live => ("● 输出中 · " + (_program?.CurrentFile is { } pf ? Path.GetFileName(pf.SourcePath) : "本地媒体"), ModernUi.Danger),
-            _ => (_stateMachine.CastSwitchOn ? "输出：待机" : "输出：待机（投屏开关已关闭）", ModernUi.Muted),
+            ProgramOutputState.Disconnected => ("未连接扩展屏 · 仅本地预览", ModernUi.Muted),
+            ProgramOutputState.Failed => ("播放失败", ModernUi.Danger),
+            ProgramOutputState.Live when source == ProgramSource.DeviceCast => ("输出中 · 设备来投", ModernUi.Text),
+            ProgramOutputState.Live => ((_program?.CurrentFile is { } pf ? Path.GetFileName(pf.SourcePath) : "本地媒体")
+                + (_program?.Position is { } pp && _program.CanSeek ? " · " + Format(pp) : "") + (_program?.IsPaused == true ? " · 已暂停" : ""), ModernUi.Text),
+            _ => (_stateMachine.CastSwitchOn ? "待机 · 没有输出" : "待机（投屏开关已关闭）", ModernUi.Muted),
         };
         SetText(_programState, programText, programColor);
+        _programBadge.Active = programState == ProgramOutputState.Live;
 
         // Transport.
         bool hasFile = file != null && state != PlaybackChannelState.Idle;
@@ -416,17 +432,21 @@ internal sealed class SharedPreviewDock : Panel
         // Disabled (not just a warning on click) while no extended display is bound.
         _takeButton.Enabled = _program != null && hasFile && state != PlaybackChannelState.Failed && state != PlaybackChannelState.Loading;
         _stopOutputButton.Enabled = programLive;
+        bool programLocal = programLive && source == ProgramSource.LocalMedia && _program != null;
+        _programPauseButton.Enabled = programLocal && (_program!.CanPause || _program.IsPaused || _program.IsCompleted);
+        SetText(_programPauseButton, programLocal && (_program!.IsPaused || _program.IsCompleted) ? "继续大屏" : "暂停大屏", null);
 
         // Source cards: which source is on air.
         string localStatus = state switch
         {
+            _ when source == ProgramSource.LocalMedia => "输出中",
             PlaybackChannelState.Idle => "待机",
-            PlaybackChannelState.Failed => "预览失败",
-            _ => "预览中",
-        } + (source == ProgramSource.LocalMedia ? " · 输出中" : " · 未投屏");
+            PlaybackChannelState.Failed => "预览失败 · 未投屏",
+            _ => "预览中 · 未投屏",
+        };
         _localCard.Update(source == ProgramSource.LocalMedia, localStatus,
             source == ProgramSource.LocalMedia ? ModernUi.Danger : state == PlaybackChannelState.Failed ? ModernUi.Danger : state == PlaybackChannelState.Idle ? ModernUi.Muted : ModernUi.Success);
-        _deviceCard.Update(_deviceConnected, _deviceName ?? "设备投屏窗口", _deviceOnProgram,
+        _deviceCard.Update(_deviceConnected, _deviceName ?? "设备来投", _deviceOnProgram,
             _program == null ? "未连接扩展屏" : "等待设备来投", _program != null);
 
         // Error card.
@@ -478,7 +498,7 @@ internal sealed class SharedPreviewDock : Panel
         {
             Card = new GlassPanel
             {
-                Width = 252, Height = SourceCardHeight, Margin = new Padding(0, 0, 10, 0),
+                Height = SourceCardHeight, Margin = Padding.Empty,
                 Padding = new Padding(6, 5, 8, 5), CornerRadius = 9, GlassTint = ModernUi.SurfaceRaised,
             };
             _thumb = new GlassPanel { Dock = DockStyle.Left, Width = 42, CornerRadius = 7, GlassTint = ModernUi.Surface };
@@ -534,7 +554,7 @@ internal sealed class SharedPreviewDock : Panel
         {
             Card = new GlassPanel
             {
-                Width = 268, Height = SourceCardHeight, Margin = new Padding(0, 0, 10, 0),
+                Height = SourceCardHeight, Margin = Padding.Empty,
                 Padding = new Padding(6, 5, 8, 5), CornerRadius = 9, GlassTint = ModernUi.SurfaceRaised,
             };
 
@@ -567,7 +587,7 @@ internal sealed class SharedPreviewDock : Panel
             _labels = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(6, 0, 0, 0) };
             _title = new Label
             {
-                Text = "设备投屏窗口", Dock = DockStyle.Top, Height = 19, ForeColor = ModernUi.Text,
+                Text = "设备来投", Dock = DockStyle.Top, Height = 19, ForeColor = ModernUi.Text,
                 Font = new Font(ModernUi.UiFontSemibold, 9F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
             };
             _state = new Label { Dock = DockStyle.Fill, Font = new Font(ModernUi.UiFont, 8F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
@@ -580,10 +600,9 @@ internal sealed class SharedPreviewDock : Panel
         public void Update(bool connected, string title, bool onProgram, string idleStatus, bool displayBound)
         {
             _onProgram = onProgram;
-            Card.Height = connected ? DeviceCardExpandedHeight : SourceCardHeight;
             _videoFrame.Visible = connected;
             _labels.Visible = !connected;
-            _title.Text = connected ? title : "设备投屏窗口";
+            _title.Text = connected ? title : "设备来投";
             _caption.Text = connected
                 ? $"{title} · {(onProgram ? "大屏中" : "预览中")}"
                 : "";
@@ -621,9 +640,9 @@ internal sealed class SharedPreviewDock : Panel
             Padding = new Padding(14, 8, 14, 8);
             var smallFont = new Font(ModernUi.UiFont, 8.5F);
             _title = new Label { Dock = DockStyle.Top, Height = 22, ForeColor = Color.FromArgb(255, 120, 120), Font = new Font(ModernUi.UiFontSemibold, 10F), AutoEllipsis = true };
-            _detail = new Label { Dock = DockStyle.Top, Height = 18, ForeColor = Color.FromArgb(210, 214, 222), Font = smallFont, AutoEllipsis = true };
+            _detail = new Label { Dock = DockStyle.Top, Height = 34, ForeColor = Color.FromArgb(210, 214, 222), Font = smallFont, AutoEllipsis = true };
             _suggestion = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(160, 170, 186), Font = smallFont, AutoEllipsis = true };
-            var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 32, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, BackColor = Color.Transparent, Margin = Padding.Empty };
+            var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 64, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, BackColor = Color.Transparent, Margin = Padding.Empty };
             actions.Controls.Add(Action("重试", () => Retry?.Invoke(), primary: true));
             actions.Controls.Add(Action("跳过", () => Skip?.Invoke()));
             actions.Controls.Add(Action("从文件库移除", () => { if (_error != null) Remove?.Invoke(_error.File); }));
@@ -731,5 +750,60 @@ internal sealed class MediaTrack : Control
         using (var fg = new SolidBrush(ModernUi.Accent)) g.FillRectangle(fg, track.X, track.Y, filled, track.Height);
         using var knob = new SolidBrush(Color.White);
         g.FillEllipse(knob, track.X + filled - 6, cy - 6, 12, 12);
+    }
+}
+
+/// <summary>The small 「预览」 / 「大屏」 tag over a monitor: filled in the channel colour (accent for
+/// Preview, danger for Program) while that channel shows something, outlined and muted otherwise.</summary>
+internal sealed class Badge : Control
+{
+    private bool _active;
+    public bool Danger { get; init; }
+
+    public bool Active
+    {
+        get => _active;
+        set { if (_active != value) { _active = value; Invalidate(); } }
+    }
+
+    public Badge(string text)
+    {
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer
+            | ControlStyles.SupportsTransparentBackColor | ControlStyles.ResizeRedraw, true);
+        BackColor = Color.Transparent;
+        Text = text;
+        Font = new Font(ModernUi.UiFontSemibold, 8F);
+    }
+
+    public int PreferredWidth => TextRenderer.MeasureText(Text, Font).Width + LogicalToDeviceUnits(8);
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+        int d = LogicalToDeviceUnits(8);
+        using var path = new GraphicsPath();
+        path.AddArc(rect.Left, rect.Top, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Top, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        Color channel = Danger ? ModernUi.Danger : ModernUi.Accent;
+        Color fore;
+        if (_active)
+        {
+            using var fill = new SolidBrush(channel);
+            g.FillPath(fill, path);
+            fore = Danger ? Color.White : ModernUi.AccentForeground;
+        }
+        else
+        {
+            using var pen = new Pen(ModernUi.Border);
+            g.DrawPath(pen, path);
+            fore = ModernUi.Muted;
+        }
+        TextRenderer.DrawText(g, Text, Font, ClientRectangle, fore,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
     }
 }

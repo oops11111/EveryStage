@@ -48,6 +48,14 @@ jobs:
       - name: Run Windows content self-tests
         run: dotnet run --project src/Tests/EveryStage.WindowsSelfTests/EveryStage.WindowsSelfTests.csproj --no-build --configuration Release
 
+      - name: Upload UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-ui-screenshots-${{ github.sha }}
+          path: artifacts/screenshots/*.png
+          if-no-files-found: warn
+
       - name: Build Windows installer
         shell: pwsh
         run: |

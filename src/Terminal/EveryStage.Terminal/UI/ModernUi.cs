@@ -44,6 +44,19 @@ internal static class ModernUi
     public static Color AccentForeground => _currentTheme == EveryStage.Terminal.Data.AppTheme.Tech
         ? Color.FromArgb(5, 22, 35) : Color.White;
     public static Color Danger => _palette.Danger;
+
+    /// <summary>Accent used as text/icon colour on the rail: the accent itself on Light, lifted toward
+    /// white on the dark themes where the plain accent is too dim for small glyphs.</summary>
+    public static Color AccentText => _currentTheme == EveryStage.Terminal.Data.AppTheme.Light
+        ? Accent : Mix(Accent, Color.White, 0.35f);
+
+    /// <summary>Fill behind the selected rail item: the rail tinted toward the accent.</summary>
+    public static Color NavActive => Mix(Rail, Accent, _currentTheme == EveryStage.Terminal.Data.AppTheme.Light ? 0.11f : 0.14f);
+
+    public static Color Mix(Color from, Color to, float amount) => Color.FromArgb(
+        (int)Math.Round(from.R + (to.R - from.R) * amount),
+        (int)Math.Round(from.G + (to.G - from.G) * amount),
+        (int)Math.Round(from.B + (to.B - from.B) * amount));
     public static Color Warning => _palette.Warning;
     public static Color Success => _palette.Success;
 
@@ -90,11 +103,8 @@ internal static class ModernUi
         previous?.Dispose();
     }
 
-    public static NavItem NavButton(NavIcon icon, string text, int top)
-    {
-        // 侧栏加宽到 250px 后导航项整条填满（16px 内边距，218px 宽），选中态实心蓝对齐效果图。
-        return new NavItem(icon, text) { Bounds = new Rectangle(16, top, 218, 46) };
-    }
+    /// <summary>A 60×58 item for the 72px icon rail: glyph above a short label.</summary>
+    public static NavItem RailButton(NavIcon icon, string text) => new(icon, text) { Rail = true, Size = new Size(60, 58), Font = new Font(UiFont, 9F) };
 
     public static void SetNavActive(IEnumerable<NavItem> buttons, NavItem active)
     {
@@ -660,6 +670,18 @@ internal sealed class AppTitleBar : Panel
         DoubleClick += (_, _) => ToggleMaximize();
     }
 
+    /// <summary>Puts a status control (e.g. 「● 大屏输出中」) just left of the caption buttons; dragging
+    /// on it moves the window like the rest of the bar.</summary>
+    public void AddStatus(Control status)
+    {
+        status.Dock = DockStyle.Right;
+        Controls.Add(status);
+        // Dock=Right controls dock from the highest index down (close first, at the far right), so
+        // index 1 — just after the title — places the status left of minimize.
+        Controls.SetChildIndex(status, 1);
+        status.MouseDown += DragWindow;
+    }
+
     private void DragWindow(object? sender, MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Left) return;
@@ -898,6 +920,9 @@ internal sealed class NavItem : Control
     private bool _hover;
     public bool Selected { get; set; }
 
+    /// <summary>Icon-rail layout: glyph centred above a small label, tinted fill when selected.</summary>
+    public bool Rail { get; init; }
+
     public NavItem(NavIcon icon, string text)
     {
         _icon = icon;
@@ -917,6 +942,11 @@ internal sealed class NavItem : Control
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var rect = ClientRectangle;
+        if (Rail)
+        {
+            PaintRail(g, rect);
+            return;
+        }
         rect.Inflate(-2, -3);
 
         if (Selected)
@@ -942,6 +972,26 @@ internal sealed class NavItem : Control
             rect.Right - iconRect.Right - LogicalToDeviceUnits(12), rect.Height);
         TextRenderer.DrawText(g, _label, Font, textRect, fg,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+    }
+
+    private void PaintRail(Graphics g, Rectangle rect)
+    {
+        rect.Width -= 1;
+        rect.Height -= 1;
+        if (Selected || _hover)
+        {
+            using var path = RoundedRect(rect, LogicalToDeviceUnits(5));
+            using var fill = new SolidBrush(Selected ? ModernUi.NavActive
+                : Color.FromArgb(24, ModernUi.Text.R, ModernUi.Text.G, ModernUi.Text.B));
+            g.FillPath(fill, path);
+        }
+        Color fg = Selected ? ModernUi.AccentText : ModernUi.Muted;
+        int iconSize = LogicalToDeviceUnits(22);
+        int textHeight = TextRenderer.MeasureText(_label, Font).Height;
+        int top = rect.Top + (rect.Height - iconSize - LogicalToDeviceUnits(3) - textHeight) / 2;
+        VectorIcons.Draw(g, _icon, new Rectangle(rect.Left + (rect.Width - iconSize) / 2, top, iconSize, iconSize), fg);
+        TextRenderer.DrawText(g, _label, Font, new Rectangle(rect.Left, top + iconSize + LogicalToDeviceUnits(3), rect.Width, textHeight), fg,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
     }
 
     private static GraphicsPath RoundedRect(Rectangle r, int radius)
