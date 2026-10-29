@@ -27,6 +27,11 @@ public sealed class DevicesPanel : UserControl
     private readonly ToggleSwitch? _castSwitch;
     private readonly EveryStage.Terminal.StateMachine.OutputStateMachine? _stateMachine;
     private PairingRequest? _displayedPairingRequest;
+    private readonly System.Windows.Forms.Timer _rowTimer;
+
+    /// <summary>Last address / time a paired device was heard from and whether it casts right now
+    /// (from the discovery service; null when unknown).</summary>
+    public Func<Guid, (string? Address, DateTimeOffset? LastSeen, bool Casting)>? Presence { get; set; }
 
     public DevicesPanel(PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog,
         string? localName = null, EveryStage.Terminal.StateMachine.OutputStateMachine? stateMachine = null)
@@ -101,6 +106,11 @@ public sealed class DevicesPanel : UserControl
         Controls.Add(_requestCard);
         Controls.Add(header);
 
+        // Presence (地址 / 最近投屏 / 投屏中) changes without the list changing: repaint the rows.
+        _rowTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _rowTimer.Tick += (_, _) => { if (Visible) foreach (Control row in _deviceRows.Controls) row.Invalidate(); };
+        _rowTimer.Start();
+
         Refresh_();
     }
 
@@ -113,6 +123,7 @@ public sealed class DevicesPanel : UserControl
 
     protected override void Dispose(bool disposing)
     {
+        if (disposing) _rowTimer.Dispose();
         if (disposing && _stateMachine != null) _stateMachine.CastSwitchChanged -= OnCastSwitchChanged;
         base.Dispose(disposing);
     }
@@ -213,7 +224,7 @@ public sealed class DevicesPanel : UserControl
         foreach (var row in oldRows) row.Dispose();
         var devices = _pairedDevices.All.ToList();
         foreach (var device in devices)
-            _deviceRows.Controls.Add(new DeviceRow(device, EditPermissions, RemoveDevice));
+            _deviceRows.Controls.Add(new DeviceRow(device, EditPermissions, RemoveDevice, id => Presence?.Invoke(id)));
         _deviceRows.ResumeLayout(true);
         LayoutRows();
 
@@ -293,11 +304,14 @@ public sealed class DevicesPanel : UserControl
         private readonly PairedDevice _device;
         private readonly Action<PairedDevice> _edit;
         private readonly Action<PairedDevice> _remove;
+        private readonly Func<Guid, (string? Address, DateTimeOffset? LastSeen, bool Casting)?> _presence;
         private Rectangle _editButton, _removeButton;
         private Point _hover = new(-1, -1);
 
-        public DeviceRow(PairedDevice device, Action<PairedDevice> edit, Action<PairedDevice> remove)
+        public DeviceRow(PairedDevice device, Action<PairedDevice> edit, Action<PairedDevice> remove,
+            Func<Guid, (string? Address, DateTimeOffset? LastSeen, bool Casting)?> presence)
         {
+            _presence = presence;
             _device = device;
             _edit = edit;
             _remove = remove;
@@ -420,13 +434,24 @@ public sealed class DevicesPanel : UserControl
                 x += tagWidth + S(6);
             }
 
-            string paired = $"配对于 {_device.PairedAt.LocalDateTime:yyyy-MM-dd HH:mm}";
-            if (x + S(8) + TextRenderer.MeasureText(paired, BodyFont).Width <= textRight)
+            var presence = _presence(_device.DeviceId);
+            string paired = presence is { Casting: true } p0 ? $"● 投屏中 · {p0.Address}"
+                : presence is { LastSeen: { } seen } p1 ? $"{p1.Address} · 最近投屏 {Ago(seen)}"
+                : $"配对于 {_device.PairedAt.LocalDateTime:yyyy-MM-dd HH:mm} · 本次运行未连接";
+            if (textRight - x >= S(60))
                 TextRenderer.DrawText(g, paired, BodyFont, Rectangle.FromLTRB(x + S(4), lineTop, textRight, lineTop + lineHeight),
-                    ModernUi.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                    presence is { Casting: true } ? ModernUi.Success : ModernUi.Muted,
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
 
             if (Focused && ShowFocusCues)
                 ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(ClientRectangle, -3, -3), ModernUi.Text, ModernUi.Background);
+        }
+
+        private static string Ago(DateTimeOffset at)
+        {
+            var span = DateTimeOffset.Now - at;
+            return span.TotalMinutes < 1 ? "刚刚" : span.TotalHours < 1 ? $"{(int)span.TotalMinutes} 分钟前"
+                : span.TotalDays < 1 ? $"{(int)span.TotalHours} 小时前" : at.LocalDateTime.ToString("MM-dd HH:mm");
         }
 
         private void DrawButton(Graphics g, Rectangle r, string text, bool danger)

@@ -68,6 +68,17 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
     private long _nextStatusSequence;
     private readonly ReplayGuard _replayGuard = new();
     private Guid? _activeCasterDeviceId;
+
+    // Last verified contact per paired device (address + time) for the 设备 page. In memory only:
+    // writing the pairing store on every status ack would wear it for no benefit.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, (IPAddress Address, DateTimeOffset At)> _sightings = new();
+
+    /// <summary>The last verified message from <paramref name="deviceId"/> this run: its address and time.</summary>
+    public (IPAddress Address, DateTimeOffset At)? LastSighting(Guid deviceId) =>
+        _sightings.TryGetValue(deviceId, out var sighting) ? sighting : null;
+
+    /// <summary>The paired device whose cast is live right now, if any.</summary>
+    public Guid? ActiveCasterDeviceId => _activeCasterDeviceId;
     private string? _activeCasterKey;
 
     private Task? _receiveLoop;
@@ -352,6 +363,7 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
             return;
         }
         if (!AcceptFresh(msg, "cast_start")) return;
+        _sightings[msg.SenderDeviceId] = (remoteEndPoint.Address, DateTimeOffset.Now);
         _lastStartMessageId = msg.MessageId;
         _lastStartDeviceId = msg.SenderDeviceId;
         void Complete(bool ready, string? error, bool pending = false)
@@ -458,6 +470,7 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
         if (_activeCasterDeviceId == null || ack.SenderDeviceId != _activeCasterDeviceId
             || !PairingSecurity.Verify(ack, _activeCasterKey)
             || !AcceptFresh(ack, "cast_status_ack")) return;
+        if (_sightings.TryGetValue(ack.SenderDeviceId, out var seen)) _sightings[ack.SenderDeviceId] = (seen.Address, DateTimeOffset.Now);
         TaskCompletionSource<bool>? pending;
         lock (_pendingGate)
             _pendingStatusAcks.TryGetValue((ack.DeviceId, ack.SessionId, ack.SequenceNumber), out pending);

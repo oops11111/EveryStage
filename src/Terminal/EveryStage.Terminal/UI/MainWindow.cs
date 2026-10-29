@@ -71,6 +71,12 @@ public sealed class MainWindow : GradientForm
 
     public void ShowPairingRequest(PairingRequest request) => _devicesPanel.ShowPairingRequest(request);
 
+    /// <summary>Address / last contact / casting state of paired devices, for the 设备 page.</summary>
+    public Func<Guid, (string? Address, DateTimeOffset? LastSeen, bool Casting)>? DevicePresence
+    {
+        set => _devicesPanel.Presence = value;
+    }
+
     public void ClearPairingRequest(string requestId) => _devicesPanel.ClearPairingRequest(requestId);
     public Control DeviceCastVideoHost => _previewDock.DeviceVideoHost;
     public event Action? DeviceTakeRequested;

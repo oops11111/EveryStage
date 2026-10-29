@@ -220,6 +220,11 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         {
             _deviceCastController?.ResizeDeviceSurface(w, h);
         };
+        _mainWindow.DevicePresence = id =>
+        {
+            var seen = _discovery.LastSighting(id);
+            return (seen?.Address.ToString(), seen?.At, _discovery.ActiveCasterDeviceId == id);
+        };
         _mainWindow.Show();
         _mainWindow.StartBackgroundMusic();
 
