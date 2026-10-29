@@ -161,6 +161,9 @@ internal sealed class SlideTransitionPicker : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        // The track bar paints its own background; keep it on the section's surface colour per theme.
+        if (_duration.BackColor != ModernUi.Surface) _duration.BackColor = ModernUi.Surface;
+        if (_durationLabel.ForeColor != ModernUi.Text) _durationLabel.ForeColor = ModernUi.Text;
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         using var labelFont = new Font(ModernUi.UiFont, 9F);

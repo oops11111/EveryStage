@@ -21,7 +21,7 @@ public readonly record struct SlideTransitionSpec(SlideTransitionEffect Effect, 
 /// </summary>
 public static class SlideTransitions
 {
-    private const int FadeStrips = 64;
+    private const int FadeStripPixels = 3; // soft-edge steps this many pixels wide: no visible banding
     private const float FadeSoftness = 0.35f;
 
     /// <summary>Ease in-out: the motion starts and ends gently.</summary>
@@ -69,24 +69,33 @@ public static class SlideTransitions
         g.DrawImage(from, r);
         if (t <= 0) return;
         if (t >= 1) { g.DrawImage(to, r); return; }
+        // Along the direction: fully revealed up to `solid`, a soft edge from `solid` to `edge`, nothing after.
+        float edge = t * (1 + FadeSoftness), solid = edge - FadeSoftness;
+        if (solid > 0) DrawBand(g, r, to, d, 0, Math.Min(1, solid), null);
+        int extent = Vertical(d) ? r.Height : r.Width;
+        int strips = Math.Max(8, (int)(FadeSoftness * extent / FadeStripPixels));
         using var attributes = new ImageAttributes();
         var matrix = new ColorMatrix();
-        float edge = t * (1 + FadeSoftness);
-        for (int i = 0; i < FadeStrips; i++)
+        for (int i = 0; i < strips; i++)
         {
-            float a0 = (float)i / FadeStrips, a1 = (float)(i + 1) / FadeStrips;
-            float alpha = Math.Clamp((edge - (a0 + a1) / 2) / FadeSoftness, 0f, 1f);
-            if (alpha <= 0) break; // later strips are further from the start: all transparent
-            var f = Band(r, d, a0, a1);
-            // Round the edges (not position and size): neighbouring strips then meet without a seam.
-            var band = Rectangle.FromLTRB((int)Math.Round(f.Left), (int)Math.Round(f.Top), (int)Math.Round(f.Right), (int)Math.Round(f.Bottom));
-            if (band.Width <= 0 || band.Height <= 0) continue;
-            var source = new Rectangle(band.X - r.X, band.Y - r.Y, band.Width, band.Height);
-            if (alpha >= 1) { g.DrawImage(to, band, source, GraphicsUnit.Pixel); continue; }
+            float a0 = solid + FadeSoftness * i / strips, a1 = solid + FadeSoftness * (i + 1) / strips;
+            if (a1 <= 0 || a0 >= 1) continue;
+            float alpha = 1f - (i + 0.5f) / strips;
             matrix.Matrix33 = alpha;
             attributes.SetColorMatrix(matrix);
-            g.DrawImage(to, band, source.X, source.Y, source.Width, source.Height, GraphicsUnit.Pixel, attributes);
+            DrawBand(g, r, to, d, Math.Max(0, a0), Math.Min(1, a1), attributes);
         }
+    }
+
+    /// <summary>Draws the part of <paramref name="image"/> between <paramref name="a0"/> and
+    /// <paramref name="a1"/> along the direction, edges rounded so neighbouring bands meet without a seam.</summary>
+    private static void DrawBand(Graphics g, Rectangle r, Bitmap image, SlideTransitionDirection d, float a0, float a1, ImageAttributes? attributes)
+    {
+        var f = Band(r, d, a0, a1);
+        var band = Rectangle.FromLTRB((int)Math.Round(f.Left), (int)Math.Round(f.Top), (int)Math.Round(f.Right), (int)Math.Round(f.Bottom));
+        if (band.Width <= 0 || band.Height <= 0) return;
+        if (attributes == null) g.DrawImage(image, band, new Rectangle(band.X - r.X, band.Y - r.Y, band.Width, band.Height), GraphicsUnit.Pixel);
+        else g.DrawImage(image, band, band.X - r.X, band.Y - r.Y, band.Width, band.Height, GraphicsUnit.Pixel, attributes);
     }
 
     private static void DrawPageTurn(Graphics g, Rectangle r, Bitmap from, Bitmap to, float t, SlideTransitionDirection d)
