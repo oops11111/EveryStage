@@ -111,6 +111,16 @@ internal static class DocumentTests
         TestSlideTransitions();
     }
 
+    private static Control? FindByTypeName(Control root, string name)
+    {
+        foreach (Control child in root.Controls)
+        {
+            if (child.GetType().Name == name) return child;
+            if (FindByTypeName(child, name) is { } found) return found;
+        }
+        return null;
+    }
+
     /// <summary>PPT 翻页过场: every effect × direction starts on the old page, ends on the new one and
     /// shows both halfway; the surface's transition layer paints and finishes.</summary>
     private static void TestSlideTransitions()
@@ -219,6 +229,17 @@ internal static class DocumentTests
                     using var shot = new Bitmap(window.Width, window.Height);
                     window.DrawToBitmap(shot, new Rectangle(Point.Empty, window.Size));
                     shot.Save(Path.Combine(output, $"{size.Width}x{size.Height}-{theme}-{page.TrimStart('_').Replace("Panel", "")}.png"), ImageFormat.Png);
+                    if (page == "_settingsPanel" && FindByTypeName(window, "SlideTransitionPicker") is { } picker
+                        && picker.Parent?.Parent is ScrollableControl scroller)
+                    {
+                        // The PPT 翻页过场 section: scroll it into view for its own screenshot.
+                        scroller.ScrollControlIntoView(picker.Parent);
+                        Pump(150);
+                        using var slides = new Bitmap(window.Width, window.Height);
+                        window.DrawToBitmap(slides, new Rectangle(Point.Empty, window.Size));
+                        slides.Save(Path.Combine(output, $"{size.Width}x{size.Height}-{theme}-settings-transitions.png"), ImageFormat.Png);
+                        scroller.AutoScrollPosition = Point.Empty;
+                    }
                 }
             }
         }
