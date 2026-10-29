@@ -30,4 +30,11 @@ public sealed class Activity
     public PlayMode DefaultPlayMode { get; set; } = PlayMode.SequentialAuto;
 
     public List<MediaFile> Files { get; init; } = new();
+
+    /// <summary>Background music when the show enters this section: switch to this playlist (null: leave
+    /// the music as it is, unless <see cref="MusicFadeOut"/>).</summary>
+    public Guid? MusicPlaylistId { get; set; }
+
+    /// <summary>Fade the background music out when the show enters this section.</summary>
+    public bool MusicFadeOut { get; set; }
 }

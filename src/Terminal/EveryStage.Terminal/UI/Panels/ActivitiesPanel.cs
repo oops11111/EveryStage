@@ -71,6 +71,10 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     private readonly ToolStripMenuItem _removeButton;
     private readonly ToolStripMenuItem _moveUpButton;
     private readonly ToolStripMenuItem _moveDownButton;
+    private readonly ToolStripMenuItem _musicCueItem;
+
+    /// <summary>The background-music playlists, for the per-section music cue.</summary>
+    public Func<IReadOnlyList<Playlist>>? Playlists { get; set; }
 
     // 「下一项」 run controls: shown in MainWindow's 监看 column while this page is visible.
     private readonly Panel _runControls;
@@ -251,10 +255,14 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             ForeColor = ModernUi.Text,
             Renderer = new ThemedMenuRenderer(),
         };
+        // 「进入本环节时的背景音乐」: keep / fade out / switch to a playlist (filled when the menu opens).
+        _musicCueItem = new ToolStripMenuItem("进入本环节时的背景音乐") { Enabled = false };
+        _musicCueItem.DropDownItems.Add(new ToolStripMenuItem("(placeholder)"));
+        _musicCueItem.DropDownOpening += (_, _) => FillMusicCueMenu();
         _editMenu.Items.AddRange(new ToolStripItem[]
         {
             _playSelectedItem, new ToolStripSeparator(),
-            _renameActivityItem, _addFileButton, _playModeButton, _deleteActivityItem, new ToolStripSeparator(),
+            _renameActivityItem, _addFileButton, _playModeButton, _musicCueItem, _deleteActivityItem, new ToolStripSeparator(),
             _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton, _documentSettingsButton, _batchPropertiesButton,
             new ToolStripSeparator(),
             _moveUpButton, _moveDownButton, _removeButton,
@@ -511,6 +519,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             Name = source.Name,
             IsCollapsed = source.IsCollapsed,
             DefaultPlayMode = source.DefaultPlayMode,
+            MusicPlaylistId = source.MusicPlaylistId,
+            MusicFadeOut = source.MusicFadeOut,
         };
         // MediaFile.Clone() — see that method's own doc comment; this used to be a private
         // CloneFile method living only here, pulled out onto MediaFile itself now that FilesPanel's
@@ -1213,6 +1223,38 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         RefreshTree();
     }
 
+    private void FillMusicCueMenu()
+    {
+        _musicCueItem.DropDownItems.Clear();
+        if (GetSelection() is not (var scenario, { } activity, _) || scenario == null) return;
+        void Add(string text, bool chosen, Action apply)
+        {
+            var item = new ToolStripMenuItem(text) { Checked = chosen };
+            item.Click += (_, _) =>
+            {
+                var (oldId, oldFade) = (activity.MusicPlaylistId, activity.MusicFadeOut);
+                apply();
+                if (!TrySave()) { (activity.MusicPlaylistId, activity.MusicFadeOut) = (oldId, oldFade); return; }
+                _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+                RefreshCardStyles();
+            };
+            _musicCueItem.DropDownItems.Add(item);
+        }
+        Add("不改变（继续当前音乐）", activity.MusicPlaylistId == null && !activity.MusicFadeOut, () => { activity.MusicPlaylistId = null; activity.MusicFadeOut = false; });
+        Add("淡出停止", activity.MusicFadeOut, () => { activity.MusicPlaylistId = null; activity.MusicFadeOut = true; });
+        var playlists = Playlists?.Invoke() ?? Array.Empty<Playlist>();
+        if (playlists.Count > 0) _musicCueItem.DropDownItems.Add(new ToolStripSeparator());
+        foreach (var playlist in playlists)
+            Add($"切换到歌单：{playlist.Name}", activity.MusicPlaylistId == playlist.Id,
+                () => { activity.MusicPlaylistId = playlist.Id; activity.MusicFadeOut = false; });
+        if (playlists.Count == 0) _musicCueItem.DropDownItems.Add(new ToolStripMenuItem("（还没有歌单 · 在底部音乐条「歌单」里新建）") { Enabled = false });
+    }
+
+    string? IActivityRowHost.MusicCueText(Activity activity) =>
+        activity.MusicFadeOut ? "♪ 音乐淡出"
+        : activity.MusicPlaylistId is { } id ? "♪ " + (Playlists?.Invoke().FirstOrDefault(p => p.Id == id)?.Name ?? "歌单已删除")
+        : null;
+
     private (Scenario? scenario, Activity? activity, MediaFile? file) GetSelection()
     {
         var scenario = CurrentScenario;
@@ -1232,6 +1274,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _deleteActivityItem.Enabled = activity != null;
         _addFileButton.Enabled = activity != null;
         _playModeButton.Enabled = activity != null;
+        _musicCueItem.Enabled = activity != null;
         _audioPropertiesButton.Enabled = file != null && file.Kind == MediaKind.Audio;
         _fadeButton.Enabled = file != null && file.Kind is MediaKind.Video or MediaKind.Audio;
         _stayDurationButton.Enabled = file != null && IsStayDurationApplicable(file);

@@ -17,6 +17,8 @@ internal interface IActivityRowHost
     RunRowState StateOf(MediaFile file);
     /// <summary>The file shown in the 预览 monitor (a 「预览」 tag on its row), if any.</summary>
     MediaFile? PreviewFile { get; }
+    /// <summary>「♪ 开场歌单」 / 「♪ 音乐淡出」 for a section with a music cue, else null.</summary>
+    string? MusicCueText(Activity activity);
     Image? ThumbnailFor(MediaFile file);
     void RowNodeClicked(TreeNode node);
     void RowNodeDoubleClicked(TreeNode node);
@@ -190,6 +192,7 @@ internal sealed class ActivityRowView : Control
         TextRenderer.DrawText(g, _activity.Name, SectionFont, nameRect, sectionSelected ? ModernUi.AccentText : ModernUi.Text,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         string meta = $"{nodes.Count} 项 · {(_activity.DefaultPlayMode == PlayMode.SequentialAuto ? "顺序自动" : "手动点选")}"
+            + (_host.MusicCueText(_activity) is { } cue ? " · " + cue : "")
             + (_activity.IsCollapsed ? " · 已收起" : "");
         int metaWidth = TextRenderer.MeasureText(meta, BodyFont).Width;
         var metaRect = new Rectangle(nameRect.Right + S(10), cy - S(10), metaWidth, S(20));

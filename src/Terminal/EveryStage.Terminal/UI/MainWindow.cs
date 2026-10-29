@@ -208,6 +208,7 @@ public sealed class MainWindow : GradientForm
             scenarioStore, scenarioRepository, library, _preview, _fileOpLog, stateMachine)
         {
             ProgramEngine = () => _playback,
+            Playlists = () => _music.Library.Playlists,
         };
         _activitiesPanel.RunRequested += RunActivityItem;
         _settingsPanel = new SettingsPanel(settingsStore, identity);
@@ -253,6 +254,7 @@ public sealed class MainWindow : GradientForm
             UpdateStatusLabel();
         };
         if (_playback != null) _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
+        if (_playback != null) _playback.FileStarted += OnProgramFileStarted;
 
         _stateMachine.StateChanged += OnStateChanged;
         UpdateStatusLabel();
@@ -304,10 +306,12 @@ public sealed class MainWindow : GradientForm
         {
             _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
             _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
+            _playback.FileStarted -= OnProgramFileStarted;
         }
         _playback = playback;
         _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
         _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
+        _playback.FileStarted += OnProgramFileStarted;
         // Files/Activities/audio bar operate the Preview engine; only the dock needs to know Program.
         _previewDock.AttachProgram(playback);
         UpdateStatusLabel();
@@ -425,9 +429,31 @@ public sealed class MainWindow : GradientForm
         if (_playback == null)
         {
             _preview.RequestPlay(activity, index, PlaybackTrigger.ManualSkip);
+            EnterSection(activity);
             return;
         }
         TakeSnapshot(new PlaybackEngine.Snapshot(activity.Files[index], activity, index, TimeSpan.Zero, false));
+    }
+
+    private Activity? _liveSection;
+
+    /// <summary>The show entered <paramref name="activity"/> (big screen started one of its items, by
+    /// 下一项 or by auto-advance): apply the section's background-music cue once.</summary>
+    private void EnterSection(Activity? activity)
+    {
+        if (ReferenceEquals(activity, _liveSection)) return;
+        _liveSection = activity;
+        if (activity == null) return;
+        if (activity.MusicFadeOut) _music.FadeOutStop();
+        else if (activity.MusicPlaylistId is { } id && _music.Library.Playlists.FirstOrDefault(p => p.Id == id) is { Tracks.Count: > 0 } playlist
+                 && !(_music.IsPlaying && ReferenceEquals(_music.Playlist, playlist)))
+            _music.Play(playlist);
+    }
+
+    private void OnProgramFileStarted(MediaFile file)
+    {
+        if (InvokeRequired) { BeginInvoke(() => OnProgramFileStarted(file)); return; }
+        EnterSection(_playback?.CurrentActivity);
     }
 
     /// <summary>"投到屏幕" in the dock: continue the Preview content (file, activity position and play
@@ -581,6 +607,7 @@ public sealed class MainWindow : GradientForm
             {
                 _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
                 _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
+                _playback.FileStarted -= OnProgramFileStarted;
             }
             _declinedMessageTimer.Dispose();
             // Preview engine first (it joins its playback threads), then the surface it presents through.
