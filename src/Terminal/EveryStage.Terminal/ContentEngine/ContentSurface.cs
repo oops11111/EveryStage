@@ -152,7 +152,12 @@ public sealed class ContentSurface : Control
     private System.Windows.Forms.Timer CreateTransitionTimer()
     {
         var timer = new System.Windows.Forms.Timer { Interval = 15 };
-        timer.Tick += (_, _) => Invalidate();
+        // Ends on time even when nothing paints (window minimized, covered or off-screen).
+        timer.Tick += (_, _) =>
+        {
+            if (TransitionProgress >= 1f) EndTransition();
+            Invalidate();
+        };
         return timer;
     }
 
