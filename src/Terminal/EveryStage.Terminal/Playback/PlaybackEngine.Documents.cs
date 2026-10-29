@@ -155,7 +155,9 @@ public sealed partial class PlaybackEngine
                 else
                 {
                     _documentMode = DocumentPlaybackMode.ReadOnlyPages;
-                    _documentNotice = settings.OpenMode == OfficeOpenMode.ReadOnlyPreview ? "只读预览（按活动设置）" : "未安装 WPS/Word 编辑组件：只读预览";
+                    _documentNotice = settings.OpenMode == OfficeOpenMode.ReadOnlyPreview ? "只读预览（按活动设置）"
+                        : OfficeInstallation.WpsInstalledWithoutAutomation ? "只读预览。" + OfficeInstallation.WpsAutomationDisabledHint
+                        : "未安装 WPS/Word 编辑组件：只读预览";
                     _ = PlayConvertedAsync(file, settings, pdfState ?? new PdfViewportState(0, 0, PdfDisplayMode.Continuous, PdfZoomMode.FitWidth));
                 }
                 break;
@@ -172,9 +174,10 @@ public sealed partial class PlaybackEngine
                 else
                 {
                     _documentMode = DocumentPlaybackMode.StaticSlides;
-                    _documentNotice = mode == PresentationMode.Native
-                        ? "未安装 PowerPoint/WPS 演示：以静态幻灯片播放（不含动画、转场和嵌入媒体）"
-                        : "静态幻灯片：不含动画、转场和嵌入媒体";
+                    _documentNotice = mode != PresentationMode.Native ? "静态幻灯片：不含动画、转场和嵌入媒体"
+                        : OfficeInstallation.WpsInstalledWithoutAutomation
+                            ? "以静态幻灯片播放（不含动画、转场和嵌入媒体）。" + OfficeInstallation.WpsAutomationDisabledHint
+                            : "未安装 PowerPoint/WPS 演示：以静态幻灯片播放（不含动画、转场和嵌入媒体）";
                     _ = PlayConvertedAsync(file, settings, new PdfViewportState(startSlide - 1, 0, PdfDisplayMode.SinglePage, PdfZoomMode.FitPage));
                 }
                 break;

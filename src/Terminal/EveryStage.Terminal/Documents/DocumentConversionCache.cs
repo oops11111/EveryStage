@@ -73,6 +73,8 @@ public sealed class DocumentConversionCache
             var suites = new List<OfficeSuite>();
             if (OfficeInstallation.IsRegistered(kind == OfficeAppKind.Writer ? OfficeInstallation.Word : OfficeInstallation.PowerPoint)) suites.Add(OfficeSuite.MicrosoftOffice);
             if (OfficeInstallation.IsRegistered(kind == OfficeAppKind.Writer ? OfficeInstallation.WpsWriter : OfficeInstallation.WpsPresentation)) suites.Add(OfficeSuite.Wps);
+            if (suites.Count == 0 && OfficeInstallation.WpsInstalledWithoutAutomation)
+                throw new OfficeOperationException(OfficeStage.Convert, "WPS", null, OfficeInstallation.WpsAutomationDisabledHint);
             if (suites.Count == 0)
                 throw new OfficeOperationException(OfficeStage.Convert, "EveryStage", null,
                     format == DocumentFormat.Presentation

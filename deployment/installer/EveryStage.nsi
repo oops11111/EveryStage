@@ -269,13 +269,34 @@ Function CheckComponents
     ${If} $0 != ""
       StrCpy $3 1
     ${EndIf}
+    ReadRegStr $0 HKCR "wps.Application\CLSID" ""   ; older WPS builds
+    ${If} $0 != ""
+      StrCpy $3 1
+    ${EndIf}
     ReadRegStr $0 HKCR "Word.Application\CLSID" ""
     ${If} $0 != ""
       StrCpy $3 1
     ${EndIf}
     ${If} $3 == 0
-      MessageBox MB_YESNO|MB_ICONEXCLAMATION "本机未检测到 WPS 或 Microsoft Office。$\r$\n$\r$\n终端机的图片、视频、音频、PDF 和投屏不受影响，但 Word/PPT 文档将无法播放。$\r$\n可以先继续安装，之后再安装并授权 WPS。是否继续？" IDYES +2
-        Abort
+      ; WPS files present but no COM registration: the personal / Microsoft Store edition keeps its
+      ; automation interface off until a compatibility option is ticked.
+      StrCpy $4 0
+      ${If} ${FileExists} "$LOCALAPPDATA\Kingsoft\WPS Office\*.*"
+        StrCpy $4 1
+      ${EndIf}
+      ${If} ${FileExists} "$PROGRAMFILES32\Kingsoft\WPS Office\*.*"
+        StrCpy $4 1
+      ${EndIf}
+      ${If} ${FileExists} "$PROGRAMFILES64\Kingsoft\WPS Office\*.*"
+        StrCpy $4 1
+      ${EndIf}
+      ${If} $4 == 1
+        MessageBox MB_YESNO|MB_ICONEXCLAMATION "检测到已安装 WPS，但它的 COM 接口未开启（WPS 个人版/微软商店版默认关闭），终端机暂时无法播放 Word/PPT。$\r$\n$\r$\n安装完成后请：开始菜单 → WPS Office → 配置工具 → 高级 → 兼容设置，勾选“WPS Office 兼容第三方系统和软件”，确定后关闭所有 WPS 窗口。$\r$\n$\r$\n是否继续安装？" IDYES +2
+          Abort
+      ${Else}
+        MessageBox MB_YESNO|MB_ICONEXCLAMATION "本机未检测到 WPS 或 Microsoft Office。$\r$\n$\r$\n终端机的图片、视频、音频、PDF 和投屏不受影响，但 Word/PPT 文档将无法播放。$\r$\n可以先继续安装，之后再安装并授权 WPS。是否继续？" IDYES +2
+          Abort
+      ${EndIf}
     ${EndIf}
   ${EndIf}
 FunctionEnd

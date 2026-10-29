@@ -21,7 +21,10 @@ if (-not (Test-Path -LiteralPath $source -PathType Container)) { throw "Package 
 if ($Component -eq "Terminal") {
     $wpsProgIds = @("KWPS.Application", "KET.Application", "KWPP.Application")
     $missing = @($wpsProgIds | Where-Object { -not (Test-Path -LiteralPath "Registry::HKEY_CLASSES_ROOT\$_\CLSID") })
-    if ($missing.Count -gt 0) { throw "WPS COM components are missing: $($missing -join ', ')" }
+    if ($missing.Count -gt 0) {
+        throw ("WPS COM components are missing: $($missing -join ', '). WPS personal / Microsoft Store edition: " +
+            "WPS 配置工具 -> 高级 -> 兼容设置 -> tick 'WPS Office 兼容第三方系统和软件', close all WPS windows, rerun.")
+    }
     if (-not $WpsLicenseConfirmed) {
         throw "Confirm a valid per-device WPS license, then rerun with -WpsLicenseConfirmed."
     }

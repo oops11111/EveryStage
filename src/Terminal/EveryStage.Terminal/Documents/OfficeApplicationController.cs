@@ -42,8 +42,62 @@ public sealed class OfficeOperationException : Exception
 /// <summary>Which automation servers are registered on this machine.</summary>
 public static class OfficeInstallation
 {
-    public const string WpsWriter = "KWPS.Application", Word = "Word.Application";
-    public const string WpsPresentation = "KWPP.Application", PowerPoint = "PowerPoint.Application";
+    public const string Word = "Word.Application", PowerPoint = "PowerPoint.Application";
+
+    // Current WPS registers KWPS/KWPP; older builds (V9 era) register wps/wpp instead. Either reaches
+    // the same automation server.
+    private static readonly string[] WpsWriterProgIds = { "KWPS.Application", "wps.Application" };
+    private static readonly string[] WpsPresentationProgIds = { "KWPP.Application", "wpp.Application" };
+
+    /// <summary>The registered WPS Writer ProgID (the current one when none is registered).</summary>
+    public static string WpsWriter => WpsWriterProgIds.FirstOrDefault(IsRegistered) ?? WpsWriterProgIds[0];
+
+    /// <summary>The registered WPS Presentation ProgID (the current one when none is registered).</summary>
+    public static string WpsPresentation => WpsPresentationProgIds.FirstOrDefault(IsRegistered) ?? WpsPresentationProgIds[0];
+
+    /// <summary>What to tell the operator when WPS is installed but cannot be automated. The WPS
+    /// personal edition — which is what the Microsoft Store installs — does not register its COM
+    /// automation interface until this compatibility option is turned on.</summary>
+    public const string WpsAutomationDisabledHint =
+        "检测到已安装 WPS，但它的 COM 接口未开启（WPS 个人版/微软商店版默认关闭），EveryStage 无法调用它。" +
+        "请打开“WPS 配置工具”（开始菜单 → WPS Office → 配置工具，或 WPS 安装目录 office6\\ksomisc.exe），" +
+        "在“高级 → 兼容设置”中勾选“WPS Office 兼容第三方系统和软件”，确定后关闭所有 WPS 窗口再重试。" +
+        "若已勾选仍无效：在同一工具“高级 → 重置修复 → 重新注册组件”。";
+
+    /// <summary>WPS program files exist on this machine (per-user installs — the personal / Microsoft
+    /// Store edition — go to %LocalAppData%\Kingsoft\WPS Office; machine installs to Program Files).</summary>
+    public static bool WpsFilesPresent()
+    {
+        var roots = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+        };
+        foreach (var root in roots.Where(r => !string.IsNullOrEmpty(r)))
+        {
+            string wpsRoot = Path.Combine(root, "Kingsoft", "WPS Office");
+            try
+            {
+                if (!Directory.Exists(wpsRoot)) continue;
+                foreach (var version in Directory.EnumerateDirectories(wpsRoot))
+                {
+                    string office6 = Path.Combine(version, "office6");
+                    if (File.Exists(Path.Combine(office6, "wps.exe")) || File.Exists(Path.Combine(office6, "wpsoffice.exe")))
+                        return true;
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        return false;
+    }
+
+    /// <summary>WPS is installed but neither of its automation servers is registered (see
+    /// <see cref="WpsAutomationDisabledHint"/>).</summary>
+    public static bool WpsInstalledWithoutAutomation =>
+        !SimulateNotInstalled
+        && !WpsWriterProgIds.Any(IsRegistered) && !WpsPresentationProgIds.Any(IsRegistered)
+        && WpsFilesPresent();
 
     // Test hook: pretend nothing is installed (degradation paths).
     public static bool SimulateNotInstalled { get; set; }
@@ -135,20 +189,26 @@ internal sealed class OfficeApplicationController
         _ => OfficeInstallation.PowerPoint,
     };
 
-    private string ProcessName => (_suite, _kind) switch
+    // WPS in multi-component mode runs wps.exe / wpp.exe; in integrated mode (the personal edition's
+    // default, one tabbed window) documents run in wpsoffice.exe. Looking for only one name meant the
+    // slide-show window, dialogs and lingering processes were never found in the other mode. Background
+    // services (wpscloudsvr, wpscenter…) are deliberately not listed: they are never ours to touch.
+    private string[] ProcessNames => (_suite, _kind) switch
     {
-        (OfficeSuite.Wps, OfficeAppKind.Writer) => "wps",
-        (OfficeSuite.Wps, _) => "wpp",
-        (_, OfficeAppKind.Writer) => "WINWORD",
-        _ => "POWERPNT",
+        (OfficeSuite.Wps, OfficeAppKind.Writer) => new[] { "wps", "wpsoffice" },
+        (OfficeSuite.Wps, _) => new[] { "wpp", "wpsoffice" },
+        (_, OfficeAppKind.Writer) => new[] { "WINWORD" },
+        _ => new[] { "POWERPNT" },
     };
+
+    private Process[] SuiteProcesses() => ProcessNames.SelectMany(Process.GetProcessesByName).ToArray();
 
     private OfficeOperationException Fail(OfficeStage stage, string message, Exception? inner = null) =>
         new(stage, SuiteName, Version, message, inner);
 
     public void Start()
     {
-        _preexistingPids = Process.GetProcessesByName(ProcessName).Select(p => p.Id).ToHashSet();
+        _preexistingPids = SuiteProcesses().Select(p => p.Id).ToHashSet();
         try
         {
             var type = Type.GetTypeFromProgID(ProgId, throwOnError: false)
@@ -159,7 +219,7 @@ internal sealed class OfficeApplicationController
         {
             throw Fail(OfficeStage.StartApplication, $"无法启动 {SuiteName}：{ex.Message}", ex);
         }
-        _startedPids = Process.GetProcessesByName(ProcessName).Select(p => p.Id).Where(id => !_preexistingPids.Contains(id)).ToHashSet();
+        _startedPids = SuiteProcesses().Select(p => p.Id).Where(id => !_preexistingPids.Contains(id)).ToHashSet();
         try { Version = $"{_app!.Name} {_app.Version} ({TryGet(() => (object)_app.Build)})"; }
         catch (Exception) { Version = null; }
     }
@@ -301,7 +361,7 @@ internal sealed class OfficeApplicationController
     /// notices) — the operator has to answer them in the editor; they never reach Program.</summary>
     public bool HasPendingDialog()
     {
-        foreach (var process in Process.GetProcessesByName(ProcessName))
+        foreach (var process in SuiteProcesses())
             foreach (var hwnd in NativeMethods.TopLevelWindowsOf(process.Id))
             {
                 string cls = NativeMethods.ClassName(hwnd);
@@ -431,7 +491,7 @@ internal sealed class OfficeApplicationController
     private HashSet<IntPtr> ProcessWindows()
     {
         var set = new HashSet<IntPtr>();
-        foreach (var process in Process.GetProcessesByName(ProcessName))
+        foreach (var process in SuiteProcesses())
             foreach (var hwnd in NativeMethods.TopLevelWindowsOf(process.Id)) set.Add(hwnd);
         return set;
     }
@@ -564,7 +624,9 @@ internal sealed class OfficeApplicationController
     private IEnumerable<Process> LingeringProcesses()
     {
         var started = _startedPids;
-        return Process.GetProcessesByName(ProcessName)
+        // Never wpsoffice: in integrated mode that one process also holds the operator's own documents
+        // of other types (a presentation next to our Writer session), so it is quit, not killed.
+        return SuiteProcesses().Where(p => !p.ProcessName.Equals("wpsoffice", StringComparison.OrdinalIgnoreCase))
             .Where(p => started != null ? started.Contains(p.Id) : !_preexistingPids.Contains(p.Id));
     }
 
