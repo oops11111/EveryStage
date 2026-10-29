@@ -66,6 +66,7 @@ internal sealed class SharedPreviewDock : Panel
     private bool _deviceOnProgram;
     private DocumentControlBar? _documentBar;
     private DocumentProgramSync? _documentSync;
+    private readonly PresenterStrip _presenter = new() { Visible = false };
     private bool _documentBarShown;
     private Control? _footer;
     private Control? _runControls;
@@ -139,7 +140,7 @@ internal sealed class SharedPreviewDock : Panel
         {
             _title, _collapseButton, _previewBadge, _previewState, _previewFrame,
             _previousButton, _playPauseButton, _stopButton, _nextButton, _volumeIcon, _volume, _loopButton, _scaleButton,
-            _timecode, _progress, _takeButton, _programBadge, _programState, _localCard.Card, _deviceCard.Card,
+            _timecode, _progress, _presenter, _takeButton, _programBadge, _programState, _localCard.Card, _deviceCard.Card,
             _programPauseButton, _stopOutputButton,
         });
 
@@ -243,6 +244,8 @@ internal sealed class SharedPreviewDock : Panel
         // Everything but the monitor has a fixed height; the monitor gets 16:9 or what is left.
         int deviceHeight = _deviceConnected ? Math.Max(S(SourceCardHeight), w * 9 / 16) : S(SourceCardHeight);
         int documentHeight = _documentBarShown ? button + S(6) : 0;
+        int presenterHeight = _presenter.Visible ? S(PresenterStrip.LogicalHeight) + S(6) : 0;
+        documentHeight += presenterHeight;
         int fixedHeight = S(28) + gap / 2 + label + S(4) + (button + S(6)) * 2 + documentHeight + gap
             + S(44) + gap + label + S(4) + S(SourceCardHeight) + S(6) + deviceHeight + gap + button
             + (_runControls != null ? _runControls.Height + gap : 0);
@@ -286,8 +289,14 @@ internal sealed class SharedPreviewDock : Panel
 
         if (_documentBar != null)
         {
-            _documentBar.Bounds = new Rectangle(x, y, w, Math.Max(1, documentHeight));
-            y += documentHeight;
+            int barHeight = documentHeight - presenterHeight;
+            _documentBar.Bounds = new Rectangle(x, y, w, Math.Max(1, barHeight));
+            y += barHeight;
+        }
+        if (_presenter.Visible)
+        {
+            _presenter.Bounds = new Rectangle(x, y, w, S(PresenterStrip.LogicalHeight));
+            y += presenterHeight;
         }
         y += gap;
         _takeButton.Bounds = new Rectangle(x, y, w, S(44));
@@ -392,6 +401,13 @@ internal sealed class SharedPreviewDock : Panel
         if (IsDisposed) return;
         _documentSync?.FollowProgramShow();
         RefreshDocumentBar();
+        var show = _program?.DocumentMode == DocumentPlaybackMode.NativeShow ? _program.OfficeSession as EveryStage.Terminal.Documents.SlideShowSession : null;
+        if (_presenter.Visible != (show != null))
+        {
+            _presenter.Visible = show != null;
+            PerformLayout();
+        }
+        _presenter.Update(show);
         var preview = _preview;
         var file = preview?.CurrentFile;
         var state = preview?.State ?? PlaybackChannelState.Idle;
@@ -828,5 +844,98 @@ internal sealed class Badge : Control
         }
         TextRenderer.DrawText(g, Text, Font, ClientRectangle, fore,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+    }
+}
+
+/// <summary>
+/// Presenter information while the big screen runs a native slide show: elapsed show time, slide and
+/// animation position, the next slide's picture and the current slide's speaker notes. The picture and
+/// notes are fetched from the show's application when the slide changes.
+/// </summary>
+internal sealed class PresenterStrip : Panel
+{
+    public const int LogicalHeight = 118;
+    private readonly Label _status;
+    private readonly PictureBox _next;
+    private readonly Label _nextCaption;
+    private readonly Label _notes;
+    private EveryStage.Terminal.Documents.SlideShowSession? _show;
+    private DateTime _started;
+    private int _slide = -1;
+    private int _version;
+
+    public PresenterStrip()
+    {
+        BackColor = Color.Transparent;
+        _status = new Label { ForeColor = ModernUi.Text, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFontSemibold, 9F), AutoEllipsis = true };
+        _next = new PictureBox { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+        _nextCaption = new Label { ForeColor = ModernUi.Muted, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8F), Text = "下一张" };
+        _notes = new Label { ForeColor = ModernUi.Text, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9F), AutoEllipsis = true };
+        Controls.AddRange(new Control[] { _status, _next, _nextCaption, _notes });
+    }
+
+    private int S(int v) => LogicalToDeviceUnits(v);
+
+    protected override void OnLayout(LayoutEventArgs levent)
+    {
+        base.OnLayout(levent);
+        if (_notes == null) return;
+        int w = ClientSize.Width;
+        _status.Bounds = new Rectangle(0, 0, w, S(20));
+        int thumbWidth = w * 42 / 100, thumbHeight = thumbWidth * 9 / 16;
+        _next.Bounds = new Rectangle(0, S(24), thumbWidth, thumbHeight);
+        _nextCaption.Bounds = new Rectangle(0, _next.Bottom + S(1), thumbWidth, S(16));
+        _notes.Bounds = new Rectangle(thumbWidth + S(10), S(24), Math.Max(1, w - thumbWidth - S(10)), ClientSize.Height - S(24));
+    }
+
+    public void Update(EveryStage.Terminal.Documents.SlideShowSession? show)
+    {
+        if (!ReferenceEquals(show, _show))
+        {
+            _show = show;
+            _started = DateTime.Now;
+            _slide = -1;
+        }
+        if (show == null) return;
+        var position = show.Position;
+        var elapsed = DateTime.Now - _started;
+        string clicks = position.Clicks > 0 ? $" · 动画 {position.Click} / {position.Clicks}" : "";
+        string screen = position.Screen switch
+        {
+            EveryStage.Terminal.Documents.SlideShowScreen.Black => " · 黑屏",
+            EveryStage.Terminal.Documents.SlideShowScreen.White => " · 白屏",
+            EveryStage.Terminal.Documents.SlideShowScreen.Paused => " · 已暂停",
+            EveryStage.Terminal.Documents.SlideShowScreen.Done => " · 放映结束",
+            _ => "",
+        };
+        string text = $"大屏放映 {(int)elapsed.TotalMinutes:D2}:{elapsed.Seconds:D2} · 第 {Math.Max(1, position.Slide)} / {show.SlideCount} 页{clicks}{screen}";
+        if (_status.Text != text) _status.Text = text;
+        if (position.Slide >= 1 && position.Slide != _slide)
+        {
+            _slide = position.Slide;
+            _ = LoadAsync(show, position.Slide, ++_version);
+        }
+    }
+
+    private async Task LoadAsync(EveryStage.Terminal.Documents.SlideShowSession show, int slide, int version)
+    {
+        string notes = "";
+        Bitmap? next = null;
+        try { notes = await show.NotesAsync(slide); } catch (Exception) { }
+        if (slide < show.SlideCount)
+            try { next = await show.GetSlideImageAsync(slide + 1, 480); } catch (Exception) { }
+        if (IsDisposed || version != _version) { next?.Dispose(); return; }
+        _notes.Text = string.IsNullOrWhiteSpace(notes) ? "（这一页没有备注）" : notes.Trim();
+        _notes.ForeColor = string.IsNullOrWhiteSpace(notes) ? ModernUi.Muted : ModernUi.Text;
+        var old = _next.Image;
+        _next.Image = next;
+        old?.Dispose();
+        _nextCaption.Text = slide < show.SlideCount ? $"下一张 · 第 {slide + 1} 页" : "已是最后一页";
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) { _next.Image?.Dispose(); _next.Image = null; }
+        base.Dispose(disposing);
     }
 }
