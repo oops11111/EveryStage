@@ -293,7 +293,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _tree.Visible = false;
 
         // --- 列标题 + 节目单 ---
-        var columnHeader = new Control { Dock = DockStyle.Top, Height = 26, BackColor = Color.Transparent };
+        var columnHeader = new Panel { Dock = DockStyle.Top, Height = 26, BackColor = Color.Transparent };
         columnHeader.Paint += (_, e) =>
         {
             var c = ActivityRowView.ColumnsFor(columnHeader.Width - SystemInformation.VerticalScrollBarWidth - 2, LogicalToDeviceUnits);
