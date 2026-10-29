@@ -78,10 +78,11 @@ public sealed class FilesPanel : UserControl
     private MediaFile? _contextFile;
     private readonly PillButton _outputStatusChip;
     private MediaKind? _activeFilter;
-    private readonly RoundedActionButton _playTriggerButton;
-    private readonly ContextMenuStrip _playTriggerMenu;
-    /// <summary>「播放触发」: false = 双击播放 (default), true = 单击播放. Session-only.</summary>
-    private bool _singleClickPlay;
+    private readonly Label _countLabel;
+    private readonly SearchBox _searchBox;
+    /// <summary>Card size: 0 = 小, 1 = 中 (default), 2 = 大. Session-only.</summary>
+    private int _cardSize = 1;
+    private string? _lastProgramPath;
     private bool _outputActive;
 
     /// <summary>PLANNING.md §8.2's audio "横向播放条" — now a single large player bar
@@ -97,9 +98,11 @@ public sealed class FilesPanel : UserControl
     private readonly System.Windows.Forms.Timer _audioBarRefreshTimer;
     private readonly Label _emptyStateLabel;
 
-    /// <summary>效果图每排 6 张文件卡片：卡片宽度随网格宽度等分，而不是固定宽度让列数随窗口变化。</summary>
-    private const int CardsPerRow = 6;
-    private const int MinCardWidth = 120;
+    /// <summary>Minimum card width per size (小 / 中 / 大); columns = grid width / this.</summary>
+    private static readonly int[] MinCardWidths = { 140, 180, 250 };
+
+    /// <summary>What Program shows right now (null when nothing local is on air) — the 「大屏」 badge.</summary>
+    public Func<MediaFile?>? ProgramFile { get; set; }
 
     /// <summary>Raised when the user double-clicks a file to play it standalone (no activity
     /// context — see <c>PlaybackEngine.RequestPlay(MediaFile)</c>'s own doc comment on what that
@@ -139,25 +142,18 @@ public sealed class FilesPanel : UserControl
         BackColor = Color.Transparent;
         Padding = new Padding(0);
 
-        var heading = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.Transparent, Padding = new Padding(CardGap / 2 + 2, 0, 0, 0) };
+        // One header row (design 「文件库」): title · count · type filter …… search · card size · ＋ 导入.
+        // Laid out by hand in LayoutHeader: a narrow page drops the count, then shrinks the search box,
+        // then compacts the filter segments.
+        var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
         var pageTitle = new Label
         {
-            Text = "文件", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
-            Font = new Font(ModernUi.UiFontSemibold, 13F), TextAlign = ContentAlignment.MiddleLeft,
+            Text = "文件库", AutoSize = true, ForeColor = ModernUi.Text,
+            Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent,
         };
-        var pageDescription = new Label
-        {
-            Text = "管理本地媒体文件，用于活动播放", Dock = DockStyle.Fill,
-            ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft,
-        };
-        heading.Controls.Add(pageDescription);
-        heading.Controls.Add(pageTitle);
-
-        // 工具栏按效果图：左侧分段筛选「全部 | 图片 | 视频 | 文档」，右侧「导入文件」「加入活动」
-        //「播放触发 [双击播放 ▾]」。位置在 Resize 里手工排：窄窗口先压缩筛选分段，再隐藏「播放触发」说明。
-        var toolbar = new Panel { Dock = DockStyle.Top, Height = 50, BackColor = Color.Transparent, Padding = new Padding(CardGap / 2, 0, CardGap / 2, 0) };
-        MediaKind?[] filters = { null, MediaKind.Image, MediaKind.Video, MediaKind.Document };
-        var filterTabs = new SegmentedFilter(new[] { "全部", "图片", "视频", "文档" }) { Height = 36 };
+        _countLabel = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 9.5F), BackColor = Color.Transparent };
+        MediaKind?[] filters = { null, MediaKind.Image, MediaKind.Video, MediaKind.Document, MediaKind.Audio };
+        var filterTabs = new SegmentedFilter(new[] { "全部", "图片", "视频", "文档", "音频" }) { Height = 34 };
         filterTabs.SelectedIndexChanged += (_, _) =>
         {
             _activeFilter = filters[filterTabs.SelectedIndex];
@@ -166,74 +162,61 @@ public sealed class FilesPanel : UserControl
 
         _toolbarMenu = BuildToolbarMenu();
 
-        var importButton = new RoundedActionButton { Text = "导入文件", IconGlyph = "\uE898", Height = 36 };
+        _searchBox = new SearchBox { Height = 34 };
+        _searchBox.TextChanged += (_, _) => Refresh_();
+
+        var sizeTabs = new SegmentedFilter(new[] { "小", "中", "大" }) { Height = 34, Compact = true, SelectedIndex = 1 };
+        sizeTabs.AccessibleName = "卡片大小";
+        sizeTabs.SelectedIndexChanged += (_, _) =>
+        {
+            _cardSize = sizeTabs.SelectedIndex;
+            UpdateTileSize();
+            _listView?.Invalidate();
+        };
+
+        var importButton = new RoundedActionButton { Text = "导入", IconGlyph = "\uE710", Height = 34 };
         ModernUi.StyleButton(importButton, primary: true);
         importButton.Click += (_, _) => ImportViaDialog();
 
-        var addToActivityButton = new RoundedActionButton { Text = "加入活动", IconGlyph = "\uECC8", Height = 36, Enabled = false };
-        ModernUi.StyleButton(addToActivityButton);
-        addToActivityButton.Click += OnAddToActivityClick;
-
-        var playTriggerLabel = new Label { Text = "播放触发", AutoSize = true, ForeColor = ModernUi.Muted };
-        _playTriggerButton = new RoundedActionButton { Text = "双击播放", ShowDropDownArrow = true, Height = 36 };
-        ModernUi.StyleButton(_playTriggerButton);
-        _playTriggerMenu = BuildPlayTriggerMenu();
-        _playTriggerButton.Click += (_, _) => _playTriggerMenu.Show(_playTriggerButton, new Point(0, _playTriggerButton.Height));
-
-        toolbar.Controls.AddRange(new Control[] { filterTabs, importButton, addToActivityButton, playTriggerLabel, _playTriggerButton });
-        toolbar.Resize += (_, _) =>
+        header.Controls.AddRange(new Control[] { pageTitle, _countLabel, filterTabs, _searchBox, sizeTabs, importButton });
+        header.Resize += (_, _) => LayoutHeader();
+        void LayoutHeader()
         {
-            int left = toolbar.Padding.Left, w = toolbar.ClientSize.Width - toolbar.Padding.Horizontal, cy = toolbar.ClientSize.Height / 2;
-            const int gap = 10;
-            // Narrow windows give up, in order: the「播放触发」caption, the button icons, the full-width
-            // filter tabs, and finally the play-trigger drop-down — never overlapping controls.
-            // Local flags, not Control.Visible: Visible reads false while the page is not shown yet.
-            int step = 0;
-            int segRoom;
-            bool showCaption, showDropDown;
-            do
+            const int gap = 12;
+            int w = header.ClientSize.Width, cy = (header.ClientSize.Height - 6) / 2;
+            importButton.Width = importButton.PreferredContentWidth();
+            sizeTabs.Width = sizeTabs.MinimumWidth;
+            int right = w;
+            importButton.Location = new Point(right -= importButton.Width, cy - importButton.Height / 2);
+            sizeTabs.Location = new Point(right -= gap + sizeTabs.Width, cy - sizeTabs.Height / 2);
+            pageTitle.Location = new Point(0, cy - pageTitle.Height / 2);
+            int left = pageTitle.Right + gap;
+            // What is left between the title and the size tabs holds count + filters + search.
+            int room = right - gap - left;
+            filterTabs.Compact = false;
+            int filterWidth = Math.Min(filterTabs.MaximumWidth, Math.Max(filterTabs.MinimumWidth, 5 * 58));
+            bool showCount = room - _countLabel.PreferredWidth - gap - filterWidth - gap >= 200;
+            _countLabel.Visible = showCount;
+            if (showCount)
             {
-                showCaption = step < 1;
-                showDropDown = step < 4;
-                playTriggerLabel.Visible = showCaption;
-                importButton.IconGlyph = step < 2 ? "\uE898" : null;
-                addToActivityButton.IconGlyph = step < 2 ? "\uECC8" : null;
-                filterTabs.Compact = step >= 3;
-                _playTriggerButton.Visible = showDropDown;
-                foreach (var button in new[] { importButton, addToActivityButton, _playTriggerButton })
-                    button.Width = button.PreferredContentWidth();
-                int actions = importButton.Width + gap + addToActivityButton.Width
-                    + (showDropDown ? gap + _playTriggerButton.Width : 0)
-                    + (showCaption ? playTriggerLabel.PreferredWidth + 14 : 0);
-                segRoom = w - actions - 16;
+                _countLabel.Location = new Point(left, cy - _countLabel.Height / 2 + 2);
+                left = _countLabel.Right + gap;
+                room = right - gap - left;
             }
-            while (segRoom < filterTabs.MinimumWidth && ++step <= 4);
-            filterTabs.Width = Math.Clamp(segRoom, filterTabs.MinimumWidth, filterTabs.MaximumWidth);
-            filterTabs.Location = new Point(left, cy - filterTabs.Height / 2);
-
-            int x = left + w;
-            if (showDropDown)
+            if (room - filterWidth - gap < 140)
             {
-                x -= _playTriggerButton.Width;
-                _playTriggerButton.Location = new Point(x, cy - _playTriggerButton.Height / 2);
-                x -= gap;
+                filterTabs.Compact = true;
+                filterWidth = filterTabs.MinimumWidth;
             }
-            if (showCaption)
-            {
-                x -= playTriggerLabel.PreferredWidth;
-                playTriggerLabel.Location = new Point(x, cy - playTriggerLabel.Height / 2);
-                x -= 14;
-            }
-            x -= addToActivityButton.Width;
-            addToActivityButton.Location = new Point(x, cy - addToActivityButton.Height / 2);
-            x -= gap + importButton.Width;
-            importButton.Location = new Point(x, cy - importButton.Height / 2);
-            foreach (var button in new[] { importButton, addToActivityButton }) button.Invalidate();
-        };
+            filterTabs.Bounds = new Rectangle(left, cy - filterTabs.Height / 2, filterWidth, filterTabs.Height);
+            int searchWidth = Math.Clamp(room - filterWidth - gap, 90, 240);
+            _searchBox.Bounds = new Rectangle(right - gap - searchWidth, cy - _searchBox.Height / 2, searchWidth, _searchBox.Height);
+            foreach (Control c in header.Controls) c.Invalidate();
+        }
 
         _outputStatusChip = new PillButton
         {
-            Text = "○  待机", AutoSize = true, Height = 38,
+            Text = "○  待机", AutoSize = true, Height = 38, Visible = false,
             Margin = new Padding(4, 1, 8, 0), Enabled = false,
         };
 
@@ -268,24 +251,24 @@ public sealed class FilesPanel : UserControl
         _listView.SelectedIndexChanged += (_, _) =>
         {
             bool hasSelection = _listView.SelectedItems.Count > 0;
-            addToActivityButton.Enabled = hasSelection;
             _removeMenuItem.Enabled = hasSelection;
             _addToActivityMenuItem.Enabled = hasSelection;
             _previewMenuItem.Enabled = hasSelection;
             _openLocationMenuItem.Enabled = hasSelection;
         };
-        _listView.DoubleClick += (_, _) =>
-        {
-            if (!_singleClickPlay) PlayOrPreviewSelected();
-        };
-        // 「单击播放」: a plain left click on a card plays it; Ctrl/Shift clicks keep multi-selecting
-        // and the card's ⋯ keeps opening its menu.
+        // Single click: show the file in the 预览 monitor. Double click: put it straight on the big screen.
+        // Ctrl/Shift clicks keep multi-selecting and the card's ⋯ keeps opening its menu.
         _listView.MouseClick += (_, e) =>
         {
-            if (!_singleClickPlay || e.Button != MouseButtons.Left
-                || (ModifierKeys & (Keys.Control | Keys.Shift)) != 0) return;
+            if (e.Button != MouseButtons.Left || (ModifierKeys & (Keys.Control | Keys.Shift)) != 0) return;
             if (_listView.GetItemAt(e.X, e.Y) is not { } item || CardLayout(item.Bounds).More.Contains(e.Location)) return;
             PlayOrPreviewSelected();
+        };
+        _listView.MouseDoubleClick += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left || (ModifierKeys & (Keys.Control | Keys.Shift)) != 0) return;
+            if (_listView.GetItemAt(e.X, e.Y) is not { Tag: MediaFile file } item || CardLayout(item.Bounds).More.Contains(e.Location)) return;
+            TakeRequested?.Invoke(file);
         };
         _fileContextMenu = BuildFileContextMenu();
         _listView.MouseUp += OnFileListMouseUp;
@@ -296,7 +279,7 @@ public sealed class FilesPanel : UserControl
         _listView.DragDrop += OnDragDrop;
         _listView.AllowDrop = true;
 
-        // 每排固定 6 张卡片（效果图）：网格宽度变化时重新等分卡片宽度。
+        // Columns follow the grid width and the chosen card size (see UpdateTileSize).
         _listView.SizeChanged += (_, _) => UpdateTileSize();
 
         // 效果图的「音频播放区」是一张独立卡片：标题行（音频播放区 + 说明）+ 内嵌播放条，常驻显示——
@@ -333,25 +316,17 @@ public sealed class FilesPanel : UserControl
         FitAudioCard();
         var audioCardGap = new Panel { Dock = DockStyle.Bottom, Height = 8, BackColor = Color.Transparent };
 
-        // 效果图里「文件」（标题 + 工具栏 + 网格）本身也是一张卡片，与下方的音频播放区卡片分开。
-        var filesCard = new GlassPanel
-        {
-            Dock = DockStyle.Fill, Padding = new Padding(7, 8, 7, 4), CornerRadius = 10,
-            GlassTint = Color.FromArgb(190, 12, 29, 49),
-        };
         // Control.Controls.Add order determines Dock z-order for same-DockStyle siblings: the LAST
-        // one added claims its edge first. The Fill control is added first so it takes whatever's
-        // left; heading/toolbar claim the top, the audio card and its gap the bottom.
-        filesCard.Controls.Add(_listView);
-        filesCard.Controls.Add(toolbar);
-        filesCard.Controls.Add(heading);
-        Controls.Add(filesCard);
+        // one added claims its edge first. The grid (Fill) goes first so it takes whatever is left;
+        // the header claims the top, the audio card and its gap the bottom.
+        Controls.Add(_listView);
+        Controls.Add(header);
         Controls.Add(audioCardGap);
         Controls.Add(audioCard);
 
         _emptyStateLabel = new Label
         {
-            Text = "文件库还是空的\n\n点击“＋ 导入文件”或将文件拖到这里",
+            Text = "文件库还是空的\n\n点击“＋ 导入”或将文件拖到这里",
             ForeColor = ModernUi.Muted,
             BackColor = ModernUi.Surface,
             TextAlign = ContentAlignment.MiddleCenter,
@@ -371,7 +346,15 @@ public sealed class FilesPanel : UserControl
         // OverlayWindow._topMostReasserter already sets in this codebase, at a comparable 500ms/2s
         // cadence to FloatingPreviewWindow's own polling.
         _audioBarRefreshTimer = new System.Windows.Forms.Timer { Interval = 500 };
-        _audioBarRefreshTimer.Tick += (_, _) => _audioBar.RefreshLiveState();
+        _audioBarRefreshTimer.Tick += (_, _) =>
+        {
+            _audioBar.RefreshLiveState();
+            // Repaint the grid only when what is on the big screen changed (the 「大屏」 badge).
+            string? programPath = ProgramFile?.Invoke()?.SourcePath;
+            if (programPath == _lastProgramPath) return;
+            _lastProgramPath = programPath;
+            _listView.Invalidate();
+        };
         _audioBarRefreshTimer.Start();
 
         Refresh_();
@@ -464,8 +447,8 @@ public sealed class FilesPanel : UserControl
         };
         // Everything above the last separator stays inside EveryStage (Preview / Program). The only
         // hand-off to Windows is the explicit last item — never a side effect of playing.
-        menu.Items.Add("在本地预览", null, (_, _) => { if (_contextFile != null) FilePlayRequested?.Invoke(_contextFile); });
-        menu.Items.Add("投到屏幕", null, (_, _) => { if (_contextFile != null) TakeRequested?.Invoke(_contextFile); });
+        menu.Items.Add("预览", null, (_, _) => { if (_contextFile != null) FilePlayRequested?.Invoke(_contextFile); });
+        menu.Items.Add("投到大屏", null, (_, _) => { if (_contextFile != null) TakeRequested?.Invoke(_contextFile); });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("循环播放", null, (_, _) => SetCompletionAndPlay(CompletionAction.Loop));
         menu.Items.Add("顺序播放", null, (_, _) => StartSequentialPlayback());
@@ -565,40 +548,6 @@ public sealed class FilesPanel : UserControl
         _listView.FocusedItem = hit;
         _contextFile = file;
         _fileContextMenu.Show(_listView, e.Location);
-    }
-
-    /// <summary>「播放触发」下拉：双击播放（默认）/ 单击播放。</summary>
-    private ContextMenuStrip BuildPlayTriggerMenu()
-    {
-        var menu = new ContextMenuStrip
-        {
-            ShowImageMargin = false,
-            ShowCheckMargin = true,
-            BackColor = ModernUi.Surface,
-            ForeColor = ModernUi.Text,
-            Renderer = new ThemedMenuRenderer(),
-        };
-        var doubleClick = new ToolStripMenuItem("双击播放") { Checked = true };
-        var singleClick = new ToolStripMenuItem("单击播放");
-        void Choose(bool single)
-        {
-            _singleClickPlay = single;
-            doubleClick.Checked = !single;
-            singleClick.Checked = single;
-            _playTriggerButton.Text = single ? "单击播放" : "双击播放";
-            _playTriggerButton.Invalidate();
-        }
-        doubleClick.Click += (_, _) => Choose(false);
-        singleClick.Click += (_, _) => Choose(true);
-        menu.Items.Add(doubleClick);
-        menu.Items.Add(singleClick);
-        menu.Opening += (_, _) =>
-        {
-            menu.BackColor = ModernUi.Surface;
-            menu.ForeColor = ModernUi.Text;
-            foreach (ToolStripItem item in menu.Items) item.ForeColor = ModernUi.Text;
-        };
-        return menu;
     }
 
     private void SetCompletionAndPlay(CompletionAction action)
@@ -779,7 +728,7 @@ public sealed class FilesPanel : UserControl
                 {
                     g.DrawLine(divider, segment.Left, segment.Top + 6, segment.Left, segment.Bottom - 6);
                 }
-                TextRenderer.DrawText(g, _labels[i], Font, segment, selected ? Color.White : ModernUi.Muted,
+                TextRenderer.DrawText(g, _labels[i], Font, segment, selected ? ModernUi.AccentForeground : ModernUi.Muted,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             }
             if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(Segment(_selectedIndex), -3, -3));
@@ -830,19 +779,17 @@ public sealed class FilesPanel : UserControl
         ImportPaths(dialog.FileNames);
     }
 
-    /// <summary>Sizes tiles so <see cref="CardsPerRow"/> cards fill each row, as in the reference.
-    /// File size/date moved out of the (now narrower) cards into the item tooltip set in
-    /// <see cref="Refresh_"/>.</summary>
+    /// <summary>Sizes tiles so the row fills the grid width with as many cards as the chosen size
+    /// allows. File date lives in the item tooltip set in <see cref="Refresh_"/>.</summary>
     private void UpdateTileSize()
     {
-        // Fill the full grid width (cards then line up with the toolbar on both sides); only when the
-        // rows overflow is the vertical scrollbar width set aside. Below MinCardWidth the grid drops
-        // columns rather than shrinking cards until their names are unreadable.
+        // Fill the full grid width (cards then line up with the header on both sides); only when the
+        // rows overflow is the vertical scrollbar width set aside.
+        int minimum = LogicalToDeviceUnits(MinCardWidths[_cardSize]);
         (int Columns, Size Tile) Fit(int available)
         {
-            int columns = CardsPerRow;
-            while (columns > 1 && available / columns < MinCardWidth) columns--;
-            int width = Math.Max(MinCardWidth, available / columns);
+            int columns = Math.Max(1, available / minimum);
+            int width = Math.Max(minimum / 2, available / columns);
             return (columns, new Size(width, TileHeightFor(width)));
         }
 
@@ -853,29 +800,28 @@ public sealed class FilesPanel : UserControl
         if (_listView.TileSize != fit.Tile) _listView.TileSize = fit.Tile;
     }
 
-    // One file card inside its grid tile, per the reference: 14px between cards, a bordered card box
-    // with the thumbnail inset 5px, and a name row (file name + ⋯) under it.
-    private const int CardGap = 14;
-    private const int CardPad = 5;
-    private const int NameRowHeight = 24;
-    private const float ThumbAspect = 0.46f;
+    // One file card inside its grid tile, per the design: 12px between cards, the thumbnail (16:10)
+    // edge to edge at the top, then the name (with ⋯) and a muted meta line.
+    private const int CardGap = 12;
+    private const int NameRowHeight = 20;
+    private const int MetaRowHeight = 16;
 
-    private readonly record struct CardGeometry(Rectangle Card, Rectangle Thumb, Rectangle Name, Rectangle More);
+    private readonly record struct CardGeometry(Rectangle Card, Rectangle Thumb, Rectangle Name, Rectangle Meta, Rectangle More);
 
     /// <summary>Card geometry shared by painting (<see cref="DrawMediaCard"/>), the ⋯ hit test and
     /// tile sizing, so they cannot drift apart.</summary>
     private static CardGeometry CardLayout(Rectangle tile)
     {
         var card = Rectangle.Inflate(tile, -CardGap / 2, -CardGap / 2);
-        int thumbWidth = Math.Max(1, card.Width - CardPad * 2);
-        var thumb = new Rectangle(card.Left + CardPad, card.Top + CardPad, thumbWidth, Math.Max(1, (int)Math.Round(thumbWidth * ThumbAspect)));
-        var more = new Rectangle(card.Right - CardPad - 24, thumb.Bottom + 2, 24, NameRowHeight);
-        var name = Rectangle.FromLTRB(thumb.Left + 2, more.Top, more.Left - 2, more.Bottom);
-        return new CardGeometry(card, thumb, name, more);
+        var thumb = new Rectangle(card.Left, card.Top, Math.Max(1, card.Width), Math.Max(1, card.Width * 10 / 16));
+        var more = new Rectangle(card.Right - 28, thumb.Bottom + 6, 24, NameRowHeight);
+        var name = Rectangle.FromLTRB(card.Left + 9, more.Top, more.Left - 2, more.Bottom);
+        var meta = new Rectangle(card.Left + 9, name.Bottom, Math.Max(1, card.Width - 18), MetaRowHeight);
+        return new CardGeometry(card, thumb, name, meta, more);
     }
 
     private static int TileHeightFor(int tileWidth) =>
-        CardLayout(new Rectangle(0, 0, tileWidth, 10_000)).More.Bottom + 3 + CardGap / 2;
+        CardLayout(new Rectangle(0, 0, tileWidth, 10_000)).Meta.Bottom + 8 + CardGap / 2;
 
     private void OnDragEnter(object? sender, DragEventArgs e)
     {
@@ -1011,9 +957,11 @@ public sealed class FilesPanel : UserControl
 
         // Audio has its own persistent horizontal player area; keep it out of the visual-media
         // thumbnail grid so the "全部" view does not duplicate audio as generic file cards.
-        foreach (var file in _library.Files.Where(f => _activeFilter == null
-                     ? f.Kind != MediaKind.Audio
-                     : f.Kind == _activeFilter))
+        string search = _searchBox.Text.Trim();
+        foreach (var file in _library.Files.Where(f => (_activeFilter == null
+                         ? f.Kind != MediaKind.Audio
+                         : f.Kind == _activeFilter)
+                     && (search.Length == 0 || Path.GetFileName(f.SourcePath).Contains(search, StringComparison.OrdinalIgnoreCase))))
         {
             string key = file.Id.ToString();
             // ImageList.Images.Add copies the bitmap's pixel data into its own native image list
@@ -1026,15 +974,18 @@ public sealed class FilesPanel : UserControl
             // the shape of thing that eventually exhausts the process's GDI object quota on a machine
             // that's never restarted.
             var item = new ListViewItem(Path.GetFileName(file.SourcePath), key) { Tag = file, ToolTipText = CardToolTip(file) };
+            item.SubItems.Add(CardMeta(file)); // read by DrawMediaCard, so painting never touches the disk
             _listView.Items.Add(item);
         }
 
+        _countLabel.Text = $"{_library.Files.Count} 个文件";
         UpdateTileSize();
         RefreshAudioBar();
         HighlightCurrentFile();
-        _emptyStateLabel.Text = _library.Files.Any(f => f.Kind == MediaKind.Audio)
-            ? "暂无图片、视频或文档\n\n音频文件在下方独立播放区管理"
-            : "文件库还是空的\n\n点击“＋ 导入文件”或将文件拖到这里";
+        _emptyStateLabel.Text = search.Length > 0 ? $"没有名称包含“{search}”的文件"
+            : _library.Files.Count == 0 ? "文件库还是空的\n\n点击“＋ 导入”或将文件拖到这里"
+            : _activeFilter == null && _library.Files.All(f => f.Kind == MediaKind.Audio) ? "暂无图片、视频或文档\n\n音频文件在「音频」筛选和下方播放区"
+            : "这一类还没有文件";
         _emptyStateLabel.Visible = _listView.Items.Count == 0;
         PositionEmptyState();
         if (IsHandleCreated) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
@@ -1323,6 +1274,9 @@ public sealed class FilesPanel : UserControl
         };
     }
 
+    private static bool SameFile(MediaFile a, MediaFile b) =>
+        ReferenceEquals(a, b) || string.Equals(a.SourcePath, b.SourcePath, StringComparison.OrdinalIgnoreCase);
+
     private void DrawMediaCard(object? sender, DrawListViewItemEventArgs e)
     {
         var g = e.Graphics;
@@ -1330,45 +1284,45 @@ public sealed class FilesPanel : UserControl
         var layout = CardLayout(e.Bounds);
         bool selected = e.Item.Selected;
         var media = e.Item.Tag as MediaFile;
-        bool playing = media != null && _playback is { State: not PlaybackChannelState.Idle, CurrentFile: { } current }
-            && (ReferenceEquals(media, current)
-                || string.Equals(media.SourcePath, current.SourcePath, StringComparison.OrdinalIgnoreCase));
+        bool inPreview = media != null && _playback is { State: not PlaybackChannelState.Idle, CurrentFile: { } current } && SameFile(media, current);
+        bool onProgram = media != null && ProgramFile?.Invoke() is { } programFile && SameFile(media, programFile);
 
-        // Card box — the reference is a dark card with a thin border; selection / playing is a ring.
+        // Card: surface fill; the border says where the file is — 大屏 (danger), 预览 (accent),
+        // selected (accent, thinner), otherwise a faint line.
         var cardRect = layout.Card;
         cardRect.Width -= 1;
         cardRect.Height -= 1;
-        using (var path = RoundedCard(cardRect, 8))
-        using (var fill = new SolidBrush(selected || playing ? Blend(ModernUi.Background, ModernUi.Accent, 0.12) : ModernUi.Background))
-        using (var border = new Pen(playing ? ModernUi.Success : selected ? ModernUi.Accent : Blend(ModernUi.Border, ModernUi.Background, 0.3),
-                   selected || playing ? 2F : 1F))
+        Color borderColor = onProgram ? ModernUi.Danger : inPreview || selected ? ModernUi.Accent : Blend(ModernUi.Surface, ModernUi.Border, 0.45);
+        float borderWidth = onProgram || inPreview ? 2F : selected ? 1.6F : 1F;
+        using (var path = RoundedCard(cardRect, 9))
         {
-            g.FillPath(fill, path);
-            g.DrawPath(border, path);
-        }
+            using (var fill = new SolidBrush(selected ? Blend(ModernUi.Surface, ModernUi.Accent, 0.10) : ModernUi.Surface))
+                g.FillPath(fill, path);
 
-        var imageRect = layout.Thumb;
-        using (var imagePath = RoundedCard(imageRect, 5))
-        {
             var state = g.Save();
-            g.SetClip(imagePath);
+            g.SetClip(path);
+            var imageRect = layout.Thumb;
             using (var imgBg = new SolidBrush(Color.FromArgb(20, 37, 58)))
                 g.FillRectangle(imgBg, imageRect);
             if (e.Item.ImageKey.Length > 0 && _thumbnailByFileId.TryGetValue(e.Item.ImageKey, out var image))
             {
-                // Cover-fill the image area (crop to fill), matching the design's edge-to-edge thumbnails.
+                // Cover-fill the thumbnail area (crop to fill), edge to edge as in the design.
                 float scale = Math.Max((float)imageRect.Width / image.Width, (float)imageRect.Height / image.Height);
                 int dw = (int)(image.Width * scale), dh = (int)(image.Height * scale);
                 g.DrawImage(image, imageRect.Left + (imageRect.Width - dw) / 2, imageRect.Top + (imageRect.Height - dh) / 2, dw, dh);
             }
             g.Restore(state);
+
+            using var border = new Pen(borderColor, borderWidth);
+            g.DrawPath(border, path);
         }
 
+        var thumb = layout.Thumb;
         // Video: a translucent dark play disc in the middle of the thumbnail.
         if (media is { Kind: MediaKind.Video })
         {
-            int d = Math.Min(28, imageRect.Height - 8);
-            var playCircle = new Rectangle(imageRect.Left + (imageRect.Width - d) / 2, imageRect.Top + (imageRect.Height - d) / 2, d, d);
+            int d = Math.Min(30, thumb.Height - 8);
+            var playCircle = new Rectangle(thumb.Left + (thumb.Width - d) / 2, thumb.Top + (thumb.Height - d) / 2, d, d);
             using var playBrush = new SolidBrush(Color.FromArgb(110, 0, 0, 0));
             g.FillEllipse(playBrush, playCircle);
             using var triBrush = new SolidBrush(Color.White);
@@ -1376,34 +1330,54 @@ public sealed class FilesPanel : UserControl
             g.FillPolygon(triBrush, new[] { new PointF(cx - s, cy - s * 1.2f), new PointF(cx - s, cy + s * 1.2f), new PointF(cx + s * 1.3f, cy) });
         }
 
-        // Type chip (JPG / MP4 / PPT / PDF / DOC …) at the thumbnail's bottom-left corner.
+        using var badgeFont = new Font(ModernUi.UiFont, 8F, FontStyle.Bold);
+        // Type chip (JPG / MP4 / PPT / PDF / DOC …) bottom-left; 大屏 / 预览 tag top-left.
         if (media != null)
         {
             var (badgeText, badgeColor) = FileTypeBadge.For(media);
-            using var badgeFont = new Font(ModernUi.UiFont, 8F, FontStyle.Bold);
-            var textSize = TextRenderer.MeasureText(badgeText, badgeFont, Size.Empty, TextFormatFlags.NoPadding);
-            var badge = new Rectangle(imageRect.Left + 2, imageRect.Bottom - 18, textSize.Width + 10, 17);
-            using (var badgePath = RoundedCard(badge, 4))
-            using (var badgeFill = new SolidBrush(badgeColor))
-                g.FillPath(badgeFill, badgePath);
-            TextRenderer.DrawText(g, badgeText, badgeFont, badge, Color.White,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            DrawChip(g, badgeText, badgeFont, new Point(thumb.Left + 6, thumb.Bottom - 6 - 17), badgeColor, Color.White);
         }
+        if (onProgram) DrawChip(g, "大屏", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Danger, Color.White);
+        else if (inPreview) DrawChip(g, "预览", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Accent, ModernUi.AccentForeground);
 
-        // File name with the ⋯ affordance on the same row, as in the reference (date/size live in
-        // the item tooltip — see CardToolTip).
+        // Name (with ⋯ on the same row) and the meta line (kind · size).
         string name = media != null ? Path.GetFileName(media.SourcePath) : e.Item.Text;
-        using (var nameFont = new Font(ModernUi.UiFont, 9F))
-            TextRenderer.DrawText(g, name, nameFont, layout.Name,
-                playing ? ModernUi.Success : ModernUi.Text,
+        using (var nameFont = new Font(ModernUi.UiFont, 9.5F))
+            TextRenderer.DrawText(g, name, nameFont, layout.Name, ModernUi.Text,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
+        if (e.Item.SubItems.Count > 1)
+            using (var metaFont = new Font(ModernUi.UiFont, 8F))
+                TextRenderer.DrawText(g, e.Item.SubItems[1].Text, metaFont, layout.Meta, ModernUi.Muted,
+                    TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
 
-        using (var dots = new SolidBrush(ModernUi.Text))
+        using (var dots = new SolidBrush(ModernUi.Muted))
         {
             int dy = layout.More.Top + layout.More.Height / 2;
             for (int i = -1; i <= 1; i++)
                 g.FillEllipse(dots, layout.More.Left + layout.More.Width / 2 + i * 5 - 1.5f, dy - 1.5f, 3.2f, 3.2f);
         }
+    }
+
+    private static void DrawChip(Graphics g, string text, Font font, Point topLeft, Color fill, Color fore)
+    {
+        var size = TextRenderer.MeasureText(text, font, Size.Empty, TextFormatFlags.NoPadding);
+        var chip = new Rectangle(topLeft.X, topLeft.Y, size.Width + 10, 17);
+        using (var path = RoundedCard(chip, 4))
+        using (var brush = new SolidBrush(fill))
+            g.FillPath(brush, path);
+        TextRenderer.DrawText(g, text, font, chip, fore,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+    }
+
+    /// <summary>The card's muted second line: 「图片 · 4.2 MB」.</summary>
+    private static string CardMeta(MediaFile file)
+    {
+        try
+        {
+            var info = new FileInfo(file.SourcePath);
+            return info.Exists ? $"{KindLabel(file.Kind)} · {FormatBytes(info.Length)}" : $"{KindLabel(file.Kind)} · 文件不可用";
+        }
+        catch (Exception) { return KindLabel(file.Kind); }
     }
 
     private static string CardToolTip(MediaFile file)
@@ -1475,5 +1449,74 @@ public sealed class FilesPanel : UserControl
             graphics.DrawString(caption, captionFont, captionBrush, new RectangleF(0, 0, 240, 150), centered);
         }
         return bitmap;
+    }
+
+    /// <summary>「搜索文件名」: a borderless text box inside a rounded field with a magnifier glyph.</summary>
+    private sealed class SearchBox : Control
+    {
+        private readonly TextBox _text;
+
+        public SearchBox()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            _text = new TextBox
+            {
+                BorderStyle = BorderStyle.None, BackColor = ModernUi.Surface, ForeColor = ModernUi.Text,
+                Font = new Font(ModernUi.UiFont, 10F), PlaceholderText = "搜索文件名",
+            };
+            _text.TextChanged += (_, _) => OnTextChanged(EventArgs.Empty);
+            _text.KeyDown += (_, e) =>
+            {
+                if (e.KeyCode != Keys.Escape) return;
+                _text.Clear();
+                e.SuppressKeyPress = true;
+            };
+            Controls.Add(_text);
+            Cursor = Cursors.IBeam;
+            AccessibleName = "搜索文件名";
+        }
+
+        [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        [System.Diagnostics.CodeAnalysis.AllowNull]
+        public override string Text
+        {
+            get => _text?.Text ?? "";
+            set { if (_text != null) _text.Text = value; }
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); _text.Focus(); }
+
+        protected override void OnLayout(LayoutEventArgs levent)
+        {
+            base.OnLayout(levent);
+            if (_text == null) return;
+            int left = 30;
+            _text.Bounds = new Rectangle(left, (Height - _text.PreferredHeight) / 2, Math.Max(10, Width - left - 10), _text.PreferredHeight);
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e) =>
+            ButtonRenderer.DrawParentBackground(e.Graphics, ClientRectangle, this);
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            if (_text.BackColor != ModernUi.Surface) _text.BackColor = ModernUi.Surface;
+            if (_text.ForeColor != ModernUi.Text) _text.ForeColor = ModernUi.Text;
+            using (var path = RoundedCard(rect, 8))
+            using (var fill = new SolidBrush(ModernUi.Surface))
+            using (var border = new Pen(_text.Focused ? ModernUi.Accent : ModernUi.Border))
+            {
+                g.FillPath(fill, path);
+                g.DrawPath(border, path);
+            }
+            using var pen = new Pen(ModernUi.Muted, 1.6F);
+            int cy = Height / 2;
+            g.DrawEllipse(pen, 10, cy - 7, 10, 10);
+            g.DrawLine(pen, 18.5F, cy + 1.5F, 22F, cy + 5F);
+        }
     }
 }

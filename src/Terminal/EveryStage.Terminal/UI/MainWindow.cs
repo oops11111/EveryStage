@@ -182,6 +182,8 @@ public sealed class MainWindow : GradientForm
         _filesPanel.PlaybackStopRequested += () => _preview.Stop();
         _filesPanel.StopProgramRequested += StopProgramOutput;
         _filesPanel.IsProgramLive = () => _stateMachine.State == OutputState.Active;
+        _filesPanel.ProgramFile = () => _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
+            ? _playback?.CurrentFile : null;
 
         // Background-music card under the 大屏 section: a second view of the file page's audio bar, so
         // the same track can be controlled from every page. Shown while the column has room for it.
@@ -297,6 +299,13 @@ public sealed class MainWindow : GradientForm
 
     public void UpdateDeviceCast(string? deviceName, bool connected, bool onProgram)
         => _previewDock.UpdateDeviceCast(deviceName, connected, onProgram);
+
+    /// <summary>Flat page background (the design has no gradient behind the pages).</summary>
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        using var background = new SolidBrush(ModernUi.Background);
+        e.Graphics.FillRectangle(background, ClientRectangle);
+    }
 
     /// <summary>Rail and monitor-column widths in device pixels for the current DPI.</summary>
     private void ApplyFrameMetrics()
