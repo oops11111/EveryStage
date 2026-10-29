@@ -1,3 +1,4 @@
+using EveryStage.Terminal.Data;
 using System.Drawing.Drawing2D;
 using EveryStage.Terminal.Devices;
 using EveryStage.Terminal.Logging;
@@ -159,7 +160,7 @@ public sealed class DevicesPanel : UserControl
         try { _pairedDevices.Remove(device.DeviceId); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, $"移除未保存：{ex.Message}", "配对记录保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"移除未保存：{DataDirectory.Describe(ex)}", "配对记录保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         // DeviceConnectionLogger.LogUnpaired's first real caller (PLANNING.md §14.4's "配对/取消
@@ -191,7 +192,7 @@ public sealed class DevicesPanel : UserControl
             device.TrustMode = oldTrust;
             device.AllowCast = oldCast;
             device.AllowMonitor = oldMonitor;
-            MessageBox.Show(this, $"权限未保存：{ex.Message}", "配对记录保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"权限未保存：{DataDirectory.Describe(ex)}", "配对记录保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         Refresh_();

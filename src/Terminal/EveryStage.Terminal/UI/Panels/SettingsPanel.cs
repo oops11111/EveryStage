@@ -398,7 +398,7 @@ public sealed class SettingsPanel : UserControl
         try { _settingsStore.Save(updated); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, $"主题未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"主题未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         _themeComboBox.SelectedIndex = index;
@@ -426,7 +426,7 @@ public sealed class SettingsPanel : UserControl
         try { _settingsStore.Save(updated); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, $"设置未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"设置未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         _savedLabel.Text = "已保存。";
@@ -480,7 +480,7 @@ public sealed class SettingsPanel : UserControl
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, $"导出失败：{ex.Message}", "日志导出", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            MessageBox.Show(this, $"导出失败：{DataDirectory.Describe(ex)}", "日志导出", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -503,7 +503,7 @@ public sealed class SettingsPanel : UserControl
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _identity.DeviceName = previousName;
-            MessageBox.Show(this, $"设备名称未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"设备名称未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         _savedLabel.Text = "设备名称已保存。";

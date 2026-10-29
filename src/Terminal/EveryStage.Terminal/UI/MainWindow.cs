@@ -67,6 +67,9 @@ public sealed class MainWindow : GradientForm
     /// a switch (or the saved theme at startup) from this palette.</summary>
     private readonly Dictionary<Control, UiPalette> _panelPalettes = new();
 
+    /// <summary>A problem found at startup that the operator must fix (stays until dismissed).</summary>
+    internal void ShowStartupProblem(string message) => _toastStack.Show(message, ToastSeverity.Critical);
+
     public void ShowPairingRequest(PairingRequest request) => _devicesPanel.ShowPairingRequest(request);
 
     public void ClearPairingRequest(string requestId) => _devicesPanel.ClearPairingRequest(requestId);
@@ -551,7 +554,7 @@ public sealed class MainWindow : GradientForm
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             activity.Files.Insert(index, file);
-            MessageBox.Show(this, $"移除未保存：{ex.Message}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"移除未保存：{DataDirectory.Describe(ex)}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         if (scenario != null) _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
@@ -565,7 +568,7 @@ public sealed class MainWindow : GradientForm
         try { _library.Remove(file.Id); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, $"移除未保存：{ex.Message}", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"移除未保存：{DataDirectory.Describe(ex)}", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return false;
         }
         _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);

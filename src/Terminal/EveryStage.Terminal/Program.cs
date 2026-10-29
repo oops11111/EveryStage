@@ -225,6 +225,16 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _tray = new TrayIconController(_stateMachine);
         _tray.ExitRequested += OnExitRequested;
         _tray.MainWindowRequested += () => { _mainWindow.Show(); _mainWindow.Activate(); };
+
+        // Files in %ProgramData%\EveryStage owned by another account (or by an elevated first run) make
+        // every later save fail with "access denied". Say so now, not at the operator's first import.
+        if (EveryStage.Terminal.Data.DataDirectory.FindUnwritable() is { } unwritable)
+        {
+            _crashLogger.LogUnhandledException("TerminalApplicationContext.DataDirectoryPermission",
+                new UnauthorizedAccessException($"Cannot write {unwritable}"));
+            _mainWindow.ShowStartupProblem("无法修改数据文件，导入、方案和设置都将无法保存。\n" + EveryStage.Terminal.Data.DataDirectory.PermissionHint);
+            _tray.ShowNotification("EveryStage 数据目录无法写入", "导入和保存会失败。请重新运行 EveryStage 安装程序修复权限。");
+        }
     }
 
     /// <summary>Builds the whole local-playback object graph — <see cref="_overlay"/>/

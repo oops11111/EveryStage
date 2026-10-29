@@ -37,6 +37,13 @@ $destination = Join-Path $InstallRoot $Component
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 Copy-Item -Path (Join-Path $source "*") -Destination $destination -Recurse -Force
 
+# Both apps keep their data in %ProgramData%\EveryStage. By default a standard user can create files there
+# but not change files another account (or an elevated run) created, which surfaces later as "access
+# denied" on import/save. Grant local Users (S-1-5-32-545) Modify, inherited, and repair existing files.
+$dataRoot = Join-Path $env:ProgramData "EveryStage"
+New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
+& icacls.exe $dataRoot /grant "*S-1-5-32-545:(OI)(CI)M" /T /C /Q | Out-Null
+
 $exe = Join-Path $destination "EveryStage.$Component.exe"
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Installed executable not found: $exe" }
 

@@ -201,6 +201,13 @@ Section "-Common"
       DeleteRegValue HKLM "${RUN_KEY}" "EveryStageCaster"
     ${EndIf}
   ${EndIf}
+  ; %ProgramData%\EveryStage holds both apps' data. Windows' default ProgramData permissions let a
+  ; standard user create files there but only change their own, so files first written by another
+  ; account or by an elevated run later fail with "access denied" (import, scenarios, settings).
+  ; Grant local Users (S-1-5-32-545, language-independent) Modify, inherited, and repair existing files.
+  ReadEnvStr $0 "ProgramData"
+  CreateDirectory "$0\EveryStage"
+  nsExec::Exec 'icacls "$0\EveryStage" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q'
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\EveryStage\卸载 EveryStage.lnk" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
@@ -301,11 +308,13 @@ Function CheckComponents
   ${EndIf}
 FunctionEnd
 
+; Started through Explorer so the app runs with the signed-in user's normal rights, not the
+; installer's elevated token (an elevated first run would own the data files it creates).
 Function LaunchInstalled
   ${If} ${SectionIsSelected} ${SecTerminal}
-    Exec '"$INSTDIR\Terminal\EveryStage.Terminal.exe"'
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\Terminal\EveryStage.Terminal.exe"'
   ${ElseIf} ${SectionIsSelected} ${SecCaster}
-    Exec '"$INSTDIR\Caster\EveryStage.Caster.exe"'
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\Caster\EveryStage.Caster.exe"'
   ${EndIf}
 FunctionEnd
 

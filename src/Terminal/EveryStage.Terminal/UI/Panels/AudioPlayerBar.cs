@@ -209,7 +209,7 @@ internal sealed class AudioPlayerBar : GlassPanel
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             _boundFile.OnCompletion = oldValue;
-            MessageBox.Show(FindForm(), $"循环设置未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(FindForm(), $"循环设置未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             RefreshLiveState();
             return;
         }

@@ -509,7 +509,7 @@ public sealed class FilesPanel : UserControl
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             file.Document = old;
-            MessageBox.Show(this, $"文档播放设置未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"文档播放设置未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.Document), null, DocumentSettingsDialog.Summarize(file));
@@ -613,7 +613,7 @@ public sealed class FilesPanel : UserControl
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 file.OnCompletion = oldValue;
-                MessageBox.Show(this, $"无法保存播放方式：{ex.Message}", "保存失败",
+                MessageBox.Show(this, $"无法保存播放方式：{DataDirectory.Describe(ex)}", "保存失败",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
@@ -919,7 +919,7 @@ public sealed class FilesPanel : UserControl
             try { _library.Remove(file.Id); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                MessageBox.Show(this, $"移除未完成：{ex.Message}", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, $"移除未完成：{DataDirectory.Describe(ex)}", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 break;
             }
             _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
@@ -959,7 +959,7 @@ public sealed class FilesPanel : UserControl
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             foreach (var addition in additions) dialog.SelectedActivity.Files.Remove(addition);
-            MessageBox.Show(this, $"未加入活动：{ex.Message}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"未加入活动：{DataDirectory.Describe(ex)}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         _fileOpLog.LogActivityModified(dialog.SelectedScenario.Id, dialog.SelectedActivity.Id, dialog.SelectedActivity.Name);
@@ -980,7 +980,7 @@ public sealed class FilesPanel : UserControl
             try { imported = _library.Import(path); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                MessageBox.Show(this, $"导入未完成：{ex.Message}\n此前成功导入的文件已保留。", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, $"导入未完成：{DataDirectory.Describe(ex)}\n此前成功导入的文件已保留。", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 break;
             }
             if (imported == null) rejected.Add(Path.GetFileName(path));
@@ -1202,7 +1202,7 @@ public sealed class FilesPanel : UserControl
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             dialog.SelectedActivity.Files.Remove(addition);
-            MessageBox.Show(this, $"未加入活动音轨：{ex.Message}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"未加入活动音轨：{DataDirectory.Describe(ex)}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         _fileOpLog.LogActivityModified(dialog.SelectedScenario.Id, dialog.SelectedActivity.Id, dialog.SelectedActivity.Name);

@@ -469,7 +469,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             bool reverted = _repository.TryReloadInto(_store);
             EnsureAtLeastOneScenario();
             MessageBox.Show(this,
-                reverted ? $"修改未能保存，已恢复为保存前的内容。\n{ex.Message}" : $"修改未能保存，重启后将丢失。\n{ex.Message}",
+                reverted ? $"修改未能保存，已恢复为保存前的内容。\n{DataDirectory.Describe(ex)}" : $"修改未能保存，重启后将丢失。\n{ex.Message}",
                 "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             RefreshScenarioCombo();
             RefreshTree();
@@ -751,7 +751,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             file.Document = old;
-            MessageBox.Show(this, $"文档播放设置未保存：{ex.Message}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"文档播放设置未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.Document), null, DocumentSettingsDialog.Summarize(file));
@@ -1075,7 +1075,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            MessageBox.Show(this, $"方案未保存：{ex.Message}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(this, $"方案未保存：{DataDirectory.Describe(ex)}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
         _saveButton.Text = "✓ 已保存";
