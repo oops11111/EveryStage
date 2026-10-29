@@ -8,6 +8,10 @@ using EveryStage.Terminal.ContentEngine;
 using EveryStage.Terminal.Devices;
 using EveryStage.Terminal.Logging;
 
+// Same visual-styles setup as the Terminal (comctl32 v6): without it the file grid's tile view and
+// other themed controls fall back to their classic look, and the UI screenshots would not match the app.
+Application.EnableVisualStyles();
+
 // Run continuations on a single owning thread, as the WinForms renderer callers do.
 using var context = new TestContext();
 SynchronizationContext.SetSynchronizationContext(context);

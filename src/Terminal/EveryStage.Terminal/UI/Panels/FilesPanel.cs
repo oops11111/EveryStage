@@ -185,32 +185,30 @@ public sealed class FilesPanel : UserControl
             const int gap = 12;
             int w = header.ClientSize.Width, cy = (header.ClientSize.Height - 6) / 2;
             importButton.Width = importButton.PreferredContentWidth();
-            sizeTabs.Width = sizeTabs.MinimumWidth;
-            int right = w;
-            importButton.Location = new Point(right -= importButton.Width, cy - importButton.Height / 2);
-            sizeTabs.Location = new Point(right -= gap + sizeTabs.Width, cy - sizeTabs.Height / 2);
             pageTitle.Location = new Point(0, cy - pageTitle.Height / 2);
-            int left = pageTitle.Right + gap;
-            // What is left between the title and the size tabs holds count + filters + search.
-            int room = right - gap - left;
-            filterTabs.Compact = false;
-            int filterWidth = Math.Min(filterTabs.MaximumWidth, Math.Max(filterTabs.MinimumWidth, 5 * 58));
-            bool showCount = room - _countLabel.PreferredWidth - gap - filterWidth - gap >= 200;
-            _countLabel.Visible = showCount;
-            if (showCount)
+            int fullFilter = Math.Min(filterTabs.MaximumWidth, 5 * 58);
+            // Narrow pages give up, in order: the count, the wide filter segments, the card-size
+            // buttons, and finally search width (never below 90px) — controls never overlap.
+            for (int step = 0; ; step++)
             {
-                _countLabel.Location = new Point(left, cy - _countLabel.Height / 2 + 2);
-                left = _countLabel.Right + gap;
-                room = right - gap - left;
+                bool showCount = step < 1, wideFilter = step < 2, showSize = step < 3;
+                filterTabs.Compact = !wideFilter;
+                int filterWidth = wideFilter ? fullFilter : filterTabs.MinimumWidth;
+                int right = w - importButton.Width - (showSize ? gap + sizeTabs.MinimumWidth : 0);
+                int left = pageTitle.Right + gap + (showCount ? _countLabel.PreferredWidth + gap : 0);
+                int searchRoom = right - gap - (left + filterWidth + gap);
+                if (searchRoom < 160 && step < 3) continue;
+
+                _countLabel.Visible = showCount;
+                sizeTabs.Visible = showSize;
+                importButton.Location = new Point(w - importButton.Width, cy - importButton.Height / 2);
+                sizeTabs.Bounds = new Rectangle(importButton.Left - gap - sizeTabs.MinimumWidth, cy - sizeTabs.Height / 2, sizeTabs.MinimumWidth, sizeTabs.Height);
+                _countLabel.Location = new Point(pageTitle.Right + gap, cy - _countLabel.Height / 2 + 2);
+                filterTabs.Bounds = new Rectangle(left, cy - filterTabs.Height / 2, filterWidth, filterTabs.Height);
+                int searchWidth = Math.Clamp(searchRoom, 90, 240);
+                _searchBox.Bounds = new Rectangle(right - gap - searchWidth, cy - _searchBox.Height / 2, searchWidth, _searchBox.Height);
+                break;
             }
-            if (room - filterWidth - gap < 140)
-            {
-                filterTabs.Compact = true;
-                filterWidth = filterTabs.MinimumWidth;
-            }
-            filterTabs.Bounds = new Rectangle(left, cy - filterTabs.Height / 2, filterWidth, filterTabs.Height);
-            int searchWidth = Math.Clamp(room - filterWidth - gap, 90, 240);
-            _searchBox.Bounds = new Rectangle(right - gap - searchWidth, cy - _searchBox.Height / 2, searchWidth, _searchBox.Height);
             foreach (Control c in header.Controls) c.Invalidate();
         }
 
