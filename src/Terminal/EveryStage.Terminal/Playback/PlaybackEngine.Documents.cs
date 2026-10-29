@@ -166,7 +166,11 @@ public sealed partial class PlaybackEngine
                 if (mode == PresentationMode.Auto)
                     mode = PresentationInspector.Inspect(file.SourcePath).NeedsNativeShow ? PresentationMode.Native : PresentationMode.Static;
                 int startSlide = slide ?? Math.Max(1, settings.StartPage);
-                if (mode == PresentationMode.Native && OfficeInstallation.PickPresentation() is { } showSuite)
+                // The native show runs only for Program, i.e. on the extended display: the Preview channel
+                // always browses static slides, so a full-screen show window never covers the operator's
+                // screen. Taking the item starts the show on the big screen at the previewed slide.
+                bool showOnProgram = mode == PresentationMode.Native && Channel == PlaybackChannel.Program;
+                if (showOnProgram && OfficeInstallation.PickPresentation() is { } showSuite)
                 {
                     _documentMode = DocumentPlaybackMode.NativeShow;
                     _ = PlayNativeShowAsync(file, showSuite, settings, startSlide);
@@ -174,7 +178,9 @@ public sealed partial class PlaybackEngine
                 else
                 {
                     _documentMode = DocumentPlaybackMode.StaticSlides;
-                    _documentNotice = mode != PresentationMode.Native ? "静态幻灯片：不含动画、转场和嵌入媒体"
+                    _documentNotice = mode == PresentationMode.Native && Channel == PlaybackChannel.Preview && OfficeInstallation.PickPresentation() != null
+                            ? "预览为静态幻灯片；投到大屏后原生放映（含动画、转场和嵌入媒体），放映窗口只在扩展屏上"
+                        : mode != PresentationMode.Native ? "静态幻灯片：不含动画、转场和嵌入媒体"
                         : OfficeInstallation.WpsInstalledWithoutAutomation
                             ? "以静态幻灯片播放（不含动画、转场和嵌入媒体）。" + OfficeInstallation.WpsAutomationDisabledHint
                             : "未安装 PowerPoint/WPS 演示：以静态幻灯片播放（不含动画、转场和嵌入媒体）";

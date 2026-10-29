@@ -65,6 +65,7 @@ internal sealed class SharedPreviewDock : Panel
     private bool _deviceConnected;
     private bool _deviceOnProgram;
     private DocumentControlBar? _documentBar;
+    private DocumentProgramSync? _documentSync;
     private bool _documentBarShown;
     private Control? _footer;
     private Control? _runControls;
@@ -366,6 +367,7 @@ internal sealed class SharedPreviewDock : Panel
     /// <summary>Adds the document control row (PDF / Word / presentation controls and Program sync).</summary>
     public void BindDocumentSync(DocumentProgramSync sync)
     {
+        _documentSync = sync;
         _documentBar = new DocumentControlBar(sync, _toolTip, ButtonHeight) { Visible = false };
         _documentBar.StopProgramRequested += () => StopProgramRequested?.Invoke();
         _documentBar.Changed += RefreshNow;
@@ -388,6 +390,7 @@ internal sealed class SharedPreviewDock : Panel
     private void RefreshNow()
     {
         if (IsDisposed) return;
+        _documentSync?.FollowProgramShow();
         RefreshDocumentBar();
         var preview = _preview;
         var file = preview?.CurrentFile;

@@ -291,7 +291,7 @@ internal static class DocumentTests
         {
             TestNativeShow(pptx, preview, program);
             TestStaticSlides(pptx, preview, cache);
-            TestShowApplicationExit(pptx, preview);
+            TestShowApplicationExit(pptx, program);
         }
         else Console.WriteLine("SKIP: PowerPoint native show / static slides (no PowerPoint)");
 
@@ -372,11 +372,17 @@ internal static class DocumentTests
         var baseline = OfficeProcessIds();
         var file = new MediaFile { SourcePath = pptx, Kind = MediaKind.Document };
         Require(PresentationInspector.Inspect(pptx) is { NeedsNativeShow: true, HasAnimations: true, SlideCount: 3 }, "The inspector did not see the deck's animations.");
+        // Preview browses static slides (no show window on the operator screen); Take starts the native
+        // show on Program at the previewed slide.
         preview.RequestPlay(file);
-        Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.OfficeSession?.Status == OfficeSessionStatus.Ready, 60000),
-            $"Native show did not start: {preview.LastError?.Message ?? preview.CurrentContentNote}");
-        Require(preview.DocumentMode == DocumentPlaybackMode.NativeShow, "An animated deck was not played as a native show.");
-        var show = (SlideShowSession)preview.OfficeSession!;
+        Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.PdfView != null, 90000),
+            $"Preview did not show the deck as static slides: {preview.LastError?.Message ?? preview.CurrentContentNote}");
+        Require(preview.DocumentMode == DocumentPlaybackMode.StaticSlides && preview.OfficeSession == null, "Preview started a native show.");
+        Require(program.RequestPlay(preview.CaptureSnapshot()!.Value), "Program refused the deck.");
+        Require(WaitFor(() => program.State == PlaybackChannelState.Playing && program.OfficeSession?.Status == OfficeSessionStatus.Ready, 60000),
+            $"Native show did not start on Program: {program.LastError?.Message ?? program.CurrentContentNote}");
+        Require(program.DocumentMode == DocumentPlaybackMode.NativeShow, "An animated deck was not played as a native show on Program.");
+        var show = (SlideShowSession)program.OfficeSession!;
         Require(WaitFor(() => show.FrameCount > 3, 8000), "The slide show is not being captured.");
         Console.WriteLine($"INFO: {show.SuiteName} {show.Version}, capture {show.CaptureMethod}{(show.CaptureFallbackReason is { } why ? " (WGC: " + why.Trim() + ")" : "")}");
         Require(WaitFor(() =>
@@ -386,10 +392,9 @@ internal static class DocumentTests
             finally { frame?.Release(); }
         }, 8000), "The captured slide show is blank.");
 
-        Require(program.RequestPlay(preview.CaptureSnapshot()!.Value) && WaitFor(() => program.OfficeFrameSequence >= 0, 15000), "Program shows no slide-show frame.");
-        Require(ReferenceEquals(program.OfficeSession, show), "Program started a second slide show.");
+        Require(WaitFor(() => program.OfficeFrameSequence >= 0, 15000), "Program shows no slide-show frame.");
 
-        void Step(Func<SlideShowSession, Task> command) { Require(Await(preview.SlideCommandAsync(command, "test"), 20000), "Slide command timed out."); Pump(400); }
+        void Step(Func<SlideShowSession, Task> command) { Require(Await(program.SlideCommandAsync(command, "test"), 20000), "Slide command timed out."); Pump(400); }
         Require(WaitFor(() => show.Position.Slide == 1, 5000), "The show did not start at slide 1.");
         Step(s => s.NextStepAsync());
         Require(show.Position.Slide == 2 && show.Position.Click == 0 && show.Position.Clicks == 2, $"Next step from slide 1: {show.Position}.");
@@ -404,14 +409,14 @@ internal static class DocumentTests
         Require(show.Position.Screen == SlideShowScreen.Black, "Black screen did not engage.");
         Step(s => s.ToggleScreenAsync(SlideShowScreen.Black));
         Require(show.Position.Screen == SlideShowScreen.Running, "Black screen did not release.");
-        Require(Await(preview.EndShowAsync(), 20000) && WaitFor(() => show.Status == OfficeSessionStatus.Ended, 5000), "End show failed.");
+        Require(Await(program.EndShowAsync(), 20000) && WaitFor(() => show.Status == OfficeSessionStatus.Ended, 5000), "End show failed.");
         Require(program.OfficeFrameSequence >= 0 && program.CurrentThumbnail != null, "Program lost its last frame when the show ended.");
 
         program.Stop();
         preview.Stop();
         Require(WaitFor(() => show.Status == OfficeSessionStatus.Closed, 30000), "The slide-show session did not close.");
         Require(WaitFor(() => !OfficeProcessIds().Except(baseline).Any(), 15000), "A PowerPoint/WPS process outlived the show.");
-        Console.WriteLine("PASS: PowerPoint native show: shared capture on Program, 下一步 plays animations before the next slide, jump, black screen, end keeps last frame, no leftover process");
+        Console.WriteLine("PASS: PowerPoint: static slides in Preview, native show only on Program, 下一步 plays animations before the next slide, jump, black screen, end keeps last frame, no leftover process");
     }
 
     private static void TestStaticSlides(string pptx, PlaybackEngine preview, DocumentConversionCache cache)
@@ -431,8 +436,9 @@ internal static class DocumentTests
 
     /// <summary>The presentation application dies mid-show (crash, killed): the show degrades to static
     /// slides at the same slide with the reason on screen, and nothing is left running.</summary>
-    private static void TestShowApplicationExit(string pptx, PlaybackEngine preview)
+    private static void TestShowApplicationExit(string pptx, PlaybackEngine program)
     {
+        var preview = program; // the native show runs only on Program
         var baseline = OfficeProcessIds();
         preview.RequestPlay(new MediaFile { SourcePath = pptx, Kind = MediaKind.Document });
         Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.OfficeSession?.Status == OfficeSessionStatus.Ready, 60000),

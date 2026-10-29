@@ -29,8 +29,24 @@ public sealed class DocumentProgramSync
     public PlaybackEngine Preview => _preview;
     public PlaybackEngine? Program => _program();
 
-    /// <summary>The engine the document control bar acts on.</summary>
-    public PlaybackEngine? Target => _preview.Document != null ? _preview : Program?.Document != null ? Program : null;
+    /// <summary>The engine the document control bar acts on: Program while it runs the native slide show of
+    /// the previewed presentation (the show exists only there), else the Preview document when Preview
+    /// shows one, otherwise the Program document (so the operator can still drive what is on air).</summary>
+    public PlaybackEngine? Target => ProgramRunsShowOfPreview ? Program
+        : _preview.Document != null ? _preview : Program?.Document != null ? Program : null;
+
+    /// <summary>Program runs the native show of the presentation Preview browses as static slides.</summary>
+    public bool ProgramRunsShowOfPreview => ProgramShowsSameDocument && Program?.DocumentMode == DocumentPlaybackMode.NativeShow;
+
+    /// <summary>Presenter follow: while Program runs the show of the previewed presentation, Preview's
+    /// static slide follows the show's slide, so the operator screen shows where the big screen is.
+    /// Called on the UI refresh tick.</summary>
+    public void FollowProgramShow()
+    {
+        if (!ProgramRunsShowOfPreview || Program?.OfficeSession is not SlideShowSession show || _preview.PdfView is not { } view) return;
+        int slide = show.Position.Slide;
+        if (slide >= 1 && slide <= view.PageCount && view.CurrentPage != slide) view.GoToPage(slide, user: false);
+    }
 
     /// <summary>Program is on air with the same document as Preview.</summary>
     public bool ProgramShowsSameDocument =>
@@ -46,6 +62,13 @@ public sealed class DocumentProgramSync
     private void OnPreviewMoved(PdfViewportState state)
     {
         if (!ProgramShowsSameDocument || Program is not { } program) return;
+        if (ProgramRunsShowOfPreview)
+        {
+            // Browsing the static slides in Preview moves the show when Program follows live.
+            if (program.DocumentLiveSync && !program.DocumentFrozen)
+                _ = program.SlideCommandAsync(s => s.GoToSlideAsync(state.PageIndex + 1), "跳转");
+            return;
+        }
         if (program.DocumentLiveSync && !program.DocumentFrozen) program.ApplyPdfState(state);
     }
 

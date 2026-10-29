@@ -305,7 +305,8 @@ public sealed partial class PlaybackEngine : IDisposable
 
     public Snapshot? CaptureSnapshot() =>
         _currentFile == null ? null : new Snapshot(_currentFile, _currentActivity, _currentFileIndex, Position, IsPaused,
-            _pdfView?.State, _officeSession is SlideShowSession show ? BrowsedSlide : null);
+            _pdfView?.State, _officeSession is SlideShowSession show ? BrowsedSlide
+                : _documentMode == DocumentPlaybackMode.StaticSlides && _pdfView != null ? _pdfView.CurrentPage : null);
 
     /// <summary>Starts <paramref name="snapshot"/>'s content on this channel at its position (Take).
     /// Returns false if this channel refused it (Program with output disabled).</summary>

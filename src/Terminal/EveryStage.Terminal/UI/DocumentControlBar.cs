@@ -140,7 +140,8 @@ internal sealed class DocumentControlBar : Panel
                     AddButton("缩放 ▾", "适合宽度 / 适合页面 / 实际大小 / 自定义比例", null, () => View != null, zoomMenu: true);
                     break;
                 case DocumentPlaybackMode.StaticSlides:
-                    AddButton("原生放映", "切换为原生放映（保留动画、转场和嵌入媒体）", () => Target?.SwitchPresentationMode(PresentationMode.Native),
+                    AddButton("大屏原生放映", "投到大屏时用原生放映（保留动画、转场和嵌入媒体）；放映窗口只在扩展屏上，预览仍为静态幻灯片",
+                        () => Target?.SwitchPresentationMode(PresentationMode.Native),
                         () => Target != null && OfficeInstallation.HasPresentation);
                     AddButton(" 上一张", "上一张", () => View?.PreviousPage(), () => View != null);
                     AddButton("下一张 ", "下一张", () => View?.NextPage(), () => View != null);
