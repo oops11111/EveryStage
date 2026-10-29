@@ -24,6 +24,8 @@ internal interface IActivityRowHost
     void RowNodeDoubleClicked(TreeNode node);
     void RowContextMenu(TreeNode node, Control source, Point location);
     void ToggleCollapsed(Activity activity);
+    /// <summary>Drag ⋮⋮: move item <paramref name="from"/> so it lands before position <paramref name="insertAt"/>.</summary>
+    void MoveFile(Activity activity, int from, int insertAt);
 }
 
 /// <summary>
@@ -54,6 +56,13 @@ internal sealed class ActivityRowView : Control
     private readonly List<(Rectangle Bounds, TreeNode Node, int Index)> _rows = new();
     private Rectangle _headerRect, _chevronRect, _emptyRect;
     private Point _hover = new(-1, -1);
+
+    // ⋮⋮ drag: the row picked up, where it would land (insertion index), and whether the mouse has
+    // moved far enough to count as a drag rather than a click.
+    private int _dragFrom = -1;
+    private int _dragTo = -1;
+    private Point _dragStart;
+    private bool _dragging;
 
     public ActivityRowView(IActivityRowHost host, Activity activity, TreeNode activityNode, int number)
     {
@@ -142,6 +151,11 @@ internal sealed class ActivityRowView : Control
             return;
         }
         var node = HitNode(e.Location);
+        if (e.Button == MouseButtons.Left && IsGripHit(e.Location, out int index))
+        {
+            _dragFrom = index;
+            _dragStart = e.Location;
+        }
         if (e.Button == MouseButtons.Left) _host.RowNodeClicked(node);
         else if (e.Button == MouseButtons.Right) _host.RowContextMenu(node, this, e.Location);
     }
@@ -162,7 +176,45 @@ internal sealed class ActivityRowView : Control
     {
         base.OnMouseMove(e);
         _hover = e.Location;
+        if (_dragFrom >= 0 && e.Button == MouseButtons.Left)
+        {
+            if (!_dragging && Math.Abs(e.Y - _dragStart.Y) > S(4)) _dragging = true;
+            if (_dragging) _dragTo = InsertionIndex(e.Y);
+        }
+        Cursor = _dragging ? Cursors.SizeNS : IsGripHit(e.Location, out _) ? Cursors.SizeAll : Cursors.Hand;
         Invalidate();
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        int from = _dragFrom, to = _dragTo;
+        bool dragged = _dragging;
+        _dragFrom = _dragTo = -1;
+        _dragging = false;
+        Invalidate();
+        // Deferred: the host rebuilds the list, which disposes this control.
+        if (dragged && to >= 0 && to != from && to != from + 1 && Parent is { } owner)
+            owner.BeginInvoke(() => _host.MoveFile(_activity, from, to));
+    }
+
+    /// <summary>The ⋮⋮ column of an item row.</summary>
+    private bool IsGripHit(Point p, out int index)
+    {
+        index = -1;
+        if (p.X > ColumnsFor(Width, S).Number) return false;
+        foreach (var (bounds, _, i) in _rows)
+            if (bounds.Contains(p)) { index = i; return true; }
+        return false;
+    }
+
+    /// <summary>Insertion index (0..count) for a drag at height <paramref name="y"/>.</summary>
+    private int InsertionIndex(int y)
+    {
+        if (_rows.Count == 0) return -1;
+        for (int i = 0; i < _rows.Count; i++)
+            if (y < _rows[i].Bounds.Top + _rows[i].Bounds.Height / 2) return i;
+        return _rows.Count;
     }
 
     protected override void OnMouseLeave(EventArgs e)
@@ -209,6 +261,14 @@ internal sealed class ActivityRowView : Control
         foreach (var (bounds, node, index) in _rows)
             DrawItemRow(g, bounds, node, index, columns, preview);
 
+        if (_dragging && _dragTo >= 0 && _rows.Count > 0)
+        {
+            // Insertion line where the dragged row would land.
+            int y = _dragTo < _rows.Count ? _rows[_dragTo].Bounds.Top - S(2) : _rows[^1].Bounds.Bottom + S(2);
+            using var pen = new Pen(ModernUi.Accent, S(3)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            g.DrawLine(pen, S(8), y, Width - S(8), y);
+        }
+
         if (!_emptyRect.IsEmpty)
         {
             using var path = RoundedBox(_emptyRect, S(8));
@@ -251,7 +311,7 @@ internal sealed class ActivityRowView : Control
         Color text = done ? ModernUi.Muted : ModernUi.Text;
         int cy = bounds.Top + bounds.Height / 2;
 
-        // ⋮⋮ grip (reorder through the menu's 上移/下移 or Alt+↑/↓).
+        // ⋮⋮ grip: drag to reorder within the section (or 上移 / 下移 in the menu).
         using (var dots = new SolidBrush(ModernUi.Mix(ModernUi.Surface, ModernUi.Muted, 0.7f)))
             for (int col = 0; col < 2; col++)
                 for (int r = -1; r <= 1; r++)

@@ -791,6 +791,26 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         RefreshTree();
     }
 
+    void IActivityRowHost.MoveFile(Activity activity, int from, int insertAt)
+    {
+        var scenario = CurrentScenario;
+        if (scenario == null || from < 0 || from >= activity.Files.Count) return;
+        var file = activity.Files[from];
+        var before = activity.Files.ToList();
+        activity.Files.RemoveAt(from);
+        activity.Files.Insert(Math.Clamp(insertAt > from ? insertAt - 1 : insertAt, 0, activity.Files.Count), file);
+        if (!TrySave())
+        {
+            activity.Files.Clear();
+            activity.Files.AddRange(before);
+            RefreshTree();
+            return;
+        }
+        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        RefreshTree();
+        SelectFileNode(activity, file);
+    }
+
     private void MoveSelectedFile(int delta)
     {
         var (scenario, activity, file) = GetSelection();
