@@ -407,7 +407,15 @@ internal sealed class ActivityRowView : Control
     }
 
     /// <summary>The muted second line under the name: what kind of item this is.</summary>
-    private static string KindLine(MediaFile file)
+    private static string KindLine(MediaFile file) => KindOnly(file) + file.TransitionOverride switch
+    {
+        TransitionStyle.Cut => " · 直切进入",
+        TransitionStyle.Dissolve => " · 叠化进入",
+        TransitionStyle.DipToBlack => " · 经黑场进入",
+        _ => "",
+    };
+
+    private static string KindOnly(MediaFile file)
     {
         if (file.IsBackgroundAudio) return "背景音乐 · 叠加播放，不占顺序";
         if (file.Kind == MediaKind.Document && (file.Document != null || EveryStage.Terminal.Documents.DocumentFormats.IsOffice(file.SourcePath)))

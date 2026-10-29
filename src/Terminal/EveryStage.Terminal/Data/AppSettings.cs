@@ -50,7 +50,18 @@ public sealed class AppSettings
     /// behavior of holding indefinitely. A per-file value, when configured, always wins over this.
     /// Applied immediately: the next file played picks it up, no restart needed.</summary>
     public int? DefaultStayDurationSeconds { get; set; }
+
+    // --- 过场 ---
+
+    /// <summary>How the big screen changes from one item to the next (an item can override it).</summary>
+    public TransitionStyle Transition { get; set; } = TransitionStyle.DipToBlack;
+
+    /// <summary>Length of the 叠化 / 经黑场 transition.</summary>
+    public int TransitionMilliseconds { get; set; } = 800;
 }
+
+/// <summary>Big-screen transition between items: 直切 / 叠化 / 经黑场.</summary>
+public enum TransitionStyle { Cut, Dissolve, DipToBlack }
 
 /// <summary>Stored as its number. <see cref="System"/> (appended, so existing files keep their meaning)
 /// follows Windows' app mode and is resolved to Light or Dark by <c>ThemeManager.Resolve</c>.</summary>

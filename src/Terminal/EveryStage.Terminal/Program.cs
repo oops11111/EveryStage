@@ -104,6 +104,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private readonly AudioTakeoverService _audioTakeover = new();
     private readonly TrayIconController _tray;
     private readonly DiscoveryService _discovery;
+    private TransitionController? _transitions;
     private readonly SynchronizationContext _uiContext;
     private OverlayWindow? _overlay;
     private VideoSurface? _videoSurface;
@@ -279,6 +280,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _videoSurface = new VideoSurface(_overlay.VideoHost.Handle, _overlay.VideoHost.ClientSize.Width, _overlay.VideoHost.ClientSize.Height);
             _playback = new PlaybackEngine(PlaybackChannel.Program, _overlay, _videoSurface, _settingsStore, _store, _stateMachine);
             _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
+            _transitions = new TransitionController(_playback, _overlay, _settingsStore);
             _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine, _settingsStore);
             return true;
         }
@@ -287,6 +289,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _crashLogger.LogUnhandledException("TerminalApplicationContext.ExtendedDisplayInit", ex);
             _previewWindow?.Dispose();
             _previewWindow = null;
+            _transitions?.Dispose();
+            _transitions = null;
             if (_playback != null) _playback.LocalPlaybackStarting -= OnLocalPlaybackStarting;
             _playback?.Dispose();
             _playback = null;
@@ -499,6 +503,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _castStatusTimer.Dispose();
         _deviceCastController?.Dispose();
         _previewWindow?.Dispose();
+        _transitions?.Dispose();
         _playback?.Dispose();
         // Close every WPS/Office document and slide show (asking about unsaved edits) and wait for the
         // applications to quit, so no WINWORD/POWERPNT/wps process outlives EveryStage.

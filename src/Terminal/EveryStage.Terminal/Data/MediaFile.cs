@@ -41,6 +41,9 @@ public sealed class MediaFile
     /// Only meaningful when Kind == Document; null means defaults.</summary>
     public DocumentPlaybackSettings? Document { get; set; }
 
+    /// <summary>The big-screen transition into this item; null uses the 设置 default.</summary>
+    public TransitionStyle? TransitionOverride { get; set; }
+
     /// <summary>Deep-copies every setting and, by default, assigns a fresh <see cref="Id"/> so an
     /// activity's copy stays independent from the library entry it came from. Set
     /// <paramref name="preserveId"/> only for an ephemeral playback queue that must keep log identity
@@ -64,5 +67,6 @@ public sealed class MediaFile
         IsBackgroundAudio = IsBackgroundAudio,
         BackgroundAudioVisual = BackgroundAudioVisual,
         Document = Document?.Clone(),
+        TransitionOverride = TransitionOverride,
     };
 }

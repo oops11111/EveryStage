@@ -32,6 +32,8 @@ public sealed class SettingsPanel : UserControl
     private readonly Label _savedLabel;
     private readonly ComboBox _themeComboBox;
     private readonly Label _diagnosticsLabel;
+    private readonly ComboBox _transitionComboBox;
+    private readonly NumericUpDown _transitionMilliseconds;
 
     // Sentinel for the ComboBox's "自动选择" item — no real MonitorInfo.DeviceName is ever an empty
     // string, so this can't collide with an actual monitor.
@@ -118,6 +120,13 @@ public sealed class SettingsPanel : UserControl
         output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举", "重启后生效", ModernUi.Muted, _monitorComboBox);
         output.AddRow("图片 / 文档默认停留时长", "没有单独设置停留时长的项目停留多久后进入下一项；关闭则一直停留到手动切换",
             "保存后生效", amberEffect, _defaultStayDurationEnabledCheckbox, _defaultStayDurationSeconds, secondsLabel);
+        _transitionComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
+        _transitionComboBox.Items.AddRange(new object[] { "直切", "叠化", "经黑场" });
+        _transitionComboBox.SelectedIndex = (int)settings.Transition;
+        ModernUi.StyleComboBox(_transitionComboBox);
+        _transitionMilliseconds = new NumericUpDown { Minimum = 100, Maximum = 3000, Increment = 100, Width = 70, Value = Math.Clamp(settings.TransitionMilliseconds, 100, 3000) };
+        output.AddRow("大屏过场", "大屏从一项切到下一项时的过渡；PPT 放映启动较慢时，过场会等到放映第一帧出现再显示。流程里每一项可以单独设置",
+            "保存后生效", amberEffect, _transitionComboBox, _transitionMilliseconds, new Label { Text = "毫秒", AutoSize = true, ForeColor = ModernUi.Muted });
         output.AddRow("PPT 没有扩展屏时", "原生放映（含动画）只在扩展屏上进行，避免占用本机屏幕；没有扩展屏时以静态幻灯片预览", null, null,
             new Label { Text = "静态幻灯片", AutoSize = true, ForeColor = ModernUi.Text });
 
@@ -399,6 +408,8 @@ public sealed class SettingsPanel : UserControl
             CastSwitchDefaultOn = current.CastSwitchDefaultOn,
             PreferredMonitorDeviceName = current.PreferredMonitorDeviceName,
             DefaultStayDurationSeconds = current.DefaultStayDurationSeconds,
+            Transition = current.Transition,
+            TransitionMilliseconds = current.TransitionMilliseconds,
         };
         try { _settingsStore.Save(updated); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -423,6 +434,8 @@ public sealed class SettingsPanel : UserControl
             DefaultStayDurationSeconds = _defaultStayDurationEnabledCheckbox.Checked
                 ? (int)_defaultStayDurationSeconds.Value
                 : null,
+            Transition = (TransitionStyle)Math.Max(0, _transitionComboBox.SelectedIndex),
+            TransitionMilliseconds = (int)_transitionMilliseconds.Value,
         };
 
         // Same guard+message convention as FilesPanel's own saves: on the Terminal an unguarded save

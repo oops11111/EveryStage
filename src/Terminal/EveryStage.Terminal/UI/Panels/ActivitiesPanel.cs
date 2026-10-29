@@ -72,6 +72,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     private readonly ToolStripMenuItem _moveUpButton;
     private readonly ToolStripMenuItem _moveDownButton;
     private readonly ToolStripMenuItem _musicCueItem;
+    private readonly ToolStripMenuItem _transitionItem;
 
     /// <summary>The background-music playlists, for the per-section music cue.</summary>
     public Func<IReadOnlyList<Playlist>>? Playlists { get; set; }
@@ -259,11 +260,15 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _musicCueItem = new ToolStripMenuItem("进入本环节时的背景音乐") { Enabled = false };
         _musicCueItem.DropDownItems.Add(new ToolStripMenuItem("(placeholder)"));
         _musicCueItem.DropDownOpening += (_, _) => FillMusicCueMenu();
+        // 「进入这一项的过场」: 默认 / 直切 / 叠化 / 经黑场 for the selected item.
+        _transitionItem = new ToolStripMenuItem("进入这一项的过场") { Enabled = false };
+        _transitionItem.DropDownItems.Add(new ToolStripMenuItem("(placeholder)"));
+        _transitionItem.DropDownOpening += (_, _) => FillTransitionMenu();
         _editMenu.Items.AddRange(new ToolStripItem[]
         {
             _playSelectedItem, new ToolStripSeparator(),
             _renameActivityItem, _addFileButton, _playModeButton, _musicCueItem, _deleteActivityItem, new ToolStripSeparator(),
-            _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton, _documentSettingsButton, _batchPropertiesButton,
+            _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton, _transitionItem, _documentSettingsButton, _batchPropertiesButton,
             new ToolStripSeparator(),
             _moveUpButton, _moveDownButton, _removeButton,
         });
@@ -1270,6 +1275,26 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         if (playlists.Count == 0) _musicCueItem.DropDownItems.Add(new ToolStripMenuItem("（还没有歌单 · 在底部音乐条「歌单」里新建）") { Enabled = false });
     }
 
+    private void FillTransitionMenu()
+    {
+        _transitionItem.DropDownItems.Clear();
+        if (GetSelection() is not (var scenario, { } activity, { } file) || scenario == null) return;
+        foreach (var (text, value) in new (string, TransitionStyle?)[]
+                 { ("默认（设置里的大屏过场）", null), ("直切", TransitionStyle.Cut), ("叠化", TransitionStyle.Dissolve), ("经黑场", TransitionStyle.DipToBlack) })
+        {
+            var item = new ToolStripMenuItem(text) { Checked = file.TransitionOverride == value };
+            item.Click += (_, _) =>
+            {
+                var old = file.TransitionOverride;
+                file.TransitionOverride = value;
+                if (!TrySave()) { file.TransitionOverride = old; return; }
+                _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.TransitionOverride), old?.ToString(), value?.ToString());
+                RefreshCardStyles();
+            };
+            _transitionItem.DropDownItems.Add(item);
+        }
+    }
+
     string? IActivityRowHost.MusicCueText(Activity activity) =>
         activity.MusicFadeOut ? "♪ 音乐淡出"
         : activity.MusicPlaylistId is { } id ? "♪ " + (Playlists?.Invoke().FirstOrDefault(p => p.Id == id)?.Name ?? "歌单已删除")
@@ -1295,6 +1320,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _addFileButton.Enabled = activity != null;
         _playModeButton.Enabled = activity != null;
         _musicCueItem.Enabled = activity != null;
+        _transitionItem.Enabled = file != null;
         _audioPropertiesButton.Enabled = file != null && file.Kind == MediaKind.Audio;
         _fadeButton.Enabled = file != null && file.Kind is MediaKind.Video or MediaKind.Audio;
         _stayDurationButton.Enabled = file != null && IsStayDurationApplicable(file);

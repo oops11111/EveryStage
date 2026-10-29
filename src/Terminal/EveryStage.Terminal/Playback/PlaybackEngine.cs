@@ -110,6 +110,10 @@ public sealed partial class PlaybackEngine : IDisposable
     /// when the cast switch declined the request).</summary>
     public event Action<MediaFile>? FileStarted;
 
+    /// <summary>Program only, raised synchronously just before the output switches to <c>file</c>
+    /// (after the cast switch allowed it): the transition layer captures the current picture here.</summary>
+    public event Action<MediaFile>? ProgramContentSwitching;
+
     /// <summary>Raised instead of <see cref="FileStarted"/> when a "点文件" request reached
     /// <see cref="PlayFile"/> but the cast switch was off (<see cref="OutputStateMachine.RequestLocalFilePlayback"/>
     /// returned false) — exists purely so the UI can acknowledge the click happened (README risk #9:
@@ -698,6 +702,10 @@ public sealed partial class PlaybackEngine : IDisposable
             PlaybackDeclinedByCastSwitch?.Invoke(file);
             return;
         }
+
+        // Program only: the picture is about to change — the transition layer freezes what is on the
+        // big screen now (before anything below touches the output) and reveals the new item when ready.
+        if (Channel == PlaybackChannel.Program) ProgramContentSwitching?.Invoke(file);
 
         // The previous document (PDF view, editor / slide-show session, captured frame) keeps drawing
         // until the next picture is ready; a next document releases it when its first frame is on screen,
