@@ -43,45 +43,39 @@ public sealed class SettingsPanel : UserControl
         _identity = identity;
         Dock = DockStyle.Fill;
 
-        // Page host only. The native tab header could not fit six tabs at the default window size (it
-        // fell back to scroll arrows) and its 3D frame can't be re-coloured (a white outline on the dark
-        // themes), so the tabs are PillButtons in the tab bar built below, like the 文件 page filters.
-        var tabs = new HeaderlessTabControl
-        {
-            Dock = DockStyle.Fill,
-            BackColor = ModernUi.Background,
-            ForeColor = ModernUi.Text,
-        };
-
         var settings = _settingsStore.Current;
+        var amberEffect = Color.FromArgb(243, 178, 76);
 
-        // --- 通用 ---
-        _castSwitchDefaultCheckbox = new CheckBox
+        // One scrolling page of sections (design): 外观 · 通用 · 输出与播放 · 网络与设备 · 诊断 · 关于.
+        // Each row: title + description on the left, its control(s) on the right, an effect tag
+        // (即时生效 / 保存后生效 / 重启后生效) beside the title.
+        var page = new FlowLayoutPanel
         {
-            Text = "终端机启动时，投屏开关默认开启",
-            AutoSize = true,
-            Location = new Point(16, 16),
-            Checked = settings.CastSwitchDefaultOn,
+            Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            BackColor = Color.Transparent, Padding = new Padding(0, 0, 0, 16),
         };
-        var themeLabel = new Label
+        var sections = new List<SettingsSection>();
+        SettingsSection Section(string title, string? effect = null, Color? effectColor = null)
         {
-            Text = "主题",
-            AutoSize = true,
-            Location = new Point(16, 84),
-            Font = new Font(ModernUi.UiFontSemibold, 10F),
-            ForeColor = ModernUi.Text,
+            var section = new SettingsSection(title, effect, effectColor ?? ModernUi.Muted);
+            sections.Add(section);
+            page.Controls.Add(section);
+            return section;
+        }
+        page.Resize += (_, _) =>
+        {
+            int width = Math.Max(LogicalToDeviceUnits(420), page.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
+            page.SuspendLayout();
+            foreach (var section in sections) section.FitToWidth(width);
+            page.ResumeLayout();
+            page.PerformLayout();
         };
+
+        // --- 外观 ---
         _themeComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Visible = false };
         _themeComboBox.Items.AddRange(new object[] { "白色", "黑色", "蓝色", "跟随系统" });
         _themeComboBox.SelectedIndex = Math.Clamp((int)settings.Theme, 0, _themeComboBox.Items.Count - 1);
-        var themeCards = new FlowLayoutPanel
-        {
-            Location = new Point(16, 112),
-            Size = new Size(570, 112),
-            WrapContents = false,
-            BackColor = Color.Transparent,
-            Margin = Padding.Empty,
-        };
+        var themeCards = new FlowLayoutPanel { Height = 112, WrapContents = true, BackColor = Color.Transparent, Margin = Padding.Empty };
         string[] themeNames = { "白色", "黑色", "蓝色", "跟随系统" };
         for (int i = 0; i < themeNames.Length; i++)
         {
@@ -91,242 +85,253 @@ public sealed class SettingsPanel : UserControl
                 foreach (Control control in themeCards.Controls) control.Invalidate();
             })
             {
-                // Four cards in the 570 px row (the fourth, 跟随系统, follows Windows' light/dark mode).
-                Size = new Size(132, 100),
-                Margin = new Padding(0, 0, 10, 0),
+                Size = new Size(148, 104),
+                Margin = new Padding(0, 0, 12, 0),
             };
             themeCards.Controls.Add(card);
         }
-        var generalNote = new Label
-        {
-            Text = "更改后重启生效；此项仅设置启动默认值，不改变当前开关。",
-            ForeColor = ModernUi.Muted,
-            AutoSize = true,
-            Location = new Point(16, 46),
-        };
-        var generalTab = new TabPage("通用");
+        var appearance = Section("外观", "即时生效", ModernUi.Accent);
+        appearance.AddBlock(themeCards);
+        appearance.AddNote("「跟随系统」在 Windows 浅色模式下使用白色，深色模式下使用黑色，切换系统模式时实时跟随。");
+        appearance.Controls.Add(_themeComboBox);
 
-        // 生效标识（对齐效果图）：页签条右侧图例（见下方 tabBar）+ 界面主题行「即时生效」徽标。颜色按真实语义：
-        // 蓝=即时、琥珀=保存后、灰=重启后（本页勾选项的“重启后生效”已在 generalNote 说明）。
-        var amberEffect = Color.FromArgb(243, 178, 76);
-        Label EffectDot(string text, Color dot, int x, int y) => new()
-        {
-            Text = "●  " + text, ForeColor = dot, AutoSize = true, BackColor = Color.Transparent,
-            Font = new Font(ModernUi.UiFont, 8.5F), Location = new Point(x, y),
-        };
-        var themeEffectBadge = EffectDot("即时生效", ModernUi.Accent, 470, 85);
+        // --- 通用 ---
+        _castSwitchDefaultCheckbox = new CheckBox { Text = "开启", AutoSize = true, Checked = settings.CastSwitchDefaultOn };
+        Section("通用").AddRow("启动时投屏开关默认开启", "只设置终端机启动时的默认值，不改变当前开关（当前开关在「设备」页和托盘菜单）",
+            "重启后生效", ModernUi.Muted, _castSwitchDefaultCheckbox);
 
-        generalTab.Controls.AddRange(new Control[]
-        {
-            _castSwitchDefaultCheckbox, generalNote, themeLabel, themeCards, _themeComboBox, themeEffectBadge,
-        });
-
-        // --- 显示 ---
-        var monitorLabel = new Label { Text = "扩展屏选择：", AutoSize = true, Location = new Point(16, 20) };
-        _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(16, 44), Width = 360 };
+        // --- 输出与播放 ---
+        _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300 };
         ModernUi.StyleComboBox(_monitorComboBox);
         PopulateMonitorComboBox(settings.PreferredMonitorDeviceName);
-        var displayNote = new Label
-        {
-            Text = "选择本身更改后需要重启终端机才能生效；但下面的显示器列表现在每次切换到本面板都会重新\n" +
-                   "枚举一次（见 Refresh_()），不再需要重启整个终端机主界面才能看到刚插拔的显示器。",
-            ForeColor = ModernUi.Muted,
-            AutoSize = true,
-            Location = new Point(16, 76),
-        };
-        var displayTab = new TabPage("显示");
-        displayTab.Controls.AddRange(new Control[] { monitorLabel, _monitorComboBox, displayNote });
-
-        // --- 播放行为 ---
-        _defaultStayDurationEnabledCheckbox = new CheckBox
-        {
-            Text = "为没有单独设置停留时长的文件启用默认停留时长",
-            AutoSize = true,
-            Location = new Point(16, 16),
-            Checked = settings.DefaultStayDurationSeconds.HasValue,
-        };
+        _defaultStayDurationEnabledCheckbox = new CheckBox { Text = "启用", AutoSize = true, Checked = settings.DefaultStayDurationSeconds.HasValue };
         _defaultStayDurationSeconds = new NumericUpDown
         {
-            Minimum = 1,
-            Maximum = 3600,
+            Minimum = 1, Maximum = 3600, Width = 70,
             Value = Math.Clamp(settings.DefaultStayDurationSeconds ?? 10, 1, 3600),
-            Location = new Point(36, 44),
-            Width = 80,
             Enabled = settings.DefaultStayDurationSeconds.HasValue,
         };
-        var secondsLabel = new Label { Text = "秒", AutoSize = true, Location = new Point(122, 47) };
+        var secondsLabel = new Label { Text = "秒", AutoSize = true, ForeColor = ModernUi.Muted };
         _defaultStayDurationEnabledCheckbox.CheckedChanged += (_, _) =>
             _defaultStayDurationSeconds.Enabled = _defaultStayDurationEnabledCheckbox.Checked;
-        var playbackNote = new Label
-        {
-            Text = "关闭时保留原有行为：没有单独设置停留时长的图片/文档会一直停留，直到手动切换到下一项。\n" +
-                   "单个文件自己设置的停留时长（活动面板里配置）始终优先于这里的默认值。立即生效，无需重启。",
-            ForeColor = ModernUi.Muted,
-            AutoSize = true,
-            Location = new Point(16, 80),
-        };
-        var playbackTab = new TabPage("播放行为");
-        playbackTab.Controls.AddRange(new Control[]
-        {
-            _defaultStayDurationEnabledCheckbox, _defaultStayDurationSeconds, secondsLabel, playbackNote,
-        });
+        var output = Section("输出与播放");
+        output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举", "重启后生效", ModernUi.Muted, _monitorComboBox);
+        output.AddRow("图片 / 文档默认停留时长", "没有单独设置停留时长的项目停留多久后进入下一项；关闭则一直停留到手动切换",
+            "保存后生效", amberEffect, _defaultStayDurationEnabledCheckbox, _defaultStayDurationSeconds, secondsLabel);
+        output.AddRow("PPT 没有扩展屏时", "原生放映（含动画）只在扩展屏上进行，避免占用本机屏幕；没有扩展屏时以静态幻灯片预览", null, null,
+            new Label { Text = "静态幻灯片", AutoSize = true, ForeColor = ModernUi.Text });
 
         // --- 网络与设备 ---
-        var deviceNameLabel = new Label { Text = "设备名称（其他设备发现/配对本机时看到的名字）：", AutoSize = true, Location = new Point(16, 20) };
-        _deviceNameTextBox = new TextBox { Text = _identity.DeviceName, Location = new Point(16, 44), Width = 280 };
-        var saveDeviceNameButton = new Button { Text = "保存设备名称", Location = new Point(304, 43), Width = 100 };
+        _deviceNameTextBox = new TextBox { Text = _identity.DeviceName, Width = 220 };
+        var saveDeviceNameButton = new RoundedActionButton { Text = "保存", Width = 72, Height = 30 };
         ModernUi.StyleButton(saveDeviceNameButton);
         saveDeviceNameButton.Click += OnSaveDeviceNameClick;
-        var networkNote = new Label
-        {
-            Text = "重命名会立即生效——下一次广播的beacon就会带上新名字，不需要重启。",
-            ForeColor = ModernUi.Muted,
-            AutoSize = true,
-            Location = new Point(16, 76),
-        };
-        var networkTab = new TabPage("网络与设备");
-        networkTab.Controls.AddRange(new Control[] { deviceNameLabel, _deviceNameTextBox, saveDeviceNameButton, networkNote });
-
-        // --- 关于 ---
-        var aboutLabel = new Label
-        {
-            Text = $"EveryStage 终端机\n\n设备ID：{_identity.DeviceId}\n\n" +
-                   "所有发现/配对/投屏数据仅在局域网内传输，不上传任何遥测或使用数据。",
-            AutoSize = true,
-            Location = new Point(16, 16),
-        };
-        var aboutTab = new TabPage("关于");
-        aboutTab.Controls.Add(aboutLabel);
+        Section("网络与设备").AddRow("设备名称", "投屏机列表中显示的名字；下一次广播就会带上新名字", "即时生效", ModernUi.Accent,
+            _deviceNameTextBox, saveDeviceNameButton);
 
         // --- 诊断 ---
-        _diagnosticsLabel = new Label { AutoSize = true, Location = new Point(16, 16) };
-        var refreshDiagnosticsButton = new Button { Text = "刷新诊断", Location = new Point(16, 204), Width = 100 };
+        _diagnosticsLabel = new Label { AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
+        var refreshDiagnosticsButton = new RoundedActionButton { Text = "刷新诊断", Width = 96, Height = 30 };
         ModernUi.StyleButton(refreshDiagnosticsButton);
         refreshDiagnosticsButton.Click += (_, _) => RefreshDiagnostics();
-        var exportLogsButton = new Button { Text = "导出日志...", Location = new Point(124, 204), Width = 100 };
+        var exportLogsButton = new RoundedActionButton { Text = "导出日志...", Width = 104, Height = 30 };
         ModernUi.StyleButton(exportLogsButton);
         exportLogsButton.Click += OnExportLogsClick;
-        var diagnosticsTab = new TabPage("诊断");
-        diagnosticsTab.Controls.AddRange(new Control[] { _diagnosticsLabel, refreshDiagnosticsButton, exportLogsButton });
+        var diagnostics = Section("诊断");
+        diagnostics.AddBlock(_diagnosticsLabel);
+        diagnostics.AddButtons(refreshDiagnosticsButton, exportLogsButton);
         RefreshDiagnostics();
 
-        tabs.TabPages.AddRange(new[] { generalTab, displayTab, playbackTab, networkTab, diagnosticsTab, aboutTab });
-        foreach (TabPage page in tabs.TabPages)
+        // --- 关于 ---
+        var openDataButton = new RoundedActionButton { Text = "打开数据目录", Width = 116, Height = 30 };
+        ModernUi.StyleButton(openDataButton);
+        openDataButton.Click += (_, _) =>
         {
-            page.BackColor = ModernUi.Background;
-            page.ForeColor = ModernUi.Text;
-            page.Padding = new Padding(2);
-            // The heading + tab bar leave less height than the old native tab header did; scroll, don't clip.
-            page.AutoScroll = true;
-        }
+            try { Process.Start(new ProcessStartInfo("explorer.exe", $"\"{DataDirectory.Root}\"") { UseShellExecute = true }); }
+            catch (Exception ex) { MessageBox.Show(this, $"无法打开数据目录：{ex.Message}", "打开失败", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
+        };
+        var about = Section("关于");
+        about.AddBlock(new Label
+        {
+            AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent,
+            Text = $"EveryStage 终端机 {Application.ProductVersion}\n设备 ID：{_identity.DeviceId}\n数据目录：{DataDirectory.Root}\n" +
+                   "所有发现 / 配对 / 投屏数据只在局域网内传输，不上传任何遥测或使用数据。",
+        });
+        about.AddButtons(openDataButton);
 
-        // Right-aligned rounded button with the save result beside it (reference); it used to be docked
-        // left and stretched to the bar's full height, which drew a square block.
+        // Right-aligned 保存设置 with the result beside it.
         var saveSettingsButton = new RoundedActionButton { Text = "保存设置", Width = 120, Height = 34, Margin = new Padding(0, 7, 0, 0) };
         ModernUi.StyleButton(saveSettingsButton, primary: true);
         saveSettingsButton.Click += OnSaveSettingsClick;
         _savedLabel = new Label { ForeColor = ModernUi.Success, AutoSize = true, Margin = new Padding(12, 16, 6, 0) };
-
-        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 50, BackColor = ModernUi.Background };
-        var bottomDivider = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = ModernUi.Border };
+        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 50, BackColor = Color.Transparent };
         var saveRow = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
             Margin = Padding.Empty, BackColor = Color.Transparent,
         };
-        saveRow.Controls.Add(_savedLabel);   // RightToLeft: first added is right-most.
-        saveRow.Controls.Add(saveSettingsButton);
+        saveRow.Controls.Add(saveSettingsButton);   // RightToLeft: first added is right-most.
+        saveRow.Controls.Add(_savedLabel);
         bottomBar.Controls.Add(saveRow);
-        bottomBar.Controls.Add(bottomDivider);
 
-        // --- 页头 + 页签条（对齐效果图）：设置 / 说明；胶囊页签 …… 生效图例 ---
-        var heading = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.Transparent, Padding = new Padding(4, 0, 0, 0) };
+        var heading = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
         heading.Controls.Add(new Label
         {
-            Text = "自定义终端的显示、播放和设备相关选项", Dock = DockStyle.Fill,
-            ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft,
+            Text = "设置", AutoSize = true, Location = new Point(0, 8), ForeColor = ModernUi.Text,
+            Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent,
         });
-        heading.Controls.Add(new Label
-        {
-            Text = "设置", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
-            Font = new Font(ModernUi.UiFontSemibold, 13F), TextAlign = ContentAlignment.MiddleLeft,
-        });
-
-        var tabBar = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top, Height = 50, ColumnCount = 2, RowCount = 1,
-            Padding = new Padding(2, 4, 2, 8), BackColor = Color.Transparent,
-        };
-        tabBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        tabBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        tabBar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        var tabPills = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
-            Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        // SelectedTab is still null before the control has a handle; the first page is the one shown.
-        int shownIndex = Math.Max(0, tabs.SelectedIndex);
-        foreach (TabPage page in tabs.TabPages)
-        {
-            var pill = new PillButton
-            {
-                Text = page.Text, AutoSize = true, Height = 36, Margin = new Padding(0, 0, 6, 0),
-                Selected = tabs.TabPages.IndexOf(page) == shownIndex, Tag = page,
-            };
-            pill.Click += (_, _) => tabs.SelectedTab = page;
-            tabPills.Controls.Add(pill);
-        }
-        tabs.SelectedIndexChanged += (_, _) =>
-        {
-            foreach (var pill in tabPills.Controls.OfType<PillButton>())
-            {
-                pill.Selected = pill.Tag == tabs.SelectedTab;
-                pill.Invalidate();
-            }
-        };
-        tabBar.Controls.Add(tabPills, 0, 0);
-        var legend = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
-            Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        foreach (var dot in new[]
-        {
-            EffectDot("重启后生效", ModernUi.Muted, 0, 0), EffectDot("保存后生效", amberEffect, 0, 0), EffectDot("即时生效", ModernUi.Accent, 0, 0),
-        })
-        {
-            dot.Margin = new Padding(14, 10, 0, 0);
-            legend.Controls.Add(dot);
-        }
-        tabBar.Controls.Add(legend, 1, 0);
-        // Narrow window: drop the legend rather than squeeze it — each setting row keeps its own badge.
-        tabBar.Resize += (_, _) =>
-            legend.Visible = tabPills.PreferredSize.Width + legend.Controls.Cast<Control>().Sum(c => c.PreferredSize.Width + c.Margin.Horizontal)
-                <= tabBar.ClientSize.Width - tabBar.Padding.Horizontal;
 
         // Dock order: the last Top control added sits highest, so heading goes in last.
-        Controls.Add(tabs);
+        Controls.Add(page);
         Controls.Add(bottomBar);
-        Controls.Add(tabBar);
         Controls.Add(heading);
     }
 
-    /// <summary>A TabControl used purely as a page host: answering TCM_ADJUSTRECT without shrinking the
-    /// rectangle gives the pages the whole client area, so the native tab header and its 3D frame —
-    /// neither of which can be re-coloured — never show.</summary>
-    private sealed class HeaderlessTabControl : TabControl
+    /// <summary>One settings section: a rounded surface card with a title (and optional effect tag),
+    /// then rows / blocks stacked top to bottom. Laid out by hand in <see cref="FitToWidth"/>.</summary>
+    private sealed class SettingsSection : Panel
     {
-        private const int TCM_ADJUSTRECT = 0x1328;
+        private readonly string _title;
+        private readonly string? _effect;
+        private readonly Color _effectColor;
+        private readonly List<(Control Item, int Kind)> _items = new(); // 0 block, 1 row, 2 note, 3 buttons
+        private readonly List<int> _dividers = new();
 
-        protected override void WndProc(ref Message m)
+        public SettingsSection(string title, string? effect, Color effectColor)
         {
-            if (m.Msg == TCM_ADJUSTRECT)
+            _title = title;
+            _effect = effect;
+            _effectColor = effectColor;
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw
+                | ControlStyles.SupportsTransparentBackColor | ControlStyles.UserPaint, true);
+            BackColor = Color.Transparent;
+            Margin = new Padding(0, 0, 0, 12);
+        }
+
+        private int S(int v) => LogicalToDeviceUnits(v);
+
+        public void AddBlock(Control control)
+        {
+            Controls.Add(control);
+            _items.Add((control, 0));
+        }
+
+        public void AddNote(string text) => AddBlockOf(new Label { Text = text, AutoSize = false, ForeColor = ModernUi.Muted, BackColor = Color.Transparent }, 2);
+
+        public void AddButtons(params Control[] buttons)
+        {
+            var row = new FlowLayoutPanel { WrapContents = false, BackColor = Color.Transparent, Height = 36, Margin = Padding.Empty };
+            foreach (var button in buttons) { button.Margin = new Padding(0, 0, 8, 0); row.Controls.Add(button); }
+            AddBlockOf(row, 3);
+        }
+
+        public void AddRow(string title, string description, string? effect, Color? effectColor, params Control[] controls) =>
+            AddBlockOf(new SettingRow(title, description, effect, effectColor ?? ModernUi.Muted, controls), 1);
+
+        private void AddBlockOf(Control control, int kind)
+        {
+            Controls.Add(control);
+            _items.Add((control, kind));
+        }
+
+        public void FitToWidth(int width)
+        {
+            Width = width;
+            int x = S(18), inner = width - S(36), y = S(48);
+            _dividers.Clear();
+            foreach (var (item, kind) in _items)
             {
-                m.Result = (IntPtr)1;
-                return;
+                switch (kind)
+                {
+                    case 1:
+                        if (y > S(48)) _dividers.Add(y);
+                        item.Bounds = new Rectangle(x, y, inner, item.Height);
+                        ((SettingRow)item).FitToWidth(inner);
+                        y += item.Height;
+                        break;
+                    case 2:
+                        item.Bounds = new Rectangle(x, y + S(4), inner, TextRenderer.MeasureText(item.Text, item.Font, new Size(inner, 0), TextFormatFlags.WordBreak).Height + S(4));
+                        y += item.Height + S(8);
+                        break;
+                    default:
+                        item.Location = new Point(x, y + S(4));
+                        if (kind == 3) item.Width = inner;
+                        if (item is FlowLayoutPanel { WrapContents: true } wrapping)
+                            wrapping.Size = new Size(inner, wrapping.GetPreferredSize(new Size(inner, 0)).Height);
+                        y += item.Height + S(12);
+                        break;
+                }
             }
-            base.WndProc(ref m);
+            Height = y + S(8);
+            Invalidate();
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            base.OnPaintBackground(e);
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var path = ActivityRowView.RoundedBox(new Rectangle(0, 0, Width - 1, Height - 1), S(10)))
+            using (var fill = new SolidBrush(ModernUi.Surface))
+            using (var border = new Pen(ModernUi.Mix(ModernUi.Surface, ModernUi.Border, 0.45f)))
+            {
+                g.FillPath(fill, path);
+                g.DrawPath(border, path);
+            }
+            using var titleFont = new Font(ModernUi.UiFontSemibold, 11.5F);
+            var titleSize = TextRenderer.MeasureText(_title, titleFont);
+            TextRenderer.DrawText(g, _title, titleFont, new Point(S(18), S(14)), ModernUi.Text);
+            if (_effect != null)
+                using (var effectFont = new Font(ModernUi.UiFont, 8.5F))
+                    TextRenderer.DrawText(g, "● " + _effect, effectFont, new Point(S(18) + titleSize.Width + S(6), S(18)), _effectColor);
+            using var divider = new Pen(ModernUi.Mix(ModernUi.Surface, ModernUi.Border, 0.35f));
+            foreach (int y in _dividers) g.DrawLine(divider, S(18), y, Width - S(18), y);
+        }
+    }
+
+    /// <summary>A settings row: title (+ effect tag) and a muted description on the left, controls
+    /// right-aligned on the right. Taller when the description wraps.</summary>
+    private sealed class SettingRow : Panel
+    {
+        private readonly Label _title;
+        private readonly Label _description;
+        private readonly Control[] _controls;
+
+        public SettingRow(string title, string description, string? effect, Color effectColor, Control[] controls)
+        {
+            BackColor = Color.Transparent;
+            _title = new Label { Text = title, AutoSize = true, ForeColor = ModernUi.Text, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 10F) };
+            _description = new Label { Text = description, AutoSize = false, ForeColor = ModernUi.Muted, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8.5F) };
+            Controls.Add(_title);
+            Controls.Add(_description);
+            if (effect != null)
+                Controls.Add(new Label { Text = "● " + effect, AutoSize = true, ForeColor = effectColor, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8F), Tag = "effect" });
+            _controls = controls;
+            Controls.AddRange(controls);
+            Height = 64;
+        }
+
+        private int S(int v) => LogicalToDeviceUnits(v);
+
+        public void FitToWidth(int width)
+        {
+            int gap = S(8), right = width;
+            int controlsWidth = _controls.Sum(c => c.Width + gap);
+            int textWidth = Math.Max(S(160), width - controlsWidth - S(24));
+            _title.Location = new Point(0, S(12));
+            if (Controls.Cast<Control>().FirstOrDefault(c => Equals(c.Tag, "effect")) is { } tag)
+                tag.Location = new Point(_title.Right + S(8), S(14));
+            int descriptionHeight = TextRenderer.MeasureText(_description.Text, _description.Font, new Size(textWidth, 0), TextFormatFlags.WordBreak).Height;
+            _description.Bounds = new Rectangle(0, _title.Bottom + S(2), textWidth, descriptionHeight);
+            Height = Math.Max(S(64), _description.Bottom + S(12));
+            int cy = Height / 2;
+            for (int i = _controls.Length - 1; i >= 0; i--)
+            {
+                var control = _controls[i];
+                right -= control.Width;
+                control.Location = new Point(right, cy - control.Height / 2);
+                right -= gap;
+            }
         }
     }
 

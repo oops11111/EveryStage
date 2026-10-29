@@ -23,65 +23,63 @@ public sealed class DevicesPanel : UserControl
     private readonly FlowLayoutPanel _deviceRows;
     private readonly Label _deviceCount;
     private readonly Label _emptyState;
-    private readonly GlassPanel _requestCard;
-    private readonly Label _requestLabel;
+    private readonly RequestCard _requestCard;
+    private readonly ToggleSwitch? _castSwitch;
+    private readonly EveryStage.Terminal.StateMachine.OutputStateMachine? _stateMachine;
     private PairingRequest? _displayedPairingRequest;
 
-    public DevicesPanel(PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog)
+    public DevicesPanel(PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog,
+        string? localName = null, EveryStage.Terminal.StateMachine.OutputStateMachine? stateMachine = null)
     {
         _pairedDevices = pairedDevices;
         _connectionLog = connectionLog;
+        _stateMachine = stateMachine;
         Dock = DockStyle.Fill;
 
-        // --- 页头（与文件/活动/设置页同款）---
-        var heading = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.Transparent, Padding = new Padding(4, 0, 0, 0) };
-        heading.Controls.Add(new Label
+        // --- 页头：设备 · 本机：名称 · ● 可被局域网发现 …… 投屏开关 ---
+        var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
+        var title = new Label { Text = "设备", AutoSize = true, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent };
+        var local = new Label { Text = localName == null ? "" : $"本机：{localName}", AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
+        var discoverable = new Label { Text = "● 可被局域网发现", AutoSize = true, ForeColor = ModernUi.Success, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9F) };
+        header.Controls.AddRange(new Control[] { title, local, discoverable });
+        Label? switchLabel = null;
+        if (stateMachine != null)
         {
-            Text = "管理已配对设备、信任状态与远程操作权限", Dock = DockStyle.Fill,
-            ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft,
-        });
-        heading.Controls.Add(new Label
+            _castSwitch = new ToggleSwitch { Checked = stateMachine.CastSwitchOn };
+            switchLabel = new Label { Text = "投屏开关", AutoSize = true, ForeColor = ModernUi.Text, BackColor = Color.Transparent };
+            _castSwitch.CheckedChanged += (_, _) => { if (stateMachine.CastSwitchOn != _castSwitch.Checked) stateMachine.SetCastSwitch(_castSwitch.Checked); };
+            stateMachine.CastSwitchChanged += OnCastSwitchChanged;
+            header.Controls.Add(_castSwitch);
+            header.Controls.Add(switchLabel);
+        }
+        header.Resize += (_, _) =>
         {
-            Text = "设备", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
-            Font = new Font(ModernUi.UiFontSemibold, 13F), TextAlign = ContentAlignment.MiddleLeft,
-        });
+            int cy = (header.ClientSize.Height - 6) / 2;
+            title.Location = new Point(0, cy - title.Height / 2);
+            local.Location = new Point(title.Right + 16, cy - local.Height / 2 + 2);
+            discoverable.Location = new Point(local.Right + 12, cy - discoverable.Height / 2 + 2);
+            if (_castSwitch != null && switchLabel != null)
+            {
+                _castSwitch.Location = new Point(header.ClientSize.Width - _castSwitch.Width, cy - _castSwitch.Height / 2);
+                switchLabel.Location = new Point(_castSwitch.Left - 8 - switchLabel.Width, cy - switchLabel.Height / 2);
+            }
+        };
 
-        // --- 配对请求 ---
-        var requestSection = new Panel { Dock = DockStyle.Top, Height = 104, Padding = new Padding(0, 6, 0, 10), BackColor = Color.Transparent };
-        var requestTitle = new Label
-        {
-            Dock = DockStyle.Top, Height = 28, Text = "配对请求", TextAlign = ContentAlignment.MiddleLeft,
-            Font = new Font(ModernUi.UiFontSemibold, 11F), ForeColor = ModernUi.Text,
-        };
-        _requestCard = new GlassPanel
-        {
-            Dock = DockStyle.Fill, CornerRadius = 12, Padding = new Padding(16, 0, 16, 0), GlassTint = ModernUi.Palette.GlassTint,
-        };
-        _requestLabel = new Label
-        {
-            Dock = DockStyle.Fill, Text = IdleRequestText,
-            ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
-        };
-        _requestCard.Controls.Add(_requestLabel);
-        requestSection.Controls.Add(_requestCard);
-        requestSection.Controls.Add(requestTitle);
+        // --- 配对请求卡片（有请求时放大显示配对码）---
+        _requestCard = new RequestCard { Dock = DockStyle.Top, Height = 48 };
+        var requestGap = new Panel { Dock = DockStyle.Top, Height = 16, BackColor = Color.Transparent };
 
-        // --- 已配对设备：卡片标题行 + 设备行列表 ---
-        var listCard = new GlassPanel
+        // --- 已配对设备：标题行 + 设备行 ---
+        var listHeader = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = Color.Transparent };
+        var listTitle = new Label
         {
-            Dock = DockStyle.Fill, CornerRadius = 12, Padding = new Padding(12, 6, 10, 10), GlassTint = ModernUi.Palette.GlassTint,
+            Text = "已配对设备", AutoSize = true, ForeColor = ModernUi.Text, BackColor = Color.Transparent,
+            Font = new Font(ModernUi.UiFontSemibold, 11.5F), Location = new Point(0, 6),
         };
-        var listHeader = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top, Height = 40, WrapContents = false, Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        listHeader.Controls.Add(new Label
-        {
-            Text = "已配对设备", AutoSize = true, ForeColor = ModernUi.Text,
-            Font = new Font(ModernUi.UiFontSemibold, 11F), Margin = new Padding(0, 9, 8, 0),
-        });
-        _deviceCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(0, 12, 0, 0) };
+        _deviceCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
+        listHeader.Controls.Add(listTitle);
         listHeader.Controls.Add(_deviceCount);
+        listHeader.Layout += (_, _) => _deviceCount.Location = new Point(listTitle.Right + 8, listTitle.Top + 4);
         _deviceRows = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill, AutoScroll = true, FlowDirection = FlowDirection.TopDown, WrapContents = false,
@@ -90,23 +88,34 @@ public sealed class DevicesPanel : UserControl
         _deviceRows.Resize += (_, _) => LayoutRows();
         _emptyState = new Label
         {
-            Text = "还没有已配对的设备\r\n其他设备发现本机并通过配对确认后，会出现在这里",
+            Text = "还没有已配对的设备\r\n投屏机发现本机并通过配对确认后，会出现在这里",
             Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = ModernUi.Muted,
             BackColor = Color.Transparent, Visible = false,
         };
-        listCard.Controls.Add(_deviceRows);
-        listCard.Controls.Add(_emptyState);
-        listCard.Controls.Add(listHeader);
 
-        // Dock order: the last Top control added sits highest, so heading goes in last.
-        Controls.Add(listCard);
-        Controls.Add(requestSection);
-        Controls.Add(heading);
+        // Dock order: the last Top control added sits highest, so the header goes in last.
+        Controls.Add(_deviceRows);
+        Controls.Add(_emptyState);
+        Controls.Add(listHeader);
+        Controls.Add(requestGap);
+        Controls.Add(_requestCard);
+        Controls.Add(header);
 
         Refresh_();
     }
 
-    private const string IdleRequestText = "○  暂无请求 · 其他设备请求配对时会显示在这里";
+    private void OnCastSwitchChanged(bool on)
+    {
+        if (_castSwitch == null || IsDisposed) return;
+        if (InvokeRequired) { BeginInvoke(() => OnCastSwitchChanged(on)); return; }
+        _castSwitch.Checked = on;
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && _stateMachine != null) _stateMachine.CastSwitchChanged -= OnCastSwitchChanged;
+        base.Dispose(disposing);
+    }
 
     /// <summary>Gives every row the list's width; the scrollbar's width is always reserved so its
     /// appearing can't change the width and re-trigger this.</summary>
@@ -115,7 +124,7 @@ public sealed class DevicesPanel : UserControl
         int width = Math.Max(LogicalToDeviceUnits(320),
             _deviceRows.Width - SystemInformation.VerticalScrollBarWidth - _deviceRows.Padding.Horizontal - 2);
         _deviceRows.SuspendLayout();
-        foreach (Control row in _deviceRows.Controls) row.Size = new Size(width, LogicalToDeviceUnits(72));
+        foreach (Control row in _deviceRows.Controls) row.Size = new Size(width, LogicalToDeviceUnits(60));
         _deviceRows.ResumeLayout();
         // Same stale-AutoScroll-range issue as ActivitiesPanel.LayoutRows: lay out again after resizing.
         _deviceRows.PerformLayout();
@@ -127,10 +136,8 @@ public sealed class DevicesPanel : UserControl
         ArgumentNullException.ThrowIfNull(request);
         _displayedPairingRequest = request;
         string code = request.VerificationCode.Length == 6 ? request.VerificationCode.Insert(3, " ") : request.VerificationCode;
-        _requestLabel.Text = $"●  {request.DeviceName}  ·  配对码 {code}  ·  等待确认";
-        _requestLabel.ForeColor = ModernUi.Warning;
-        _requestCard.GlassTint = ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Accent, 0.14f);
-        _requestCard.Invalidate();
+        _requestCard.Show(request.DeviceName, code);
+        _requestCard.Height = LogicalToDeviceUnits(96);
     }
 
     /// <summary>Clear the displayed request when it is resolved. A stale request cannot clear a newer one.</summary>
@@ -138,10 +145,8 @@ public sealed class DevicesPanel : UserControl
     {
         if (_displayedPairingRequest?.RequestId != requestId) return;
         _displayedPairingRequest = null;
-        _requestLabel.Text = IdleRequestText;
-        _requestLabel.ForeColor = ModernUi.Muted;
-        _requestCard.GlassTint = ModernUi.Palette.GlassTint;
-        _requestCard.Invalidate();
+        _requestCard.Show(null, null);
+        _requestCard.Height = LogicalToDeviceUnits(48);
     }
 
     // Until the permissions editor existed, the only way to change a paired device's trust/permission
@@ -212,9 +217,65 @@ public sealed class DevicesPanel : UserControl
         _deviceRows.ResumeLayout(true);
         LayoutRows();
 
-        _deviceCount.Text = $"共 {devices.Count} 台";
+        _deviceCount.Text = $"{devices.Count} 台";
         _emptyState.Visible = devices.Count == 0;
         _deviceRows.Visible = devices.Count > 0;
+    }
+
+    /// <summary>The 配对请求 card: an idle one-liner, or (while a request waits) the device name and the
+    /// big verification code to compare with the Caster. Accepting / refusing stays in the
+    /// confirmation dialog the Terminal opens for every request.</summary>
+    private sealed class RequestCard : Control
+    {
+        private string? _device;
+        private string? _code;
+
+        public RequestCard()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+                | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+        }
+
+        public void Show(string? device, string? code)
+        {
+            _device = device;
+            _code = code;
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            int S(int v) => LogicalToDeviceUnits(v);
+            bool active = _device != null;
+            using (var path = ActivityRowView.RoundedBox(new Rectangle(0, 0, Width - 1, Height - 1), S(10)))
+            {
+                using var fill = new SolidBrush(active ? ModernUi.Mix(ModernUi.Background, ModernUi.Accent, 0.14f) : ModernUi.Surface);
+                g.FillPath(fill, path);
+                using var pen = new Pen(active ? ModernUi.Accent : ModernUi.Mix(ModernUi.Surface, ModernUi.Border, 0.45f));
+                g.DrawPath(pen, path);
+            }
+            using var body = new Font(ModernUi.UiFont, 9.5F);
+            if (!active)
+            {
+                TextRenderer.DrawText(g, "○  暂无配对请求 · 投屏机请求配对时会显示在这里", body, new Rectangle(S(18), 0, Width - S(36), Height),
+                    ModernUi.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                return;
+            }
+            using var small = new Font(ModernUi.UiFontSemibold, 8.5F);
+            using var name = new Font(ModernUi.UiFontSemibold, 13F);
+            using var codeFont = new Font(ModernUi.UiFontSemibold, 24F);
+            TextRenderer.DrawText(g, "新的配对请求", small, new Point(S(20), S(18)), ModernUi.AccentText);
+            TextRenderer.DrawText(g, _device, name, new Rectangle(S(20), S(38), Width / 2 - S(20), S(28)), ModernUi.Text,
+                TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, "请在弹出的确认窗口中接受或拒绝", body, new Point(S(20), S(66)), ModernUi.Muted);
+            var codeSize = TextRenderer.MeasureText(_code, codeFont);
+            int codeX = Math.Max(Width / 2, Width - S(24) - codeSize.Width);
+            TextRenderer.DrawText(g, "核对投屏机上显示的数字", body, new Point(codeX, S(14)), ModernUi.Muted);
+            TextRenderer.DrawText(g, _code, codeFont, new Point(codeX, S(34)), ModernUi.AccentText);
+        }
     }
 
     /// <summary>
@@ -243,7 +304,7 @@ public sealed class DevicesPanel : UserControl
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
                 | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor | ControlStyles.Selectable, true);
             BackColor = Color.Transparent;
-            Margin = new Padding(0, 0, 0, 10);
+            Margin = new Padding(0, 0, 0, 6);
             TabStop = true;
             AccessibleName = device.DeviceName;
             // The table this replaced was keyboard-reachable; keep that: Tab to a row, then Enter/Delete.
@@ -304,16 +365,16 @@ public sealed class DevicesPanel : UserControl
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int w = Width, h = Height, cy = h / 2;
 
-            using (var path = ActivityRowView.RoundedBox(new Rectangle(0, 0, w - 1, h - 1), S(12)))
+            using (var path = ActivityRowView.RoundedBox(new Rectangle(0, 0, w - 1, h - 1), S(8)))
             {
-                using var fill = new SolidBrush(ModernUi.Background);
+                using var fill = new SolidBrush(ModernUi.Surface);
                 g.FillPath(fill, path);
-                using var border = new Pen(ModernUi.Border);
+                using var border = new Pen(ModernUi.Mix(ModernUi.Surface, ModernUi.Border, 0.45f));
                 g.DrawPath(border, path);
             }
 
             // Device icon tile.
-            var tile = new Rectangle(S(14), cy - S(22), S(44), S(44));
+            var tile = new Rectangle(S(12), cy - S(18), S(36), S(36));
             using (var path = ActivityRowView.RoundedBox(tile, S(10)))
             using (var fill = new SolidBrush(ActivityRowView.Blend(ModernUi.Background, ModernUi.Text, 0.06f)))
                 g.FillPath(fill, path);

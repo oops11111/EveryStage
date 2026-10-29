@@ -191,7 +191,7 @@ public sealed class MainWindow : GradientForm
         audioCard.Height = audioCard.CompactHeight;
         _previewDock.SetFooter(audioCard);
 
-        _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);
+        _devicesPanel = new DevicesPanel(pairedDevices, connectionLog, identity.DeviceName, stateMachine);
         _activitiesPanel = new ActivitiesPanel(
             scenarioStore, scenarioRepository, library, _preview, _fileOpLog, stateMachine)
         {
