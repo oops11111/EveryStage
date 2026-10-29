@@ -119,6 +119,9 @@ public sealed class FilesPanel : UserControl
     /// <summary>"停止输出": take the extended display off air (Preview is unaffected).</summary>
     public event Action? StopProgramRequested;
 
+    /// <summary>「加入歌单...」 on audio files: MainWindow opens the playlist window with them added.</summary>
+    public event Action<IReadOnlyList<MediaFile>>? AddToPlaylistRequested;
+
     /// <summary>Whether Program is currently on air — enables the context menu's "停止输出".</summary>
     public Func<bool>? IsProgramLive { get; set; }
 
@@ -292,35 +295,14 @@ public sealed class FilesPanel : UserControl
             FilePlayRequested?.Invoke(file); // internal Preview playback — never an external player
             _audioBar.RefreshLiveState();
         };
-        var audioTitleFont = new Font(ModernUi.UiFontSemibold, 10.5F);
-        var audioHeader = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Top, Height = TextRenderer.MeasureText("音频播放区 Ag", audioTitleFont).Height + 8,
-            FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
-            BackColor = Color.Transparent, Margin = Padding.Empty, Padding = new Padding(2, 2, 0, 0),
-        };
-        audioHeader.Controls.Add(new Label { Text = "音频播放区", AutoSize = true, ForeColor = ModernUi.Text, Font = audioTitleFont, Margin = new Padding(0, 0, 12, 0) });
-        audioHeader.Controls.Add(new Label { Text = "管理音频文件，用于背景音乐播放，可加入活动音轨", AutoSize = true, ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 9F), Margin = new Padding(0, 3, 0, 0) });
-        var audioCard = new GlassPanel
-        {
-            Dock = DockStyle.Bottom, Padding = new Padding(10, 4, 10, 8), CornerRadius = 10,
-            GlassTint = Color.FromArgb(190, 12, 29, 49),
-        };
-        audioCard.Controls.Add(_audioBar);
-        audioCard.Controls.Add(audioHeader);
-        // The bar picks its own height (one row, or two when narrow); the card wraps it.
-        void FitAudioCard() => audioCard.Height = audioCard.Padding.Vertical + audioHeader.Height + _audioBar.Height;
-        _audioBar.SizeChanged += (_, _) => FitAudioCard();
-        FitAudioCard();
-        var audioCardGap = new Panel { Dock = DockStyle.Bottom, Height = 8, BackColor = Color.Transparent };
 
         // Control.Controls.Add order determines Dock z-order for same-DockStyle siblings: the LAST
         // one added claims its edge first. The grid (Fill) goes first so it takes whatever is left;
         // the header claims the top, the audio card and its gap the bottom.
         Controls.Add(_listView);
         Controls.Add(header);
-        Controls.Add(audioCardGap);
-        Controls.Add(audioCard);
+        // No audio card here any more: background music has its own bar and playlists (MainWindow);
+        // audio files are reachable through the 音频 filter and join playlists from their menu.
 
         _emptyStateLabel = new Label
         {
@@ -457,6 +439,12 @@ public sealed class FilesPanel : UserControl
         menu.Items.Add(new ToolStripSeparator());
         var documentSettingsItem = new ToolStripMenuItem("文档播放设置...", null, (_, _) => EditDocumentSettings());
         menu.Items.Add(documentSettingsItem);
+        var addToPlaylistItem = new ToolStripMenuItem("加入背景音乐歌单...", null, (_, _) =>
+        {
+            var audio = _listView.SelectedItems.Cast<ListViewItem>().Select(i => i.Tag).OfType<MediaFile>().Where(f => f.Kind == MediaKind.Audio).ToList();
+            if (audio.Count > 0) AddToPlaylistRequested?.Invoke(audio);
+        });
+        menu.Items.Add(addToPlaylistItem);
         menu.Items.Add("加入流程...", null, OnAddToActivityClick);
         menu.Items.Add("从文件库移除", null, (_, _) => OnRemoveClick(this, EventArgs.Empty));
         menu.Items.Add(new ToolStripSeparator());
@@ -469,6 +457,7 @@ public sealed class FilesPanel : UserControl
         {
             stopOutputItem.Enabled = IsProgramLive?.Invoke() == true;
             documentSettingsItem.Enabled = _contextFile?.Kind == MediaKind.Document;
+            addToPlaylistItem.Visible = _contextFile?.Kind == MediaKind.Audio;
             menu.BackColor = ModernUi.Surface;
             menu.ForeColor = ModernUi.Text;
             foreach (ToolStripItem item in menu.Items)

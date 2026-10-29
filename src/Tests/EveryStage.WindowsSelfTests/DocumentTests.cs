@@ -94,6 +94,18 @@ internal static class DocumentTests
         CaptureMainWindow(window, dir);
         window.Close();
         Console.WriteLine("PASS: main window starts, lays out and closes with the document controls");
+
+        // Background-music playlists persist (mode, tracks, startup flag, mixer settings).
+        string musicPath = Path.Combine(dir, "music.json");
+        var music = new MusicLibraryStore(musicPath);
+        music.Library.Playlists.Add(new Playlist { Name = "开场歌单", Tracks = { "a.mp3", "b.mp3" }, Mode = PlaylistMode.Shuffle, AutoPlayOnStartup = true });
+        music.Library.Volume = 0.5f;
+        music.Library.DuckForVideo = false;
+        music.Save();
+        var reloaded = new MusicLibraryStore(musicPath).Library;
+        Require(reloaded.Playlists.Single() is { Name: "开场歌单", Mode: PlaylistMode.Shuffle, AutoPlayOnStartup: true, Tracks.Count: 2 }
+            && Math.Abs(reloaded.Volume - 0.5f) < 0.001 && !reloaded.DuckForVideo, "Playlists did not round-trip.");
+        Console.WriteLine("PASS: background-music playlists persist");
     }
 
     /// <summary>Renders every page in each theme at a large and a small window size into

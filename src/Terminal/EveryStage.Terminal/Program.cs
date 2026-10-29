@@ -221,6 +221,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _deviceCastController?.ResizeDeviceSurface(w, h);
         };
         _mainWindow.Show();
+        _mainWindow.StartBackgroundMusic();
 
         _tray = new TrayIconController(_stateMachine);
         _tray.ExitRequested += OnExitRequested;

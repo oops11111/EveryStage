@@ -41,6 +41,9 @@ public sealed class MainWindow : GradientForm
     private readonly Panel _panelHost;
     private readonly SharedPreviewDock _previewDock;
     private readonly Panel _rail;
+    private readonly MusicLibraryStore _musicStore;
+    private readonly MusicChannel _music;
+    private readonly MusicBar _musicBar;
     private readonly Panel _monitorColumn;
     private readonly RoundedActionButton _expandMonitorButton;
     private bool _monitorCollapsed;
@@ -187,9 +190,18 @@ public sealed class MainWindow : GradientForm
 
         // Background-music card under the 大屏 section: a second view of the file page's audio bar, so
         // the same track can be controlled from every page. Shown while the column has room for it.
-        var audioCard = new AudioSidebarCard(_filesPanel.AudioBar) { Compact = true };
-        audioCard.Height = audioCard.CompactHeight;
-        _previewDock.SetFooter(audioCard);
+        // Background music: its own channel and the mini bar along the bottom of every page.
+        _musicStore = new MusicLibraryStore();
+        _music = new MusicChannel(_musicStore)
+        {
+            // Give way while the big screen plays video with sound (or audio).
+            ShouldDuck = () => _stateMachine.State == OutputState.Active && _playback is { State: PlaybackChannelState.Playing, Muted: false } program
+                && (program.CurrentVideoHasAudio || program.CurrentFile?.Kind == MediaKind.Audio),
+        };
+        _musicBar = new MusicBar(_music) { Dock = DockStyle.Bottom };
+        _musicBar.PlaylistsRequested += () => OpenPlaylists();
+        _contentHost.Controls.Add(_musicBar);
+        _filesPanel.AddToPlaylistRequested += files => OpenPlaylists(files.Select(f => f.SourcePath).ToList());
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog, identity.DeviceName, stateMachine);
         _activitiesPanel = new ActivitiesPanel(
@@ -303,6 +315,17 @@ public sealed class MainWindow : GradientForm
 
     public void UpdateDeviceCast(string? deviceName, bool connected, bool onProgram)
         => _previewDock.UpdateDeviceCast(deviceName, connected, onProgram);
+
+    /// <summary>Starts the playlist marked 「启动后自动播放」 (called once by the application at startup).</summary>
+    public void StartBackgroundMusic() => _music.AutoPlayOnStartup();
+
+    /// <summary>The 「背景音乐歌单」 window; <paramref name="add"/> are added to the selected playlist first.</summary>
+    private void OpenPlaylists(IReadOnlyList<string>? add = null)
+    {
+        using var dialog = new PlaylistDialog(_music, _library);
+        if (add is { Count: > 0 }) dialog.AddTracks(add);
+        dialog.ShowDialog(this);
+    }
 
     /// <summary>Flat page background (the design has no gradient behind the pages).</summary>
     protected override void OnPaintBackground(PaintEventArgs e)
@@ -563,6 +586,7 @@ public sealed class MainWindow : GradientForm
             // Preview engine first (it joins its playback threads), then the surface it presents through.
             _preview.Dispose();
             _previewVideoSurface?.Dispose();
+            _music.Dispose();
 
             // ShowPanel() only ever keeps the *currently active* panel inside _contentHost.Controls
             // (Clear() detaches the rest without disposing them) — the inactive three would
