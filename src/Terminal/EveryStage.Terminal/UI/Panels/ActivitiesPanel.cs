@@ -50,8 +50,6 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     private readonly FlowLayoutPanel _activityRows;
     private readonly Label _activityCount;
     private readonly Label _emptyState;
-    private readonly RoundedActionButton _expandAllButton;
-    private readonly RoundedActionButton _saveButton;
     private readonly System.Windows.Forms.Timer _saveFeedbackTimer;
 
     /// <summary>Every selection-dependent edit, opened from the list header's「编辑 ▾」and as the
@@ -74,15 +72,25 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     private readonly ToolStripMenuItem _moveUpButton;
     private readonly ToolStripMenuItem _moveDownButton;
 
-    // 播控条（效果图底部）: 播控方式 · 当前 · 上一项 / 播放/切换 / 下一项 · 下一项.
-    private readonly ComboBox _playModeCombo;
-    private readonly Label _currentLabel;
-    private readonly Label _nextLabel;
-    private readonly RoundedActionButton _previousActivityButton;
-    private readonly RoundedActionButton _playSwitchButton;
-    private readonly RoundedActionButton _nextActivityButton;
+    // 「下一项」 run controls: shown in MainWindow's 监看 column while this page is visible.
+    private readonly Panel _runControls;
+    private readonly Label _nextName;
+    private readonly RoundedActionButton _runNextButton;
+    private readonly RoundedActionButton _runPreviousButton;
+    private readonly RoundedActionButton _runPreviewButton;
+    private readonly System.Windows.Forms.Timer _liveTimer;
+    private MediaFile? _lastLiveFile;
     private readonly ToolTip _toolTip = new();
-    private bool _updatingPlaybar;
+
+    /// <summary>The engine that drives the big screen (null while no extended display is bound). The
+    /// run sheet's 「大屏播放中 / 下一项 / 已播」 follow it, or the Preview engine when it is null.</summary>
+    public Func<PlaybackEngine?>? ProgramEngine { get; set; }
+
+    /// <summary>Run this item now: MainWindow puts it on the big screen (or in Preview without one).</summary>
+    public event Action<Activity, int>? RunRequested;
+
+    /// <summary>「下一项 ▶」 and friends, for MainWindow's 监看 column.</summary>
+    public Control RunControls => _runControls;
 
     /// <summary>Row thumbnails, keyed by kind + source path, built off the UI thread by
     /// <see cref="FilesPanel.BuildThumbnail"/> (the same readers and fallback tiles the 文件 page uses).</summary>
@@ -118,64 +126,65 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         Dock = DockStyle.Fill;
         EnsureAtLeastOneScenario();
 
-        // --- 页头（对齐效果图，与文件页同款）---
-        var heading = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.Transparent, Padding = new Padding(4, 0, 0, 0) };
-        heading.Controls.Add(new Label
-        {
-            Text = "管理活动方案，按顺序播放多媒体内容", Dock = DockStyle.Fill,
-            ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft,
-        });
-        heading.Controls.Add(new Label
-        {
-            Text = "活动", Dock = DockStyle.Top, Height = 22, ForeColor = ModernUi.Text,
-            Font = new Font(ModernUi.UiFontSemibold, 13F), TextAlign = ContentAlignment.MiddleLeft,
-        });
-
-        // --- 方案工具栏：当前方案 ▾ …… ＋新建方案 / 保存 / 另存为 / 删除 ---
-        var scenarioBar = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top, Height = 50, ColumnCount = 2, RowCount = 1,
-            Padding = new Padding(2, 4, 2, 6), BackColor = Color.Transparent,
-        };
-        scenarioBar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        scenarioBar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        scenarioBar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        var scenarioPicker = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
-            Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        scenarioPicker.Controls.Add(new Label { Text = "当前方案", AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(2, 11, 10, 0) });
-        _scenarioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200, Margin = new Padding(0, 6, 0, 0) };
+        // --- 页头：流程 · 方案 [▾] · N 个环节 …… ＋ 环节 · ＋ 添加文件 · ⋯ ---
+        var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
+        var title = new Label { Text = "流程", AutoSize = true, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent };
+        var scenarioLabel = new Label { Text = "方案", AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
+        _scenarioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
         ModernUi.StyleComboBox(_scenarioCombo);
         _scenarioCombo.SelectedIndexChanged += OnScenarioComboChanged;
-        scenarioPicker.Controls.Add(_scenarioCombo);
-        scenarioBar.Controls.Add(scenarioPicker, 0, 0);
-
-        var scenarioActions = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
-            Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        // RightToLeft flow: the first button added ends up right-most (删除), matching the mockup's order.
-        scenarioActions.Controls.Add(ActionButton("删除", OnDeleteScenario, width: 64));
-        scenarioActions.Controls.Add(ActionButton("另存为", OnSaveAsScenario, width: 76));
-        _saveButton = ActionButton("保存", OnSaveScenario, width: 84);
-        scenarioActions.Controls.Add(_saveButton);
-        scenarioActions.Controls.Add(ActionButton("＋ 新建方案", OnNewScenario, primary: true, width: 104));
-        scenarioBar.Controls.Add(scenarioActions, 1, 0);
+        _activityCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
         _saveFeedbackTimer = new System.Windows.Forms.Timer { Interval = 2500 };
-        _saveFeedbackTimer.Tick += (_, _) => { _saveFeedbackTimer.Stop(); _saveButton.Text = "保存"; };
+        _saveFeedbackTimer.Tick += (_, _) => { _saveFeedbackTimer.Stop(); UpdateCountLabel(); };
+        var addSectionButton = ActionButton("＋ 环节", OnNewActivity, width: 84);
+        var addFileButton = ActionButton("＋ 添加文件", OnAddFile, width: 104);
+        var scenarioMenu = new ContextMenuStrip { ShowImageMargin = false, BackColor = ModernUi.Surface, ForeColor = ModernUi.Text, Renderer = new ThemedMenuRenderer() };
+        scenarioMenu.Items.Add("新建方案...", null, (_, _) => OnNewScenario());
+        scenarioMenu.Items.Add("保存方案", null, (_, _) => OnSaveScenario());
+        scenarioMenu.Items.Add("方案另存为...", null, (_, _) => OnSaveAsScenario());
+        scenarioMenu.Items.Add("删除方案", null, (_, _) => OnDeleteScenario());
+        scenarioMenu.Items.Add(new ToolStripSeparator());
+        var expandAllItem = new ToolStripMenuItem("全部展开 / 收起", null, (_, _) => OnToggleExpandAll());
+        scenarioMenu.Items.Add(expandAllItem);
+        scenarioMenu.Opening += (_, _) =>
+        {
+            scenarioMenu.BackColor = ModernUi.Surface;
+            foreach (ToolStripItem item in scenarioMenu.Items) item.ForeColor = ModernUi.Text;
+            expandAllItem.Text = CurrentScenario?.Activities.Any(a => !a.IsCollapsed) == true ? "全部收起" : "全部展开";
+        };
+        RoundedActionButton? moreButton = null;
+        moreButton = ActionButton("⋯", () => scenarioMenu.Show(moreButton!, new Point(0, moreButton!.Height)), width: 40);
+        _toolTip.SetToolTip(moreButton, "方案：新建 / 保存 / 另存为 / 删除；全部展开或收起");
+        _toolTip.SetToolTip(addFileButton, "从文件库添加到所选环节");
+        header.Controls.AddRange(new Control[] { title, scenarioLabel, _scenarioCombo, _activityCount, addSectionButton, addFileButton, moreButton });
+        header.Resize += (_, _) =>
+        {
+            int cy = (header.ClientSize.Height - 6) / 2, gap = 10;
+            title.Location = new Point(0, cy - title.Height / 2);
+            scenarioLabel.Location = new Point(title.Right + 16, cy - scenarioLabel.Height / 2);
+            int right = header.ClientSize.Width;
+            foreach (var button in new[] { moreButton, addFileButton, addSectionButton })
+            {
+                right -= button.Width;
+                button.Location = new Point(right, cy - button.Height / 2);
+                right -= gap;
+            }
+            int comboLeft = scenarioLabel.Right + 8;
+            _scenarioCombo.Width = Math.Clamp(right - comboLeft - _activityCount.PreferredWidth - 2 * gap, 120, 240);
+            _scenarioCombo.Location = new Point(comboLeft, cy - _scenarioCombo.Height / 2);
+            _activityCount.Location = new Point(_scenarioCombo.Right + gap, cy - _activityCount.Height / 2);
+            _activityCount.Visible = _activityCount.Right <= right;
+        };
 
         // --- 编辑菜单：「编辑 ▾」按钮与行/文件的右键菜单共用同一个菜单 ---
         // These used to be two always-visible rows of 14 buttons above the list, which the reference
         // design doesn't have. Each item's enabled state still comes from UpdateButtonStates, and each
         // still calls the exact same handler it did as a button.
-        _playSelectedItem = new ToolStripMenuItem("▶ 播放所选") { Enabled = false };
+        _playSelectedItem = new ToolStripMenuItem("▶ 从这里开始播") { Enabled = false };
         _playSelectedItem.Click += (_, _) => PlaySelectedActivity();
-        _renameActivityItem = new ToolStripMenuItem("重命名活动...") { Enabled = false };
+        _renameActivityItem = new ToolStripMenuItem("重命名环节...") { Enabled = false };
         _renameActivityItem.Click += (_, _) => OnRenameActivity();
-        _deleteActivityItem = new ToolStripMenuItem("删除活动") { Enabled = false };
+        _deleteActivityItem = new ToolStripMenuItem("删除环节") { Enabled = false };
         _deleteActivityItem.Click += (_, _) => OnDeleteActivity();
         _addFileButton = new ToolStripMenuItem("添加文件...") { Enabled = false };
         _addFileButton.Click += (_, _) => OnAddFile();
@@ -283,45 +292,20 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         // Never shown: it is only the selection/model adapter behind the ActivityRowView list below.
         _tree.Visible = false;
 
-        // --- 活动节目单卡片：标题行（活动节目单 · 共 N 项 …… ＋新建活动 / 编辑 ▾ / 展开全部）+ 行列表 ---
-        var programCard = new GlassPanel
+        // --- 列标题 + 节目单 ---
+        var columnHeader = new Control { Dock = DockStyle.Top, Height = 26, BackColor = Color.Transparent };
+        columnHeader.Paint += (_, e) =>
         {
-            Dock = DockStyle.Fill, CornerRadius = 12, Padding = new Padding(12, 6, 10, 10),
-            GlassTint = ModernUi.Palette.GlassTint,
+            var c = ActivityRowView.ColumnsFor(columnHeader.Width - SystemInformation.VerticalScrollBarWidth - 2, LogicalToDeviceUnits);
+            using var font = new Font(ModernUi.UiFont, 8.5F);
+            void Draw(string text, int x) => TextRenderer.DrawText(e.Graphics, text, font, new Point(x, (columnHeader.Height - font.Height) / 2), ModernUi.Muted);
+            Draw("序号", c.Number);
+            Draw("画面", c.Thumb);
+            Draw("名称", c.Name);
+            if (c.Wide) { Draw("时长", c.Duration); Draw("结束后", c.After); }
+            Draw("状态", c.Status);
         };
-        var listHeader = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top, Height = 42, ColumnCount = 2, RowCount = 1,
-            Margin = Padding.Empty, Padding = Padding.Empty, BackColor = Color.Transparent,
-        };
-        listHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        listHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        listHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        var listTitle = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
-            Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        listTitle.Controls.Add(new Label
-        {
-            Text = "活动节目单", AutoSize = true, ForeColor = ModernUi.Text,
-            Font = new Font(ModernUi.UiFontSemibold, 11F), Margin = new Padding(0, 9, 8, 0),
-        });
-        _activityCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(0, 12, 0, 0) };
-        listTitle.Controls.Add(_activityCount);
-        listHeader.Controls.Add(listTitle, 0, 0);
-        var listActions = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
-            Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        _expandAllButton = ActionButton("展开全部 ▾", OnToggleExpandAll, width: 96, height: 30);
-        listActions.Controls.Add(_expandAllButton);
-        RoundedActionButton? editButton = null;
-        editButton = ActionButton("编辑 ▾", () => _editMenu.Show(editButton!, new Point(0, editButton!.Height)), width: 76, height: 30);
-        listActions.Controls.Add(editButton);
-        listActions.Controls.Add(ActionButton("＋ 新建活动", OnNewActivity, width: 100, height: 30));
-        listHeader.Controls.Add(listActions, 1, 0);
+        columnHeader.Resize += (_, _) => columnHeader.Invalidate();
 
         _activityRows = new FlowLayoutPanel
         {
@@ -329,73 +313,60 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             AutoScroll = true,
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
-            Padding = new Padding(0, 2, 0, 0),
+            Padding = new Padding(0, 0, 0, 12),
             BackColor = Color.Transparent,
         };
         _activityRows.Resize += (_, _) => LayoutRows();
         _emptyState = new Label
         {
-            Text = "这个方案还没有活动\r\n点右上角「＋ 新建活动」开始编排节目单",
+            Text = "这个方案还没有环节\r\n点右上角「＋ 环节」开始编排流程",
             Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = ModernUi.Muted,
             BackColor = Color.Transparent, Visible = false,
         };
-        programCard.Controls.Add(_activityRows);
-        programCard.Controls.Add(_emptyState);
-        programCard.Controls.Add(listHeader);
 
-        // --- 播控条：播控方式 ▾ · 当前 …… ‹ 上一项 / ▶ 播放/切换 / 下一项 › · 下一项 ---
-        var playbar = new TableLayoutPanel
+        // --- 下一项 run controls (hosted by MainWindow's 监看 column) ---
+        _runControls = new Panel { BackColor = Color.Transparent, Height = 128 };
+        var nextCaption = new Badge("下一项");
+        _nextName = new Label { ForeColor = ModernUi.Text, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9.5F) };
+        _runNextButton = ActionButton("下一项  ▶", GoNext, primary: true, height: 52);
+        _runNextButton.Font = new Font(ModernUi.UiFontSemibold, 13F);
+        _runPreviousButton = ActionButton("◀ 上一项", GoPrevious, height: 34);
+        _runPreviewButton = ActionButton("预览下一项", PreviewNext, height: 34);
+        _toolTip.SetToolTip(_runNextButton, "把下一项放到大屏（空格键）");
+        _toolTip.SetToolTip(_runPreviousButton, "回到上一项");
+        _toolTip.SetToolTip(_runPreviewButton, "先在预览里看下一项，不上大屏");
+        _runControls.Controls.AddRange(new Control[] { nextCaption, _nextName, _runNextButton, _runPreviousButton, _runPreviewButton });
+        _runControls.Layout += (_, _) =>
         {
-            Dock = DockStyle.Bottom, Height = 52, ColumnCount = 4, RowCount = 1,
-            Padding = new Padding(2, 10, 2, 2), BackColor = Color.Transparent,
+            int w = _runControls.ClientSize.Width, s6 = LogicalToDeviceUnits(6), line = LogicalToDeviceUnits(22);
+            int badge = nextCaption.PreferredWidth;
+            nextCaption.Bounds = new Rectangle(0, (line - LogicalToDeviceUnits(18)) / 2, badge, LogicalToDeviceUnits(18));
+            _nextName.Bounds = new Rectangle(badge + s6, 0, Math.Max(1, w - badge - s6), line);
+            _runNextButton.Bounds = new Rectangle(0, line + s6, w, LogicalToDeviceUnits(52));
+            int half = (w - LogicalToDeviceUnits(8)) / 2, y = _runNextButton.Bottom + s6;
+            _runPreviousButton.Bounds = new Rectangle(0, y, half, LogicalToDeviceUnits(34));
+            _runPreviewButton.Bounds = new Rectangle(half + LogicalToDeviceUnits(8), y, w - half - LogicalToDeviceUnits(8), LogicalToDeviceUnits(34));
+            int height = _runPreviousButton.Bottom;
+            if (_runControls.Height != height) _runControls.Height = height;
         };
-        playbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        playbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-        playbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        playbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        playbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
-        var modePicker = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
-            Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        modePicker.Controls.Add(new Label { Text = "播控方式", AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(0, 10, 8, 0) });
-        // Edits the 当前 activity's DefaultPlayMode — the same field (and the same log + save) as
-        // 编辑 ▾ → 播放方式... with an activity selected; per-file overrides stay in that dialog.
-        _playModeCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120, Margin = new Padding(0, 5, 0, 0) };
-        _playModeCombo.Items.AddRange(new object[] { "顺序自动", "手动点选" });
-        ModernUi.StyleComboBox(_playModeCombo);
-        _playModeCombo.SelectedIndexChanged += (_, _) => OnPlaybarPlayModeChanged();
-        modePicker.Controls.Add(_playModeCombo);
-        playbar.Controls.Add(modePicker, 0, 0);
-        _currentLabel = new Label
-        {
-            Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = ModernUi.Text, Margin = new Padding(16, 0, 8, 0),
-        };
-        playbar.Controls.Add(_currentLabel, 1, 0);
-        var transport = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = false,
-            Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        _previousActivityButton = ActionButton("‹  上一项", () => StepActivity(-1), width: 84);
-        _playSwitchButton = ActionButton("▶  播放/切换", PlayOrSwitch, primary: true, width: 108);
-        _nextActivityButton = ActionButton("下一项  ›", () => StepActivity(1), width: 84);
-        transport.Controls.AddRange(new Control[] { _previousActivityButton, _playSwitchButton, _nextActivityButton });
-        playbar.Controls.Add(transport, 2, 0);
-        _nextLabel = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = new Padding(10, 12, 0, 0) };
-        playbar.Controls.Add(_nextLabel, 3, 0);
-        // Too narrow for "下一项：…" as well → drop it rather than squeeze 当前 into an ellipsis.
-        playbar.Resize += (_, _) => _nextLabel.Visible = playbar.Width >= LogicalToDeviceUnits(760);
-        _toolTip.SetToolTip(_playSwitchButton, "播放所选活动或文件；正在播放时切换到所选项");
 
-        // Dock order: the last Top control added sits highest, so heading goes in last.
-        Controls.Add(programCard);
+        // Repaint when what is live changes (Program advances on its own, or output stops).
+        _liveTimer = new System.Windows.Forms.Timer { Interval = 400 };
+        _liveTimer.Tick += (_, _) =>
+        {
+            var live = LiveEngine?.CurrentFile;
+            if (ReferenceEquals(live, _lastLiveFile)) return;
+            _lastLiveFile = live;
+            RefreshCardStyles();
+        };
+        _liveTimer.Start();
+
+        // Dock order: the last Top control added sits highest, so the header goes in last.
+        Controls.Add(_activityRows);
+        Controls.Add(_emptyState);
         Controls.Add(_tree);
-        Controls.Add(playbar);
-        Controls.Add(scenarioBar);
-        Controls.Add(heading);
+        Controls.Add(columnHeader);
+        Controls.Add(header);
 
         if (_playback != null) _playback.FileStarted += OnFileStarted;
         _stateMachine.StateChanged += OnStateChanged;
@@ -826,19 +797,17 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         SelectFileNode(activity, file);
     }
 
+    /// <summary>Double-click: run from this item (an activity node runs from its first item).</summary>
     private void OnNodeDoubleClick(object? sender, TreeNodeMouseClickEventArgs e)
     {
-        var scenario = CurrentScenario;
-        if (scenario == null || _playback == null) return;
-
         if (e.Node.Tag is Activity activity)
         {
-            if (activity.Files.Count > 0) _playback.RequestPlay(activity, 0);
+            if (FirstRunnable(activity, 0) is int first) RunRequested?.Invoke(activity, first);
         }
         else if (e.Node.Tag is MediaFile file && e.Node.Parent?.Tag is Activity owningActivity)
         {
             int index = owningActivity.Files.IndexOf(file);
-            if (index >= 0) _playback.RequestPlay(owningActivity, index);
+            if (index >= 0) RunRequested?.Invoke(owningActivity, index);
         }
     }
 
@@ -898,22 +867,12 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     private void RefreshCardStyles()
     {
         foreach (Control row in _activityRows.Controls) row.Invalidate();
-        UpdatePlaybar();
+        UpdateRunControls();
     }
 
     private void PlaySelectedActivity()
     {
-        if (_playback == null || _tree.SelectedNode == null) return;
-        var node = _tree.SelectedNode;
-        if (node.Tag is Activity activity)
-        {
-            if (activity.Files.Count > 0) _playback.RequestPlay(activity, 0);
-        }
-        else if (node.Tag is MediaFile file && node.Parent?.Tag is Activity owningActivity)
-        {
-            int index = owningActivity.Files.IndexOf(file);
-            if (index >= 0) _playback.RequestPlay(owningActivity, index);
-        }
+        if (_tree.SelectedNode is { } node) OnNodeDoubleClick(this, new TreeNodeMouseClickEventArgs(node, MouseButtons.Left, 2, 0, 0));
     }
 
     internal void RefreshTheme() => RefreshTree();
@@ -943,12 +902,132 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         return null;
     }
 
-    private Activity? PlayingActivity => _playback?.CurrentFile != null ? _playback.CurrentActivity : null;
+    /// <summary>The engine whose current item is 「大屏播放中」: Program when bound, else Preview.</summary>
+    private PlaybackEngine? LiveEngine => ProgramEngine?.Invoke() ?? _playback;
+
+    /// <summary>Every runnable item of the current scenario in run order (background music is
+    /// layered under the show and never becomes 「下一项」).</summary>
+    private List<(Activity Activity, int Index)> RunOrder()
+    {
+        var order = new List<(Activity, int)>();
+        if (CurrentScenario is not { } scenario) return order;
+        foreach (var activity in scenario.Activities)
+            for (int i = 0; i < activity.Files.Count; i++)
+                if (!activity.Files[i].IsBackgroundAudio) order.Add((activity, i));
+        return order;
+    }
+
+    private static int? FirstRunnable(Activity activity, int from)
+    {
+        for (int i = from; i < activity.Files.Count; i++)
+            if (!activity.Files[i].IsBackgroundAudio) return i;
+        return null;
+    }
+
+    /// <summary>Position of the live item in <see cref="RunOrder"/>, or -1.</summary>
+    private int LivePosition(List<(Activity Activity, int Index)> order)
+    {
+        var live = LiveEngine is { State: not PlaybackChannelState.Idle } engine ? engine.CurrentFile : null;
+        if (live == null) return -1;
+        return order.FindIndex(o => ReferenceEquals(o.Activity.Files[o.Index], live));
+    }
+
+    /// <summary>「下一项」: the item after the live one; with nothing live, the selected item (or the
+    /// first of the selected section), else the very first item.</summary>
+    private int NextPosition(List<(Activity Activity, int Index)> order)
+    {
+        int live = LivePosition(order);
+        if (live >= 0) return live + 1 < order.Count ? live + 1 : -1;
+        if (_tree.SelectedNode?.Tag is MediaFile file)
+        {
+            int selected = order.FindIndex(o => ReferenceEquals(o.Activity.Files[o.Index], file));
+            if (selected >= 0) return selected;
+        }
+        if (_tree.SelectedNode?.Tag is Activity activity)
+        {
+            int first = order.FindIndex(o => ReferenceEquals(o.Activity, activity));
+            if (first >= 0) return first;
+        }
+        return order.Count > 0 ? 0 : -1;
+    }
+
+    RunRowState IActivityRowHost.StateOf(MediaFile file)
+    {
+        var order = RunOrder();
+        int index = order.FindIndex(o => ReferenceEquals(o.Activity.Files[o.Index], file));
+        if (index < 0) return RunRowState.Pending;
+        int live = LivePosition(order);
+        if (index == live) return RunRowState.Live;
+        if (index == NextPosition(order)) return RunRowState.Next;
+        return live >= 0 && index < live ? RunRowState.Done : RunRowState.Pending;
+    }
+
+    MediaFile? IActivityRowHost.PreviewFile => _playback is { State: not PlaybackChannelState.Idle } preview ? preview.CurrentFile : null;
+
+    /// <summary>「下一项 ▶」 / space: put the next item on the big screen.</summary>
+    private void GoNext()
+    {
+        var order = RunOrder();
+        int next = NextPosition(order);
+        if (next < 0) return;
+        RunRequested?.Invoke(order[next].Activity, order[next].Index);
+    }
+
+    /// <summary>「◀ 上一项」: back to the item before the live one.</summary>
+    private void GoPrevious()
+    {
+        var order = RunOrder();
+        int live = LivePosition(order);
+        if (live <= 0) return;
+        RunRequested?.Invoke(order[live - 1].Activity, order[live - 1].Index);
+    }
+
+    /// <summary>「预览下一项」: load the next item in the Preview monitor only.</summary>
+    private void PreviewNext()
+    {
+        var order = RunOrder();
+        int next = NextPosition(order);
+        if (next < 0 || _playback == null) return;
+        _playback.RequestPlay(order[next].Activity, order[next].Index, PlaybackTrigger.ManualSkip);
+    }
+
+    private void UpdateRunControls()
+    {
+        var order = RunOrder();
+        int next = NextPosition(order), live = LivePosition(order);
+        var scenario = CurrentScenario;
+        string NumberOf((Activity Activity, int Index) item) =>
+            $"{(scenario?.Activities.IndexOf(item.Activity) ?? 0) + 1}.{item.Index + 1}";
+        _nextName.Text = next < 0
+            ? (live >= 0 ? "已是最后一项" : "流程里还没有可播放的文件")
+            : $"{NumberOf(order[next])}  {Path.GetFileName(order[next].Activity.Files[order[next].Index].SourcePath)}";
+        _nextName.ForeColor = next < 0 ? ModernUi.Muted : ModernUi.Text;
+        _runNextButton.Enabled = next >= 0;
+        _runPreviewButton.Enabled = next >= 0 && _playback != null;
+        _runPreviousButton.Enabled = live > 0;
+    }
+
+    /// <summary>Space runs 「下一项」 while this page has focus (not while typing in a text box or the
+    /// scenario list).</summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Space && ActiveControlIsNotTextInput())
+        {
+            GoNext();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+
+        bool ActiveControlIsNotTextInput()
+        {
+            Control? active = ActiveControl;
+            while (active is ContainerControl { ActiveControl: { } inner }) active = inner;
+            return active is not (TextBoxBase or ComboBox);
+        }
+    }
 
     bool IActivityRowHost.IsSelected(TreeNode node) => ReferenceEquals(_tree.SelectedNode, node);
     bool IActivityRowHost.IsMultiSelected(TreeNode node) => _multiSelectedFileNodes.Contains(node);
-    Activity? IActivityRowHost.PlayingActivity => PlayingActivity;
-    MediaFile? IActivityRowHost.PlayingFile => _playback?.CurrentFile;
     void IActivityRowHost.RowNodeClicked(TreeNode node) => OnCardNodeClick(node);
     void IActivityRowHost.RowNodeDoubleClicked(TreeNode node) => OnCardNodeDoubleClick(node);
 
@@ -990,81 +1069,6 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         foreach (Control row in _activityRows.Controls) row.Invalidate();
     }
 
-    /// <summary>The activity the 播控条 refers to: the one playing in this scenario, else the selected
-    /// one, else the first.</summary>
-    private Activity? PlaybarActivity
-    {
-        get
-        {
-            var scenario = CurrentScenario;
-            if (scenario == null || scenario.Activities.Count == 0) return null;
-            if (PlayingActivity is { } playing && scenario.Activities.Contains(playing)) return playing;
-            return GetSelection().activity ?? scenario.Activities[0];
-        }
-    }
-
-    private void UpdatePlaybar()
-    {
-        var scenario = CurrentScenario;
-        var current = PlaybarActivity;
-        int index = current == null || scenario == null ? -1 : scenario.Activities.IndexOf(current);
-        var next = index >= 0 && index + 1 < scenario!.Activities.Count ? scenario.Activities[index + 1] : null;
-        bool playing = current != null && ReferenceEquals(PlayingActivity, current);
-
-        _currentLabel.Text = current == null ? "当前：—" : $"当前：{index + 1}. {current.Name}{(playing ? "  · 播放中" : "")}";
-        _currentLabel.ForeColor = playing ? ModernUi.Success : ModernUi.Text;
-        _nextLabel.Text = next == null ? "下一项：—" : $"下一项：{index + 2}. {next.Name}";
-        _previousActivityButton.Enabled = index > 0;
-        _nextActivityButton.Enabled = next != null;
-        _playSwitchButton.Enabled = _playback != null && current != null;
-
-        _updatingPlaybar = true;
-        _playModeCombo.Enabled = current != null;
-        _playModeCombo.SelectedIndex = current == null ? -1 : current.DefaultPlayMode == PlayMode.SequentialAuto ? 0 : 1;
-        _updatingPlaybar = false;
-    }
-
-    /// <summary>上一项/下一项 move the 播控条 to the neighbouring activity. While an activity of this
-    /// scenario is playing they switch playback to it; otherwise they only move the selection, so
-    /// output never starts by accident — 播放/切换 is the explicit start.</summary>
-    private void StepActivity(int delta)
-    {
-        var scenario = CurrentScenario;
-        var current = PlaybarActivity;
-        if (scenario == null || current == null) return;
-        int target = scenario.Activities.IndexOf(current) + delta;
-        if (target < 0 || target >= scenario.Activities.Count) return;
-
-        var activity = scenario.Activities[target];
-        bool wasPlaying = PlayingActivity is { } playing && scenario.Activities.Contains(playing);
-        if (FindNode(activity) is { } node) OnCardNodeClick(node);
-        var row = _activityRows.Controls.OfType<ActivityRowView>().FirstOrDefault(r => r.Activity == activity);
-        if (row != null) _activityRows.ScrollControlIntoView(row);
-        if (wasPlaying && _playback != null && activity.Files.Count > 0) _playback.RequestPlay(activity, 0);
-    }
-
-    private void PlayOrSwitch()
-    {
-        if (_tree.SelectedNode == null && PlaybarActivity is { } current && FindNode(current) is { } node)
-            OnCardNodeClick(node);
-        PlaySelectedActivity();
-    }
-
-    private void OnPlaybarPlayModeChanged()
-    {
-        if (_updatingPlaybar || _playModeCombo.SelectedIndex < 0) return;
-        var scenario = CurrentScenario;
-        var activity = PlaybarActivity;
-        if (scenario == null || activity == null) return;
-        var mode = _playModeCombo.SelectedIndex == 0 ? PlayMode.SequentialAuto : PlayMode.ManualSelect;
-        if (activity.DefaultPlayMode == mode) return;
-
-        activity.DefaultPlayMode = mode;
-        if (!TrySave()) return;
-        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
-        foreach (Control row in _activityRows.Controls) row.Invalidate();
-    }
-
     /// <summary>「保存」: every edit here already saves immediately, so this is an explicit, visible
     /// confirmation — and a way to retry after an earlier save failed — not the only way to save.</summary>
     private void OnSaveScenario()
@@ -1078,7 +1082,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             MessageBox.Show(this, $"方案未保存：{DataDirectory.Describe(ex)}", "方案保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        _saveButton.Text = "✓ 已保存";
+        _activityCount.Text = "✓ 已保存";
         _saveFeedbackTimer.Stop();
         _saveFeedbackTimer.Start();
     }
@@ -1237,7 +1241,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _removeButton.Enabled = file != null;
         _moveUpButton.Enabled = file != null;
         _moveDownButton.Enabled = file != null;
-        UpdatePlaybar();
+        UpdateRunControls();
     }
 
     /// <summary>Narrower than a bare <c>Kind is MediaKind.Image or MediaKind.Document</c> check —
@@ -1372,6 +1376,13 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         return path;
     }
 
+    private void UpdateCountLabel()
+    {
+        var scenario = CurrentScenario;
+        int sections = scenario?.Activities.Count ?? 0, items = scenario?.Activities.Sum(a => a.Files.Count) ?? 0;
+        _activityCount.Text = $"{sections} 个环节 · {items} 项";
+    }
+
     /// <summary>Call after the scenario store changes from outside this control.</summary>
     public void RefreshTree()
     {
@@ -1405,11 +1416,9 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _activityRows.ResumeLayout(true);
         LayoutRows();
 
-        _activityCount.Text = $"共 {count} 项";
+        UpdateCountLabel();
         _emptyState.Visible = count == 0;
         _activityRows.Visible = count > 0;
-        _expandAllButton.Enabled = count > 0;
-        _expandAllButton.Text = scenario != null && scenario.Activities.Any(a => !a.IsCollapsed) ? "收起全部 ▴" : "展开全部 ▾";
         if (selectedTag != null && FindNode(selectedTag) is { } reselect) _tree.SelectedNode = reselect;
         RefreshCardStyles();
         UpdateButtonStates();
@@ -1512,6 +1521,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             if (_playback != null) _playback.FileStarted -= OnFileStarted;
             _stateMachine.StateChanged -= OnStateChanged;
             _saveFeedbackTimer.Dispose();
+            _liveTimer.Dispose();
             _editMenu.Dispose();
             _toolTip.Dispose();
             foreach (var image in _thumbnails.Values) image.Dispose();

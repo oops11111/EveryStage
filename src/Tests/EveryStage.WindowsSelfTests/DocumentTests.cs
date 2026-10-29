@@ -117,6 +117,18 @@ internal static class DocumentTests
             }
             library.Import(image);
         }
+        // A small run sheet, so the 流程 screenshots show sections, numbered rows and the 下一项 cue.
+        var scenarios = (ScenarioStore)type.GetField("_scenarioStore", flags)!.GetValue(window)!;
+        var scenario = scenarios.Scenarios.FirstOrDefault(s => s.Id == scenarios.CurrentScenarioId) ?? scenarios.Scenarios.First();
+        scenario.Activities.Clear();
+        var images = library.Files.Where(f => f.Kind == MediaKind.Image).ToList();
+        foreach (var (name, range) in new[] { ("开场", (0, 3)), ("产品发布", (3, 4)), ("签约仪式", (7, 2)) })
+        {
+            var section = new EveryStage.Terminal.Data.Activity { Name = name };
+            foreach (var file in images.Skip(range.Item1).Take(range.Item2)) section.Files.Add(file.Clone());
+            scenario.Activities.Add(section);
+        }
+        scenario.Activities[1].Files[0].StayDuration = TimeSpan.FromSeconds(15);
         var showPanel = type.GetMethod("ShowPanel", flags)!;
         var applyTheme = type.GetMethod("ApplyTheme", flags)!;
         var dock = type.GetField("_previewDock", flags)!.GetValue(window)!;

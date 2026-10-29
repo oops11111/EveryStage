@@ -4,6 +4,9 @@ using EveryStage.Terminal.Data;
 
 namespace EveryStage.Terminal.UI.Panels;
 
+/// <summary>Where a run-sheet row stands in the show.</summary>
+internal enum RunRowState { Pending, Done, Next, Live }
+
 /// <summary>What an <see cref="ActivityRowView"/> needs from the panel that owns it. The row is a pure
 /// view: selection, playback and every edit stay in <see cref="ActivitiesPanel"/> (and the hidden
 /// TreeView it keeps as its selection model) — the row only reports which node was clicked.</summary>
@@ -11,8 +14,9 @@ internal interface IActivityRowHost
 {
     bool IsSelected(TreeNode node);
     bool IsMultiSelected(TreeNode node);
-    Activity? PlayingActivity { get; }
-    MediaFile? PlayingFile { get; }
+    RunRowState StateOf(MediaFile file);
+    /// <summary>The file shown in the 预览 monitor (a 「预览」 tag on its row), if any.</summary>
+    MediaFile? PreviewFile { get; }
     Image? ThumbnailFor(MediaFile file);
     void RowNodeClicked(TreeNode node);
     void RowNodeDoubleClicked(TreeNode node);
@@ -21,34 +25,32 @@ internal interface IActivityRowHost
 }
 
 /// <summary>
-/// One activity in the 活动节目单, drawn to match the reference mockup's row: number badge ·
-/// thumbnail with a type badge · name / play mode · file tags · file count · status · expand chevron.
-/// Collapsed (<see cref="Activity.IsCollapsed"/>) it shows as many file tags inline as fit plus a
-/// "+N" tag; expanded it lists every file as a selectable card underneath (click selects, Ctrl+click
-/// multi-selects, double-click plays, right-click opens the panel's edit menu).
+/// One section (环节) of the 流程 run sheet, drawn after the design: a header line「1  开场  3 项 ·
+/// 顺序自动 ───── ⌃」 and, unless collapsed, one row per item: ⋮⋮ · 序号 (1.1) · thumbnail with a type
+/// badge · name / kind · 时长 · 结束后 · 状态 (已播 / ● 大屏播放中 / 下一项 / 待播). The live row is tinted
+/// in the danger colour, the next one in the accent colour.
 ///
-/// Owner-drawn as a single control rather than nested Labels/Buttons: the old card built one WinForms
-/// Button per file, which could not render the reference's compact tag shape at all. Colours are read
-/// from <see cref="ModernUi"/> at paint time, so all three themes apply without rebuilding.
+/// Click selects, Ctrl+click multi-selects, double-click runs the item, right-click opens the panel's
+/// edit menu. Owner-drawn as a single control; colours are read from <see cref="ModernUi"/> at paint
+/// time, so every theme applies without rebuilding.
 /// </summary>
 internal sealed class ActivityRowView : Control
 {
-    private static readonly Font TitleFont = new(ModernUi.UiFontSemibold, 10.5F);
+    private static readonly Font SectionFont = new(ModernUi.UiFontSemibold, 11.5F);
+    private static readonly Font SectionNumberFont = new(ModernUi.UiFontSemibold, 10F);
+    private static readonly Font NameFont = new(ModernUi.UiFont, 10F);
     private static readonly Font BodyFont = new(ModernUi.UiFont, 9F);
     private static readonly Font SmallFont = new(ModernUi.UiFont, 8.5F);
-    private static readonly Font ChipTitleFont = new(ModernUi.UiFontSemibold, 9F);
-    private static readonly Font BadgeFont = new(ModernUi.UiFont, 7.5F, FontStyle.Bold);
-    private static readonly Font NumberFont = new(ModernUi.UiFontSemibold, 9.5F);
+    private static readonly Font StatusFont = new(ModernUi.UiFontSemibold, 8.5F);
+    private static readonly Font BadgeFont = new(ModernUi.UiFont, 7F, FontStyle.Bold);
 
     private readonly IActivityRowHost _host;
     private readonly Activity _activity;
     private readonly TreeNode _activityNode;
     private readonly int _number;
 
-    private readonly List<(Rectangle Bounds, TreeNode Node)> _chips = new();
-    private Rectangle _badgeRect, _thumbRect, _titleRect, _subtitleRect, _countRect, _statusRect, _chevronRect;
-    private Rectangle _moreRect, _emptyRect;
-    private int _moreCount;
+    private readonly List<(Rectangle Bounds, TreeNode Node, int Index)> _rows = new();
+    private Rectangle _headerRect, _chevronRect, _emptyRect;
     private Point _hover = new(-1, -1);
 
     public ActivityRowView(IActivityRowHost host, Activity activity, TreeNode activityNode, int number)
@@ -61,18 +63,34 @@ internal sealed class ActivityRowView : Control
             | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor | ControlStyles.Selectable, true);
         BackColor = Color.Transparent;
         Cursor = Cursors.Hand;
-        Margin = new Padding(0, 0, 0, 10);
-        AccessibleName = $"活动 {number}. {activity.Name}";
+        Margin = new Padding(0, 0, 0, 4);
+        AccessibleName = $"环节 {number}. {activity.Name}";
     }
 
     public Activity Activity => _activity;
 
     private int S(int value) => LogicalToDeviceUnits(value);
-    private bool Wide => Width >= S(820);
     private IEnumerable<TreeNode> FileNodes => _activityNode.Nodes.Cast<TreeNode>();
 
-    /// <summary>Sets the width and grows/shrinks to the height that width needs (expanded rows wrap
-    /// their file cards, so height depends on width).</summary>
+    /// <summary>Column layout shared with the panel's column-heading row, so both line up.</summary>
+    internal readonly record struct Columns(int Handle, int Number, int Thumb, int Name, int NameRight, int Duration, int After, int Status, bool Wide);
+
+    internal static Columns ColumnsFor(int width, Func<int, int> s)
+    {
+        bool wide = width >= s(700);
+        int x = s(12);
+        int handle = x; x += s(22) + s(8);
+        int number = x; x += s(40) + s(8);
+        int thumb = x; x += s(76) + s(12);
+        int name = x;
+        int right = width - s(12);
+        int status = right - s(104);
+        int after = wide ? status - s(12) - s(84) : status;
+        int duration = wide ? after - s(12) - s(96) : status;
+        return new Columns(handle, number, thumb, name, duration - s(12), duration, after, status, wide);
+    }
+
+    /// <summary>Sets the width and grows/shrinks to the height the section needs.</summary>
     public void FitToWidth(int width)
     {
         Width = width;
@@ -81,80 +99,41 @@ internal sealed class ActivityRowView : Control
 
     private int ComputeLayout(int w)
     {
-        _chips.Clear();
-        _moreRect = _emptyRect = Rectangle.Empty;
-        _moreCount = 0;
-
-        var thumb = Wide ? new Size(S(120), S(64)) : new Size(S(96), S(54));
-        int headerHeight = thumb.Height + S(20);
-        int cy = headerHeight / 2;
-        _badgeRect = new Rectangle(S(14), cy - S(13), S(26), S(26));
-        _thumbRect = new Rectangle(_badgeRect.Right + S(14), cy - thumb.Height / 2, thumb.Width, thumb.Height);
-        int titleWidth = Wide ? S(170) : S(120);
-        _titleRect = new Rectangle(_thumbRect.Right + S(16), cy - S(22), titleWidth, S(22));
-        _subtitleRect = new Rectangle(_titleRect.Left, cy + S(1), titleWidth, S(20));
-        _chevronRect = new Rectangle(w - S(14) - S(24), cy - S(12), S(24), S(24));
-        _statusRect = new Rectangle(_chevronRect.Left - S(10) - S(76), cy - S(11), S(76), S(22));
-        // Narrow rows drop the file-count column: the "+N" tag and the expanded list already carry it,
-        // and without the room it frees not even one file tag fits.
-        _countRect = Wide ? new Rectangle(_statusRect.Left - S(6) - S(78), cy - S(11), S(78), S(22)) : Rectangle.Empty;
+        _rows.Clear();
+        _emptyRect = Rectangle.Empty;
+        _headerRect = new Rectangle(0, 0, w, S(44));
+        _chevronRect = new Rectangle(w - S(12) - S(24), S(14), S(24), S(24));
+        int y = _headerRect.Bottom;
+        if (_activity.IsCollapsed) return y + S(2);
 
         var nodes = FileNodes.ToList();
-        if (_activity.IsCollapsed)
-        {
-            // Reference: the row itself carries the activity's file tags — as many as fit, then "+N".
-            int x = _titleRect.Right + S(12), right = (_countRect.IsEmpty ? _statusRect.Left : _countRect.Left) - S(10);
-            for (int i = 0; i < nodes.Count; i++)
-            {
-                var file = (MediaFile)nodes[i].Tag!;
-                int wanted = Math.Min(S(176), TextRenderer.MeasureText(Path.GetFileName(file.SourcePath), BodyFont).Width + S(42));
-                int reserveForMore = i < nodes.Count - 1 ? S(48) : 0; // 8px gap + the 40px "+N" tag
-                // Shrink a tag (its name ellipsizes) rather than drop it, down to a still-readable width.
-                int chipWidth = Math.Min(wanted, right - x - reserveForMore);
-                if (chipWidth < Math.Min(wanted, S(84)))
-                {
-                    _moreCount = nodes.Count - i;
-                    if (x + S(40) <= right) _moreRect = new Rectangle(x, cy - S(16), S(40), S(32));
-                    break;
-                }
-                _chips.Add((new Rectangle(x, cy - S(16), chipWidth, S(32)), nodes[i]));
-                x += chipWidth + S(8);
-            }
-            return headerHeight;
-        }
-
-        // Expanded: every file as a card, wrapping under the thumbnail column.
-        int left = _thumbRect.Left, maxRight = w - S(14), top = headerHeight;
         if (nodes.Count == 0)
         {
-            _emptyRect = new Rectangle(left, top, Math.Max(S(40), maxRight - left), S(36));
-            return top + S(36) + S(12);
+            _emptyRect = new Rectangle(S(12), y, Math.Max(S(40), w - S(24)), S(40));
+            return _emptyRect.Bottom + S(6);
         }
-        int cardWidth = Math.Min(S(236), maxRight - left), cardHeight = S(46), gap = S(8);
-        int cx = left, y = top;
-        foreach (var node in nodes)
+        int rowHeight = S(56), gap = S(4);
+        for (int i = 0; i < nodes.Count; i++)
         {
-            if (cx + cardWidth > maxRight && cx > left) { cx = left; y += cardHeight + gap; }
-            _chips.Add((new Rectangle(cx, y, cardWidth, cardHeight), node));
-            cx += cardWidth + gap;
+            _rows.Add((new Rectangle(0, y, w - 1, rowHeight), nodes[i], i));
+            y += rowHeight + gap;
         }
-        return y + cardHeight + S(12);
+        return y + S(2);
     }
 
     private TreeNode HitNode(Point p)
     {
-        foreach (var (bounds, node) in _chips)
+        foreach (var (bounds, node, _) in _rows)
             if (bounds.Contains(p)) return node;
         return _activityNode;
     }
 
-    private bool IsToggleHit(Point p) => _chevronRect.Contains(p) || _moreRect.Contains(p);
 
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
         Focus();
-        if (IsToggleHit(e.Location))
+        if (_chevronRect.Contains(e.Location))
         {
             // Rebuilds the list (the host disposes this control) — nothing else may touch it afterwards.
             if (e.Button == MouseButtons.Left) _host.ToggleCollapsed(_activity);
@@ -168,7 +147,13 @@ internal sealed class ActivityRowView : Control
     protected override void OnMouseDoubleClick(MouseEventArgs e)
     {
         base.OnMouseDoubleClick(e);
-        if (e.Button == MouseButtons.Left && !IsToggleHit(e.Location)) _host.RowNodeDoubleClicked(HitNode(e.Location));
+        if (e.Button != MouseButtons.Left || _chevronRect.Contains(e.Location)) return;
+        if (_headerRect.Contains(e.Location))
+        {
+            _host.ToggleCollapsed(_activity);
+            return;
+        }
+        _host.RowNodeDoubleClicked(HitNode(e.Location));
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -193,182 +178,128 @@ internal sealed class ActivityRowView : Control
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var nodes = FileNodes.ToList();
-        bool selected = _host.IsSelected(_activityNode) || nodes.Any(n => _host.IsSelected(n) || _host.IsMultiSelected(n));
-        bool playing = ReferenceEquals(_host.PlayingActivity, _activity);
+        bool sectionSelected = _host.IsSelected(_activityNode);
 
-        // Row surface — prototype .act-row / .act-row.sel.
-        var surface = new Rectangle(0, 0, Width - 1, Height - 1);
-        using (var path = RoundedBox(surface, S(12)))
-        {
-            using var fill = new SolidBrush(selected ? Blend(ModernUi.Background, ModernUi.Accent, 0.12f) : ModernUi.Background);
-            g.FillPath(fill, path);
-            using var border = new Pen(selected ? Color.FromArgb(150, ModernUi.Accent) : ModernUi.Border, 1F);
-            g.DrawPath(border, path);
-        }
-
-        // Number badge: brand blue while this is the selected/playing activity, outlined otherwise.
-        bool strong = selected || playing;
-        using (var fill = new SolidBrush(strong ? ModernUi.Accent : Blend(ModernUi.Background, ModernUi.Text, 0.06f)))
-            g.FillEllipse(fill, _badgeRect);
-        if (!strong) { using var pen = new Pen(ModernUi.Border); g.DrawEllipse(pen, _badgeRect); }
-        TextRenderer.DrawText(g, _number.ToString(), NumberFont, _badgeRect, strong ? Color.White : ModernUi.Muted,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-
-        DrawThumbnail(g, nodes.Select(n => (MediaFile)n.Tag!).ToList());
-
-        TextRenderer.DrawText(g, _activity.Name, TitleFont, _titleRect, ModernUi.Text,
+        // Section header: number · name · meta ───── chevron.
+        int cy = _headerRect.Top + S(26);
+        var numberRect = new Rectangle(S(12), cy - S(11), S(28), S(22));
+        TextRenderer.DrawText(g, _number.ToString(), SectionNumberFont, numberRect, ModernUi.AccentText,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        int nameWidth = Math.Min(TextRenderer.MeasureText(_activity.Name, SectionFont).Width, Math.Max(S(40), Width / 2));
+        var nameRect = new Rectangle(numberRect.Left + S(22), cy - S(12), nameWidth, S(24));
+        TextRenderer.DrawText(g, _activity.Name, SectionFont, nameRect, sectionSelected ? ModernUi.AccentText : ModernUi.Text,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-        string mode = _activity.DefaultPlayMode == PlayMode.SequentialAuto ? "顺序自动播放" : "手动点选播放";
-        TextRenderer.DrawText(g, mode, BodyFont, _subtitleRect, ModernUi.Muted,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-
-        // File count — the data model has no durations to total, unlike the mockup's clock column.
-        if (!_countRect.IsEmpty)
-        {
-            var stack = new Rectangle(_countRect.Left, _countRect.Top + (_countRect.Height - S(14)) / 2, S(14), S(14));
-            DrawStackGlyph(g, stack, ModernUi.Muted);
-            TextRenderer.DrawText(g, $"{nodes.Count} 个文件", BodyFont,
-                Rectangle.FromLTRB(stack.Right + S(6), _countRect.Top, _countRect.Right, _countRect.Bottom), ModernUi.Muted,
-                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-        }
-
-        // Status: green while this activity is the one playing.
-        var dot = new Rectangle(_statusRect.Left, _statusRect.Top + (_statusRect.Height - S(8)) / 2, S(8), S(8));
-        using (var dotBrush = new SolidBrush(playing ? ModernUi.Success : ModernUi.Muted))
-            g.FillEllipse(dotBrush, dot);
-        TextRenderer.DrawText(g, playing ? "播放中" : "未播放", BodyFont,
-            Rectangle.FromLTRB(dot.Right + S(7), _statusRect.Top, _statusRect.Right, _statusRect.Bottom),
-            playing ? ModernUi.Success : ModernUi.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-
+        string meta = $"{nodes.Count} 项 · {(_activity.DefaultPlayMode == PlayMode.SequentialAuto ? "顺序自动" : "手动点选")}"
+            + (_activity.IsCollapsed ? " · 已收起" : "");
+        int metaWidth = TextRenderer.MeasureText(meta, BodyFont).Width;
+        var metaRect = new Rectangle(nameRect.Right + S(10), cy - S(10), metaWidth, S(20));
+        TextRenderer.DrawText(g, meta, BodyFont, metaRect, ModernUi.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+        using (var line = new Pen(ModernUi.Mix(ModernUi.Background, ModernUi.Border, 0.5f)))
+            if (_chevronRect.Left - S(10) > metaRect.Right + S(10))
+                g.DrawLine(line, metaRect.Right + S(10), cy, _chevronRect.Left - S(10), cy);
         DrawChevron(g, _chevronRect, up: !_activity.IsCollapsed, hot: _chevronRect.Contains(_hover));
+        if (sectionSelected && Focused && ShowFocusCues)
+            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(_headerRect, -3, -3), ModernUi.Text, ModernUi.Background);
 
-        foreach (var (bounds, node) in _chips)
-        {
-            if (_activity.IsCollapsed) DrawInlineTag(g, bounds, node);
-            else DrawFileCard(g, bounds, node);
-        }
-        if (!_moreRect.IsEmpty)
-        {
-            using var path = RoundedBox(_moreRect, S(8));
-            using var fill = new SolidBrush(Blend(ModernUi.Background, ModernUi.Text, _moreRect.Contains(_hover) ? 0.10f : 0.05f));
-            g.FillPath(fill, path);
-            TextRenderer.DrawText(g, $"+{_moreCount}", BodyFont, _moreRect, ModernUi.Muted,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-        }
+        var columns = ColumnsFor(Width, S);
+        var preview = _host.PreviewFile;
+        foreach (var (bounds, node, index) in _rows)
+            DrawItemRow(g, bounds, node, index, columns, preview);
+
         if (!_emptyRect.IsEmpty)
         {
             using var path = RoundedBox(_emptyRect, S(8));
             using var pen = new Pen(ModernUi.Border) { DashStyle = DashStyle.Dash };
             g.DrawPath(pen, path);
-            TextRenderer.DrawText(g, "还没有文件 · 右键此活动或「编辑 ▾」→ 添加文件…", SmallFont, _emptyRect, ModernUi.Muted,
+            TextRenderer.DrawText(g, "这个环节还没有文件 · 右键或「＋ 添加文件」", SmallFont, _emptyRect, ModernUi.Muted,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
-
-        if (Focused && ShowFocusCues)
-            ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(ClientRectangle, -3, -3), ModernUi.Text, ModernUi.Background);
     }
 
-    /// <summary>Representative picture for the row: the first visual (non-background-audio) file.</summary>
-    private void DrawThumbnail(Graphics g, List<MediaFile> files)
-    {
-        var file = files.FirstOrDefault(f => f.Kind != MediaKind.Audio && !f.IsBackgroundAudio) ?? files.FirstOrDefault();
-        using var clip = RoundedBox(_thumbRect, S(8));
-        var image = file == null ? null : _host.ThumbnailFor(file);
-        var state = g.Save();
-        g.SetClip(clip);
-        if (image != null)
-        {
-            // Cover-fit: fill the frame, cropping whichever axis overflows.
-            float scale = Math.Max((float)_thumbRect.Width / image.Width, (float)_thumbRect.Height / image.Height);
-            float dw = image.Width * scale, dh = image.Height * scale;
-            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.DrawImage(image, _thumbRect.Left + (_thumbRect.Width - dw) / 2, _thumbRect.Top + (_thumbRect.Height - dh) / 2, dw, dh);
-        }
-        else
-        {
-            using var fill = new LinearGradientBrush(_thumbRect, Blend(ModernUi.Background, ModernUi.Accent, 0.35f),
-                Blend(ModernUi.Background, ModernUi.Accent, 0.08f), 45F);
-            g.FillRectangle(fill, _thumbRect);
-            if (file == null)
-                TextRenderer.DrawText(g, "空", BodyFont, _thumbRect, ModernUi.Muted,
-                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
-        }
-        g.Restore(state);
-        using (var pen = new Pen(Color.FromArgb(40, 255, 255, 255))) g.DrawPath(pen, clip);
-        if (file == null) return;
-
-        if (file.Kind == MediaKind.Video)
-        {
-            int d = S(26);
-            var play = new Rectangle(_thumbRect.Left + (_thumbRect.Width - d) / 2, _thumbRect.Top + (_thumbRect.Height - d) / 2, d, d);
-            using (var bg = new SolidBrush(Color.FromArgb(110, 0, 0, 0))) g.FillEllipse(bg, play);
-            using var glyph = new SolidBrush(Color.White);
-            float px = play.Left + d * 0.40f, py = play.Top + d * 0.30f;
-            g.FillPolygon(glyph, new[] { new PointF(px, py), new PointF(px, play.Bottom - d * 0.30f), new PointF(play.Right - d * 0.28f, play.Top + d / 2f) });
-        }
-
-        var (label, color) = FileTypeBadge.For(file);
-        var size = TextRenderer.MeasureText(label, BadgeFont, Size.Empty, TextFormatFlags.NoPadding);
-        var badge = new Rectangle(_thumbRect.Left + S(6), _thumbRect.Bottom - S(6) - S(16), size.Width + S(10), S(16));
-        using (var path = RoundedBox(badge, S(4)))
-        using (var fill = new SolidBrush(color))
-            g.FillPath(fill, path);
-        TextRenderer.DrawText(g, label, BadgeFont, badge, Color.White,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
-    }
-
-    private void DrawInlineTag(Graphics g, Rectangle bounds, TreeNode node)
+    private void DrawItemRow(Graphics g, Rectangle bounds, TreeNode node, int index, Columns c, MediaFile? preview)
     {
         var file = (MediaFile)node.Tag!;
-        bool selected = _host.IsSelected(node) || _host.IsMultiSelected(node);
+        var state = _host.StateOf(file);
+        bool selected = _host.IsSelected(node), multi = _host.IsMultiSelected(node);
         bool hot = bounds.Contains(_hover);
+
+        Color fill = state switch
+        {
+            RunRowState.Live => ModernUi.Mix(ModernUi.Background, ModernUi.Danger, 0.16f),
+            RunRowState.Next => ModernUi.Mix(ModernUi.Background, ModernUi.Accent, 0.14f),
+            _ => hot ? ModernUi.Mix(ModernUi.Surface, ModernUi.Text, 0.04f) : ModernUi.Surface,
+        };
+        Color border = state switch
+        {
+            RunRowState.Live => ModernUi.Danger,
+            RunRowState.Next => ModernUi.Accent,
+            _ when selected || multi => ModernUi.Accent,
+            _ => ModernUi.Mix(ModernUi.Surface, ModernUi.Border, 0.45f),
+        };
         using (var path = RoundedBox(bounds, S(8)))
         {
-            using var fill = new SolidBrush(Blend(ModernUi.Background, ModernUi.Text, hot ? 0.09f : 0.05f));
-            g.FillPath(fill, path);
-            using var pen = new Pen(selected ? ModernUi.Accent : Blend(ModernUi.Background, ModernUi.Text, 0.10f), selected ? 1.5F : 1F);
-            g.DrawPath(pen, path);
-        }
-        var icon = new Rectangle(bounds.Left + S(10), bounds.Top + (bounds.Height - S(16)) / 2, S(16), S(16));
-        DrawKindIcon(g, icon, file);
-        bool playingFile = ReferenceEquals(_host.PlayingFile, file);
-        TextRenderer.DrawText(g, (playingFile ? "▶ " : "") + Path.GetFileName(file.SourcePath), BodyFont,
-            Rectangle.FromLTRB(icon.Right + S(7), bounds.Top, bounds.Right - S(8), bounds.Bottom),
-            playingFile ? ModernUi.Success : ModernUi.Text,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-    }
-
-    private void DrawFileCard(Graphics g, Rectangle bounds, TreeNode node)
-    {
-        var file = (MediaFile)node.Tag!;
-        bool selected = _host.IsSelected(node);
-        bool multi = _host.IsMultiSelected(node);
-        bool hot = bounds.Contains(_hover);
-        using (var path = RoundedBox(bounds, S(9)))
-        {
-            Color fill = selected || multi ? Blend(ModernUi.Surface, ModernUi.Accent, 0.14f)
-                : Blend(ModernUi.Surface, ModernUi.Text, hot ? 0.06f : 0.02f);
             using var brush = new SolidBrush(fill);
             g.FillPath(brush, path);
-            using var pen = new Pen(selected || multi ? ModernUi.Accent : ModernUi.Border, selected || multi ? 1.5F : 1F);
+            using var pen = new Pen(border, selected || multi ? 1.8F : 1F);
             g.DrawPath(pen, path);
         }
-        var icon = new Rectangle(bounds.Left + S(10), bounds.Top + (bounds.Height - S(22)) / 2, S(22), S(22));
-        DrawKindIcon(g, icon, file);
-        bool playingFile = ReferenceEquals(_host.PlayingFile, file);
-        int textLeft = icon.Right + S(9), textRight = bounds.Right - (multi ? S(26) : S(8));
-        TextRenderer.DrawText(g, (playingFile ? "▶ " : "") + Path.GetFileName(file.SourcePath), ChipTitleFont,
-            Rectangle.FromLTRB(textLeft, bounds.Top + S(5), textRight, bounds.Top + S(24)),
-            playingFile ? ModernUi.Success : ModernUi.Text,
+
+        bool done = state == RunRowState.Done;
+        Color text = done ? ModernUi.Muted : ModernUi.Text;
+        int cy = bounds.Top + bounds.Height / 2;
+
+        // ⋮⋮ grip (reorder through the menu's 上移/下移 or Alt+↑/↓).
+        using (var dots = new SolidBrush(ModernUi.Mix(ModernUi.Surface, ModernUi.Muted, 0.7f)))
+            for (int col = 0; col < 2; col++)
+                for (int r = -1; r <= 1; r++)
+                    g.FillEllipse(dots, c.Handle + S(7) + col * S(6), cy + r * S(5) - S(1), S(3), S(3));
+
+        TextRenderer.DrawText(g, $"{_number}.{index + 1}", BodyFont, new Rectangle(c.Number, bounds.Top, S(40), bounds.Height),
+            ModernUi.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+
+        var thumb = new Rectangle(c.Thumb, cy - S(22), S(76), S(43));
+        DrawThumbnail(g, thumb, file);
+        if (ReferenceEquals(preview, file) && state != RunRowState.Live)
+        {
+            var tag = new Rectangle(thumb.Left + S(3), thumb.Top + S(3), S(30), S(15));
+            using (var path = RoundedBox(tag, S(3)))
+            using (var brush = new SolidBrush(ModernUi.Accent))
+                g.FillPath(brush, path);
+            TextRenderer.DrawText(g, "预览", BadgeFont, tag, ModernUi.AccentForeground,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
+
+        int nameRight = c.Wide ? c.NameRight : c.Status - S(12);
+        TextRenderer.DrawText(g, Path.GetFileName(file.SourcePath), NameFont,
+            Rectangle.FromLTRB(c.Name, bounds.Top + S(8), nameRight, cy + S(2)), text,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-        TextRenderer.DrawText(g, FileMeta(file), SmallFont,
-            Rectangle.FromLTRB(textLeft, bounds.Top + S(24), textRight, bounds.Bottom - S(4)), ModernUi.Muted,
-            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        TextRenderer.DrawText(g, KindLine(file), SmallFont,
+            Rectangle.FromLTRB(c.Name, cy + S(2), nameRight, bounds.Bottom - S(8)), ModernUi.Muted,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+        if (c.Wide)
+        {
+            TextRenderer.DrawText(g, DurationText(file), BodyFont, Rectangle.FromLTRB(c.Duration, bounds.Top, c.After - S(12), bounds.Bottom),
+                ModernUi.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            TextRenderer.DrawText(g, AfterText(file), BodyFont, Rectangle.FromLTRB(c.After, bounds.Top, c.Status - S(12), bounds.Bottom),
+                ModernUi.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        }
+
+        (string status, Color color) = state switch
+        {
+            RunRowState.Live => ("● 大屏播放中", ModernUi.Danger),
+            RunRowState.Next => ("下一项", ModernUi.AccentText),
+            RunRowState.Done => ("已播", ModernUi.Muted),
+            _ => ("待播", ModernUi.Muted),
+        };
+        TextRenderer.DrawText(g, status, StatusFont, Rectangle.FromLTRB(c.Status, bounds.Top, bounds.Right - S(8), bounds.Bottom),
+            color, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+
         if (multi)
         {
             // Ctrl+click multi-selection (for 统一设置属性…) gets a check mark, distinct from plain selection.
-            var check = new Rectangle(bounds.Right - S(22), bounds.Top + (bounds.Height - S(16)) / 2, S(16), S(16));
-            using (var fill = new SolidBrush(ModernUi.Accent)) g.FillEllipse(fill, check);
+            var check = new Rectangle(bounds.Right - S(24), cy - S(8), S(16), S(16));
+            using (var brush = new SolidBrush(ModernUi.Accent)) g.FillEllipse(brush, check);
             using var pen = new Pen(Color.White, 1.8F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
             g.DrawLines(pen, new[]
             {
@@ -379,18 +310,75 @@ internal sealed class ActivityRowView : Control
         }
     }
 
-    private static string FileMeta(MediaFile file)
+    private void DrawThumbnail(Graphics g, Rectangle rect, MediaFile file)
     {
-        if (file.IsBackgroundAudio) return "背景音频 · 叠加循环";
+        using var clip = RoundedBox(rect, S(5));
+        var image = _host.ThumbnailFor(file);
+        var state = g.Save();
+        g.SetClip(clip);
+        if (image != null)
+        {
+            // Cover-fit: fill the frame, cropping whichever axis overflows.
+            float scale = Math.Max((float)rect.Width / image.Width, (float)rect.Height / image.Height);
+            float dw = image.Width * scale, dh = image.Height * scale;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.DrawImage(image, rect.Left + (rect.Width - dw) / 2, rect.Top + (rect.Height - dh) / 2, dw, dh);
+        }
+        else
+        {
+            using var fill = new LinearGradientBrush(rect, Blend(ModernUi.Background, ModernUi.Accent, 0.35f),
+                Blend(ModernUi.Background, ModernUi.Accent, 0.08f), 45F);
+            g.FillRectangle(fill, rect);
+            if (file.Kind == MediaKind.Audio) DrawKindIcon(g, new Rectangle(rect.Left + (rect.Width - S(18)) / 2, rect.Top + (rect.Height - S(18)) / 2, S(18), S(18)), file);
+        }
+        g.Restore(state);
+
+        var (label, color) = FileTypeBadge.For(file);
+        var size = TextRenderer.MeasureText(label, BadgeFont, Size.Empty, TextFormatFlags.NoPadding);
+        var badge = new Rectangle(rect.Left + S(3), rect.Bottom - S(3) - S(14), size.Width + S(8), S(14));
+        using (var path = RoundedBox(badge, S(3)))
+        using (var fill = new SolidBrush(color))
+            g.FillPath(fill, path);
+        TextRenderer.DrawText(g, label, BadgeFont, badge, Color.White,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+    }
+
+    /// <summary>The muted second line under the name: what kind of item this is.</summary>
+    private static string KindLine(MediaFile file)
+    {
+        if (file.IsBackgroundAudio) return "背景音乐 · 叠加播放，不占顺序";
         if (file.Kind == MediaKind.Document && (file.Document != null || EveryStage.Terminal.Documents.DocumentFormats.IsOffice(file.SourcePath)))
             return DocumentSettingsDialog.Summarize(file);
+        return file.Kind switch
+        {
+            MediaKind.Image => "图片",
+            MediaKind.Video => "视频",
+            MediaKind.Audio => "音频",
+            MediaKind.Document => "文档",
+            _ => "文件",
+        };
+    }
+
+    /// <summary>「时长」: how long the item holds the screen. Media length is not stored, so video and
+    /// audio read 「播完」.</summary>
+    private static string DurationText(MediaFile file)
+    {
+        if (file.IsBackgroundAudio) return "贯穿本环节";
         if (file.Kind is MediaKind.Image or MediaKind.Document)
             return file.StayDuration is { } stay ? $"停留 {stay.TotalSeconds:0} 秒" : "手动翻页";
+        return "播完";
+    }
+
+    /// <summary>「结束后」: what happens when the item finishes.</summary>
+    private static string AfterText(MediaFile file)
+    {
+        if (file.IsBackgroundAudio) return "继续播放";
+        if (file.Kind is MediaKind.Image or MediaKind.Document && file.StayDuration == null) return "停留";
         return file.OnCompletion switch
         {
-            CompletionAction.Loop => "循环播放",
-            CompletionAction.HoldOnLastFrame => "播完停在最后一帧",
-            _ => "播完自动下一项",
+            CompletionAction.Loop => "循环",
+            CompletionAction.HoldOnLastFrame => "停留",
+            _ => "下一项",
         };
     }
 
@@ -448,18 +436,6 @@ internal sealed class ActivityRowView : Control
                 g.DrawLine(glyphPen, r.Left + r.Width * 0.26f, y, r.Left + r.Width * (i == 2 ? 0.56f : 0.74f), y);
             }
         }
-    }
-
-    private void DrawStackGlyph(Graphics g, Rectangle r, Color color)
-    {
-        using var pen = new Pen(color, 1.4F) { LineJoin = LineJoin.Round };
-        var back = new Rectangle(r.Left + S(3), r.Top, r.Width - S(3), r.Height - S(3));
-        var front = new Rectangle(r.Left, r.Top + S(3), r.Width - S(3), r.Height - S(3));
-        using (var backPath = RoundedBox(back, S(2))) g.DrawPath(pen, backPath);
-        using var bg = new SolidBrush(ModernUi.Background);
-        using var frontPath = RoundedBox(front, S(2));
-        g.FillPath(bg, frontPath);
-        g.DrawPath(pen, frontPath);
     }
 
     private void DrawChevron(Graphics g, Rectangle r, bool up, bool hot)

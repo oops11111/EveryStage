@@ -67,6 +67,7 @@ internal sealed class SharedPreviewDock : Panel
     private DocumentControlBar? _documentBar;
     private bool _documentBarShown;
     private Control? _footer;
+    private Control? _runControls;
 
     /// <summary>The Preview channel's output surface (MainWindow builds the Preview engine on it).</summary>
     public PreviewSurface PreviewSurface { get; }
@@ -208,6 +209,17 @@ internal sealed class SharedPreviewDock : Panel
         }
     }
 
+    /// <summary>The 流程 page's 「下一项 ▶」 controls, shown under the 大屏 section while that page is
+    /// visible (null removes them). They take the footer's place.</summary>
+    public void SetRunControls(Control? controls)
+    {
+        if (ReferenceEquals(controls, _runControls)) return;
+        if (_runControls != null) Controls.Remove(_runControls);
+        _runControls = controls;
+        if (controls != null) Controls.Add(controls);
+        PerformLayout();
+    }
+
     /// <summary>A control pinned under the 大屏 section (the background-music card), shown while it fits.</summary>
     public void SetFooter(Control footer)
     {
@@ -231,7 +243,8 @@ internal sealed class SharedPreviewDock : Panel
         int deviceHeight = _deviceConnected ? Math.Max(S(SourceCardHeight), w * 9 / 16) : S(SourceCardHeight);
         int documentHeight = _documentBarShown ? button + S(6) : 0;
         int fixedHeight = S(28) + gap / 2 + label + S(4) + (button + S(6)) * 2 + documentHeight + gap
-            + S(44) + gap + label + S(4) + S(SourceCardHeight) + S(6) + deviceHeight + gap + button;
+            + S(44) + gap + label + S(4) + S(SourceCardHeight) + S(6) + deviceHeight + gap + button
+            + (_runControls != null ? _runControls.Height + gap : 0);
         int monitor = Math.Clamp(area.Height - fixedHeight, S(90), (w - S(4)) * 9 / 16 + S(4));
 
         int y = area.Top;
@@ -292,10 +305,17 @@ internal sealed class SharedPreviewDock : Panel
         _stopOutputButton.Bounds = new Rectangle(x + half + S(8), y, w - half - S(8), button);
         y += button + gap;
 
+        if (_runControls != null)
+        {
+            _runControls.Width = w; // its own layout sets the height for this width
+            _runControls.Bounds = new Rectangle(x, y, w, _runControls.Height);
+            y += _runControls.Height + gap;
+        }
+
         if (_footer != null)
         {
             int footerHeight = _footer.Height;
-            _footer.Visible = area.Bottom - y >= footerHeight;
+            _footer.Visible = _runControls == null && area.Bottom - y >= footerHeight;
             _footer.Bounds = new Rectangle(x, area.Bottom - footerHeight, w, footerHeight);
         }
     }

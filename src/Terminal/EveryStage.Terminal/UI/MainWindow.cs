@@ -193,7 +193,11 @@ public sealed class MainWindow : GradientForm
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog);
         _activitiesPanel = new ActivitiesPanel(
-            scenarioStore, scenarioRepository, library, _preview, _fileOpLog, stateMachine);
+            scenarioStore, scenarioRepository, library, _preview, _fileOpLog, stateMachine)
+        {
+            ProgramEngine = () => _playback,
+        };
+        _activitiesPanel.RunRequested += RunActivityItem;
         _settingsPanel = new SettingsPanel(settingsStore, identity);
         foreach (Control page in new Control[] { _filesPanel, _devicesPanel, _activitiesPanel, _settingsPanel })
             _panelPalettes[page] = ModernUi.Palette;
@@ -342,6 +346,7 @@ public sealed class MainWindow : GradientForm
         if (_panelPalettes.TryGetValue(panel, out var themedWith)) ThemeManager.Reapply(panel, themedWith);
         _panelPalettes[panel] = ModernUi.Palette;
 
+        _previewDock.SetRunControls(panel == _activitiesPanel ? _activitiesPanel.RunControls : null);
         if (panel == _filesPanel) _filesPanel.Refresh_();
         else if (panel == _devicesPanel) _devicesPanel.Refresh_();
         else if (panel == _activitiesPanel) _activitiesPanel.RefreshTree();
@@ -387,6 +392,19 @@ public sealed class MainWindow : GradientForm
     {
         if (!ReferenceEquals(_preview.CurrentFile, file)) _preview.RequestPlay(file, PlaybackTrigger.ManualSkip);
         TakeSnapshot(new PlaybackEngine.Snapshot(file, null, -1, TimeSpan.Zero, false));
+    }
+
+    /// <summary>流程 「下一项 ▶」 / double-click / space: put this item on the big screen, continuing the
+    /// section from there. Without an extended display it plays in Preview instead.</summary>
+    private void RunActivityItem(Activity activity, int index)
+    {
+        if (index < 0 || index >= activity.Files.Count) return;
+        if (_playback == null)
+        {
+            _preview.RequestPlay(activity, index, PlaybackTrigger.ManualSkip);
+            return;
+        }
+        TakeSnapshot(new PlaybackEngine.Snapshot(activity.Files[index], activity, index, TimeSpan.Zero, false));
     }
 
     /// <summary>"投到屏幕" in the dock: continue the Preview content (file, activity position and play

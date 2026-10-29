@@ -459,7 +459,7 @@ public sealed class FilesPanel : UserControl
         menu.Items.Add(new ToolStripSeparator());
         var documentSettingsItem = new ToolStripMenuItem("文档播放设置...", null, (_, _) => EditDocumentSettings());
         menu.Items.Add(documentSettingsItem);
-        menu.Items.Add("加入活动...", null, OnAddToActivityClick);
+        menu.Items.Add("加入流程...", null, OnAddToActivityClick);
         menu.Items.Add("从文件库移除", null, (_, _) => OnRemoveClick(this, EventArgs.Empty));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("打开文件所在位置", null, (_, _) => OpenSelectedLocation());
@@ -510,7 +510,7 @@ public sealed class FilesPanel : UserControl
         menu.Items.Add("导入文件...", null, (_, _) => ImportViaDialog());
         menu.Items.Add(new ToolStripSeparator());
         _previewMenuItem = new ToolStripMenuItem("播放 / 预览", null, (_, _) => PlayOrPreviewSelected()) { Enabled = false };
-        _addToActivityMenuItem = new ToolStripMenuItem("加入活动...", null, OnAddToActivityClick) { Enabled = false };
+        _addToActivityMenuItem = new ToolStripMenuItem("加入流程...", null, OnAddToActivityClick) { Enabled = false };
         _removeMenuItem = new ToolStripMenuItem("移除所选文件", null, OnRemoveClick) { Enabled = false };
         menu.Items.Add(_previewMenuItem);
         menu.Items.Add(_addToActivityMenuItem);
