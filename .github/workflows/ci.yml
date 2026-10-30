@@ -59,10 +59,12 @@ jobs:
       - name: Build Windows installer
         shell: pwsh
         run: |
-          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and
-              -not (Test-Path "${env:ProgramFiles(x86)}\NSIS\makensis.exe")) {
+          # The Chocolatey feed sometimes times out (504) and choco still exits 0: retry until makensis exists.
+          $nsis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          for ($try = 1; -not (Get-Command makensis -ErrorAction SilentlyContinue) -and -not (Test-Path $nsis); $try++) {
+            if ($try -gt 4) { throw "NSIS could not be installed from Chocolatey." }
+            if ($try -gt 1) { Start-Sleep -Seconds (15 * $try) }
             choco install nsis -y --no-progress
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           ./scripts/Build-Installer.ps1
 
