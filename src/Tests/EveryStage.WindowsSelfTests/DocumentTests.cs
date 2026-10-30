@@ -275,6 +275,22 @@ internal static class DocumentTests
         Require(gapsSeen.Distinct().Count() <= 1, $"文件库: the gap changes with the card size ({string.Join("/", gapsSeen)}).");
         gridType.GetProperty("CardWidth")!.SetValue(grid, 180);
 
+        // 背景音乐歌单 slides up out of the music bar (no window) and back.
+        var drawer = (Control)type.GetField("_musicDrawer", flags)!.GetValue(window)!;
+        var drawerType = drawer.GetType();
+        drawerType.GetMethod("Toggle")!.Invoke(drawer, null);
+        Pump(400);
+        Require(drawer.Visible && drawer.Height > 150 && (bool)drawerType.GetProperty("IsOpen")!.GetValue(drawer)!, $"背景音乐: the drawer did not slide open (height {drawer.Height}).");
+        Require(Application.OpenForms.Cast<Form>().All(f => f == window || f.GetType().Name != "PlaylistDialog"), "背景音乐: a playlist window opened.");
+        using (var shot = new Bitmap(window.Width, window.Height))
+        {
+            window.DrawToBitmap(shot, new Rectangle(Point.Empty, window.Size));
+            shot.Save(Path.Combine(output, "music-drawer.png"), ImageFormat.Png);
+        }
+        drawerType.GetMethod("Toggle")!.Invoke(drawer, null);
+        Pump(400);
+        Require(!drawer.Visible && drawer.Height == 0, $"背景音乐: the drawer did not slide closed (height {drawer.Height}).");
+
         // Drag to reorder ends in FileLibraryStore.Move: the moved files land before the target.
         var order = library.Files.Select(f => f.Id).ToList();
         library.Move(new[] { order[0], order[1] }, order[4]);

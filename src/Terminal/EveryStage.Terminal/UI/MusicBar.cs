@@ -7,7 +7,8 @@ namespace EveryStage.Terminal.UI;
 /// <summary>
 /// The background-music mini bar along the bottom of every page (design 「背景音乐」): ♪ · track ·
 /// 「歌单 · 第 i / n 首 · 模式」 · ⏮ ⏯ ⏭ · progress · time · volume · 淡出 · 「歌单 ▴」. It drives the
-/// <see cref="MusicChannel"/>, which plays independently of Preview and the big screen.
+/// <see cref="MusicChannel"/>, which plays independently of Preview and the big screen. Clicking the bar
+/// itself (♪, the track text, empty space) or 「歌单 ▴」 slides the <see cref="MusicDrawer"/> up or back.
 /// </summary>
 internal sealed class MusicBar : Panel
 {
@@ -27,8 +28,18 @@ internal sealed class MusicBar : Panel
     private readonly System.Windows.Forms.Timer _timer;
     private readonly ToolTip _toolTip = new();
 
-    /// <summary>「歌单 ▴」: MainWindow opens the playlist window.</summary>
+    /// <summary>The bar or 「歌单 ▴」 was clicked: MainWindow slides the playlist drawer up or back.</summary>
     public event Action? PlaylistsRequested;
+
+    /// <summary>Whether the drawer is open: 「歌单 ▾」 then, 「歌单 ▴」 otherwise.</summary>
+    public bool DrawerOpen
+    {
+        set
+        {
+            _playlists.Text = value ? "歌单 ▾" : "歌单 ▴";
+            _toolTip.SetToolTip(_playlists, value ? "收起歌单" : "展开歌单");
+        }
+    }
 
     public MusicBar(MusicChannel music)
     {
@@ -49,7 +60,7 @@ internal sealed class MusicBar : Panel
         _volumeIcon = new Label { Text = "", Font = new Font(IconFont, 10F), ForeColor = ModernUi.Muted, BackColor = Color.Transparent, TextAlign = ContentAlignment.MiddleCenter };
         _volume = new MediaTrack { Value = music.Volume };
         _fadeOut = TextButton("淡出", "3 秒内淡出后停止");
-        _playlists = TextButton("歌单 ▴", "管理背景音乐歌单");
+        _playlists = TextButton("歌单 ▴", "展开歌单");
         Controls.AddRange(new Control[] { _title, _subtitle, _previous, _playPause, _next, _progress, _time, _volumeIcon, _volume, _fadeOut, _playlists });
 
         _previous.Click += (_, _) => _music.Previous();
@@ -68,6 +79,12 @@ internal sealed class MusicBar : Panel
         };
         _fadeOut.Click += (_, _) => _music.FadeOutStop();
         _playlists.Click += (_, _) => PlaylistsRequested?.Invoke();
+        // The bar itself is the drawer's handle.
+        Cursor = _title.Cursor = _subtitle.Cursor = Cursors.Hand;
+        _toolTip.SetToolTip(_title, "点击展开 / 收起歌单");
+        _toolTip.SetToolTip(_subtitle, "点击展开 / 收起歌单");
+        _title.Click += (_, _) => PlaylistsRequested?.Invoke();
+        _subtitle.Click += (_, _) => PlaylistsRequested?.Invoke();
         _music.Changed += RefreshState;
 
         _timer = new System.Windows.Forms.Timer { Interval = 250 };
@@ -95,6 +112,12 @@ internal sealed class MusicBar : Panel
     }
 
     private int S(int v) => LogicalToDeviceUnits(v);
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (e.Button == MouseButtons.Left) PlaylistsRequested?.Invoke();
+    }
 
     protected override void OnLayout(LayoutEventArgs levent)
     {
@@ -160,7 +183,7 @@ internal sealed class MusicBar : Panel
         else if (track == null || !_music.IsPlaying)
         {
             Set(_title, playlist == null ? "背景音乐" : playlist.Name, ModernUi.Text);
-            Set(_subtitle, playlist == null ? "还没有歌单 · 点「歌单」新建" : $"{playlist.Tracks.Count} 首 · {ModeText(playlist.Mode)} · 未播放", ModernUi.Muted);
+            Set(_subtitle, playlist == null ? "还没有歌单 · 点这里新建" : $"{playlist.Tracks.Count} 首 · {ModeText(playlist.Mode)} · 未播放", ModernUi.Muted);
         }
         else
         {

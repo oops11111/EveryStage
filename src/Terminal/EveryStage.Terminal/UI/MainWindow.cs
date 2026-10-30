@@ -44,6 +44,7 @@ public sealed class MainWindow : GradientForm
     private readonly MusicLibraryStore _musicStore;
     private readonly MusicChannel _music;
     private readonly MusicBar _musicBar;
+    private readonly MusicDrawer _musicDrawer;
     private readonly Panel _monitorColumn;
     private readonly RoundedActionButton _expandMonitorButton;
     private bool _monitorCollapsed;
@@ -205,9 +206,17 @@ public sealed class MainWindow : GradientForm
                 && (program.CurrentVideoHasAudio || program.CurrentFile?.Kind == MediaKind.Audio),
         };
         _musicBar = new MusicBar(_music) { Dock = DockStyle.Bottom };
-        _musicBar.PlaylistsRequested += () => OpenPlaylists();
+        _musicDrawer = new MusicDrawer(_music, _library) { Dock = DockStyle.Bottom };
+        _musicBar.PlaylistsRequested += _musicDrawer.Toggle;
+        _musicDrawer.OpenChanged += open => _musicBar.DrawerOpen = open;
+        // Dock order (outermost first = highest index): the bar on the bottom edge, the drawer sliding up
+        // from it, the page filling the rest.
+        _contentHost.Controls.Add(_musicDrawer);
         _contentHost.Controls.Add(_musicBar);
-        _filesPanel.AddToPlaylistRequested += files => OpenPlaylists(files.Select(f => f.SourcePath).ToList());
+        _contentHost.Controls.SetChildIndex(_panelHost, 0);
+        _contentHost.Controls.SetChildIndex(_musicDrawer, 1);
+        _contentHost.Controls.SetChildIndex(_musicBar, 2);
+        _filesPanel.AddToPlaylistRequested += files => _musicDrawer.OpenAndAdd(files.Select(f => f.SourcePath));
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog, identity.DeviceName, stateMachine);
         _activitiesPanel = new ActivitiesPanel(
@@ -328,14 +337,6 @@ public sealed class MainWindow : GradientForm
 
     /// <summary>Starts the playlist marked 「启动后自动播放」 (called once by the application at startup).</summary>
     public void StartBackgroundMusic() => _music.AutoPlayOnStartup();
-
-    /// <summary>The 「背景音乐歌单」 window; <paramref name="add"/> are added to the selected playlist first.</summary>
-    private void OpenPlaylists(IReadOnlyList<string>? add = null)
-    {
-        using var dialog = new PlaylistDialog(_music, _library);
-        if (add is { Count: > 0 }) dialog.AddTracks(add);
-        dialog.ShowDialog(this);
-    }
 
     /// <summary>Flat page background (the design has no gradient behind the pages).</summary>
     protected override void OnPaintBackground(PaintEventArgs e)
