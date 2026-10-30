@@ -79,8 +79,10 @@ internal sealed class MusicDrawer : Panel
         _mode = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Font = new Font(ModernUi.UiFont, 9F) };
         _mode.Items.AddRange(new object[] { "列表循环", "顺序播完停止", "单曲循环", "随机播放" });
         ModernUi.StyleComboBox(_mode);
-        _autoPlay = Check("启动后自动播放此歌单");
-        _duck = Check("大屏视频有声音时压低到 20%");
+        _autoPlay = Check("启动时自动播放");
+        _toolTip.SetToolTip(_autoPlay, "终端机启动后自动播放这个歌单");
+        _duck = Check("大屏有声时压低");
+        _toolTip.SetToolTip(_duck, "大屏视频有声音时，自动把音乐压低到 20%");
         _duck.Checked = Library.DuckForVideo;
 
         _sheet.Controls.AddRange(new Control[]
@@ -234,8 +236,7 @@ internal sealed class MusicDrawer : Panel
         _mode.Bounds = new Rectangle(x + S(62), optionsY + (row - _mode.Height) / 2, S(130), _mode.Height);
         int cx = _mode.Right + S(20);
         _autoPlay.Location = new Point(cx, optionsY + (row - _autoPlay.Height) / 2);
-        _duck.Location = new Point(_autoPlay.Right + S(18), optionsY + (row - _duck.Height) / 2);
-        _duck.Visible = _duck.Right <= w - pad;
+        _duck.Location = new Point(_autoPlay.Right + S(16), optionsY + (row - _duck.Height) / 2);
 
         int listsBottom = optionsY - S(10);
         // Left column: playlists with 新建 / 重命名 / 删除 under it.
@@ -253,13 +254,19 @@ internal sealed class MusicDrawer : Panel
         int rx = x + leftWidth + S(16), rightWidth = Math.Max(S(120), w - pad - rx);
         _trackLabel.Bounds = new Rectangle(rx, top, rightWidth, S(20));
         _tracks.Bounds = new Rectangle(rx, listTop, rightWidth, Math.Max(S(26), buttonsY - gap - listTop));
+        // The song buttons share the column: their preferred widths, squeezed evenly when it is narrower.
+        var songButtons = new[] { (_addFromLibrary, 112), (_import, 80), (_up, 52), (_down, 52), (_remove, 52) };
+        int spacing = S(6), preferred = songButtons.Sum(b => S(b.Item2));
+        float squeeze = Math.Min(1f, (rightWidth - spacing * (songButtons.Length - 1)) / (float)preferred);
         int bx = rx;
-        foreach (var (button, width) in new[] { (_addFromLibrary, 112), (_import, 80), (_up, 52), (_down, 52), (_remove, 52) })
+        foreach (var (button, width) in songButtons)
         {
-            button.Bounds = new Rectangle(bx, buttonsY, S(width), row);
-            button.Visible = bx + S(width) <= rx + rightWidth;
-            bx += S(width) + S(6);
+            int bw = Math.Max(S(36), (int)(S(width) * squeeze));
+            button.Bounds = new Rectangle(bx, buttonsY, bw, row);
+            bx += bw + spacing;
         }
+        if (_addFromLibrary.Text != (squeeze < 0.85f ? "＋ 文件库" : "＋ 从文件库添加"))
+            _addFromLibrary.Text = squeeze < 0.85f ? "＋ 文件库" : "＋ 从文件库添加";
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -334,7 +341,7 @@ internal sealed class MusicDrawer : Panel
         if (playlist != null)
             foreach (var track in playlist.Tracks) _tracks.Items.Add(Path.GetFileName(track));
         _tracks.EndUpdate();
-        _mode.SelectedIndex = playlist == null ? -1 : (int)playlist.Mode;
+        _mode.SelectedIndex = playlist == null ? 0 : (int)playlist.Mode;
         _autoPlay.Checked = playlist?.AutoPlayOnStartup == true;
         _duck.Checked = Library.DuckForVideo;
         if (playlist != null) Library.CurrentPlaylistId = playlist.Id;
@@ -347,7 +354,7 @@ internal sealed class MusicDrawer : Panel
     private void UpdateButtons()
     {
         bool has = Selected != null;
-        _rename.Enabled = _delete.Enabled = _mode.Enabled = _autoPlay.Enabled = has;
+        _rename.Enabled = _delete.Enabled = _autoPlay.Enabled = has; // the mode box stays enabled: a disabled flat combo draws a white frame
         _remove.Enabled = has && _tracks.SelectedIndices.Count > 0;
         _up.Enabled = has && _tracks.SelectedIndices.Count == 1 && _tracks.SelectedIndex > 0;
         _down.Enabled = has && _tracks.SelectedIndices.Count == 1 && _tracks.SelectedIndex < _tracks.Items.Count - 1;
