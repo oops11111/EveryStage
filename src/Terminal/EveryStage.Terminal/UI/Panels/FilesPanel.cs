@@ -118,8 +118,9 @@ public sealed class FilesPanel : UserControl
     /// <summary>"停止输出": take the extended display off air (Preview is unaffected).</summary>
     public event Action? StopProgramRequested;
 
-    /// <summary>「加入歌单...」 on audio files: MainWindow opens the playlist window with them added.</summary>
-    public event Action<IReadOnlyList<MediaFile>>? AddToPlaylistRequested;
+    /// <summary>Audio files dropped or imported here: they go to the background-music playlist
+    /// (MainWindow slides the 歌单 drawer up with them added), never into the library.</summary>
+    public event Action<IReadOnlyList<string>>? AudioDropped;
 
     /// <summary>Whether Program is currently on air — enables the context menu's "停止输出".</summary>
     public Func<bool>? IsProgramLive { get; set; }
@@ -154,8 +155,9 @@ public sealed class FilesPanel : UserControl
             Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent,
         };
         _countLabel = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 9.5F), BackColor = Color.Transparent };
-        MediaKind?[] filters = { null, MediaKind.Image, MediaKind.Video, MediaKind.Document, MediaKind.Audio };
-        var filterTabs = new SegmentedFilter(new[] { "全部", "图片", "视频", "文档", "音频" }) { Height = 34 };
+        // No 音频 tab: audio belongs to the background music (歌单), never to the library.
+        MediaKind?[] filters = { null, MediaKind.Image, MediaKind.Video, MediaKind.Document };
+        var filterTabs = new SegmentedFilter(new[] { "全部", "图片", "视频", "文档" }) { Height = 34 };
         filterTabs.SelectedIndexChanged += (_, _) =>
         {
             _activeFilter = filters[filterTabs.SelectedIndex];
@@ -423,12 +425,6 @@ public sealed class FilesPanel : UserControl
         menu.Items.Add(new ToolStripSeparator());
         var documentSettingsItem = new ToolStripMenuItem("文档播放设置...", null, (_, _) => EditDocumentSettings());
         menu.Items.Add(documentSettingsItem);
-        var addToPlaylistItem = new ToolStripMenuItem("加入背景音乐歌单...", null, (_, _) =>
-        {
-            var audio = SelectedFiles().Where(f => f.Kind == MediaKind.Audio).ToList();
-            if (audio.Count > 0) AddToPlaylistRequested?.Invoke(audio);
-        });
-        menu.Items.Add(addToPlaylistItem);
         menu.Items.Add("加入流程...", null, OnAddToActivityClick);
         menu.Items.Add("从文件库移除", null, (_, _) => OnRemoveClick(this, EventArgs.Empty));
         menu.Items.Add(new ToolStripSeparator());
@@ -441,7 +437,6 @@ public sealed class FilesPanel : UserControl
         {
             stopOutputItem.Enabled = IsProgramLive?.Invoke() == true;
             documentSettingsItem.Enabled = _contextFile?.Kind == MediaKind.Document;
-            addToPlaylistItem.Visible = _contextFile?.Kind == MediaKind.Audio;
             menu.BackColor = ModernUi.Surface;
             menu.ForeColor = ModernUi.Text;
             foreach (ToolStripItem item in menu.Items)
@@ -823,7 +818,11 @@ public sealed class FilesPanel : UserControl
     private void ImportPaths(IEnumerable<string> paths)
     {
         var rejected = new List<string>();
-        foreach (var path in paths)
+        // Audio goes to the background music (the selected 歌单), not into the library.
+        var all = paths.ToList();
+        var audio = all.Where(p => FileLibraryStore.InferKind(p) == MediaKind.Audio).ToList();
+        if (audio.Count > 0) AudioDropped?.Invoke(audio);
+        foreach (var path in all.Except(audio))
         {
             MediaFile? imported;
             try { imported = _library.Import(path); }
@@ -835,7 +834,7 @@ public sealed class FilesPanel : UserControl
             if (imported == null) rejected.Add(Path.GetFileName(path));
             else _fileOpLog.LogFileImported(imported.Id, imported.SourcePath);
         }
-        Refresh_();
+        if (audio.Count < all.Count) Refresh_();
 
         if (rejected.Count > 0)
         {
@@ -860,9 +859,8 @@ public sealed class FilesPanel : UserControl
         // Audio has its own persistent horizontal player area; keep it out of the visual-media
         // thumbnail grid so the "全部" view does not duplicate audio as generic file cards.
         string search = _searchBox.Text.Trim();
-        foreach (var file in _library.Files.Where(f => (_activeFilter == null
-                         ? f.Kind != MediaKind.Audio
-                         : f.Kind == _activeFilter)
+        foreach (var file in _library.Files.Where(f => f.Kind != MediaKind.Audio
+                     && (_activeFilter == null || f.Kind == _activeFilter)
                      && (search.Length == 0 || Path.GetFileName(f.SourcePath).Contains(search, StringComparison.OrdinalIgnoreCase))))
         {
             // Meta is read when painting, so it is worked out here once (painting never touches the disk).
@@ -870,12 +868,11 @@ public sealed class FilesPanel : UserControl
         }
         _grid.SetItems(items);
 
-        _countLabel.Text = $"{_library.Files.Count} 个文件";
+        _countLabel.Text = $"{_library.Files.Count(f => f.Kind != MediaKind.Audio)} 个文件";
         RefreshAudioBar();
         HighlightCurrentFile();
         _emptyStateLabel.Text = search.Length > 0 ? $"没有名称包含“{search}”的文件"
-            : _library.Files.Count == 0 ? "文件库还是空的\n\n点击“＋ 导入”或将文件拖到这里"
-            : _activeFilter == null && _library.Files.All(f => f.Kind == MediaKind.Audio) ? "暂无图片、视频或文档\n\n音频文件在「音频」筛选和下方播放区"
+            : _library.Files.All(f => f.Kind == MediaKind.Audio) ? "文件库还是空的\n\n点击“＋ 导入”或将文件拖到这里（音频会进入下方的背景音乐歌单）"
             : "这一类还没有文件";
         _emptyStateLabel.Visible = _grid.Items.Count == 0;
         PositionEmptyState();

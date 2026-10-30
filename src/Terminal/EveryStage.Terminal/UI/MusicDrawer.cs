@@ -38,6 +38,11 @@ internal sealed class MusicDrawer : Panel
     private int _slideFrom;
     private bool _open;
     private bool _updating;
+    private const string TrackDragFormat = "EveryStage.MusicTracks";
+    private Point _trackPress;
+    private int _trackPressIndex = -1;
+    private bool _hasLibraryAudio;
+    private int _insertAt = -1; // drag insertion position in the song list (0..count), -1 when none
 
     /// <summary>Raised when the drawer starts opening or closing (the bar flips its 「歌单 ▴/▾」).</summary>
     public event Action<bool>? OpenChanged;
@@ -66,7 +71,7 @@ internal sealed class MusicDrawer : Panel
         _rename = Button("重命名", "重命名选中的歌单", RenamePlaylist);
         _delete = Button("删除", "删除选中的歌单（音频文件本身不会被删除）", DeletePlaylist);
 
-        _trackLabel = Caption("歌曲 · 双击从这首开始播放");
+        _trackLabel = Caption("歌曲");
         _tracks = List(SelectionMode.MultiExtended, DrawTrack);
         _addFromLibrary = Button("＋ 从文件库添加", "把文件库里的音频加入这个歌单", AddFromLibrary);
         _import = Button("导入音频", "从电脑选择音频文件加入这个歌单", ImportFiles);
@@ -100,6 +105,36 @@ internal sealed class MusicDrawer : Panel
             if (Selected is { } playlist && _tracks.SelectedIndex >= 0) _music.Play(playlist, _tracks.SelectedIndex);
         };
         _tracks.KeyDown += (_, e) => { if (e.KeyCode == Keys.Delete) RemoveTracks(); };
+        // Drag songs to reorder them; drop audio files from Explorer anywhere on the drawer (on the song
+        // list: at the insertion bar).
+        _tracks.MouseDown += (_, e) =>
+        {
+            _trackPress = e.Location;
+            _trackPressIndex = e.Button == MouseButtons.Left ? _tracks.IndexFromPoint(e.Location) : -1;
+        };
+        _tracks.MouseMove += (_, e) =>
+        {
+            if (_trackPressIndex < 0 || e.Button != MouseButtons.Left) return;
+            var drag = SystemInformation.DragSize;
+            if (Math.Abs(e.X - _trackPress.X) < drag.Width && Math.Abs(e.Y - _trackPress.Y) < drag.Height) return;
+            var moved = _tracks.GetSelected(_trackPressIndex)
+                ? _tracks.SelectedIndices.Cast<int>().OrderBy(i => i).ToArray()
+                : new[] { _trackPressIndex };
+            _trackPressIndex = -1;
+            _tracks.DoDragDrop(new DataObject(TrackDragFormat, moved), DragDropEffects.Move);
+            SetInsertAt(-1);
+        };
+        _tracks.MouseUp += (_, _) => _trackPressIndex = -1;
+        AllowDrop = _sheet.AllowDrop = _tracks.AllowDrop = _playlists.AllowDrop = true;
+        foreach (var target in new Control[] { this, _sheet, _playlists })
+        {
+            target.DragEnter += (_, e) => e.Effect = AudioPaths(e.Data).Count > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+            target.DragDrop += (_, e) => AddTracks(AudioPaths(e.Data));
+        }
+        _tracks.DragEnter += (_, e) => OnTracksDragOver(e);
+        _tracks.DragOver += (_, e) => OnTracksDragOver(e);
+        _tracks.DragLeave += (_, _) => SetInsertAt(-1);
+        _tracks.DragDrop += (_, e) => OnTracksDrop(e);
         _mode.SelectedIndexChanged += (_, _) =>
         {
             if (_updating || Selected is not { } playlist || _mode.SelectedIndex < 0) return;
@@ -180,6 +215,67 @@ internal sealed class MusicDrawer : Panel
         AddTracks(paths);
     }
 
+    /// <summary>The audio files in a drag from Explorer (other files are ignored).</summary>
+    public static IReadOnlyList<string> AudioPaths(IDataObject? data) =>
+        data?.GetData(DataFormats.FileDrop) is string[] paths
+            ? paths.Where(p => FileLibraryStore.InferKind(p) == MediaKind.Audio).ToList()
+            : Array.Empty<string>();
+
+    private void OnTracksDragOver(DragEventArgs e)
+    {
+        bool internalMove = e.Data?.GetDataPresent(TrackDragFormat) == true;
+        if (!internalMove && AudioPaths(e.Data).Count == 0) { e.Effect = DragDropEffects.None; return; }
+        e.Effect = internalMove ? DragDropEffects.Move : DragDropEffects.Copy;
+        var p = _tracks.PointToClient(new Point(e.X, e.Y));
+        // Scroll when the pointer rests near the top or bottom edge.
+        int edge = _tracks.ItemHeight / 2;
+        if (p.Y < edge && _tracks.TopIndex > 0) _tracks.TopIndex--;
+        else if (p.Y > _tracks.ClientSize.Height - edge && _tracks.TopIndex < _tracks.Items.Count - 1) _tracks.TopIndex++;
+        int index = _tracks.IndexFromPoint(p);
+        int insert = index < 0
+            ? (p.Y < 0 ? _tracks.TopIndex : _tracks.Items.Count)
+            : p.Y - _tracks.GetItemRectangle(index).Top > _tracks.ItemHeight / 2 ? index + 1 : index;
+        SetInsertAt(insert);
+    }
+
+    private void OnTracksDrop(DragEventArgs e)
+    {
+        int insert = _insertAt;
+        SetInsertAt(-1);
+        if (e.Data?.GetData(TrackDragFormat) is int[] moved) MoveTracks(moved, insert < 0 ? _tracks.Items.Count : insert);
+        else AddTracks(AudioPaths(e.Data), insert);
+    }
+
+    private void SetInsertAt(int insert)
+    {
+        if (_insertAt == insert) return;
+        _insertAt = insert;
+        _tracks.Invalidate();
+    }
+
+    /// <summary>Moves the songs at <paramref name="moved"/> (ascending) so they sit, in order, before
+    /// the song that was at <paramref name="insertAt"/>; the playing song keeps playing and stays marked.</summary>
+    private void MoveTracks(IReadOnlyList<int> moved, int insertAt)
+    {
+        if (Selected is not { } playlist || moved.Count == 0) return;
+        var tracks = playlist.Tracks;
+        string? playing = ReferenceEquals(_music.Playlist, playlist) && _music.TrackIndex >= 0 && _music.TrackIndex < tracks.Count ? tracks[_music.TrackIndex] : null;
+        int playingIndex = ReferenceEquals(_music.Playlist, playlist) ? _music.TrackIndex : -1;
+        var order = Enumerable.Range(0, tracks.Count).ToList();
+        int target = insertAt - moved.Count(i => i < insertAt);
+        order.RemoveAll(moved.Contains);
+        target = Math.Clamp(target, 0, order.Count);
+        order.InsertRange(target, moved);
+        if (order.SequenceEqual(Enumerable.Range(0, tracks.Count))) return; // dropped where it was
+        var reordered = order.Select(i => tracks[i]).ToList();
+        tracks.Clear();
+        tracks.AddRange(reordered);
+        if (playing != null) _music.CurrentTrackMoved(playlist, order.IndexOf(playingIndex));
+        Save();
+        ShowSelected();
+        for (int i = 0; i < moved.Count; i++) _tracks.SetSelected(target + i, true);
+    }
+
     private void BringToSlide()
     {
         _slideFrom = Height;
@@ -255,7 +351,7 @@ internal sealed class MusicDrawer : Panel
         _trackLabel.Bounds = new Rectangle(rx, top, rightWidth, S(20));
         _tracks.Bounds = new Rectangle(rx, listTop, rightWidth, Math.Max(S(26), buttonsY - gap - listTop));
         // The song buttons share the column: their preferred widths, squeezed evenly when it is narrower.
-        var songButtons = new[] { (_addFromLibrary, 112), (_import, 80), (_up, 52), (_down, 52), (_remove, 52) };
+        var songButtons = new[] { (_addFromLibrary, 112), (_import, 80), (_up, 52), (_down, 52), (_remove, 52) }.Where(b => b.Item1 != _addFromLibrary || _hasLibraryAudio).ToArray();
         int spacing = S(6), preferred = songButtons.Sum(b => S(b.Item2));
         float squeeze = Math.Min(1f, (rightWidth - spacing * (songButtons.Length - 1)) / (float)preferred);
         int bx = rx;
@@ -295,6 +391,13 @@ internal sealed class MusicDrawer : Panel
         bool playing = _music.IsPlaying && ReferenceEquals(_music.Playlist, playlist) && _music.TrackIndex == e.Index;
         bool missing = !File.Exists(path);
         DrawRow(_tracks, e, $"{e.Index + 1}.  {Path.GetFileName(path)}", missing ? "文件不存在" : "", playing, missing);
+        // Drag insertion bar: above this row, or below the last one.
+        int barY = _insertAt == e.Index ? e.Bounds.Top : _insertAt == playlist.Tracks.Count && e.Index == playlist.Tracks.Count - 1 ? e.Bounds.Bottom - S(2) : -1;
+        if (barY >= 0)
+        {
+            using var bar = new SolidBrush(ModernUi.Accent);
+            e.Graphics.FillRectangle(bar, e.Bounds.Left + S(4), barY, e.Bounds.Width - S(8), S(2));
+        }
     }
 
     /// <summary>One list row: accent tint when selected, ♪ and accent text on the playing entry,
@@ -345,7 +448,12 @@ internal sealed class MusicDrawer : Panel
         _autoPlay.Checked = playlist?.AutoPlayOnStartup == true;
         _duck.Checked = Library.DuckForVideo;
         if (playlist != null) Library.CurrentPlaylistId = playlist.Id;
-        _trackLabel.Text = playlist == null ? "歌曲 · 先在左边新建一个歌单" : $"歌曲 · {playlist.Tracks.Count} 首 · 双击从这首开始播放";
+        _trackLabel.Text = playlist == null ? "歌曲 · 把音频文件拖到这里，或先在左边新建歌单"
+            : playlist.Tracks.Count == 0 ? "歌曲 · 把音频文件拖到这里"
+            : $"歌曲 · {playlist.Tracks.Count} 首 · 拖动排序 · 双击从这首开始播放";
+        // 从文件库添加 only for audio imported into the library before audio moved to the 歌单.
+        _addFromLibrary.Visible = _hasLibraryAudio = _fileLibrary.Files.Any(f => f.Kind == MediaKind.Audio);
+        if (_sheet.IsHandleCreated) _sheet.PerformLayout();
         _updating = false;
         _playlists.Invalidate();
         UpdateButtons();
@@ -401,7 +509,7 @@ internal sealed class MusicDrawer : Panel
         RefreshPlaylists(null);
     }
 
-    private void AddTracks(IEnumerable<string> paths)
+    private void AddTracks(IEnumerable<string> paths, int insertAt = -1)
     {
         var list = paths.ToList();
         if (list.Count == 0) return;
@@ -411,13 +519,15 @@ internal sealed class MusicDrawer : Panel
             playlist = new Playlist { Name = "默认歌单" };
             Library.Playlists.Add(playlist);
         }
-        int first = playlist.Tracks.Count;
-        playlist.Tracks.AddRange(list);
+        int first = insertAt < 0 || insertAt > playlist.Tracks.Count ? playlist.Tracks.Count : insertAt;
+        if (ReferenceEquals(_music.Playlist, playlist) && _music.TrackIndex >= first)
+            _music.CurrentTrackMoved(playlist, _music.TrackIndex + list.Count);
+        playlist.Tracks.InsertRange(first, list);
         Save();
         RefreshPlaylists(playlist);
         // Show what was just added.
         _tracks.ClearSelected();
-        for (int i = first; i < _tracks.Items.Count; i++) _tracks.SetSelected(i, true);
+        for (int i = first; i < first + list.Count; i++) _tracks.SetSelected(i, true);
         _tracks.TopIndex = Math.Max(0, first - 1);
     }
 
@@ -429,7 +539,7 @@ internal sealed class MusicDrawer : Panel
         var menu = new ContextMenuStrip { ShowImageMargin = false };
         if (audio.Count == 0)
         {
-            menu.Items.Add(new ToolStripMenuItem("文件库里还没有音频 · 用「导入音频」直接添加") { Enabled = false });
+            menu.Items.Add(new ToolStripMenuItem("文件库里没有音频") { Enabled = false });
         }
         else
         {
@@ -456,7 +566,7 @@ internal sealed class MusicDrawer : Panel
             Filter = "音频文件|" + string.Join(";", AudioExtensions.Select(e => "*" + e)) + "|所有文件|*.*",
         };
         if (dialog.ShowDialog(OwnerWindow) != DialogResult.OK) return;
-        AddTracks(dialog.FileNames);
+        AddTracks(dialog.FileNames.Where(p => FileLibraryStore.InferKind(p) == MediaKind.Audio || p.EndsWith(".ogg", StringComparison.OrdinalIgnoreCase)));
     }
 
     private void MoveTrack(int delta)
@@ -464,10 +574,7 @@ internal sealed class MusicDrawer : Panel
         if (Selected is not { } playlist || _tracks.SelectedIndices.Count != 1) return;
         int index = _tracks.SelectedIndex, target = index + delta;
         if (target < 0 || target >= playlist.Tracks.Count) return;
-        (playlist.Tracks[index], playlist.Tracks[target]) = (playlist.Tracks[target], playlist.Tracks[index]);
-        Save();
-        ShowSelected();
-        _tracks.SelectedIndex = target;
+        MoveTracks(new[] { index }, delta < 0 ? target : target + 1);
     }
 
     private void RemoveTracks()

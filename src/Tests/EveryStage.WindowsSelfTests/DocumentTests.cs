@@ -282,6 +282,24 @@ internal static class DocumentTests
         Pump(400);
         Require(drawer.Visible && drawer.Height > 150 && (bool)drawerType.GetProperty("IsOpen")!.GetValue(drawer)!, $"背景音乐: the drawer did not slide open (height {drawer.Height}).");
         Require(Application.OpenForms.Cast<Form>().All(f => f == window || f.GetType().Name != "PlaylistDialog"), "背景音乐: a playlist window opened.");
+        // Audio dropped on the 文件库 goes to the selected 歌单, not into the library.
+        var filesPanel = type.GetField("_filesPanel", flags)!.GetValue(window)!;
+        int libraryCount = library.Files.Count;
+        string[] songs = { @"C:\music\开场.mp3", @"C:\music\颁奖.mp3", @"C:\music\散场.mp3" };
+        filesPanel.GetType().GetMethod("ImportPaths", flags)!.Invoke(filesPanel, new object[] { songs });
+        Pump(100);
+        Require(library.Files.Count == libraryCount, "背景音乐: dropped audio went into the 文件库.");
+        var selectedPlaylist = drawerType.GetProperty("Selected", flags)!;
+        List<string> Songs() => ((Playlist)selectedPlaylist.GetValue(drawer)!).Tracks.TakeLast(3).ToList();
+        Require(Songs().SequenceEqual(songs), "背景音乐: dropped audio did not join the playlist.");
+        // Drag 开场 below 散场, then 散场 back to the top.
+        int offset = ((Playlist)selectedPlaylist.GetValue(drawer)!).Tracks.Count - 3;
+        var moveTracks = drawerType.GetMethod("MoveTracks", flags)!;
+        moveTracks.Invoke(drawer, new object[] { new[] { offset }, offset + 3 });
+        Require(Songs().SequenceEqual(new[] { songs[1], songs[2], songs[0] }), $"背景音乐: drag reorder gave {string.Join(",", Songs())}.");
+        moveTracks.Invoke(drawer, new object[] { new[] { offset + 1 }, offset });
+        Require(Songs().SequenceEqual(new[] { songs[2], songs[1], songs[0] }), $"背景音乐: drag reorder gave {string.Join(",", Songs())}.");
+        Pump(100);
         using (var shot = new Bitmap(window.Width, window.Height))
         {
             window.DrawToBitmap(shot, new Rectangle(Point.Empty, window.Size));

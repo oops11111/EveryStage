@@ -150,6 +150,13 @@ public sealed class MusicChannel : IDisposable
     }
 
     /// <summary>Call after the playlists were edited: keeps the playing track if it is still there.</summary>
+    /// <summary>The playing playlist's songs were reordered: the song that is playing is now at
+    /// <paramref name="index"/> (so 上一首 / 下一首 continue from where it really is).</summary>
+    public void CurrentTrackMoved(Playlist playlist, int index)
+    {
+        if (ReferenceEquals(Playlist, playlist) && index >= 0 && index < playlist.Tracks.Count) TrackIndex = index;
+    }
+
     public void PlaylistsEdited()
     {
         if (Playlist != null && !Library.Playlists.Contains(Playlist))

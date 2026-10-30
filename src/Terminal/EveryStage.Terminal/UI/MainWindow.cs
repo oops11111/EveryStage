@@ -216,7 +216,11 @@ public sealed class MainWindow : GradientForm
         _contentHost.Controls.SetChildIndex(_panelHost, 0);
         _contentHost.Controls.SetChildIndex(_musicDrawer, 1);
         _contentHost.Controls.SetChildIndex(_musicBar, 2);
-        _filesPanel.AddToPlaylistRequested += files => _musicDrawer.OpenAndAdd(files.Select(f => f.SourcePath));
+        _filesPanel.AudioDropped += paths => _musicDrawer.OpenAndAdd(paths);
+        // Audio dropped on the music bar joins the selected playlist too.
+        _musicBar.AllowDrop = true;
+        _musicBar.DragEnter += (_, e) => e.Effect = MusicDrawer.AudioPaths(e.Data).Count > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+        _musicBar.DragDrop += (_, e) => _musicDrawer.OpenAndAdd(MusicDrawer.AudioPaths(e.Data));
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog, identity.DeviceName, stateMachine);
         _activitiesPanel = new ActivitiesPanel(
