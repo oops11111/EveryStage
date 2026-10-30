@@ -98,7 +98,7 @@ public sealed class FilesPanel : UserControl
     private readonly Label _emptyStateLabel;
 
     /// <summary>Card width per size (小 / 中 / 大), each 20% larger than the one before; the gap stays fixed.</summary>
-    private static readonly int[] CardWidths = { 150, 180, 216 };
+    private static readonly int[] CardWidths = { 85, 102, 122 };
 
     /// <summary>What Program shows right now (null when nothing local is on air) — the 「大屏」 badge.</summary>
     public Func<MediaFile?>? ProgramFile { get; set; }
@@ -723,9 +723,11 @@ public sealed class FilesPanel : UserControl
     {
         var card = tile; // the grid keeps the gaps between cards
         var thumb = new Rectangle(card.Left, card.Top, Math.Max(1, card.Width), Math.Max(1, card.Width * 10 / 16));
-        var more = new Rectangle(card.Right - 28, thumb.Bottom + 6, 24, NameRowHeight);
-        var name = Rectangle.FromLTRB(card.Left + 9, more.Top, more.Left - 2, more.Bottom);
-        var meta = new Rectangle(card.Left + 9, name.Bottom, Math.Max(1, card.Width - 18), MetaRowHeight);
+        // Small cards (小 is 85 px) get tighter padding and a narrower ⋯ so the name keeps some room.
+        int pad = card.Width < 120 ? 5 : 9, moreWidth = card.Width < 120 ? 16 : 24;
+        var more = new Rectangle(card.Right - moreWidth - pad / 2, thumb.Bottom + 6, moreWidth, NameRowHeight);
+        var name = Rectangle.FromLTRB(card.Left + pad, more.Top, more.Left - 2, more.Bottom);
+        var meta = new Rectangle(card.Left + pad, name.Bottom, Math.Max(1, card.Width - 2 * pad), MetaRowHeight);
         return new CardGeometry(card, thumb, name, meta, more);
     }
 

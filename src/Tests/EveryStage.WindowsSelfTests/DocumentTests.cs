@@ -249,7 +249,7 @@ internal static class DocumentTests
         var gridType = grid.GetType();
         var columnsSeen = new List<int>();
         var gapsSeen = new List<int>();
-        foreach (var (label, width) in new[] { ("small", 150), ("medium", 180), ("large", 216) })
+        foreach (var (label, width) in new[] { ("small", 85), ("medium", 102), ("large", 122) })
         {
             gridType.GetProperty("CardWidth")!.SetValue(grid, width);
             Pump(100);
