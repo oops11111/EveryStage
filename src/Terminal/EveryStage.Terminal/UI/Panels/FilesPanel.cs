@@ -22,7 +22,7 @@ namespace EveryStage.Terminal.UI.Panels;
 /// this copy-not-reference behavior being a deliberate, previously-documented choice, not something
 /// decided here.
 ///
-/// PLANNING.md §11's "批量选择" now covers two of its three actions: <see cref="_listView"/> allows
+/// PLANNING.md §11's "批量选择" now covers two of its three actions: <see cref="_grid"/> allows
 /// <c>MultiSelect</c>, "移除" (<see cref="OnRemoveClick"/>) handles any number of selected files at
 /// once, and "加入活动" (<see cref="OnAddToActivityClick"/>, added once <see cref="ActivityPickerDialog"/>
 /// gave this panel a way to pick a destination scenario/activity — see this project's README) does
@@ -57,8 +57,7 @@ public sealed class FilesPanel : UserControl
     // monitor-hot-plug binding needs to replace this from null to a real PlaybackEngine well after
     // this panel is already constructed.
     private PlaybackEngine? _playback;
-    private readonly ListView _listView;
-    private readonly ImageList _thumbnails;
+    private readonly MediaGrid _grid;
     // Managed keyed images are reliable for owner-drawn Tile items even when the native
     // LargeImageList is intentionally not assigned.
     private readonly Dictionary<string, Image> _thumbnailByFileId = new(StringComparer.OrdinalIgnoreCase);
@@ -173,8 +172,7 @@ public sealed class FilesPanel : UserControl
         sizeTabs.SelectedIndexChanged += (_, _) =>
         {
             _cardSize = sizeTabs.SelectedIndex;
-            UpdateTileSize();
-            _listView?.Invalidate();
+            if (_grid != null) _grid.MinCardWidth = MinCardWidths[_cardSize];
         };
 
         var importButton = new RoundedActionButton { Text = "导入", IconGlyph = "\uE710", Height = 34 };
@@ -221,67 +219,53 @@ public sealed class FilesPanel : UserControl
             Margin = new Padding(4, 1, 8, 0), Enabled = false,
         };
 
-        // Not assigned to _listView.LargeImageList on purpose: this ListView is fully OwnerDraw and
-        // DrawMediaCard looks thumbnails up directly from _thumbnails.Images[key], so the ListView
-        // never needs to realize an ImageList handle. Assigning it made WinForms realize that handle
-        // on the ListView's own handle creation, which throws "Parameter is not valid" while the
-        // list is still empty (an ImageList with no images yet) — a caught-but-logged ThreadException
-        // that spammed the crash log on every empty-library show. Keeping the ImageList purely as a
-        // keyed bitmap cache for owner-draw avoids that entirely.
-        _thumbnails = new ImageList { ImageSize = new Size(240, 150), ColorDepth = ColorDepth.Depth32Bit };
-        _listView = new MediaCardGridView
+        // The card grid: our own layout (columns re-flow with the card size and the width), selection,
+        // ⋯ / right-click menus and drag-to-reorder — see MediaGrid.
+        _grid = new MediaGrid
         {
             Dock = DockStyle.Fill,
-            View = View.Tile,
-            TileSize = new Size(200, 144),
-            OwnerDraw = true,
-            // PLANNING.md §11 "批量选择": Ctrl/Shift+点击 multi-select now works, and both "删除"
-            // (below) and "加入活动" (OnAddToActivityClick) handle any number of selected items —
-            // see class doc comment for why the remaining action, "统一设置属性", still isn't
-            // attempted, and why this reuses the existing always-visible toolbar buttons rather than
-            // building a separate floating one for the same enable/disable-on-selection behavior
-            // "选中后悬浮工具栏出现" already describes in spirit.
-            MultiSelect = true,
-            ShowItemToolTips = true,
-            BackColor = ModernUi.Background,
-            ForeColor = ModernUi.Text,
-            BorderStyle = BorderStyle.None,
+            Gap = CardGap,
+            MinCardWidth = MinCardWidths[_cardSize],
+            TileHeightFor = TileHeightFor,
             Font = new Font(ModernUi.UiFont, 10F),
         };
-        _listView.DrawItem += DrawMediaCard;
-        _listView.SelectedIndexChanged += (_, _) =>
+        _fileContextMenu = BuildFileContextMenu();
+        _grid.DrawCard += DrawMediaCard;
+        _grid.SelectionChanged += () =>
         {
-            bool hasSelection = _listView.SelectedItems.Count > 0;
+            bool hasSelection = _grid.SelectedItems.Count > 0;
             _removeMenuItem.Enabled = hasSelection;
             _addToActivityMenuItem.Enabled = hasSelection;
             _previewMenuItem.Enabled = hasSelection;
             _openLocationMenuItem.Enabled = hasSelection;
         };
-        // Single click: show the file in the 预览 monitor. Double click: put it straight on the big screen.
-        // Ctrl/Shift clicks keep multi-selecting and the card's ⋯ keeps opening its menu.
-        _listView.MouseClick += (_, e) =>
+        // Single click: show the file in the 预览 monitor (the card's ⋯ opens its menu instead).
+        // Double click: put it straight on the big screen.
+        _grid.ItemClicked += (item, e) =>
         {
-            if (e.Button != MouseButtons.Left || (ModifierKeys & (Keys.Control | Keys.Shift)) != 0) return;
-            if (_listView.GetItemAt(e.X, e.Y) is not { } item || CardLayout(item.Bounds).More.Contains(e.Location)) return;
-            PlayOrPreviewSelected();
+            int index = _grid.Items.ToList().IndexOf(item);
+            if (index >= 0 && CardLayout(_grid.CardBounds(index)).More.Contains(e.Location))
+            {
+                _contextFile = item.File;
+                _fileContextMenu.Show(_grid, e.Location);
+                return;
+            }
+            FilePlayRequested?.Invoke(item.File);
         };
-        _listView.MouseDoubleClick += (_, e) =>
+        _grid.ItemDoubleClicked += (item, _) => TakeRequested?.Invoke(item.File);
+        _grid.ContextMenuRequested += (item, point) =>
         {
-            if (e.Button != MouseButtons.Left || (ModifierKeys & (Keys.Control | Keys.Shift)) != 0) return;
-            if (_listView.GetItemAt(e.X, e.Y) is not { Tag: MediaFile file } item || CardLayout(item.Bounds).More.Contains(e.Location)) return;
-            TakeRequested?.Invoke(file);
+            if (item == null) { _toolbarMenu.Show(_grid, point); return; }
+            _contextFile = item.File;
+            _fileContextMenu.Show(_grid, point);
         };
-        _fileContextMenu = BuildFileContextMenu();
-        _listView.MouseUp += OnFileListMouseUp;
+        _grid.ReorderRequested += OnReorder;
 
         DragEnter += OnDragEnter;
         DragDrop += OnDragDrop;
-        _listView.DragEnter += OnDragEnter;
-        _listView.DragDrop += OnDragDrop;
-        _listView.AllowDrop = true;
-
-        // Columns follow the grid width and the chosen card size (see UpdateTileSize).
-        _listView.SizeChanged += (_, _) => UpdateTileSize();
+        _grid.DragEnter += OnDragEnter;
+        _grid.DragDrop += OnDragDrop;
+        _grid.AllowDrop = true;
 
         // 效果图的「音频播放区」是一张独立卡片：标题行（音频播放区 + 说明）+ 内嵌播放条，常驻显示——
         // 没有音频时播放条显示「导入音频」占位，而不是整块隐藏。
@@ -299,7 +283,7 @@ public sealed class FilesPanel : UserControl
         // Control.Controls.Add order determines Dock z-order for same-DockStyle siblings: the LAST
         // one added claims its edge first. The grid (Fill) goes first so it takes whatever is left;
         // the header claims the top, the audio card and its gap the bottom.
-        Controls.Add(_listView);
+        Controls.Add(_grid);
         Controls.Add(header);
         // No audio card here any more: background music has its own bar and playlists (MainWindow);
         // audio files are reachable through the 音频 filter and join playlists from their menu.
@@ -333,7 +317,7 @@ public sealed class FilesPanel : UserControl
             string? programPath = ProgramFile?.Invoke()?.SourcePath;
             if (programPath == _lastProgramPath) return;
             _lastProgramPath = programPath;
-            _listView.Invalidate();
+            _grid.Invalidate();
         };
         _audioBarRefreshTimer.Start();
 
@@ -347,7 +331,6 @@ public sealed class FilesPanel : UserControl
             _thumbnailLoad?.Cancel();
             _thumbnailLoad?.Dispose();
             _thumbnailLoad = null;
-            _thumbnails.Dispose();
             _toolbarMenu.Dispose();
             foreach (var image in _thumbnailByFileId.Values) image.Dispose();
             _thumbnailByFileId.Clear();
@@ -370,7 +353,7 @@ public sealed class FilesPanel : UserControl
     /// started with none bound. The audio bar reads its playback engine fresh each tick and is also
     /// re-pointed here via <see cref="AudioPlayerBar.AttachPlaybackEngine"/>. The current-file
     /// highlight does subscribe to <see cref="PlaybackEngine.FileStarted"/>, so this method also
-    /// moves that subscription from any previous engine to the newly attached one. <see cref="_listView"/>'s own double-click doesn't read <see cref="_playback"/> at all —
+    /// moves that subscription from any previous engine to the newly attached one. <see cref="_grid"/>'s own double-click doesn't read <see cref="_playback"/> at all —
     /// it only raises <see cref="FilePlayRequested"/>, which <c>MainWindow</c>'s own subscriber
     /// resolves against ITS <see cref="_playback"/> field, already covered by
     /// <c>MainWindow.AttachPlaybackEngine</c> separately.</summary>
@@ -396,7 +379,8 @@ public sealed class FilesPanel : UserControl
 
     private void OpenSelectedLocation()
     {
-        if (_listView.SelectedItems.Count == 0 || _listView.SelectedItems[0].Tag is not MediaFile file) return;
+        if (_grid.SelectedItems.Count == 0) return;
+        var file = _grid.SelectedItems[0].File;
         OpenLocation(file);
     }
 
@@ -441,7 +425,7 @@ public sealed class FilesPanel : UserControl
         menu.Items.Add(documentSettingsItem);
         var addToPlaylistItem = new ToolStripMenuItem("加入背景音乐歌单...", null, (_, _) =>
         {
-            var audio = _listView.SelectedItems.Cast<ListViewItem>().Select(i => i.Tag).OfType<MediaFile>().Where(f => f.Kind == MediaKind.Audio).ToList();
+            var audio = SelectedFiles().Where(f => f.Kind == MediaKind.Audio).ToList();
             if (audio.Count > 0) AddToPlaylistRequested?.Invoke(audio);
         });
         menu.Items.Add(addToPlaylistItem);
@@ -515,26 +499,18 @@ public sealed class FilesPanel : UserControl
         return menu;
     }
 
-    private void OnFileListMouseUp(object? sender, MouseEventArgs e)
+    private List<MediaFile> SelectedFiles() => _grid.SelectedItems.Select(item => item.File).ToList();
+
+    /// <summary>Drag to reorder: the library order changes (and is saved); the grid follows it.</summary>
+    private void OnReorder(IReadOnlyList<MediaGrid.Item> moving, MediaGrid.Item? before)
     {
-        var hit = _listView.HitTest(e.Location).Item;
-        if (hit?.Tag is not MediaFile file)
+        try { _library.Move(moving.Select(item => item.File.Id).ToList(), before?.File.Id); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Right-click on empty grid space: the library-level actions (import, reload, ...).
-            if (e.Button == MouseButtons.Right) _toolbarMenu.Show(_listView, e.Location);
+            MessageBox.Show(this, $"顺序未保存：{DataDirectory.Describe(ex)}", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-        bool moreClicked = e.Button == MouseButtons.Left && CardLayout(hit.Bounds).More.Contains(e.Location);
-        if (e.Button != MouseButtons.Right && !moreClicked) return;
-
-        if (!hit.Selected)
-        {
-            foreach (ListViewItem item in _listView.SelectedItems) item.Selected = false;
-            hit.Selected = true;
-        }
-        _listView.FocusedItem = hit;
-        _contextFile = file;
-        _fileContextMenu.Show(_listView, e.Location);
+        Refresh_();
     }
 
     private void SetCompletionAndPlay(CompletionAction action)
@@ -567,11 +543,7 @@ public sealed class FilesPanel : UserControl
             return;
         }
 
-        var files = _listView.Items.Cast<ListViewItem>()
-            .Select(item => item.Tag as MediaFile)
-            .Where(file => file != null)
-            .Cast<MediaFile>()
-            .ToList();
+        var files = _grid.Items.Select(item => item.File).ToList();
         int startIndex = files.FindIndex(file => file.Id == _contextFile.Id);
         if (startIndex < 0) return;
 
@@ -604,35 +576,6 @@ public sealed class FilesPanel : UserControl
         public override Color ImageMarginGradientEnd => ModernUi.Surface;
         public override Color SeparatorDark => ModernUi.Border;
         public override Color SeparatorLight => ModernUi.Surface;
-    }
-
-    private sealed class MediaCardGridView : ListView
-    {
-        protected override void WndProc(ref Message m)
-        {
-            if (m.Msg == 0x0014 && m.WParam != IntPtr.Zero) // WM_ERASEBKGND
-            {
-                // Paint the hosting card behind the grid, so the grid reads as part of the 文件 card
-                // rather than an opaque rectangle inside it.
-                using var graphics = Graphics.FromHdc(m.WParam);
-                if (Parent != null)
-                {
-                    var state = graphics.Save();
-                    graphics.TranslateTransform(-Left, -Top);
-                    using (var args = new PaintEventArgs(graphics, Bounds))
-                        InvokePaintBackground(Parent, args);
-                    graphics.Restore(state);
-                }
-                else
-                {
-                    using var background = new SolidBrush(ModernUi.Background);
-                    graphics.FillRectangle(background, ClientRectangle);
-                }
-                m.Result = new IntPtr(1);
-                return;
-            }
-            base.WndProc(ref m);
-        }
     }
 
     /// <summary>效果图的分段筛选「全部 | 图片 | 视频 | 文档」：一个圆角容器，选中段填主蓝，未选中段之间
@@ -766,27 +709,6 @@ public sealed class FilesPanel : UserControl
         ImportPaths(dialog.FileNames);
     }
 
-    /// <summary>Sizes tiles so the row fills the grid width with as many cards as the chosen size
-    /// allows. File date lives in the item tooltip set in <see cref="Refresh_"/>.</summary>
-    private void UpdateTileSize()
-    {
-        // Fill the full grid width (cards then line up with the header on both sides); only when the
-        // rows overflow is the vertical scrollbar width set aside.
-        int minimum = LogicalToDeviceUnits(MinCardWidths[_cardSize]);
-        (int Columns, Size Tile) Fit(int available)
-        {
-            int columns = Math.Max(1, available / minimum);
-            int width = Math.Max(minimum / 2, available / columns);
-            return (columns, new Size(width, TileHeightFor(width)));
-        }
-
-        var fit = Fit(_listView.Width - 2);
-        int rows = (_listView.Items.Count + fit.Columns - 1) / fit.Columns;
-        if (rows * fit.Tile.Height > _listView.Height)
-            fit = Fit(_listView.Width - SystemInformation.VerticalScrollBarWidth - 2);
-        if (_listView.TileSize != fit.Tile) _listView.TileSize = fit.Tile;
-    }
-
     // One file card inside its grid tile, per the design: 12px between cards, the thumbnail (16:10)
     // edge to edge at the top, then the name (with ⋯) and a muted meta line.
     private const int CardGap = 12;
@@ -799,7 +721,7 @@ public sealed class FilesPanel : UserControl
     /// tile sizing, so they cannot drift apart.</summary>
     private static CardGeometry CardLayout(Rectangle tile)
     {
-        var card = Rectangle.Inflate(tile, -CardGap / 2, -CardGap / 2);
+        var card = tile; // the grid keeps the gaps between cards
         var thumb = new Rectangle(card.Left, card.Top, Math.Max(1, card.Width), Math.Max(1, card.Width * 10 / 16));
         var more = new Rectangle(card.Right - 28, thumb.Bottom + 6, 24, NameRowHeight);
         var name = Rectangle.FromLTRB(card.Left + 9, more.Top, more.Left - 2, more.Bottom);
@@ -808,7 +730,7 @@ public sealed class FilesPanel : UserControl
     }
 
     private static int TileHeightFor(int tileWidth) =>
-        CardLayout(new Rectangle(0, 0, tileWidth, 10_000)).Meta.Bottom + 8 + CardGap / 2;
+        CardLayout(new Rectangle(0, 0, tileWidth, 10_000)).Meta.Bottom + 8;
 
     private void OnDragEnter(object? sender, DragEventArgs e)
     {
@@ -823,14 +745,10 @@ public sealed class FilesPanel : UserControl
 
     /// <summary>PLANNING.md §11 "批量选择" — the "删除" half of it (see class doc comment for the
     /// other two actions §11 describes for the same selection). Handles any number of selected
-    /// items, not just one, now that <see cref="_listView"/> allows <c>MultiSelect</c>.</summary>
+    /// items, not just one, now that <see cref="_grid"/> allows multi-selection.</summary>
     private void OnRemoveClick(object? sender, EventArgs e)
     {
-        RemoveFromLibrary(_listView.SelectedItems.Cast<ListViewItem>()
-            .Select(item => item.Tag as MediaFile)
-            .Where(file => file != null)
-            .Cast<MediaFile>()
-            .ToList());
+        RemoveFromLibrary(SelectedFiles());
     }
 
     /// <summary>Confirm, remove, log, refresh — shared by the grid (selection) and the audio
@@ -874,11 +792,7 @@ public sealed class FilesPanel : UserControl
     /// pushing a live update across panels that aren't currently visible anyway.</summary>
     private void OnAddToActivityClick(object? sender, EventArgs e)
     {
-        var files = _listView.SelectedItems.Cast<ListViewItem>()
-            .Select(item => item.Tag as MediaFile)
-            .Where(file => file != null)
-            .Cast<MediaFile>()
-            .ToList();
+        var files = SelectedFiles();
         if (files.Count == 0 || _scenarioStore.Scenarios.Count == 0) return;
 
         using var dialog = new ActivityPickerDialog(_scenarioStore.Scenarios, _scenarioStore.CurrentScenarioId);
@@ -939,8 +853,7 @@ public sealed class FilesPanel : UserControl
         _thumbnailLoad = new CancellationTokenSource();
         foreach (var image in _thumbnailByFileId.Values) image.Dispose();
         _thumbnailByFileId.Clear();
-        _thumbnails.Images.Clear();
-        _listView.Items.Clear();
+        var items = new List<MediaGrid.Item>();
 
         // Audio has its own persistent horizontal player area; keep it out of the visual-media
         // thumbnail grid so the "全部" view does not duplicate audio as generic file cards.
@@ -950,30 +863,19 @@ public sealed class FilesPanel : UserControl
                          : f.Kind == _activeFilter)
                      && (search.Length == 0 || Path.GetFileName(f.SourcePath).Contains(search, StringComparison.OrdinalIgnoreCase))))
         {
-            string key = file.Id.ToString();
-            // ImageList.Images.Add copies the bitmap's pixel data into its own native image list
-            // handle — it does not take ownership of (or ever dispose) the Image instance passed in,
-            // so without this `using`, every BuildThumbnail() result here would leak its GDI+ handle
-            // until the next GC finalizer pass happens to run. This matters more than a one-off leak
-            // would: Refresh_() re-runs on every filter tab click, import, and removal (MainWindow
-            // also calls it every time the user switches to the 文件 tab), on what PLANNING.md §14.4
-            // frames as an always-on, unattended device — repeated small leaks like this are exactly
-            // the shape of thing that eventually exhausts the process's GDI object quota on a machine
-            // that's never restarted.
-            var item = new ListViewItem(Path.GetFileName(file.SourcePath), key) { Tag = file, ToolTipText = CardToolTip(file) };
-            item.SubItems.Add(CardMeta(file)); // read by DrawMediaCard, so painting never touches the disk
-            _listView.Items.Add(item);
+            // Meta is read when painting, so it is worked out here once (painting never touches the disk).
+            items.Add(new MediaGrid.Item { File = file, Meta = CardMeta(file), ToolTip = CardToolTip(file) });
         }
+        _grid.SetItems(items);
 
         _countLabel.Text = $"{_library.Files.Count} 个文件";
-        UpdateTileSize();
         RefreshAudioBar();
         HighlightCurrentFile();
         _emptyStateLabel.Text = search.Length > 0 ? $"没有名称包含“{search}”的文件"
             : _library.Files.Count == 0 ? "文件库还是空的\n\n点击“＋ 导入”或将文件拖到这里"
             : _activeFilter == null && _library.Files.All(f => f.Kind == MediaKind.Audio) ? "暂无图片、视频或文档\n\n音频文件在「音频」筛选和下方播放区"
             : "这一类还没有文件";
-        _emptyStateLabel.Visible = _listView.Items.Count == 0;
+        _emptyStateLabel.Visible = _grid.Items.Count == 0;
         PositionEmptyState();
         if (IsHandleCreated) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
     }
@@ -992,7 +894,7 @@ public sealed class FilesPanel : UserControl
         if (_thumbnailPassRunning && _thumbnailPassToken == token) return;
         _thumbnailPassToken = token;
         _thumbnailPassRunning = true;
-        var files = _listView.Items.Cast<ListViewItem>().Select(item => (MediaFile)item.Tag!).ToArray();
+        var files = _grid.Items.Select(item => item.File).ToArray();
         try
         {
             foreach (var file in files)
@@ -1038,8 +940,7 @@ public sealed class FilesPanel : UserControl
                     string key = file.Id.ToString();
                     if (!_thumbnailByFileId.ContainsKey(key))
                         _thumbnailByFileId.Add(key, (Image)thumbnail.Clone());
-                    if (!_thumbnails.Images.ContainsKey(key)) _thumbnails.Images.Add(key, thumbnail);
-                    _listView.Invalidate();
+                    _grid.Invalidate();
                 }
             }
         }
@@ -1090,26 +991,21 @@ public sealed class FilesPanel : UserControl
     private void OnPreviewStateChanged(PlaybackChannelState state)
     {
         HighlightCurrentFile();
-        _listView.Invalidate();
+        _grid.Invalidate();
     }
 
     private void HighlightCurrentFile()
     {
         // Follows what is loaded in the Preview monitor (independent of whether Program is on air).
         MediaFile? current = _playback is { State: not PlaybackChannelState.Idle } preview ? preview.CurrentFile : null;
-        foreach (ListViewItem item in _listView.Items)
-        {
-            bool playing = item.Tag is MediaFile file && current != null
-                && (ReferenceEquals(file, current)
-                    || string.Equals(file.SourcePath, current.SourcePath, StringComparison.OrdinalIgnoreCase));
-            string fileName = item.Tag is MediaFile tagged ? Path.GetFileName(tagged.SourcePath) : item.Text.TrimStart('▶', ' ');
-            item.Text = playing ? $"▶ {fileName}" : fileName;
-            if (playing) item.EnsureVisible();
-        }
+        if (current == null) return;
+        var playing = _grid.Items.FirstOrDefault(item => SameFile(item.File, current));
+        if (playing != null) _grid.EnsureVisible(playing);
+        _grid.Invalidate();
     }
 
     /// <summary>Rebinds the single <see cref="AudioPlayerBar"/> to the current audio files — called
-    /// from <see cref="Refresh_()"/> on the same cadence that rebuilds <see cref="_listView"/>. With no
+    /// from <see cref="Refresh_()"/> on the same cadence that rebuilds <see cref="_grid"/>. With no
     /// audio files the bar stays visible and shows its「导入音频」placeholder.</summary>
     private void RefreshAudioBar()
     {
@@ -1264,13 +1160,12 @@ public sealed class FilesPanel : UserControl
     private static bool SameFile(MediaFile a, MediaFile b) =>
         ReferenceEquals(a, b) || string.Equals(a.SourcePath, b.SourcePath, StringComparison.OrdinalIgnoreCase);
 
-    private void DrawMediaCard(object? sender, DrawListViewItemEventArgs e)
+    private void DrawMediaCard(Graphics g, MediaGrid.Item item, Rectangle bounds)
     {
-        var g = e.Graphics;
         g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        var layout = CardLayout(e.Bounds);
-        bool selected = e.Item.Selected;
-        var media = e.Item.Tag as MediaFile;
+        var layout = CardLayout(bounds);
+        bool selected = item.Selected;
+        var media = item.File;
         bool inPreview = media != null && _playback is { State: not PlaybackChannelState.Idle, CurrentFile: { } current } && SameFile(media, current);
         bool onProgram = media != null && ProgramFile?.Invoke() is { } programFile && SameFile(media, programFile);
 
@@ -1291,7 +1186,7 @@ public sealed class FilesPanel : UserControl
             var imageRect = layout.Thumb;
             using (var imgBg = new SolidBrush(Color.FromArgb(20, 37, 58)))
                 g.FillRectangle(imgBg, imageRect);
-            if (e.Item.ImageKey.Length > 0 && _thumbnailByFileId.TryGetValue(e.Item.ImageKey, out var image))
+            if (_thumbnailByFileId.TryGetValue(item.File.Id.ToString(), out var image))
             {
                 // Cover-fill the thumbnail area (crop to fill), edge to edge as in the design.
                 float scale = Math.Max((float)imageRect.Width / image.Width, (float)imageRect.Height / image.Height);
@@ -1328,13 +1223,13 @@ public sealed class FilesPanel : UserControl
         else if (inPreview) DrawChip(g, "预览", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Accent, ModernUi.AccentForeground);
 
         // Name (with ⋯ on the same row) and the meta line (kind · size).
-        string name = media != null ? Path.GetFileName(media.SourcePath) : e.Item.Text;
+        string name = Path.GetFileName(item.File.SourcePath);
         using (var nameFont = new Font(ModernUi.UiFont, 9.5F))
             TextRenderer.DrawText(g, name, nameFont, layout.Name, ModernUi.Text,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
-        if (e.Item.SubItems.Count > 1)
+        if (item.Meta.Length > 0)
             using (var metaFont = new Font(ModernUi.UiFont, 8F))
-                TextRenderer.DrawText(g, e.Item.SubItems[1].Text, metaFont, layout.Meta, ModernUi.Muted,
+                TextRenderer.DrawText(g, item.Meta, metaFont, layout.Meta, ModernUi.Muted,
                     TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
 
         using (var dots = new SolidBrush(ModernUi.Muted))
@@ -1414,7 +1309,7 @@ public sealed class FilesPanel : UserControl
 
     private void PlayOrPreviewSelected()
     {
-        if (_listView.SelectedItems.Count > 0 && _listView.SelectedItems[0].Tag is MediaFile file)
+        if (_grid.SelectedItems.Count > 0 && _grid.SelectedItems[0].File is { } file)
             FilePlayRequested?.Invoke(file);
     }
 

@@ -243,6 +243,40 @@ internal static class DocumentTests
                 }
             }
         }
+        // 文件库 card sizes: cards never overlap, gaps stay even, and each size gives a different column count.
+        showPanel.Invoke(window, new[] { type.GetField("_filesPanel", flags)!.GetValue(window)! });
+        var grid = FindByTypeName(window, "MediaGrid")!;
+        var gridType = grid.GetType();
+        var columnsSeen = new List<int>();
+        foreach (var (label, width) in new[] { ("small", 140), ("medium", 180), ("large", 250) })
+        {
+            gridType.GetProperty("MinCardWidth")!.SetValue(grid, width);
+            Pump(100);
+            int count = ((System.Collections.ICollection)gridType.GetProperty("Items")!.GetValue(grid)!).Count;
+            var bounds = Enumerable.Range(0, count).Select(i => (Rectangle)gridType.GetMethod("CardBounds")!.Invoke(grid, new object[] { i })!).ToList();
+            for (int i = 0; i < bounds.Count; i++)
+                for (int j = i + 1; j < bounds.Count; j++)
+                    Require(!bounds[i].IntersectsWith(bounds[j]), $"文件库 {label}: cards {i} and {j} overlap ({bounds[i]} / {bounds[j]}).");
+            int columns = bounds.Count(b => b.Top == bounds[0].Top);
+            columnsSeen.Add(columns);
+            if (bounds.Count > 1 && columns > 1)
+                Require(bounds[1].Left - bounds[0].Right == bounds[columns - 1].Left - bounds[columns - 2].Right, $"文件库 {label}: uneven gaps.");
+            Require(bounds.All(b => b.Right <= grid.ClientSize.Width), $"文件库 {label}: a card runs past the right edge.");
+            using var shot = new Bitmap(window.Width, window.Height);
+            window.DrawToBitmap(shot, new Rectangle(Point.Empty, window.Size));
+            shot.Save(Path.Combine(output, $"files-card-size-{label}.png"), ImageFormat.Png);
+        }
+        Require(columnsSeen[0] > columnsSeen[2], $"文件库: 小 and 大 give the same number of columns ({string.Join("/", columnsSeen)}).");
+        gridType.GetProperty("MinCardWidth")!.SetValue(grid, 180);
+
+        // Drag to reorder ends in FileLibraryStore.Move: the moved files land before the target.
+        var order = library.Files.Select(f => f.Id).ToList();
+        library.Move(new[] { order[0], order[1] }, order[4]);
+        Require(library.Files.Select(f => f.Id).ToList() is var moved && moved[2] == order[0] && moved[3] == order[1] && moved[4] == order[4],
+            "文件库 reorder did not put the files before the target.");
+        library.Move(new[] { order[0] }, null);
+        Require(library.Files[^1].Id == order[0], "文件库 reorder to the end failed.");
+
         applyTheme.Invoke(window, new object[] { AppTheme.Dark });
         Console.WriteLine($"INFO: main window screenshots in {output}");
     }

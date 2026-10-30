@@ -74,6 +74,21 @@ public sealed class FileLibraryStore
         return file;
     }
 
+    /// <summary>Moves <paramref name="ids"/> (kept in their current relative order) so they sit just before
+    /// <paramref name="beforeId"/>, or at the end when it is null. Saved; restored if the save fails.</summary>
+    public void Move(IReadOnlyCollection<Guid> ids, Guid? beforeId)
+    {
+        var previous = _files.ToList();
+        var moving = _files.Where(f => ids.Contains(f.Id)).ToList();
+        if (moving.Count == 0) return;
+        _files.RemoveAll(f => ids.Contains(f.Id));
+        int index = beforeId is { } id ? _files.FindIndex(f => f.Id == id) : -1;
+        if (index < 0) index = _files.Count;
+        _files.InsertRange(index, moving);
+        try { Save(); }
+        catch { _files = previous; throw; }
+    }
+
     public void Remove(Guid id)
     {
         EnsureWritable();
