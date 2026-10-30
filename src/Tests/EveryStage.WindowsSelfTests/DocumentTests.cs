@@ -243,14 +243,15 @@ internal static class DocumentTests
                 }
             }
         }
-        // 文件库 card sizes: cards never overlap, gaps stay even, and each size gives a different column count.
+        // 文件库 card sizes: cards never overlap, keep their set width, the gap is the same at every size.
         showPanel.Invoke(window, new[] { type.GetField("_filesPanel", flags)!.GetValue(window)! });
         var grid = FindByTypeName(window, "MediaGrid")!;
         var gridType = grid.GetType();
         var columnsSeen = new List<int>();
-        foreach (var (label, width) in new[] { ("small", 140), ("medium", 180), ("large", 250) })
+        var gapsSeen = new List<int>();
+        foreach (var (label, width) in new[] { ("small", 150), ("medium", 180), ("large", 216) })
         {
-            gridType.GetProperty("MinCardWidth")!.SetValue(grid, width);
+            gridType.GetProperty("CardWidth")!.SetValue(grid, width);
             Pump(100);
             int count = ((System.Collections.ICollection)gridType.GetProperty("Items")!.GetValue(grid)!).Count;
             var bounds = Enumerable.Range(0, count).Select(i => (Rectangle)gridType.GetMethod("CardBounds")!.Invoke(grid, new object[] { i })!).ToList();
@@ -259,15 +260,20 @@ internal static class DocumentTests
                     Require(!bounds[i].IntersectsWith(bounds[j]), $"文件库 {label}: cards {i} and {j} overlap ({bounds[i]} / {bounds[j]}).");
             int columns = bounds.Count(b => b.Top == bounds[0].Top);
             columnsSeen.Add(columns);
+            Require(bounds.All(b => b.Width == grid.LogicalToDeviceUnits(width)), $"文件库 {label}: cards are not {width} wide ({bounds[0].Width}).");
             if (bounds.Count > 1 && columns > 1)
+            {
                 Require(bounds[1].Left - bounds[0].Right == bounds[columns - 1].Left - bounds[columns - 2].Right, $"文件库 {label}: uneven gaps.");
+                gapsSeen.Add(bounds[1].Left - bounds[0].Right);
+            }
             Require(bounds.All(b => b.Right <= grid.ClientSize.Width), $"文件库 {label}: a card runs past the right edge.");
             using var shot = new Bitmap(window.Width, window.Height);
             window.DrawToBitmap(shot, new Rectangle(Point.Empty, window.Size));
             shot.Save(Path.Combine(output, $"files-card-size-{label}.png"), ImageFormat.Png);
         }
         Require(columnsSeen[0] > columnsSeen[2], $"文件库: 小 and 大 give the same number of columns ({string.Join("/", columnsSeen)}).");
-        gridType.GetProperty("MinCardWidth")!.SetValue(grid, 180);
+        Require(gapsSeen.Distinct().Count() <= 1, $"文件库: the gap changes with the card size ({string.Join("/", gapsSeen)}).");
+        gridType.GetProperty("CardWidth")!.SetValue(grid, 180);
 
         // Drag to reorder ends in FileLibraryStore.Move: the moved files land before the target.
         var order = library.Files.Select(f => f.Id).ToList();

@@ -6,8 +6,8 @@ namespace EveryStage.Terminal.UI.Panels;
 /// The 文件库 card grid, laid out and drawn here rather than by a WinForms ListView (whose tile view did not
 /// re-flow when the card size changed — cards overlapped or left wide gaps — and cannot reorder by drag).
 ///
-/// Columns: as many cards of at least <see cref="MinCardWidth"/> as fit, stretched to fill the width with a
-/// fixed gap between them; the card height comes from <see cref="TileHeightFor"/>. Vertical scrolling
+/// Columns: as many cards of exactly <see cref="CardWidth"/> as fit, a fixed <see cref="Gap"/> between them
+/// (cards keep their size; spare width stays at the right); the card height comes from <see cref="TileHeightFor"/>. Vertical scrolling
 /// (wheel, scroll bar, keyboard). Selection: click, Ctrl+click, Shift+click, Ctrl+A, arrow keys. Dragging a
 /// card shows an insertion bar and raises <see cref="ReorderRequested"/>; files dragged in from Explorer
 /// still reach the owner's DragEnter/DragDrop. Cards are painted by the owner (<see cref="DrawCard"/>).
@@ -42,13 +42,13 @@ internal sealed class MediaGrid : Control
     /// <summary>Gap between cards and around the grid, in logical pixels.</summary>
     public int Gap { get; set; } = 12;
 
-    /// <summary>Smallest card width (logical pixels) — the 小 / 中 / 大 setting.</summary>
-    public int MinCardWidth
+    /// <summary>Card width (logical pixels) — the 小 / 中 / 大 setting.</summary>
+    public int CardWidth
     {
-        get => _minCardWidth;
-        set { if (_minCardWidth != value) { _minCardWidth = value; Relayout(); } }
+        get => _cardWidthSetting;
+        set { if (_cardWidthSetting != value) { _cardWidthSetting = value; Relayout(); } }
     }
-    private int _minCardWidth = 180;
+    private int _cardWidthSetting = 180;
 
     /// <summary>Card height for a card width (both device pixels).</summary>
     public Func<int, int> TileHeightFor { get; set; } = width => width * 3 / 4;
@@ -133,8 +133,10 @@ internal sealed class MediaGrid : Control
         void Measure()
         {
             int gap = S(Gap), width = ViewWidth - gap;
-            _columns = Math.Max(1, width / (S(MinCardWidth) + gap));
-            _cardWidth = Math.Max(S(60), width / _columns - gap);
+            _cardWidth = S(CardWidth);
+            _columns = Math.Max(1, width / (_cardWidth + gap));
+            // Too narrow for even one card: shrink it to fit rather than run past the edge.
+            _cardWidth = Math.Max(S(60), Math.Min(_cardWidth, width - gap));
             _tileHeight = TileHeightFor(_cardWidth);
         }
     }

@@ -97,8 +97,8 @@ public sealed class FilesPanel : UserControl
     private readonly System.Windows.Forms.Timer _audioBarRefreshTimer;
     private readonly Label _emptyStateLabel;
 
-    /// <summary>Minimum card width per size (小 / 中 / 大); columns = grid width / this.</summary>
-    private static readonly int[] MinCardWidths = { 140, 180, 250 };
+    /// <summary>Card width per size (小 / 中 / 大), each 20% larger than the one before; the gap stays fixed.</summary>
+    private static readonly int[] CardWidths = { 150, 180, 216 };
 
     /// <summary>What Program shows right now (null when nothing local is on air) — the 「大屏」 badge.</summary>
     public Func<MediaFile?>? ProgramFile { get; set; }
@@ -172,7 +172,7 @@ public sealed class FilesPanel : UserControl
         sizeTabs.SelectedIndexChanged += (_, _) =>
         {
             _cardSize = sizeTabs.SelectedIndex;
-            if (_grid != null) _grid.MinCardWidth = MinCardWidths[_cardSize];
+            if (_grid != null) _grid.CardWidth = CardWidths[_cardSize];
         };
 
         var importButton = new RoundedActionButton { Text = "导入", IconGlyph = "\uE710", Height = 34 };
@@ -225,7 +225,7 @@ public sealed class FilesPanel : UserControl
         {
             Dock = DockStyle.Fill,
             Gap = CardGap,
-            MinCardWidth = MinCardWidths[_cardSize],
+            CardWidth = CardWidths[_cardSize],
             TileHeightFor = TileHeightFor,
             Font = new Font(ModernUi.UiFont, 10F),
         };
