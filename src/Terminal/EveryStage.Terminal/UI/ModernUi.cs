@@ -5,6 +5,16 @@ namespace EveryStage.Terminal.UI;
 
 internal static class ModernUi
 {
+    private sealed class ButtonRole { public bool Primary; public bool Danger; }
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Button, ButtonRole> ButtonRoles = new();
+    internal static bool ApplyButtonRole(Button button, UiPalette palette)
+    {
+        if (!ButtonRoles.TryGetValue(button, out var role)) return false;
+        button.BackColor = role.Primary ? (role.Danger ? palette.DangerFill : palette.AccentFill) : palette.Surface;
+        button.ForeColor = role.Primary ? Color.White : role.Danger ? palette.Danger : palette.Text;
+        button.FlatAppearance.BorderColor = role.Danger ? palette.Danger : palette.Border;
+        return true;
+    }
     /// <summary>The UI text font: Windows 11's Segoe UI Variable (Text optical size) when it is installed
     /// AND Windows links it to Microsoft YaHei UI for Chinese (HKLM FontLink\SystemLink); otherwise Segoe
     /// UI. The link check matters: the UI is mostly Chinese, Segoe UI Variable has no CJK glyphs, and a
@@ -68,11 +78,15 @@ internal static class ModernUi
 
     public static void StyleButton(Button button, bool primary = false, bool danger = false)
     {
+        var role = ButtonRoles.GetOrCreateValue(button);
+        role.Primary = primary;
+        role.Danger = danger;
         button.FlatStyle = FlatStyle.Flat;
         button.FlatAppearance.BorderSize = primary ? 0 : 1;
         button.FlatAppearance.BorderColor = danger ? Danger : Border;
         button.BackColor = primary ? (danger ? Danger : Accent) : Surface;
         button.ForeColor = primary ? (danger ? Color.White : AccentForeground) : Text;
+        ApplyButtonRole(button, Palette);
         button.Cursor = Cursors.Hand;
         button.Font = new Font(ModernUi.UiFont, 10F, FontStyle.Regular);
         button.Padding = new Padding(8, 0, 8, 0);
@@ -680,6 +694,13 @@ internal sealed class AppTitleBar : Panel
         // index 1 — just after the title — places the status left of minimize.
         Controls.SetChildIndex(status, 1);
         status.MouseDown += DragWindow;
+    }
+
+    public void AddAction(Control action)
+    {
+        action.Dock = DockStyle.Right;
+        Controls.Add(action);
+        Controls.SetChildIndex(action, 1);
     }
 
     private void DragWindow(object? sender, MouseEventArgs e)

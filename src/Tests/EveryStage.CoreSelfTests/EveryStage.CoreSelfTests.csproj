@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="../SelfTestWatchdog.cs" Link="SelfTestWatchdog.cs" />
     <ProjectReference Include="..\..\Shared\EveryStage.Discovery\EveryStage.Discovery.csproj" />
     <ProjectReference Include="..\..\Shared\EveryStage.Transport\EveryStage.Transport.csproj" />
   </ItemGroup>

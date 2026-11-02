@@ -80,13 +80,12 @@ public sealed class SettingsPanel : UserControl
 
         // --- 外观 ---
         _themeComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Visible = false };
-        _themeComboBox.Items.AddRange(new object[] { "白色", "黑色", "蓝色", "跟随系统" });
+        _themeComboBox.Items.AddRange(new object[] { "浅色", "深色", "舞台", "跟随系统" });
         _themeComboBox.SelectedIndex = Math.Clamp((int)settings.Theme, 0, _themeComboBox.Items.Count - 1);
         var themeCards = new FlowLayoutPanel { Height = 112, WrapContents = true, BackColor = Color.Transparent, Margin = Padding.Empty };
-        string[] themeNames = { "白色", "黑色", "蓝色", "跟随系统" };
-        for (int i = 0; i < themeNames.Length; i++)
+        foreach (var (name, theme) in new[] { ("跟随系统", AppTheme.System), ("浅色", AppTheme.Light), ("深色", AppTheme.Dark), ("舞台", AppTheme.Tech) })
         {
-            var card = new ThemePreviewCard(themeNames[i], i, () => _themeComboBox.SelectedIndex, index =>
+            var card = new ThemePreviewCard(name, (int)theme, () => _themeComboBox.SelectedIndex, index =>
             {
                 SelectTheme(index);
                 foreach (Control control in themeCards.Controls) control.Invalidate();
@@ -99,13 +98,31 @@ public sealed class SettingsPanel : UserControl
         }
         var appearance = Section("外观", "即时生效", ModernUi.Accent);
         appearance.AddBlock(themeCards);
-        appearance.AddNote("「跟随系统」在 Windows 浅色模式下使用白色，深色模式下使用黑色，切换系统模式时实时跟随。");
+        appearance.AddNote("「跟随系统」跟随 Windows 应用的浅色或深色模式，切换时即时生效；不跟随系统强调色。");
         appearance.Controls.Add(_themeComboBox);
 
         // --- 通用 ---
         _castSwitchDefaultCheckbox = new CheckBox { Text = "开启", AutoSize = true, Checked = settings.CastSwitchDefaultOn };
         Section("通用").AddRow("启动时投屏开关默认开启", "只设置终端机启动时的默认值，不改变当前开关（当前开关在「设备」页和托盘菜单）",
             "重启后生效", ModernUi.Muted, _castSwitchDefaultCheckbox);
+        var globalEmergency = new CheckBox { Text = "启用", AutoSize = true, Checked = settings.GlobalEmergencyStopEnabled, AccessibleName = "全局急停快捷键 Shift+Esc" };
+        Section("急停快捷键").AddRow("Shift+Esc 全局急停", "默认关闭。开启后即使其他应用获得焦点也能停止输出；应用内及本应用对话框中始终可用。",
+            "即时生效", ModernUi.Accent, globalEmergency);
+        bool revertingEmergency = false;
+        globalEmergency.CheckedChanged += (_, _) =>
+        {
+            if (revertingEmergency) return;
+            var updated = _settingsStore.Current.Clone();
+            updated.GlobalEmergencyStopEnabled = globalEmergency.Checked;
+            try { _settingsStore.Save(updated); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                revertingEmergency = true;
+                try { globalEmergency.Checked = _settingsStore.Current.GlobalEmergencyStopEnabled; }
+                finally { revertingEmergency = false; }
+                MessageBox.Show(this, $"急停设置未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        };
 
         // --- 输出与播放 ---
         _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300 };

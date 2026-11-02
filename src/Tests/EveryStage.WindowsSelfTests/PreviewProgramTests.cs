@@ -303,6 +303,7 @@ internal static class PreviewProgramTests
             Console.WriteLine("PASS: system default application is only used on explicit request");
 
             // ── 7. Audio output failures (audit A-24 / B-20 / B-21) ─────────────────────────────────
+            Console.WriteLine("PHASE: audio output failures (including long media generation)");
             TestAudioOutputFailures(preview, media, logs, hasVideo, hasAudio);
 
             // ── 8. Decoding slower than real time (audit B-24) ──────────────────────────────────────

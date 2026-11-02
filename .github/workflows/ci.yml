@@ -10,6 +10,12 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      DOTNET_DbgEnableMiniDump: 1
+      DOTNET_DbgMiniDumpType: 1
+      DOTNET_DbgMiniDumpName: ${{ github.workspace }}/artifacts/test-diagnostics/selftest-%p.dmp
+      ES_SELFTEST_DUMP_TOOL: ${{ github.workspace }}/artifacts/tools/dotnet-dump.exe
 
     steps:
       - name: Check out repository
@@ -38,15 +44,39 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+      - name: Prepare timeout diagnostics
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/test-diagnostics | Out-Null
+          dotnet tool install dotnet-dump --tool-path artifacts/tools --version '8.*'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Run core self-tests
-        run: dotnet run --project src/Tests/EveryStage.CoreSelfTests/EveryStage.CoreSelfTests.csproj --no-build --configuration Release
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/test-diagnostics | Out-Null
+          dotnet run --project src/Tests/EveryStage.CoreSelfTests/EveryStage.CoreSelfTests.csproj --no-build --configuration Release 2>&1 | Tee-Object artifacts/test-diagnostics/core.log
+          exit $LASTEXITCODE
 
       - name: Build release packages and verify native dependencies
         shell: pwsh
         run: ./scripts/Build-ReleasePackages.ps1
 
       - name: Run Windows content self-tests
-        run: dotnet run --project src/Tests/EveryStage.WindowsSelfTests/EveryStage.WindowsSelfTests.csproj --no-build --configuration Release
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          dotnet run --project src/Tests/EveryStage.WindowsSelfTests/EveryStage.WindowsSelfTests.csproj --no-build --configuration Release 2>&1 | Tee-Object artifacts/test-diagnostics/windows.log
+          exit $LASTEXITCODE
+
+      - name: Upload self-test logs and timeout dumps
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-test-diagnostics-${{ github.sha }}
+          path: artifacts/test-diagnostics/
+          if-no-files-found: warn
 
       - name: Upload UI screenshots
         if: always()

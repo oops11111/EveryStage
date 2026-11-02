@@ -19,6 +19,69 @@ using EveryStage.Terminal.UI;
 /// </summary>
 internal static class DocumentTests
 {
+    public static void RunOperatorSmoke(string directory)
+    {
+        Exception? failure = null;
+        var thread = new Thread(() =>
+        {
+            try { TestThemeRoles(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            catch (Exception ex) { failure = ex; }
+        });
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        if (!thread.Join(TimeSpan.FromSeconds(30))) throw new TimeoutException("Operator UI tests did not finish.");
+        if (failure != null) throw new InvalidOperationException("Operator UI tests failed.", failure);
+    }
+
+    private static void TestHotkeyRegistration()
+    {
+        int failures = 0;
+        using var first = new EmergencyStopHotkey(() => { }, _ => failures++);
+        using var second = new EmergencyStopHotkey(() => { }, _ => failures++);
+        Require(!first.Registered && !second.Registered, "Global shortcut should be off by default.");
+        first.Configure(true);
+        if (!first.Registered)
+        {
+            Require(failures == 1, "Registration failure was not reported.");
+            Console.WriteLine("SKIP: native hotkey ownership test (Shift+Esc already owned externally; failure feedback verified)");
+            return;
+        }
+        second.Configure(true);
+        Require(!second.Registered && failures == 1, "A hotkey conflict was not reported.");
+        first.Configure(false);
+        second.Configure(true);
+        Require(second.Registered, "Disabling the first registration did not release the hotkey.");
+        Console.WriteLine("PASS: global emergency hotkey defaults off, reports conflicts, releases and retries");
+    }
+
+    private static void TestThemeRoles()
+    {
+        var saved = ModernUi.CurrentTheme;
+        using var form = new Form();
+        using var button = new Button();
+        ModernUi.StyleButton(button, primary: true);
+        form.Controls.Add(button);
+        try
+        {
+            foreach (var theme in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.Tech, AppTheme.System, AppTheme.Dark })
+            {
+                ThemeManager.Apply(form, theme);
+                var palette = UiPalette.For(theme);
+                Require(button.BackColor == palette.AccentFill && button.ForeColor == Color.White, "Primary role drifted during theme switching.");
+                double Channel(byte value) { double c = value / 255d; return c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4); }
+                double L(Color c) => 0.2126 * Channel(c.R) + 0.7152 * Channel(c.G) + 0.0722 * Channel(c.B);
+                Require(1.05 / (L(palette.AccentFill) + 0.05) >= 4.5 && 1.05 / (L(palette.DangerFill) + 0.05) >= 4.5,
+                    $"White button text contrast below 4.5:1 in {theme}.");
+                Require(palette.Preview != palette.ProgramBorder && palette.ProgramBorder != palette.Accent, "Output roles share a colour.");
+            }
+            Console.WriteLine("PASS: role-based primary buttons survive theme switches; primary/danger fill white-text contrast >=4.5:1");
+        }
+        finally { ThemeManager.Apply(form, saved); }
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
     public static void Run(string directory)
     {
         Exception? failure = null;
@@ -82,7 +145,8 @@ internal static class DocumentTests
     {
         string dir = Path.Combine(directory, "mainwindow");
         Directory.CreateDirectory(dir);
-        using var window = new MainWindow(new OutputStateMachine(), null, new FileLibraryStore(Path.Combine(dir, "library.json")),
+        var outputState = new OutputStateMachine();
+        using var window = new MainWindow(outputState, null, new FileLibraryStore(Path.Combine(dir, "library.json")),
             new EveryStage.Terminal.Devices.PairedDeviceStore(Path.Combine(dir, "paired.json")), new ScenarioStore(),
             new ScenarioRepository(Path.Combine(dir, "scenarios.json")), new SettingsStore(Path.Combine(dir, "settings.json")),
             EveryStage.Discovery.DeviceIdentity.LoadOrCreate("selftest", Path.Combine(dir, "identity.json")),
@@ -92,7 +156,68 @@ internal static class DocumentTests
         Pump(400);
         window.Size = new Size(1000, 760);
         Pump(200);
+        // Emergency output stop must work even while a text box has keyboard focus.
+        using (var text = new TextBox())
+        {
+            string imagePath = Path.Combine(dir, "emergency-auto.png");
+            using (var image = new Bitmap(16, 16)) image.Save(imagePath, ImageFormat.Png);
+            var preview = (PlaybackEngine)typeof(MainWindow).GetField("_preview", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+            preview.RequestPlay(new MediaFile
+            {
+                SourcePath = imagePath, Kind = MediaKind.Image, StayDuration = TimeSpan.FromSeconds(1),
+                OnCompletion = CompletionAction.Loop,
+            });
+            Require(WaitFor(() => preview.State == PlaybackChannelState.Playing, 3000), "Emergency fixture did not start.");
+            window.Controls.Add(text);
+            text.Focus();
+            outputState.AcceptDeviceCastRequest();
+            var command = typeof(MainWindow).GetMethod("ProcessCmdKey", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            object[] arguments = { new Message(), Keys.Shift | Keys.Escape };
+            Require((bool)command.Invoke(window, arguments)! && outputState.State == OutputState.Idle,
+                "Shift+Esc did not stop output with a text box focused.");
+            Pump(1200);
+            Require(outputState.State == OutputState.Idle && preview.State == PlaybackChannelState.Idle && preview.CurrentFile == null,
+                "An automatic timer restarted playback after emergency stop.");
+            window.Controls.Remove(text);
+        }
+        Console.WriteLine("PASS: Shift+Esc stops output with text-box focus and leaves it idle");
+        var hotkey = (EmergencyStopHotkey)typeof(MainWindow).GetField("_emergencyHotkey", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+        hotkey.Configure(true);
+        if (hotkey.Registered)
+        {
+            outputState.AcceptDeviceCastRequest();
+            using var dialog = new Form { ShowInTaskbar = false, Opacity = 0 };
+            using var closeDialog = new System.Windows.Forms.Timer { Interval = 250 };
+            closeDialog.Tick += (_, _) => dialog.Close();
+            dialog.Shown += (_, _) =>
+            {
+                Require(PostMessage(hotkey.Handle, 0x312, new IntPtr(0x4553), IntPtr.Zero), "Could not queue the hotkey message.");
+                closeDialog.Start();
+            };
+            dialog.ShowDialog(window);
+            hotkey.Configure(false);
+            Require(outputState.State == OutputState.Idle, "Delivered hotkey did not stop output inside a modal loop.");
+            Console.WriteLine("PASS: delivered WM_HOTKEY stops output while the owner is disabled by a modal dialog (physical key not simulated)");
+        }
+        using var feedbackOverlay = new OverlayWindow(new MonitorInfo("SELFTEST", new Rectangle(0, 0, 480, 270), false));
+        using var feedbackProgram = new PlaybackEngine(PlaybackChannel.Program, feedbackOverlay, null,
+            new SettingsStore(Path.Combine(dir, "feedback-settings.json")), new ScenarioStore(), outputState, dir);
+        window.AttachPlaybackEngine(feedbackProgram);
+        var lastFeedback = typeof(MainWindow).GetField("_lastOnAirFile", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        feedbackProgram.RequestPlay(new MediaFile { SourcePath = Path.Combine(dir, "missing.png"), Kind = MediaKind.Image });
+        Require(WaitFor(() => feedbackProgram.State == PlaybackChannelState.Failed, 3000) && lastFeedback.GetValue(window) == null,
+            "Failed output generated a success notification.");
+        string readyImage = Path.Combine(dir, "onair.png");
+        using (var bitmap = new Bitmap(32, 24)) bitmap.Save(readyImage, ImageFormat.Png);
+        var readyFile = new MediaFile { SourcePath = readyImage, Kind = MediaKind.Image };
+        feedbackProgram.RequestPlay(readyFile);
+        Require(WaitFor(() => ReferenceEquals(lastFeedback.GetValue(window), readyFile), 3000), "Ready Program output did not generate feedback.");
+        var dock = (SharedPreviewDock)typeof(MainWindow).GetField("_previewDock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+        Require(WaitFor(() => typeof(SharedPreviewDock).GetField("_flashingCard", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock) == null, 2000),
+            "On-air flash did not finish.");
+        Console.WriteLine("PASS: failed load never announces success; ready Program generates feedback; on-air flash expires");
         CaptureMainWindow(window, dir);
+        outputState.Disconnect();
         window.Close();
         Console.WriteLine("PASS: main window starts, lays out and closes with the document controls");
 

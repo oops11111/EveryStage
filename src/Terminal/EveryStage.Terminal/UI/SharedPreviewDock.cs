@@ -26,6 +26,41 @@ namespace EveryStage.Terminal.UI;
 /// </summary>
 internal sealed class SharedPreviewDock : Panel
 {
+    private readonly System.Windows.Forms.Timer _feedbackTimer = new() { Interval = 150 };
+    private Control? _flashingCard;
+    public void FlashProgram(bool device)
+    {
+        _flashingCard?.Invalidate();
+        _flashingCard = device ? _deviceCard.Card : _localCard.Card;
+        _flashingCard.Paint -= PaintOnAirFeedback;
+        _flashingCard.Paint += PaintOnAirFeedback;
+        _feedbackTimer.Tick -= EndOnAirFeedback;
+        _feedbackTimer.Tick += EndOnAirFeedback;
+        _feedbackTimer.Stop();
+        _feedbackTimer.Start();
+        _flashingCard.Invalidate();
+    }
+    private void PaintOnAirFeedback(object? sender, PaintEventArgs e)
+    {
+        if (!ReferenceEquals(sender, _flashingCard) || sender is not Control card) return;
+        using var pen = new Pen(ModernUi.Palette.ProgramBorder, 3);
+        var rect = new Rectangle(2, 2, Math.Max(1, card.Width - 5), Math.Max(1, card.Height - 5));
+        float d = Math.Min(12, Math.Min(rect.Width, rect.Height));
+        using var outline = new GraphicsPath();
+        outline.AddArc(rect.Left, rect.Top, d, d, 180, 90);
+        outline.AddArc(rect.Right - d, rect.Top, d, d, 270, 90);
+        outline.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        outline.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
+        outline.CloseFigure();
+        e.Graphics.DrawPath(pen, outline);
+    }
+    private void EndOnAirFeedback(object? sender, EventArgs e)
+    {
+        _feedbackTimer.Stop();
+        var card = _flashingCard;
+        _flashingCard = null;
+        card?.Invalidate();
+    }
     private const int MinProgressWidth = 90;
     private const int ButtonHeight = 30;
     private const int SourceCardHeight = 46;
@@ -429,7 +464,7 @@ internal sealed class SharedPreviewDock : Panel
         if (preview?.Muted == true && state is PlaybackChannelState.Playing or PlaybackChannelState.Paused) text += " · 预监静音";
         SetText(_previewState, text, color);
         bool previewHasContent = state is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed);
-        var frameColor = previewHasContent ? ModernUi.Accent : ModernUi.Border;
+        var frameColor = previewHasContent ? ModernUi.Palette.Preview : ModernUi.Border;
         if (_previewFrame.BackColor != frameColor) _previewFrame.BackColor = frameColor;
         _previewBadge.Active = previewHasContent;
 
@@ -512,6 +547,7 @@ internal sealed class SharedPreviewDock : Panel
 
     protected override void Dispose(bool disposing)
     {
+        if (disposing) _feedbackTimer.Dispose();
         if (disposing)
         {
             _timer.Stop();
@@ -545,7 +581,7 @@ internal sealed class SharedPreviewDock : Panel
             {
                 int s = 20;
                 var r = new Rectangle((_thumb.Width - s) / 2, (_thumb.Height - s) / 2, s, s);
-                VectorIcons.Draw(e.Graphics, NavIcon.Devices, r, _selected ? ModernUi.Accent : ModernUi.Muted);
+                VectorIcons.Draw(e.Graphics, NavIcon.Devices, r, _selected ? ModernUi.Palette.ProgramBorder : ModernUi.Muted);
             };
             var labels = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(10, 0, 0, 0) };
             var name = new Label
@@ -565,10 +601,10 @@ internal sealed class SharedPreviewDock : Panel
             SetText(_state, "● " + status, color);
             _selected = selected;
             Card.GlassTint = selected
-                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Accent, 0.19f))
+                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Palette.ProgramBorder, 0.19f))
                 : ModernUi.Palette.GlassTint;
             _thumb.GlassTint = selected
-                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Accent, 0.11f))
+                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Palette.ProgramBorder, 0.11f))
                 : ModernUi.Palette.GlassTint;
             Card.Invalidate(true);
         }
@@ -654,7 +690,7 @@ internal sealed class SharedPreviewDock : Panel
             ModernUi.StyleButton(_actionButton, primary: !onProgram, danger: onProgram);
             _actionButton.BringToFront();
             Card.GlassTint = onProgram
-                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Accent, 0.19f))
+                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Palette.ProgramBorder, 0.19f))
                 : ModernUi.Palette.GlassTint;
             Card.Invalidate(true);
         }
@@ -828,13 +864,13 @@ internal sealed class Badge : Control
         path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
         path.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
         path.CloseFigure();
-        Color channel = Danger ? ModernUi.Danger : ModernUi.Accent;
+        Color channel = Danger ? ModernUi.Palette.DangerFill : ModernUi.Palette.Preview;
         Color fore;
         if (_active)
         {
             using var fill = new SolidBrush(channel);
             g.FillPath(fill, path);
-            fore = Danger ? Color.White : ModernUi.AccentForeground;
+            fore = Danger ? Color.White : ModernUi.Palette.PreviewForeground;
         }
         else
         {

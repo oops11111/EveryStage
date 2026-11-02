@@ -12,6 +12,7 @@
     <NoWarn>$(NoWarn);NU1701</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../SelfTestWatchdog.cs" Link="SelfTestWatchdog.cs" />
     <PackageReference Include="PdfiumViewer.Native.x86_64.v8-xfa" Version="2018.4.8.256" />
     <ProjectReference Include="../../Terminal/EveryStage.Terminal/EveryStage.Terminal.csproj" />
   </ItemGroup>

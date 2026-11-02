@@ -7,6 +7,7 @@ using EveryStage.Terminal.StateMachine;
 using EveryStage.Terminal.Logging;
 using System.IO.Compression;
 
+using var watchdog = new EveryStage.Tests.SelfTestWatchdog("CoreSelfTests", 180);
 var failures = new List<string>();
 
 await RunAsync("RTP/H.264 transport", async () =>

@@ -49,6 +49,23 @@ namespace EveryStage.Terminal.UI.Panels;
 /// </summary>
 public sealed class FilesPanel : UserControl
 {
+    private string? _flashPath;
+    private readonly System.Windows.Forms.Timer _flashTimer = new() { Interval = 150 };
+    public void FlashOnAir(MediaFile file)
+    {
+        _flashPath = file.SourcePath;
+        _flashTimer.Tick -= EndOnAirFlash;
+        _flashTimer.Tick += EndOnAirFlash;
+        _flashTimer.Stop();
+        _flashTimer.Start();
+        Invalidate(true);
+    }
+    private void EndOnAirFlash(object? sender, EventArgs e)
+    {
+        _flashTimer.Stop();
+        _flashPath = null;
+        Invalidate(true);
+    }
     private readonly FileLibraryStore _library;
     private readonly FileOperationLogger _fileOpLog;
     private readonly ScenarioStore _scenarioStore;
@@ -328,6 +345,7 @@ public sealed class FilesPanel : UserControl
 
     protected override void Dispose(bool disposing)
     {
+        if (disposing) _flashTimer.Dispose();
         if (disposing)
         {
             _thumbnailLoad?.Cancel();
@@ -1173,8 +1191,9 @@ public sealed class FilesPanel : UserControl
         var cardRect = layout.Card;
         cardRect.Width -= 1;
         cardRect.Height -= 1;
-        Color borderColor = onProgram ? ModernUi.Danger : inPreview || selected ? ModernUi.Accent : Blend(ModernUi.Surface, ModernUi.Border, 0.45);
-        float borderWidth = onProgram || inPreview ? 2F : selected ? 1.6F : 1F;
+        bool flashing = string.Equals(media?.SourcePath, _flashPath, StringComparison.OrdinalIgnoreCase) && _flashPath != null;
+        Color borderColor = onProgram || flashing ? ModernUi.Palette.ProgramBorder : inPreview ? ModernUi.Palette.Preview : selected ? ModernUi.Accent : Blend(ModernUi.Surface, ModernUi.Border, 0.45);
+        float borderWidth = flashing ? 3F : onProgram || inPreview ? 2F : selected ? 1.6F : 1F;
         using (var path = RoundedCard(cardRect, 9))
         {
             using (var fill = new SolidBrush(selected ? Blend(ModernUi.Surface, ModernUi.Accent, 0.10) : ModernUi.Surface))
@@ -1219,7 +1238,7 @@ public sealed class FilesPanel : UserControl
             DrawChip(g, badgeText, badgeFont, new Point(thumb.Left + 6, thumb.Bottom - 6 - 17), badgeColor, Color.White);
         }
         if (onProgram) DrawChip(g, "大屏", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Danger, Color.White);
-        else if (inPreview) DrawChip(g, "预览", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Accent, ModernUi.AccentForeground);
+        else if (inPreview) DrawChip(g, "预览", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Palette.Preview, ModernUi.Palette.PreviewForeground);
 
         // Name (with ⋯ on the same row) and the meta line (kind · size).
         string name = Path.GetFileName(item.File.SourcePath);

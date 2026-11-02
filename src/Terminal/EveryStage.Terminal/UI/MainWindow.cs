@@ -56,6 +56,11 @@ public sealed class MainWindow : GradientForm
     private readonly VideoSurface? _previewVideoSurface;
     private readonly ToastStack _toastStack;
     private readonly Label _statusLabel;
+    private readonly RoundedActionButton _emergencyStop;
+    private readonly Label _onAir;
+    private readonly EmergencyStopHotkey _emergencyHotkey;
+    private MediaFile? _lastOnAirFile;
+    private bool _deviceFeedbackLive;
     private readonly System.Windows.Forms.Timer _declinedMessageTimer;
     private readonly FilesPanel _filesPanel;
     private readonly DevicesPanel _devicesPanel;
@@ -242,11 +247,27 @@ public sealed class MainWindow : GradientForm
 
         var titleBar = new AppTitleBar(this, "终端机");
         titleBar.AddStatus(_statusLabel);
+        _emergencyStop = new RoundedActionButton
+        {
+            Text = "■ 停止输出", AccessibleName = "停止输出，Shift+Esc", Width = 140,
+            BackColor = Color.FromArgb(180, 40, 48), ForeColor = Color.White,
+        };
+        ModernUi.StyleButton(_emergencyStop, primary: true, danger: true);
+        _emergencyStop.Click += (_, _) => StopProgramOutput();
+        titleBar.AddAction(_emergencyStop);
+        _onAir = new Label
+        {
+            Text = "● ON AIR · 大屏输出中", Dock = DockStyle.Top, Height = 28,
+            BackColor = Color.FromArgb(180, 40, 48), ForeColor = Color.White,
+            TextAlign = ContentAlignment.MiddleCenter, Visible = false,
+            AccessibleName = "大屏正在输出",
+        };
         // WinForms docks the back-most control first: the title bar takes the full top edge, then the
         // rail and the monitor column their sides, and the page area (front-most) fills the rest.
         Controls.Add(_contentHost);
         Controls.Add(_monitorColumn);
         Controls.Add(rail);
+        Controls.Add(_onAir);
         Controls.Add(titleBar);
         _rail = rail;
         ApplyFrameMetrics();
@@ -257,6 +278,8 @@ public sealed class MainWindow : GradientForm
         // on top of _contentHost regardless of which panel is currently showing.
         _toastStack = new ToastStack { RightInset = _monitorColumn.Width };
         Controls.Add(_toastStack);
+        _emergencyHotkey = new EmergencyStopHotkey(StopProgramOutput, message => _toastStack.Show(message, ToastSeverity.Critical));
+        _emergencyHotkey.Configure(settingsStore.Current.GlobalEmergencyStopEnabled);
         if (_playback != null) _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
 
         // See PlaybackEngine.PlaybackDeclinedByCastSwitch's own doc comment (README risk #9): a
@@ -274,6 +297,7 @@ public sealed class MainWindow : GradientForm
         };
         if (_playback != null) _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
         if (_playback != null) _playback.FileStarted += OnProgramFileStarted;
+        if (_playback != null) _playback.StateChanged += OnProgramPlaybackStateChanged;
 
         _stateMachine.StateChanged += OnStateChanged;
         UpdateStatusLabel();
@@ -326,18 +350,28 @@ public sealed class MainWindow : GradientForm
             _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
             _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
             _playback.FileStarted -= OnProgramFileStarted;
+            _playback.StateChanged -= OnProgramPlaybackStateChanged;
         }
         _playback = playback;
         _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
         _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
         _playback.FileStarted += OnProgramFileStarted;
+        _playback.StateChanged += OnProgramPlaybackStateChanged;
         // Files/Activities/audio bar operate the Preview engine; only the dock needs to know Program.
         _previewDock.AttachProgram(playback);
         UpdateStatusLabel();
     }
 
     public void UpdateDeviceCast(string? deviceName, bool connected, bool onProgram)
-        => _previewDock.UpdateDeviceCast(deviceName, connected, onProgram);
+    {
+        _previewDock.UpdateDeviceCast(deviceName, connected, onProgram);
+        if (connected && onProgram && !_deviceFeedbackLive)
+        {
+            _previewDock.FlashProgram(true);
+            _toastStack.Show($"已上屏：{deviceName ?? "设备来投"}", ToastSeverity.Info);
+        }
+        _deviceFeedbackLive = connected && onProgram;
+    }
 
     /// <summary>Starts the playlist marked 「启动后自动播放」 (called once by the application at startup).</summary>
     public void StartBackgroundMusic() => _music.AutoPlayOnStartup();
@@ -356,6 +390,8 @@ public sealed class MainWindow : GradientForm
         _monitorColumn.Width = LogicalToDeviceUnits(_monitorCollapsed ? 36 : 360);
         _monitorColumn.Padding = _monitorCollapsed ? new Padding(LogicalToDeviceUnits(4), LogicalToDeviceUnits(10), LogicalToDeviceUnits(4), 0) : Padding.Empty;
         _expandMonitorButton.Height = LogicalToDeviceUnits(30);
+        if (_emergencyStop != null) _emergencyStop.Width = LogicalToDeviceUnits(140);
+        if (_onAir != null) _onAir.Height = LogicalToDeviceUnits(28);
         if (_toastStack != null) _toastStack.RightInset = _monitorColumn.Width;
     }
 
@@ -396,6 +432,9 @@ public sealed class MainWindow : GradientForm
     private void ApplyTheme(AppTheme theme)
     {
         ThemeManager.Apply(this, theme);
+        // Safety colours are stable across themes; they do not follow the old-colour remapping.
+        _emergencyStop.BackColor = _onAir.BackColor = ModernUi.Palette.DangerFill;
+        _emergencyStop.ForeColor = _onAir.ForeColor = Color.White;
         foreach (Control hosted in _panelHost.Controls) _panelPalettes[hosted] = ModernUi.Palette;
     }
 
@@ -465,6 +504,26 @@ public sealed class MainWindow : GradientForm
     {
         if (InvokeRequired) { BeginInvoke(() => OnProgramFileStarted(file)); return; }
         EnterSection(_playback?.CurrentActivity);
+        NotifyProgramReady();
+    }
+
+    private void OnProgramPlaybackStateChanged(PlaybackChannelState state)
+    {
+        if (InvokeRequired) { BeginInvoke(() => OnProgramPlaybackStateChanged(state)); return; }
+        if (state is PlaybackChannelState.Loading or PlaybackChannelState.Idle or PlaybackChannelState.Failed)
+            _lastOnAirFile = null;
+        NotifyProgramReady();
+    }
+
+    private void NotifyProgramReady()
+    {
+        if (_stateMachine.State != OutputState.Active || _stateMachine.Source != ProgramSource.LocalMedia
+            || _playback?.State is not (PlaybackChannelState.Playing or PlaybackChannelState.Paused)
+            || _playback.CurrentFile is not { } file || ReferenceEquals(file, _lastOnAirFile)) return;
+        _lastOnAirFile = file;
+        _filesPanel.FlashOnAir(file);
+        _previewDock.FlashProgram(false);
+        _toastStack.Show($"已上屏：{Path.GetFileName(file.SourcePath)}", ToastSeverity.Info);
     }
 
     /// <summary>"投到屏幕" in the dock: continue the Preview content (file, activity position and play
@@ -501,7 +560,24 @@ public sealed class MainWindow : GradientForm
     }
 
     /// <summary>"停止输出": take the extended display off air. Preview keeps its content and position.</summary>
-    private void StopProgramOutput() => _stateMachine.Disconnect();
+    private void StopProgramOutput()
+    {
+        _stateMachine.Disconnect();
+        _playback?.Stop();
+        _preview.Stop();
+        _music.Stop();
+        _liveSection = null;
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == (Keys.Shift | Keys.Escape))
+        {
+            StopProgramOutput();
+            return true;
+        }
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
 
     private void RemoveFailedPreviewFileFromLibrary(MediaFile file)
     {
@@ -514,14 +590,20 @@ public sealed class MainWindow : GradientForm
         if (RemoveFileFromLibrary(libraryEntry)) _preview.Stop();
     }
 
-    private void OnSettingsChanged(AppSettings settings) => ApplyTheme(settings.Theme);
+    private void OnSettingsChanged(AppSettings settings)
+    {
+        ApplyTheme(settings.Theme);
+        _emergencyHotkey.Configure(settings.GlobalEmergencyStopEnabled);
+    }
 
     private void UpdateStatusLabel()
     {
         bool active = _stateMachine.State == OutputState.Active;
+        _emergencyStop.Enabled = active || _preview.State != PlaybackChannelState.Idle || _music.IsPlaying;
+        _onAir.Visible = active;
         (_statusLabel.Text, _statusLabel.ForeColor) =
-            active && (_playback == null || _stateMachine.Source == ProgramSource.DeviceCast) ? ("● 大屏输出中 · 设备来投", ModernUi.Success)
-            : active ? ("● 大屏输出中", ModernUi.Success)
+            active && (_playback == null || _stateMachine.Source == ProgramSource.DeviceCast) ? ("● 大屏输出中 · 设备来投", ModernUi.Danger)
+            : active ? ("● 大屏输出中", ModernUi.Danger)
             : _playback == null ? ("○ 未连接扩展屏 · 仅本地预览", ModernUi.Muted)
             : _stateMachine.CastSwitchOn ? ("○ 大屏待机", ModernUi.Muted)
             : ("○ 大屏待机 · 投屏开关已关闭", ModernUi.Warning);
@@ -609,6 +691,7 @@ public sealed class MainWindow : GradientForm
 
     protected override void Dispose(bool disposing)
     {
+        if (disposing) _emergencyHotkey?.Dispose();
         if (disposing)
         {
             _stateMachine.StateChanged -= OnStateChanged;
@@ -619,6 +702,7 @@ public sealed class MainWindow : GradientForm
                 _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
                 _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
                 _playback.FileStarted -= OnProgramFileStarted;
+                _playback.StateChanged -= OnProgramPlaybackStateChanged;
             }
             _declinedMessageTimer.Dispose();
             // Preview engine first (it joins its playback threads), then the surface it presents through.

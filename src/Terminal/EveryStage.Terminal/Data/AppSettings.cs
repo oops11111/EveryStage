@@ -25,6 +25,8 @@ public sealed class AppSettings
     /// while running does not retroactively flip the switch that's already on screen, since
     /// "default" and "current" are different things.</summary>
     public bool CastSwitchDefaultOn { get; set; } = true;
+    /// <summary>Register Shift+Esc across applications. Off by default; local emergency stop remains available.</summary>
+    public bool GlobalEmergencyStopEnabled { get; set; }
 
     // --- 显示 ---
 

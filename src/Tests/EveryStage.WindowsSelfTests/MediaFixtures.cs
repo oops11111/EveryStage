@@ -55,12 +55,24 @@ internal static class MediaFixtures
             long frameDuration = 10_000_000L / fps;
             int ySize = width * height, frameBytes = ySize + ySize / 2;
             var nv12 = new byte[frameBytes];
+            // Feed both streams together. Writing seconds of video before the first audio sample
+            // can block the muxer's backpressure queue on longer fixtures (e.g. long-av.mp4).
+            byte[]? pcm = withAudio ? SinePcm(seconds, audioStream.Rate, audioStream.Channels) : null;
+            int totalSamples = pcm == null ? 0 : pcm.Length / (audioStream.Channels * 2);
             for (int i = 0; i < frames; i++)
             {
                 FillNv12(nv12, width, height, i, frames);
                 WriteSample(writer, videoStream, nv12, i * frameDuration, frameDuration);
+                if (pcm != null)
+                {
+                    int start = (int)((long)i * totalSamples / frames);
+                    int end = (int)((long)(i + 1) * totalSamples / frames);
+                    int stride = audioStream.Channels * 2;
+                    long startTicks = 10_000_000L * start / audioStream.Rate;
+                    long endTicks = 10_000_000L * end / audioStream.Rate;
+                    WriteSample(writer, audioStream.Index, pcm.AsSpan(start * stride, (end - start) * stride).ToArray(), startTicks, endTicks - startTicks);
+                }
             }
-            if (withAudio) WriteSineTone(writer, audioStream.Index, seconds, audioStream.Rate, audioStream.Channels);
             writer.Finalize();
         }
         finally

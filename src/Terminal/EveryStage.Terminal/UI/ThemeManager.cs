@@ -124,6 +124,7 @@ public static class ThemeManager
                 : button.FlatAppearance.BorderColor == previous.Border ? palette.Border : palette.Accent;
         }
         foreach (Control child in control.Controls) ApplyRecursive(child, palette, previous);
+        if (control is Button roleButton) ModernUi.ApplyButtonRole(roleButton, palette);
     }
 
     private static Color MapForeground(Color current, UiPalette palette, UiPalette previous)

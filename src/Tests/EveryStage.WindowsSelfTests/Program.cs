@@ -10,6 +10,7 @@ using EveryStage.Terminal.Logging;
 
 // Same visual-styles setup as the Terminal (comctl32 v6): without it the file grid's tile view and
 // other themed controls fall back to their classic look, and the UI screenshots would not match the app.
+using var watchdog = new EveryStage.Tests.SelfTestWatchdog("WindowsSelfTests", 600);
 Application.EnableVisualStyles();
 
 // Run continuations on a single owning thread, as the WinForms renderer callers do.
@@ -18,7 +19,9 @@ SynchronizationContext.SetSynchronizationContext(context);
 Task tests = RunTests();
 while (!tests.IsCompleted) context.RunOne();
 tests.GetAwaiter().GetResult();
-Console.WriteLine("Windows content self-tests passed.");
+Console.WriteLine(Environment.GetEnvironmentVariable("ES_SELFTEST_SUITE") == "operator"
+    ? "Operator UI self-tests passed; remaining suites not run."
+    : "Windows content self-tests passed.");
 
 static async Task RunTests()
 {
@@ -28,6 +31,12 @@ static async Task RunTests()
     Directory.CreateDirectory(directory);
     try
     {
+        if (Environment.GetEnvironmentVariable("ES_SELFTEST_SUITE") == "operator")
+        {
+            Console.WriteLine("PHASE: operator UI only (other suites not run)");
+            DocumentTests.RunOperatorSmoke(directory);
+            return;
+        }
         string first = Path.Combine(directory, "first.png");
         string second = Path.Combine(directory, "second.png");
         using (var bitmap = new Bitmap(64, 32)) bitmap.Save(first, ImageFormat.Png);
@@ -93,9 +102,13 @@ static async Task RunTests()
         using (File.Open(pdfPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
         Console.WriteLine("PASS: native PDF rendering, async page boundaries, replacement during paging, disposal during paging/load, file release");
         TestAudioLayout(directory);
+        Console.WriteLine("PHASE: Preview/Program (includes resource cleanup)");
         PreviewProgramTests.Run(directory);
+        Console.WriteLine("PHASE: UDP pairing");
         await TestPairingV2DiscoveryServiceUdpAsync(directory);
+        Console.WriteLine("PHASE: documents and main window");
         DocumentTests.Run(directory);
+        Console.WriteLine("PHASE: cast audio");
         CastAudioTests.Run();
     }
     finally { Directory.Delete(directory, true); }

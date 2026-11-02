@@ -1,9 +1,8 @@
 namespace EveryStage.Terminal.UI;
 
 /// <summary>PLANNING.md §11 "异常提示"："按严重程度分色（红=严重/黄=提示）". <see cref="Critical"/> is
-/// red, <see cref="Warning"/> is yellow — no third level exists in the spec, so this enum stays a
-/// plain two-value severity rather than something more elaborate.</summary>
-public enum ToastSeverity { Warning, Critical }
+/// red, <see cref="Warning"/> is yellow; Info is the non-warning feedback for a successful take.</summary>
+public enum ToastSeverity { Warning, Critical, Info }
 
 /// <summary>One button on a Toast — PLANNING.md §11's "涉及播放的异常需带可执行按钮（重试/移除）".
 /// Invoking <see cref="Callback"/> is the button click handler's whole job; <see cref="ToastStack"/>
@@ -45,7 +44,7 @@ public sealed class ToastNotification : Panel
 
         var accentBar = new Panel
         {
-            BackColor = severity == ToastSeverity.Critical ? ModernUi.Danger : ModernUi.Warning,
+            BackColor = severity switch { ToastSeverity.Critical => ModernUi.Danger, ToastSeverity.Info => ModernUi.Accent, _ => ModernUi.Warning },
             Bounds = new Rectangle(0, 0, AccentBarWidth, height),
         };
 

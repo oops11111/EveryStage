@@ -1,5 +1,7 @@
 # PDF / Word / PPT 预览、编辑与投屏
 
+> 2026-11-03 状态：原生 PPT 会话仅由 Program 持有，Preview 浏览静态页，监看栏从 Program 获取演讲者信息。本地旧版独立演讲者窗口已归档，不属于当前交付能力。本文历史测试段落仅记录当时环境，当前是否通过以对应提交 CI 真实日志为准；双屏真机验收尚未完成。
+
 接入 [Preview / Program 双通道](PREVIEW-PROGRAM.md)：文档与图片、视频一样，先在 Preview（主窗口"本地预览 / 播控窗口"）中呈现，
 「投到屏幕」后由 Program（扩展屏 OverlayWindow）输出。替换了旧的 `WpsDocumentController`（WPS 窗口直接盖在扩展屏上、
 Preview 只有封面卡片）。
@@ -75,8 +77,8 @@ Preview 只有封面卡片）。
 ## 5. 测试结果（2026-10-03，Windows 10 Enterprise 19045，单显示器 1280×1024，WPS 12.8.2.18913，Office 16.0.20430）
 
 - 9 个项目 Release `-warnaserror`：0 错误 0 警告。
-- CoreSelfTests：全部通过（新增 PDF 视口数学、文档设置保存 / 克隆）。
-- WindowsSelfTests：全部通过，文档部分：
+- CoreSelfTests：历史运行记录包含 PDF 视口数学、文档设置保存 / 克隆；不作为当前提交 CI 结论。
+- WindowsSelfTests：以下为当时记录的文档场景，不作为当前提交 CI 结论：
   - PDF 120 页连续滚动 373 步约 1 s、只渲染可见页、缓存 35 MB；Take 精确位置、实时同步、冻结 + 更新大屏、关闭同步、
     改尺寸保持位置、Program 无界面元素 / 鼠标；损坏 PDF 应用内报错。
   - Word（WPS，PrintWindow 捕获）：Preview / Program 共享编辑器画面、编辑实时上屏、冻结 + 更新、保存、无残留进程。

@@ -89,9 +89,9 @@ Program.cs：只有绑定了扩展屏才创建 OverlayWindow / VideoSurface / Pl
 
 实现上，设备投屏编排集中在 `DeviceCastController`。控制器只依赖 `IDeviceCastStream` 和 `IDeviceCastTransport`：生产路径用 `CastReceiverStream` 适配真实 `CastReceiver`，并由 `DiscoveryService` 负责状态、NACK、ping 和 CastStatus；测试路径使用 fake stream/transport，不占用发现端口即可验证预览、上屏、投屏开关不管理网络投屏机请求但会撤回已上大屏的设备流、CastStatus `OnProgram` / 终端 `DeviceId`、回退、同设备重连、本地 Take 接管、第二台设备 Pending/拒绝/接受、断开、10 秒无包和解码/呈现坏死状态转换。
 
-## 5. 测试结果（Windows 10 Enterprise 19045，单显示器 1280×1024，Debug 与 Release 均通过）
+## 5. 历史测试记录（Windows 10 Enterprise 19045，单显示器 1280×1024）
 
-全部 6 个项目 Debug/Release 构建 0 警告 0 错误；CoreSelfTests 全通过；WindowsSelfTests 全通过，含：
+以下为历史环境的构建与运行记录，不代表当前提交通过 CI 或现场验收。当前结果以对应提交的 CI 日志为准；本地首批整改进度见 `IMPLEMENTATION-PROGRESS-2026-11-03.md`。历史覆盖场景包括：
 
 - 无扩展屏内部预览：图片、带/不带音轨视频、音频（格式矩阵见下）
 - 预览内容横向铺满且保持宽高比：2:1 图片上下留黑边；1:2 图片横向铺满、上下裁切；视频满宽矩形计算（宽画面、竖画面）
