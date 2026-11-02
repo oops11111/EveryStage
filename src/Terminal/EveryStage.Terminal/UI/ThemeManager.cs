@@ -6,6 +6,9 @@ namespace EveryStage.Terminal.UI;
 
 public static class ThemeManager
 {
+    // Test injection never writes Windows settings and is not exposed as a user override.
+    internal static Func<bool>? HighContrastProbe { get; set; }
+    internal static bool HighContrast => HighContrastProbe?.Invoke() ?? SystemInformation.HighContrast;
     /// <summary>The concrete theme for a configured one: "跟随系统" becomes Light or Dark from Windows'
     /// app mode at the time of the call.</summary>
     public static AppTheme Resolve(AppTheme theme) => theme == AppTheme.System
@@ -19,7 +22,7 @@ public static class ThemeManager
     {
         UserPreferenceChangedEventHandler handler = (_, e) =>
         {
-            if (e.Category != UserPreferenceCategory.General || configured() != AppTheme.System) return;
+            if (e.Category is not (UserPreferenceCategory.General or UserPreferenceCategory.Accessibility or UserPreferenceCategory.Color)) return;
             if (owner.IsHandleCreated && !owner.IsDisposed) owner.BeginInvoke(reapply);
         };
         SystemEvents.UserPreferenceChanged += handler;
@@ -32,7 +35,7 @@ public static class ThemeManager
         var previous = ModernUi.Palette;
         var palette = UiPalette.For(theme);
         ModernUi.SetPalette(palette, theme);
-        if (root.FindForm() is Form form) WindowsAppearance.ApplyTitleBarTheme(form, theme != AppTheme.Light);
+        if (root.FindForm() is Form form) WindowsAppearance.ApplyTitleBarTheme(form, !HighContrast && theme != AppTheme.Light);
         ApplyRecursive(root, palette, previous);
         RefreshThemeAwareControls(root);
         ThemeScrollbars(root);
@@ -78,6 +81,7 @@ public static class ThemeManager
     {
         if (control is EveryStage.Terminal.UI.Panels.ActivitiesPanel activities) activities.RefreshTheme();
         if (control is SharedPreviewDock previewDock) previewDock.RefreshTheme();
+        if (control is PresenterStrip presenter) presenter.RefreshTheme();
         foreach (Control child in control.Controls) RefreshThemeAwareControls(child);
     }
 

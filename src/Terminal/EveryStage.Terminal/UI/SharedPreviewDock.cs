@@ -870,7 +870,7 @@ internal sealed class Badge : Control
         {
             using var fill = new SolidBrush(channel);
             g.FillPath(fill, path);
-            fore = Danger ? Color.White : ModernUi.Palette.PreviewForeground;
+            fore = Danger ? ModernUi.Palette.DangerFillForeground : ModernUi.Palette.PreviewForeground;
         }
         else
         {
@@ -908,6 +908,18 @@ internal sealed class PresenterStrip : Panel
         _nextCaption = new Label { ForeColor = ModernUi.Muted, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8F), Text = "下一张" };
         _notes = new Label { ForeColor = ModernUi.Text, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9F), AutoEllipsis = true };
         Controls.AddRange(new Control[] { _status, _next, _nextCaption, _notes });
+        RefreshTheme();
+    }
+
+    private UiPalette ChromePalette => ThemeManager.HighContrast ? UiPalette.For(EveryStage.Terminal.Data.AppTheme.Dark) : UiPalette.Normal(EveryStage.Terminal.Data.AppTheme.Dark);
+    internal void RefreshTheme()
+    {
+        var palette = ChromePalette;
+        BackColor = palette.Background;
+        _status.ForeColor = palette.Text;
+        _nextCaption.ForeColor = palette.Muted;
+        _notes.ForeColor = palette.Text;
+        _next.BackColor = palette.IsHighContrast ? SystemColors.Window : Color.Black;
     }
 
     private int S(int v) => LogicalToDeviceUnits(v);
@@ -926,6 +938,7 @@ internal sealed class PresenterStrip : Panel
 
     public void Update(EveryStage.Terminal.Documents.SlideShowSession? show)
     {
+        RefreshTheme();
         if (!ReferenceEquals(show, _show))
         {
             _show = show;
@@ -962,7 +975,7 @@ internal sealed class PresenterStrip : Panel
             try { next = await show.GetSlideImageAsync(slide + 1, 480); } catch (Exception) { }
         if (IsDisposed || version != _version) { next?.Dispose(); return; }
         _notes.Text = string.IsNullOrWhiteSpace(notes) ? "（这一页没有备注）" : notes.Trim();
-        _notes.ForeColor = string.IsNullOrWhiteSpace(notes) ? ModernUi.Muted : ModernUi.Text;
+        _notes.ForeColor = string.IsNullOrWhiteSpace(notes) ? ChromePalette.Muted : ChromePalette.Text;
         var old = _next.Image;
         _next.Image = next;
         old?.Dispose();

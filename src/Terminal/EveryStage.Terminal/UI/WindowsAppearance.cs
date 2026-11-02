@@ -25,6 +25,7 @@ internal static class WindowsAppearance
 
     public static void ApplyTitleBarTheme(Form form, bool dark)
     {
+        dark &= !ThemeManager.HighContrast;
         if (!OperatingSystem.IsWindows() || !form.IsHandleCreated) return;
         int enabled = dark ? 1 : 0;
         // Windows 10 20H1+ uses 20; older Windows 10 builds use 19.
@@ -83,6 +84,7 @@ internal static class WindowsAppearance
     /// HandleCreated.</summary>
     public static void ApplyScrollbarTheme(Control control, bool dark)
     {
+        dark &= !ThemeManager.HighContrast;
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763) || !control.IsHandleCreated) return;
         try { SetWindowTheme(control.Handle, dark ? "DarkMode_Explorer" : null, null); }
         catch (DllNotFoundException) { }

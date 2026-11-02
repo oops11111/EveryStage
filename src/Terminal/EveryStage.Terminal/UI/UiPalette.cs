@@ -24,7 +24,12 @@ internal sealed record UiPalette(
     public Color ProgramBorder { get; init; } = Color.FromArgb(198, 66, 94);
     public Color Preview { get; init; } = Color.FromArgb(34, 197, 94);
     public Color PreviewForeground { get; init; } = Color.Black;
-    public static UiPalette For(AppTheme theme) => ThemeManager.Resolve(theme) switch
+    public bool IsHighContrast { get; init; }
+    public Color AccentFillForeground { get; init; } = Color.White;
+    public Color DangerFillForeground { get; init; } = Color.White;
+    public Color Focus { get; init; } = Color.FromArgb(66, 132, 245);
+    public static UiPalette For(AppTheme theme) => ThemeManager.HighContrast ? SystemContrast() : Normal(theme);
+    internal static UiPalette Normal(AppTheme theme) => ThemeManager.Resolve(theme) switch
     {
         AppTheme.Light => new(
             Color.FromArgb(246, 248, 251), Color.FromArgb(250, 252, 255), Color.FromArgb(255, 255, 255),
@@ -43,5 +48,18 @@ internal sealed record UiPalette(
             Color.FromArgb(27, 33, 40), Color.FromArgb(64, 74, 86), Color.FromArgb(239, 243, 247),
             Color.FromArgb(162, 174, 188), Color.FromArgb(63, 125, 233), Color.FromArgb(232, 104, 127),
             Color.FromArgb(240, 180, 60), Color.FromArgb(55, 222, 120), Color.FromArgb(202, 19, 23, 29)),
+    };
+
+    private static UiPalette SystemContrast() => new(
+        SystemColors.Window, SystemColors.Control, SystemColors.Window, SystemColors.Control,
+        SystemColors.WindowText, SystemColors.WindowText, SystemColors.WindowText,
+        SystemColors.Highlight, SystemColors.WindowText, SystemColors.WindowText,
+        SystemColors.WindowText, SystemColors.Window)
+    {
+        IsHighContrast = true,
+        AccentFill = SystemColors.Highlight, AccentFillForeground = SystemColors.HighlightText,
+        DangerFill = SystemColors.Highlight, DangerFillForeground = SystemColors.HighlightText,
+        ProgramBorder = SystemColors.WindowText, Preview = SystemColors.WindowText,
+        PreviewForeground = SystemColors.Window, Focus = SystemColors.Highlight,
     };
 }

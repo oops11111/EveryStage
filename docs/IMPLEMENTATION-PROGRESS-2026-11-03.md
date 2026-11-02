@@ -63,3 +63,15 @@ OV 代码签名需要用户持有的有效证书/签名服务；目前不具备�
 - 严格构建通过。日志 `artifacts/test-diagnostics/operator-feedback-theme.log`：主题反复切换后 primary 角色不漂移、主按钮/危险按钮白字对比度 ≥4.5:1、急停、失败加载不误报、成功输出触发反馈、描边终止、界面截图、歌单持久化和过场专项通过。末尾圆角描边/急停按钮角色及文案小改另做最终构建，未重复整套媒体测试。
 - 截图在 `artifacts/screenshots/`，检查了 `1024x640-Tech-settings.png` 的 ON AIR 通栏和主题名称。本轮截图是测试设置的状态，不作为系统外观/混合 DPI 真机验收。
 - 待继续：Windows 高对比度强制接管、全部控件角色化迁移、固定深色监看、其余 Focus/OnAir 等 Token、Mica 边界及 T1 真机验证。尚未推送/运行本批 CI。
+
+## 第四批：系统高对比度接管与演讲者监看
+
+- 前三批已保存为本地检查点提交 `7515004`；构建目录与旧审核材料未加入该提交。
+- 高对比度由 Windows SystemInformation.HighContrast 决定，覆盖所有应用主题；没有用户关闭该覆盖的入口。Accessibility/Color/General 系统偏好变化会重新应用已配置主题，退出高对比度后恢复原主题。
+- 使用 SystemColors 的 Window/WindowText/Control/Highlight/HighlightText/GrayText，主按钮及危险按钮保留正确的前景/背景配对；导航选中态也使用 Highlight/HighlightText，避免混色后的低对比度。
+- 高对比度下停止 GradientForm 的背景渐变与 GlassPanel 的半透明高光，恢复系统标题栏/滚动条主题；当前主窗口没有启用 Mica，因此本批不声称新增 Mica 能力。
+- 焦点新增 Focus Token，按钮用点线框；文件卡片的“大屏/预览”文字保留，预览用虚线、正式输出用实线，区别不再只靠红绿。素材图像/视频像素不被色板转换。
+- PresenterStrip（演讲者备注/下一张信息栏）普通主题下固定深色，高对比度优先覆盖系统色；异步备注返回也按该局部色板赋色。此项不代表整个右侧控制坞已完全固定深色。
+- 严格构建通过（0 警告/错误）。专项日志 `artifacts/test-diagnostics/operator-highcontrast-final.log` 验证内部模拟的高对比度强制接管、退出恢复、演讲者固定深色、按钮对比度、急停、反馈和界面启动；没有切换真实 Windows 设置。末尾导航系统色修补另通过最终严格构建。
+- 已检查 `artifacts/screenshots/simulated-system-highcontrast.png`；该图使用本机 SystemColors 的模拟覆盖，不能当作真实黑/白/自定义 Windows 高对比度主题矩阵验收。
+- 本批保留边界：非按钮旧控件角色化迁移、高对比度下各个自绘控件的细部适配、真实 Windows 设置通知/双屏与混合 DPI、整坞固定深色和 Mica 同步改动仍待继续。媒体整套用例本批未重复运行，未推送 CI。

@@ -11,7 +11,7 @@ internal static class ModernUi
     {
         if (!ButtonRoles.TryGetValue(button, out var role)) return false;
         button.BackColor = role.Primary ? (role.Danger ? palette.DangerFill : palette.AccentFill) : palette.Surface;
-        button.ForeColor = role.Primary ? Color.White : role.Danger ? palette.Danger : palette.Text;
+        button.ForeColor = role.Primary ? (role.Danger ? palette.DangerFillForeground : palette.AccentFillForeground) : role.Danger ? palette.Danger : palette.Text;
         button.FlatAppearance.BorderColor = role.Danger ? palette.Danger : palette.Border;
         return true;
     }
@@ -51,17 +51,17 @@ internal static class ModernUi
     public static Color Text => _palette.Text;
     public static Color Muted => _palette.Muted;
     public static Color Accent => _palette.Accent;
-    public static Color AccentForeground => _currentTheme == EveryStage.Terminal.Data.AppTheme.Tech
+    public static Color AccentForeground => Palette.IsHighContrast ? Palette.AccentFillForeground : _currentTheme == EveryStage.Terminal.Data.AppTheme.Tech
         ? Color.FromArgb(5, 22, 35) : Color.White;
     public static Color Danger => _palette.Danger;
 
     /// <summary>Accent used as text/icon colour on the rail: the accent itself on Light, lifted toward
     /// white on the dark themes where the plain accent is too dim for small glyphs.</summary>
-    public static Color AccentText => _currentTheme == EveryStage.Terminal.Data.AppTheme.Light
+    public static Color AccentText => Palette.IsHighContrast ? SystemColors.WindowText : _currentTheme == EveryStage.Terminal.Data.AppTheme.Light
         ? Accent : Mix(Accent, Color.White, 0.35f);
 
     /// <summary>Fill behind the selected rail item: the rail tinted toward the accent.</summary>
-    public static Color NavActive => Mix(Rail, Accent, _currentTheme == EveryStage.Terminal.Data.AppTheme.Light ? 0.11f : 0.14f);
+    public static Color NavActive => Palette.IsHighContrast ? SystemColors.Highlight : Mix(Rail, Accent, _currentTheme == EveryStage.Terminal.Data.AppTheme.Light ? 0.11f : 0.14f);
 
     public static Color Mix(Color from, Color to, float amount) => Color.FromArgb(
         (int)Math.Round(from.R + (to.R - from.R) * amount),
@@ -395,6 +395,11 @@ public class GradientForm : Form
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
+        if (ModernUi.Palette.IsHighContrast)
+        {
+            e.Graphics.Clear(ModernUi.Background);
+            return;
+        }
         using var background = new LinearGradientBrush(ClientRectangle,
             ModernUi.Background, ModernUi.Surface, 32F);
         e.Graphics.FillRectangle(background, ClientRectangle);
@@ -556,6 +561,14 @@ internal class GlassPanel : Panel
         if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
         int scaledRadius = LogicalToDeviceUnits(CornerRadius);
         using var path = Rounded(ClientRectangle, scaledRadius);
+        if (ModernUi.Palette.IsHighContrast)
+        {
+            using var flat = new SolidBrush(ModernUi.Surface);
+            using var edge = new Pen(ModernUi.Border, 2);
+            e.Graphics.FillPath(flat, path);
+            e.Graphics.DrawPath(edge, path);
+            return;
+        }
         using var fill = new LinearGradientBrush(ClientRectangle,
             Color.FromArgb(Math.Min(255, GlassTint.A + 24), GlassTint), GlassTint, 110F);
         e.Graphics.FillPath(fill, path);
@@ -766,7 +779,7 @@ internal sealed class RoundedActionButton : Button
         using var path = Rounded(bounds, Math.Min(8, bounds.Height / 2));
         // Disabled: fade the fill toward the surface and drop the accent/danger border, so a primary or
         // danger button that can't be used right now doesn't look exactly like one that can.
-        Color fillColor = Enabled ? BackColor : Blend(BackColor, ModernUi.Surface, 0.7);
+        Color fillColor = Enabled ? BackColor : ModernUi.Palette.IsHighContrast ? SystemColors.Control : Blend(BackColor, ModernUi.Surface, 0.7);
         using var fill = new SolidBrush(fillColor);
         e.Graphics.FillPath(fill, path);
         if (FlatAppearance.BorderSize > 0)
@@ -774,7 +787,7 @@ internal sealed class RoundedActionButton : Button
             using var border = new Pen(Enabled ? FlatAppearance.BorderColor : ModernUi.Border, FlatAppearance.BorderSize);
             e.Graphics.DrawPath(border, path);
         }
-        Color textColor = Enabled ? ForeColor : ModernUi.Muted;
+        Color textColor = Enabled ? ForeColor : ModernUi.Palette.IsHighContrast ? SystemColors.GrayText : ModernUi.Muted;
         var textBounds = bounds;
         if (ShowDropDownArrow)
         {
@@ -805,7 +818,11 @@ internal sealed class RoundedActionButton : Button
             TextRenderer.DrawText(e.Graphics, Text, Font, bounds, textColor,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
-        if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(bounds, -5, -5));
+        if (Focused && ShowFocusCues)
+        {
+            using var focus = new Pen(ModernUi.Palette.IsHighContrast ? ForeColor : ModernUi.Palette.Focus, 2) { DashStyle = DashStyle.Dot };
+            e.Graphics.DrawRectangle(focus, Rectangle.Inflate(bounds, -5, -5));
+        }
     }
 
     private static Color Blend(Color from, Color to, double amount) => Color.FromArgb(
@@ -1003,10 +1020,10 @@ internal sealed class NavItem : Control
         {
             using var path = RoundedRect(rect, LogicalToDeviceUnits(5));
             using var fill = new SolidBrush(Selected ? ModernUi.NavActive
-                : Color.FromArgb(24, ModernUi.Text.R, ModernUi.Text.G, ModernUi.Text.B));
+                : ModernUi.Palette.IsHighContrast ? SystemColors.Control : Color.FromArgb(24, ModernUi.Text.R, ModernUi.Text.G, ModernUi.Text.B));
             g.FillPath(fill, path);
         }
-        Color fg = Selected ? ModernUi.AccentText : ModernUi.Muted;
+        Color fg = Selected ? (ModernUi.Palette.IsHighContrast ? SystemColors.HighlightText : ModernUi.AccentText) : ModernUi.Muted;
         int iconSize = LogicalToDeviceUnits(22);
         int textHeight = TextRenderer.MeasureText(_label, Font).Height;
         int top = rect.Top + (rect.Height - iconSize - LogicalToDeviceUnits(3) - textHeight) / 2;

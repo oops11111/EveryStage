@@ -57,10 +57,14 @@ internal static class DocumentTests
     private static void TestThemeRoles()
     {
         var saved = ModernUi.CurrentTheme;
+        var originalProbe = ThemeManager.HighContrastProbe;
+        ThemeManager.HighContrastProbe = () => false;
         using var form = new Form();
         using var button = new Button();
+        using var presenter = new PresenterStrip();
         ModernUi.StyleButton(button, primary: true);
         form.Controls.Add(button);
+        form.Controls.Add(presenter);
         try
         {
             foreach (var theme in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.Tech, AppTheme.System, AppTheme.Dark })
@@ -73,10 +77,26 @@ internal static class DocumentTests
                 Require(1.05 / (L(palette.AccentFill) + 0.05) >= 4.5 && 1.05 / (L(palette.DangerFill) + 0.05) >= 4.5,
                     $"White button text contrast below 4.5:1 in {theme}.");
                 Require(palette.Preview != palette.ProgramBorder && palette.ProgramBorder != palette.Accent, "Output roles share a colour.");
+                Require(presenter.BackColor == UiPalette.Normal(AppTheme.Dark).Background, "Presenter chrome changed with the app theme.");
             }
+            ThemeManager.HighContrastProbe = () => true;
+            foreach (var theme in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.Tech, AppTheme.System })
+            {
+                ThemeManager.Apply(form, theme);
+                Require(ModernUi.Palette.IsHighContrast && ModernUi.Background == SystemColors.Window,
+                    "System high contrast did not override a configured theme.");
+                Require(button.BackColor == SystemColors.Highlight && button.ForeColor == SystemColors.HighlightText,
+                    "Button did not use the system high-contrast pair.");
+                Require(presenter.BackColor == SystemColors.Window, "Fixed-dark presenter blocked system high contrast.");
+            }
+            ThemeManager.HighContrastProbe = () => false;
+            ThemeManager.Apply(form, AppTheme.Tech);
+            Require(!ModernUi.Palette.IsHighContrast && button.BackColor == UiPalette.Normal(AppTheme.Tech).AccentFill,
+                "Leaving high contrast did not restore the configured theme.");
             Console.WriteLine("PASS: role-based primary buttons survive theme switches; primary/danger fill white-text contrast >=4.5:1");
+            Console.WriteLine("PASS: simulated system high contrast overrides every app theme and restores; presenter stays dark outside high contrast");
         }
-        finally { ThemeManager.Apply(form, saved); }
+        finally { ThemeManager.HighContrastProbe = originalProbe; ThemeManager.Apply(form, saved); }
     }
 
     [DllImport("user32.dll")]
@@ -217,6 +237,23 @@ internal static class DocumentTests
             "On-air flash did not finish.");
         Console.WriteLine("PASS: failed load never announces success; ready Program generates feedback; on-air flash expires");
         CaptureMainWindow(window, dir);
+        var savedProbe = ThemeManager.HighContrastProbe;
+        try
+        {
+            ThemeManager.HighContrastProbe = () => true;
+            typeof(MainWindow).GetMethod("ApplyTheme", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(window, new object[] { AppTheme.Tech });
+            var emergency = (Button)typeof(MainWindow).GetField("_emergencyStop", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+            Require(emergency.BackColor == SystemColors.Highlight && emergency.ForeColor == SystemColors.HighlightText,
+                "Emergency button ignored system high contrast.");
+            using var contrastShot = new Bitmap(window.Width, window.Height);
+            window.DrawToBitmap(contrastShot, new Rectangle(Point.Empty, window.Size));
+            contrastShot.Save(Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots", "simulated-system-highcontrast.png"), ImageFormat.Png);
+        }
+        finally
+        {
+            ThemeManager.HighContrastProbe = savedProbe;
+            typeof(MainWindow).GetMethod("ApplyTheme", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(window, new object[] { AppTheme.Dark });
+        }
         outputState.Disconnect();
         window.Close();
         Console.WriteLine("PASS: main window starts, lays out and closes with the document controls");

@@ -1196,13 +1196,13 @@ public sealed class FilesPanel : UserControl
         float borderWidth = flashing ? 3F : onProgram || inPreview ? 2F : selected ? 1.6F : 1F;
         using (var path = RoundedCard(cardRect, 9))
         {
-            using (var fill = new SolidBrush(selected ? Blend(ModernUi.Surface, ModernUi.Accent, 0.10) : ModernUi.Surface))
+            using (var fill = new SolidBrush(selected && !ModernUi.Palette.IsHighContrast ? Blend(ModernUi.Surface, ModernUi.Accent, 0.10) : ModernUi.Surface))
                 g.FillPath(fill, path);
 
             var state = g.Save();
             g.SetClip(path);
             var imageRect = layout.Thumb;
-            using (var imgBg = new SolidBrush(Color.FromArgb(20, 37, 58)))
+            using (var imgBg = new SolidBrush(ModernUi.Palette.IsHighContrast ? SystemColors.Window : Color.FromArgb(20, 37, 58)))
                 g.FillRectangle(imgBg, imageRect);
             if (_thumbnailByFileId.TryGetValue(item.File.Id.ToString(), out var image))
             {
@@ -1214,6 +1214,7 @@ public sealed class FilesPanel : UserControl
             g.Restore(state);
 
             using var border = new Pen(borderColor, borderWidth);
+            if (ModernUi.Palette.IsHighContrast && inPreview && !onProgram && !flashing) border.DashStyle = DashStyle.Dash;
             g.DrawPath(border, path);
         }
 
@@ -1235,9 +1236,10 @@ public sealed class FilesPanel : UserControl
         if (media != null)
         {
             var (badgeText, badgeColor) = FileTypeBadge.For(media);
-            DrawChip(g, badgeText, badgeFont, new Point(thumb.Left + 6, thumb.Bottom - 6 - 17), badgeColor, Color.White);
+            if (ModernUi.Palette.IsHighContrast) badgeColor = SystemColors.WindowText;
+            DrawChip(g, badgeText, badgeFont, new Point(thumb.Left + 6, thumb.Bottom - 6 - 17), badgeColor, ModernUi.Palette.IsHighContrast ? SystemColors.Window : Color.White);
         }
-        if (onProgram) DrawChip(g, "大屏", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Danger, Color.White);
+        if (onProgram) DrawChip(g, "大屏", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Palette.DangerFill, ModernUi.Palette.DangerFillForeground);
         else if (inPreview) DrawChip(g, "预览", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Palette.Preview, ModernUi.Palette.PreviewForeground);
 
         // Name (with ⋯ on the same row) and the meta line (kind · size).

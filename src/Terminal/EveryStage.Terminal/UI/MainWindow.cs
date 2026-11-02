@@ -434,7 +434,7 @@ public sealed class MainWindow : GradientForm
         ThemeManager.Apply(this, theme);
         // Safety colours are stable across themes; they do not follow the old-colour remapping.
         _emergencyStop.BackColor = _onAir.BackColor = ModernUi.Palette.DangerFill;
-        _emergencyStop.ForeColor = _onAir.ForeColor = Color.White;
+        _emergencyStop.ForeColor = _onAir.ForeColor = ModernUi.Palette.DangerFillForeground;
         foreach (Control hosted in _panelHost.Controls) _panelPalettes[hosted] = ModernUi.Palette;
     }
 
