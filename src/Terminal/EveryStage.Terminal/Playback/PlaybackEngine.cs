@@ -759,6 +759,8 @@ public sealed partial class PlaybackEngine : IDisposable
                     VideoController.FirstFramePresented += OnVideoFirstFrame;
                     VideoController.AudioOutputLost -= OnVideoAudioOutputLost;
                     VideoController.AudioOutputLost += OnVideoAudioOutputLost;
+                    VideoController.AudioOutputRecoveryRequested -= OnVideoAudioRecoveryRequested;
+                    VideoController.AudioOutputRecoveryRequested += OnVideoAudioRecoveryRequested;
                     VideoController.DecodeTooSlow -= OnVideoDecodeTooSlow;
                     VideoController.DecodeTooSlow += OnVideoDecodeTooSlow;
                     VideoController.Volume = _pendingAudioVolume;
@@ -1379,6 +1381,20 @@ public sealed partial class PlaybackEngine : IDisposable
     {
         var file = _currentFile;
         if (file != null) _playbackLogger.LogAudioOutputLost(file.Id, reason);
+    }
+
+    private void OnVideoAudioRecoveryRequested()
+    {
+        var file = _currentFile;
+        int generation = _contentLoadVersion;
+        if (file == null) return;
+        _output.Post(() =>
+        {
+            if (generation != _contentLoadVersion || !ReferenceEquals(file, _currentFile)
+                || IsCompleted || State is not (PlaybackChannelState.Playing or PlaybackChannelState.Paused)) return;
+            if (_videoController?.TryRecoverAudioOnDefault() == true)
+                _settingsStore.NotifyAudioOutputFallback("视频音频设备已断开，已从当前位置切换到系统默认设备。");
+        });
     }
 
     /// <summary>This machine decodes the current video slower than real time (frames dropped, picture

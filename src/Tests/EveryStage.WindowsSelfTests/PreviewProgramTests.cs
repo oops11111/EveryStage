@@ -110,6 +110,41 @@ internal static class PreviewProgramTests
                     }
                     finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
                     preview.Stop();
+                    if (hasVideo)
+                    {
+                        preview.RequestPlay(Media(Path.Combine(media, "av.mp4")));
+                        Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.VideoFrameStats.Presented >= 8, 5000),
+                            "Selected-device video did not start.");
+                        int beforeVideoRecovery = recovered;
+                        var positionBeforeVideoLoss = preview.Position;
+                        var framesBeforeVideoLoss = preview.VideoFrameStats.Presented;
+                        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                        Require(WaitFor(() => recovered == beforeVideoRecovery + 1 && preview.CurrentVideoHasAudio
+                            && preview.Position > positionBeforeVideoLoss + TimeSpan.FromMilliseconds(200)
+                            && preview.VideoFrameStats.Presented > framesBeforeVideoLoss + 4, 7000),
+                            "Video did not recover audio and continue presenting on the default device.");
+                        var videoController = typeof(PlaybackEngine).GetField("_videoController", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(preview)!;
+                        var recoveredClock = (EveryStage.Rendering.Audio.AudioPlaybackClock)videoController.GetType()
+                            .GetField("_audioClock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(videoController)!;
+                        Require(recoveredClock.SelectedDeviceId == null && !recoveredClock.IsFaulted
+                            && recoveredClock.PositionTicks > TimeSpan.FromMilliseconds(100).Ticks,
+                            "Recovered video did not advance its new default-device audio clock.");
+                        preview.Stop();
+                        preview.RequestPlay(Media(Path.Combine(media, "av.mp4")));
+                        Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.VideoFrameStats.Presented >= 8, 5000),
+                            "Selected-device video did not restart for the unavailable-default test.");
+                        try
+                        {
+                            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                            var beforeSilent = preview.VideoFrameStats.Presented;
+                            Require(WaitFor(() => !preview.CurrentVideoHasAudio && preview.VideoFrameStats.Presented > beforeSilent + 8, 6000)
+                                && preview.State == PlaybackChannelState.Playing,
+                                "Video did not continue silently when the fallback output was unavailable.");
+                        }
+                        finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                        preview.Stop();
+                    }
                     settings.AudioOutputFallback -= OnRecovered;
                     updated = settings.Current.Clone();
                     updated.AudioOutputDeviceId = "EveryStage-missing-test-endpoint";

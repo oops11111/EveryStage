@@ -46,6 +46,8 @@ public sealed class VideoContentController : IDisposable
     private CancellationTokenSource? _playbackCts;
     private Thread? _playbackThread;
     private VideoDecodeSource? _source;
+    private string? _sourcePath;
+    private volatile bool _recoveryAttempted;
     private AudioPlaybackClock? _audioClock;
     private readonly Stopwatch _wallClock = new();
 
@@ -87,6 +89,7 @@ public sealed class VideoContentController : IDisposable
     /// <summary>The audio output could not be opened or stopped mid-play; the video continues without
     /// sound. Raised from the UI thread (open failure) or the playback thread (loss), with the reason.</summary>
     public event Action<string>? AudioOutputLost;
+    internal event Action? AudioOutputRecoveryRequested;
 
     /// <summary>Raised once per file from the playback thread when frames are being dropped because
     /// decoding is slower than real time (the picture then updates at least every 250 ms).</summary>
@@ -155,6 +158,8 @@ public sealed class VideoContentController : IDisposable
     public void Play(string path, TimeSpan? fadeDuration = null, TimeSpan startAt = default, bool startPaused = false)
     {
         Stop();
+        _sourcePath = path;
+        _recoveryAttempted = false;
 
         var source = new VideoDecodeSource(path, _surface.Gpu);
         try
@@ -225,6 +230,7 @@ public sealed class VideoContentController : IDisposable
         StopPlaybackThreadAndClock();
         _source?.Dispose();
         _source = null;
+        _sourcePath = null;
         _clockBaseTicks = 0;
         _seekTargetTicks = 0;
         _paused = false;
@@ -250,14 +256,14 @@ public sealed class VideoContentController : IDisposable
         }
     }
 
-    private void StartPlaybackThread(VideoDecodeSource source, bool firstStart)
+    private void StartPlaybackThread(VideoDecodeSource source, bool firstStart, AudioPlaybackClock? preparedClock = null)
     {
         _audioClock = null;
         if (source.HasAudio)
         {
             try
             {
-                _audioClock = AudioOutputFactory?.Invoke(source.AudioSampleRate, source.AudioChannels)
+                _audioClock = preparedClock ?? AudioOutputFactory?.Invoke(source.AudioSampleRate, source.AudioChannels)
                     ?? new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
             }
             catch (Exception ex)
@@ -283,6 +289,36 @@ public sealed class VideoContentController : IDisposable
             Name = "EveryStage.VideoPlayback",
         };
         _playbackThread.Start();
+    }
+
+    /// <summary>Prepare a replacement before disrupting silent video; retry only once per file.</summary>
+    internal bool TryRecoverAudioOnDefault()
+    {
+        if (_recoveryAttempted || !_audioLost || _sourcePath == null
+            || _audioClock?.SelectedDeviceId == null || _source == null) return false;
+        _recoveryAttempted = true;
+        VideoDecodeSource? replacement = null;
+        AudioPlaybackClock? clock = null;
+        try
+        {
+            replacement = new VideoDecodeSource(_sourcePath, _surface.Gpu);
+            if (!replacement.HasAudio) return false;
+            clock = new AudioPlaybackClock(replacement.AudioSampleRate, replacement.AudioChannels);
+            var position = Position;
+            if (!replacement.TrySeek(position)) return false;
+            var oldSource = _source;
+            StopPlaybackThreadAndClock();
+            _source = replacement;
+            replacement = null;
+            _clockBaseTicks = _seekTargetTicks = position.Ticks;
+            _audioNote = null;
+            StartPlaybackThread(_source, firstStart: false, preparedClock: clock);
+            clock = null;
+            oldSource.Dispose();
+            return true;
+        }
+        catch (Exception) { return false; }
+        finally { clock?.Dispose(); replacement?.Dispose(); }
     }
 
     private void RunPlaybackLoop(VideoDecodeSource source, AudioPlaybackClock? audioClock, bool firstStart, CancellationToken token)
@@ -373,6 +409,7 @@ public sealed class VideoContentController : IDisposable
             string reason = $"声音输出已断开（{audioClock.FaultReason}），继续无声播放";
             _audioNote = reason;
             AudioOutputLost?.Invoke(reason);
+            if (audioClock.SelectedDeviceId != null && !_recoveryAttempted) AudioOutputRecoveryRequested?.Invoke();
             return true;
         }
 
