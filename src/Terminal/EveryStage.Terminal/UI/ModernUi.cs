@@ -250,6 +250,7 @@ internal static class ModernUi
         dialog.Font = new Font(ModernUi.UiFont, 9.5F);
         WindowsAppearance.UseDarkTitleBar(dialog);
         StyleDialogChildren(dialog, dialog.AcceptButton as Button);
+        ThemeManager.RegisterStyledDialog(dialog);
         dialog.ResumeLayout(true);
     }
 
@@ -274,6 +275,8 @@ internal static class ModernUi
                 Panel => Surface,
                 _ => child.BackColor,
             };
+            if (child is TextBoxBase or ListBox or ListView or TreeView or NumericUpDown)
+                SetBackgroundRole(child, UiBackgroundRole.SurfaceRaised);
 
             switch (child)
             {

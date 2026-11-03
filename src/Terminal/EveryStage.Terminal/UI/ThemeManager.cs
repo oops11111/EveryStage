@@ -8,6 +8,7 @@ public static class ThemeManager
 {
     private sealed class RootPalette { public UiPalette? Value; }
     private static readonly ConditionalWeakTable<Control, RootPalette> s_rootPalettes = new();
+    private static readonly ConditionalWeakTable<Form, object> s_styledDialogs = new();
     // Test injection never writes Windows settings and is not exposed as a user override.
     internal static Func<bool>? HighContrastProbe { get; set; }
     internal static bool HighContrast => HighContrastProbe?.Invoke() ?? SystemInformation.HighContrast;
@@ -34,10 +35,33 @@ public static class ThemeManager
     public static void Apply(Control root, AppTheme theme)
     {
         theme = Resolve(theme);
-        var rootPalette = s_rootPalettes.GetOrCreateValue(root);
-        var previous = rootPalette.Value ?? ModernUi.Palette;
+        var previousGlobal = ModernUi.Palette;
         var palette = UiPalette.For(theme);
         ModernUi.SetPalette(palette, theme);
+        ApplyRoot(root, theme, palette, previousGlobal);
+        if (root is Form owner) ApplyOwnedDialogs(owner, theme, palette, previousGlobal);
+    }
+
+    internal static void RegisterStyledDialog(Form dialog)
+    {
+        s_styledDialogs.GetValue(dialog, _ => new object());
+        s_rootPalettes.GetOrCreateValue(dialog).Value = ModernUi.Palette;
+    }
+
+    private static void ApplyOwnedDialogs(Form owner, AppTheme theme, UiPalette palette, UiPalette previousGlobal)
+    {
+        foreach (Form child in owner.OwnedForms)
+        {
+            if (child.IsDisposed || child.Disposing) continue;
+            if (s_styledDialogs.TryGetValue(child, out _)) ApplyRoot(child, theme, palette, previousGlobal);
+            ApplyOwnedDialogs(child, theme, palette, previousGlobal);
+        }
+    }
+
+    private static void ApplyRoot(Control root, AppTheme theme, UiPalette palette, UiPalette previousGlobal)
+    {
+        var rootPalette = s_rootPalettes.GetOrCreateValue(root);
+        var previous = rootPalette.Value ?? previousGlobal;
         if (root.FindForm() is Form form) WindowsAppearance.ApplyTitleBarTheme(form, !HighContrast && theme != AppTheme.Light);
         ApplyRecursive(root, palette, previous);
         rootPalette.Value = palette;

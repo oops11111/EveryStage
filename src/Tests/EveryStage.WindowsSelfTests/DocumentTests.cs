@@ -281,6 +281,40 @@ internal static class DocumentTests
                 "Leaving high contrast did not restore the configured theme.");
             Require(dock.BackColor == UiPalette.Normal(AppTheme.Dark).Rail && take.BackColor == UiPalette.Normal(AppTheme.Dark).AccentFill,
                 "Monitor did not restore its dark palette after high contrast.");
+            using (var modalOwner = new Form { StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), Opacity = 0 })
+            {
+                modalOwner.Show();
+                ThemeManager.Apply(modalOwner, AppTheme.Dark);
+                using var modal = new PairingConfirmationDialog(new EveryStage.Terminal.Devices.PairingRequest("modal", Guid.NewGuid(), "测试", "127.0.0.1", "123456"));
+                var modalCode = modal.Controls.OfType<Label>().Single(label => label.Text == "123 456");
+                var modalHint = modal.Controls.OfType<Label>().Single(label => label.Text.Contains("监看功能本身"));
+                Exception? modalFailure = null;
+                using var timer = new System.Windows.Forms.Timer { Interval = 50 };
+                timer.Tick += (_, _) =>
+                {
+                    timer.Stop();
+                    try
+                    {
+                        ThemeManager.Apply(modalOwner, AppTheme.Light);
+                        var light = UiPalette.Normal(AppTheme.Light);
+                        Require(modalCode.ForeColor == light.Accent && modalHint.ForeColor == light.Muted && modal.BackColor == light.Background,
+                            "An open modal dialog did not follow its owner's theme.");
+                        ThemeManager.HighContrastProbe = () => true;
+                        ThemeManager.Apply(modalOwner, AppTheme.Light);
+                        Require(modalCode.ForeColor == SystemColors.WindowText && modal.BackColor == SystemColors.Window,
+                            "An open modal dialog did not follow its owner into high contrast.");
+                        ThemeManager.HighContrastProbe = () => false;
+                        ThemeManager.Apply(modalOwner, AppTheme.Tech);
+                        Require(modalCode.ForeColor == UiPalette.Normal(AppTheme.Tech).Accent && ModernUi.CurrentTheme == AppTheme.Tech,
+                            "An open modal dialog did not restore its theme or changed the global theme.");
+                    }
+                    catch (Exception ex) { modalFailure = ex; }
+                    finally { ThemeManager.HighContrastProbe = () => false; modal.Close(); }
+                };
+                timer.Start();
+                modal.ShowDialog(modalOwner);
+                if (modalFailure != null) throw new InvalidOperationException("Modal theme propagation failed.", modalFailure);
+            }
             Console.WriteLine("PASS: role-based primary buttons survive theme switches; primary/danger fill white-text contrast >=4.5:1");
             Console.WriteLine("PASS: simulated system high contrast overrides every app theme and restores; presenter stays dark outside high contrast");
         }
