@@ -132,3 +132,10 @@ OV 代码签名需要用户持有的有效证书/签名服务；目前不具备�
 - 歌单选中行使用系统 Highlight/HighlightText，非选中行保持对应背景与文字色；高对比度抽屉边框与把手不再混色。通知背景、关闭按钮和严重程度色条登记颜色角色，已显示的通知切换主题后仍按角色更新；文件卡片的普通边框在高对比度下使用系统边框色。
 - WindowsSelfTests 严格构建与操作界面专项通过，日志 `artifacts/test-diagnostics/operator-music-notice-theme-final.log`。检查三种通知跨主题颜色和模拟高对比度、歌单选中行背景与文字，并查看 `artifacts/screenshots/simulated-highcontrast-music-drawer.png`。本批未运行完整媒体自检，亦未切换真实 Windows 高对比度设置。
 - 流程行等其他自绘控件和未登记控件仍需迁移；真实双屏来投、音频设备选择、CI 和推送待完成。
+
+## 第十三批：流程行高对比度
+
+- 流程行在高对比度下使用系统表面和边框，不再混合上屏/下一项的背景色；下一项用虚线，上屏用实线，选中项增加内侧点线，保留状态文字。空缩略图、类型徽标、多选标记、拖动手柄及悬停箭头采用对应系统色。
+- 普通主题的流程预览徽标改用 Preview 色及对应文字色，与上屏/选中状态区分。
+- WindowsSelfTests 严格构建和操作界面专项通过，日志 `artifacts/test-diagnostics/operator-activity-contrast-final.log`；模拟高对比度下检查选中线、预览标记、上屏/下一项边框、待播与空缩略图底色，已查看 `artifacts/screenshots/simulated-highcontrast-activities.png`。未切换真实系统高对比度或重跑完整媒体自检。
+- 其他未登记控件、菜单和 `ThemeManager` 的旧色反查仍待逐项迁移；真实双屏来投、音频设备选择、CI 和推送待完成。

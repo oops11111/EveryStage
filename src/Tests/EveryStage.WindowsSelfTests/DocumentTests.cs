@@ -8,6 +8,8 @@ using EveryStage.Terminal.Documents;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.StateMachine;
 using EveryStage.Terminal.UI;
+using EveryStage.Terminal.UI.Panels;
+using StageActivity = EveryStage.Terminal.Data.Activity;
 
 /// <summary>
 /// End-to-end document playback on the real pipeline: the PDF viewer (continuous scrolling, page cache,
@@ -97,6 +99,16 @@ internal static class DocumentTests
         ModernUi.StyleButton(runButton, primary: true);
         runControls.Controls.AddRange(new Control[] { runLabel, runButton });
         dock.SetRunControls(runControls);
+        var sampleFile = new MediaFile { SourcePath = "sample.pdf", Kind = MediaKind.Document };
+        var sampleActivity = new StageActivity { Name = "演示" };
+        sampleActivity.Files.Add(sampleFile);
+        var activityNode = new TreeNode { Tag = sampleActivity };
+        var fileNode = new TreeNode { Tag = sampleFile };
+        activityNode.Nodes.Add(fileNode);
+        var rowHost = new TestActivityRowHost { State = RunRowState.Next, SelectedNode = fileNode, PreviewFile = sampleFile };
+        using var row = new ActivityRowView(rowHost, sampleActivity, activityNode, 1);
+        row.FitToWidth(720);
+        form.Controls.Add(row);
         var monitorMenuColors = new EveryStage.Terminal.UI.Panels.FilesPanel.FileMenuColorTable(() => ModernUi.PaletteFor(dock));
         try
         {
@@ -167,6 +179,45 @@ internal static class DocumentTests
                 Require(runLabel.ForeColor == SystemColors.WindowText && runButton.BackColor == SystemColors.Highlight,
                     "Dynamically attached run controls did not use high-contrast colours.");
                 Require(dock.PreviewSurface.ContentSurface.BackColor == Color.Black, "High contrast changed the media output's black background.");
+                using (var selectedRow = Capture(row))
+                {
+                    var columns = ActivityRowView.ColumnsFor(row.Width, value => row.LogicalToDeviceUnits(value));
+                    int rowTop = row.LogicalToDeviceUnits(44);
+                    Require(selectedRow.GetPixel(columns.Thumb + row.LogicalToDeviceUnits(38), rowTop + row.LogicalToDeviceUnits(11)).ToArgb() == SystemColors.Window.ToArgb(),
+                        "Empty activity thumbnail used a mixed colour in high contrast.");
+                    Require(selectedRow.GetPixel(row.Width - row.LogicalToDeviceUnits(50), rowTop + row.LogicalToDeviceUnits(7)).ToArgb() == SystemColors.Window.ToArgb(),
+                        "Activity row used a mixed background in high contrast.");
+                    rowHost.SelectedNode = null;
+                    using var unselectedRow = Capture(row);
+                    bool selectionVisible = false;
+                    int y = rowTop + row.LogicalToDeviceUnits(4);
+                    for (int x = row.LogicalToDeviceUnits(12); x < row.Width - row.LogicalToDeviceUnits(12); x++)
+                        if (selectedRow.GetPixel(x, y).ToArgb() != unselectedRow.GetPixel(x, y).ToArgb()) { selectionVisible = true; break; }
+                    Require(selectionVisible, "Selected activity row was indistinguishable from an unselected row.");
+                    rowHost.PreviewFile = null;
+                    using (var noPreview = Capture(row))
+                    {
+                        bool previewVisible = false;
+                        for (int py = rowTop + row.LogicalToDeviceUnits(9); py < rowTop + row.LogicalToDeviceUnits(23) && !previewVisible; py++)
+                            for (int px = columns.Thumb + row.LogicalToDeviceUnits(4); px < columns.Thumb + row.LogicalToDeviceUnits(32); px++)
+                                if (unselectedRow.GetPixel(px, py).ToArgb() != noPreview.GetPixel(px, py).ToArgb()) { previewVisible = true; break; }
+                        Require(previewVisible, "Activity preview marker was not visible in high contrast.");
+                        rowHost.State = RunRowState.Live;
+                        using var liveRow = Capture(row);
+                        bool stateBorderDiffers = false;
+                        for (int by = rowTop; by <= rowTop + row.LogicalToDeviceUnits(2) && !stateBorderDiffers; by++)
+                            for (int bx = row.LogicalToDeviceUnits(20); bx < row.Width - row.LogicalToDeviceUnits(20); bx++)
+                                if (liveRow.GetPixel(bx, by).ToArgb() != noPreview.GetPixel(bx, by).ToArgb()) { stateBorderDiffers = true; break; }
+                        Require(stateBorderDiffers, "Live and next activity rows had indistinguishable borders in high contrast.");
+                    }
+                    rowHost.State = RunRowState.Pending;
+                    using (var pendingRow = Capture(row))
+                        Require(pendingRow.GetPixel(row.Width - row.LogicalToDeviceUnits(50), rowTop + row.LogicalToDeviceUnits(7)).ToArgb() == SystemColors.Window.ToArgb(),
+                            "Pending activity row did not use the system background.");
+                    rowHost.State = RunRowState.Next;
+                    rowHost.PreviewFile = sampleFile;
+                    rowHost.SelectedNode = fileNode;
+                }
             }
             ThemeManager.HighContrastProbe = () => false;
             ThemeManager.Apply(form, AppTheme.Tech);
@@ -178,6 +229,23 @@ internal static class DocumentTests
             Console.WriteLine("PASS: simulated system high contrast overrides every app theme and restores; presenter stays dark outside high contrast");
         }
         finally { ThemeManager.HighContrastProbe = originalProbe; ThemeManager.Apply(form, saved); }
+    }
+
+    private sealed class TestActivityRowHost : IActivityRowHost
+    {
+        public TreeNode? SelectedNode { get; set; }
+        public RunRowState State { get; set; }
+        public MediaFile? PreviewFile { get; set; }
+        public bool IsSelected(TreeNode node) => ReferenceEquals(node, SelectedNode);
+        public bool IsMultiSelected(TreeNode node) => false;
+        public RunRowState StateOf(MediaFile file) => State;
+        public string? MusicCueText(StageActivity activity) => null;
+        public Image? ThumbnailFor(MediaFile file) => null;
+        public void RowNodeClicked(TreeNode node) { }
+        public void RowNodeDoubleClicked(TreeNode node) { }
+        public void RowContextMenu(TreeNode node, Control source, Point location) { }
+        public void ToggleCollapsed(StageActivity activity) { }
+        public void MoveFile(StageActivity activity, int from, int insertAt) { }
     }
 
     [DllImport("user32.dll")]
@@ -354,6 +422,13 @@ internal static class DocumentTests
             using var contrastShot = new Bitmap(window.Width, window.Height);
             window.DrawToBitmap(contrastShot, new Rectangle(Point.Empty, window.Size));
             contrastShot.Save(Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots", "simulated-system-highcontrast.png"), ImageFormat.Png);
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var activities = typeof(MainWindow).GetField("_activitiesPanel", flags)!.GetValue(window)!;
+            typeof(MainWindow).GetMethod("ShowPanel", flags)!.Invoke(window, new[] { activities });
+            Pump(150);
+            using var activityShot = new Bitmap(window.Width, window.Height);
+            window.DrawToBitmap(activityShot, new Rectangle(Point.Empty, window.Size));
+            activityShot.Save(Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots", "simulated-highcontrast-activities.png"), ImageFormat.Png);
         }
         finally
         {

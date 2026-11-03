@@ -249,7 +249,7 @@ internal sealed class ActivityRowView : Control
         int metaWidth = TextRenderer.MeasureText(meta, BodyFont).Width;
         var metaRect = new Rectangle(nameRect.Right + S(10), cy - S(10), metaWidth, S(20));
         TextRenderer.DrawText(g, meta, BodyFont, metaRect, ModernUi.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-        using (var line = new Pen(ModernUi.Mix(ModernUi.Background, ModernUi.Border, 0.5f)))
+        using (var line = new Pen(ModernUi.Palette.IsHighContrast ? ModernUi.Border : ModernUi.Mix(ModernUi.Background, ModernUi.Border, 0.5f)))
             if (_chevronRect.Left - S(10) > metaRect.Right + S(10))
                 g.DrawLine(line, metaRect.Right + S(10), cy, _chevronRect.Left - S(10), cy);
         DrawChevron(g, _chevronRect, up: !_activity.IsCollapsed, hot: _chevronRect.Contains(_hover));
@@ -286,13 +286,14 @@ internal sealed class ActivityRowView : Control
         bool selected = _host.IsSelected(node), multi = _host.IsMultiSelected(node);
         bool hot = bounds.Contains(_hover);
 
-        Color fill = state switch
+        bool highContrast = ModernUi.Palette.IsHighContrast;
+        Color fill = highContrast ? ModernUi.Surface : state switch
         {
             RunRowState.Live => ModernUi.Mix(ModernUi.Background, ModernUi.Danger, 0.16f),
             RunRowState.Next => ModernUi.Mix(ModernUi.Background, ModernUi.Accent, 0.14f),
             _ => hot ? ModernUi.Mix(ModernUi.Surface, ModernUi.Text, 0.04f) : ModernUi.Surface,
         };
-        Color border = state switch
+        Color border = highContrast ? (state == RunRowState.Next || selected || multi ? SystemColors.Highlight : SystemColors.WindowText) : state switch
         {
             RunRowState.Live => ModernUi.Danger,
             RunRowState.Next => ModernUi.Accent,
@@ -304,7 +305,15 @@ internal sealed class ActivityRowView : Control
             using var brush = new SolidBrush(fill);
             g.FillPath(brush, path);
             using var pen = new Pen(border, selected || multi ? 1.8F : 1F);
+            if (highContrast && state == RunRowState.Next) pen.DashStyle = DashStyle.Dash;
             g.DrawPath(pen, path);
+            if (highContrast && (selected || multi))
+            {
+                var innerBounds = Rectangle.Inflate(bounds, -4, -4);
+                using var inner = RoundedBox(innerBounds, S(5));
+                using var selection = new Pen(SystemColors.Highlight, 1.5F) { DashStyle = DashStyle.Dot };
+                g.DrawPath(selection, inner);
+            }
         }
 
         bool done = state == RunRowState.Done;
@@ -312,7 +321,7 @@ internal sealed class ActivityRowView : Control
         int cy = bounds.Top + bounds.Height / 2;
 
         // ⋮⋮ grip: drag to reorder within the section (or 上移 / 下移 in the menu).
-        using (var dots = new SolidBrush(ModernUi.Mix(ModernUi.Surface, ModernUi.Muted, 0.7f)))
+        using (var dots = new SolidBrush(highContrast ? ModernUi.Text : ModernUi.Mix(ModernUi.Surface, ModernUi.Muted, 0.7f)))
             for (int col = 0; col < 2; col++)
                 for (int r = -1; r <= 1; r++)
                     g.FillEllipse(dots, c.Handle + S(7) + col * S(6), cy + r * S(5) - S(1), S(3), S(3));
@@ -326,9 +335,9 @@ internal sealed class ActivityRowView : Control
         {
             var tag = new Rectangle(thumb.Left + S(3), thumb.Top + S(3), S(30), S(15));
             using (var path = RoundedBox(tag, S(3)))
-            using (var brush = new SolidBrush(ModernUi.Accent))
+            using (var brush = new SolidBrush(ModernUi.Palette.Preview))
                 g.FillPath(brush, path);
-            TextRenderer.DrawText(g, "预览", BadgeFont, tag, ModernUi.AccentForeground,
+            TextRenderer.DrawText(g, "预览", BadgeFont, tag, ModernUi.Palette.PreviewForeground,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
 
@@ -363,7 +372,7 @@ internal sealed class ActivityRowView : Control
             // Ctrl+click multi-selection (for 统一设置属性…) gets a check mark, distinct from plain selection.
             var check = new Rectangle(bounds.Right - S(24), cy - S(8), S(16), S(16));
             using (var brush = new SolidBrush(ModernUi.Accent)) g.FillEllipse(brush, check);
-            using var pen = new Pen(Color.White, 1.8F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            using var pen = new Pen(highContrast ? SystemColors.HighlightText : Color.White, 1.8F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
             g.DrawLines(pen, new[]
             {
                 new PointF(check.Left + check.Width * 0.27f, check.Top + check.Height * 0.52f),
@@ -389,20 +398,22 @@ internal sealed class ActivityRowView : Control
         }
         else
         {
-            using var fill = new LinearGradientBrush(rect, Blend(ModernUi.Background, ModernUi.Accent, 0.35f),
-                Blend(ModernUi.Background, ModernUi.Accent, 0.08f), 45F);
+            using Brush fill = ModernUi.Palette.IsHighContrast ? new SolidBrush(SystemColors.Window)
+                : new LinearGradientBrush(rect, Blend(ModernUi.Background, ModernUi.Accent, 0.35f),
+                    Blend(ModernUi.Background, ModernUi.Accent, 0.08f), 45F);
             g.FillRectangle(fill, rect);
             if (file.Kind == MediaKind.Audio) DrawKindIcon(g, new Rectangle(rect.Left + (rect.Width - S(18)) / 2, rect.Top + (rect.Height - S(18)) / 2, S(18), S(18)), file);
         }
         g.Restore(state);
 
         var (label, color) = FileTypeBadge.For(file);
+        if (ModernUi.Palette.IsHighContrast) color = SystemColors.WindowText;
         var size = TextRenderer.MeasureText(label, BadgeFont, Size.Empty, TextFormatFlags.NoPadding);
         var badge = new Rectangle(rect.Left + S(3), rect.Bottom - S(3) - S(14), size.Width + S(8), S(14));
         using (var path = RoundedBox(badge, S(3)))
         using (var fill = new SolidBrush(color))
             g.FillPath(fill, path);
-        TextRenderer.DrawText(g, label, BadgeFont, badge, Color.White,
+        TextRenderer.DrawText(g, label, BadgeFont, badge, ModernUi.Palette.IsHighContrast ? SystemColors.Window : Color.White,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
     }
 
@@ -460,9 +471,10 @@ internal sealed class ActivityRowView : Control
         var (_, color) = FileTypeBadge.For(file);
         if (file.Kind == MediaKind.Audio)
         {
-            using (var fill = new SolidBrush(Color.FromArgb(107, 75, 208))) g.FillEllipse(fill, r);
-            using var note = new SolidBrush(Color.White);
-            using var pen = new Pen(Color.White, Math.Max(1.2F, r.Width / 14f));
+            using (var fill = new SolidBrush(ModernUi.Palette.IsHighContrast ? SystemColors.WindowText : Color.FromArgb(107, 75, 208))) g.FillEllipse(fill, r);
+            var audioInk = ModernUi.Palette.IsHighContrast ? SystemColors.Window : Color.White;
+            using var note = new SolidBrush(audioInk);
+            using var pen = new Pen(audioInk, Math.Max(1.2F, r.Width / 14f));
             float stemX = r.Left + r.Width * 0.60f;
             g.DrawLine(pen, stemX, r.Top + r.Height * 0.26f, stemX, r.Top + r.Height * 0.66f);
             g.DrawLine(pen, stemX, r.Top + r.Height * 0.26f, r.Left + r.Width * 0.74f, r.Top + r.Height * 0.34f);
@@ -514,10 +526,10 @@ internal sealed class ActivityRowView : Control
     {
         if (hot)
         {
-            using var fill = new SolidBrush(Blend(ModernUi.Background, ModernUi.Text, 0.08f));
+            using var fill = new SolidBrush(ModernUi.Palette.IsHighContrast ? SystemColors.Highlight : Blend(ModernUi.Background, ModernUi.Text, 0.08f));
             g.FillEllipse(fill, r);
         }
-        using var pen = new Pen(hot ? ModernUi.Text : ModernUi.Muted, 1.8F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var pen = new Pen(hot && ModernUi.Palette.IsHighContrast ? SystemColors.HighlightText : hot ? ModernUi.Text : ModernUi.Muted, 1.8F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
         float cx = r.Left + r.Width / 2f, cy = r.Top + r.Height / 2f, dx = S(5), dy = S(3);
         g.DrawLines(pen, up
             ? new[] { new PointF(cx - dx, cy + dy), new PointF(cx, cy - dy), new PointF(cx + dx, cy + dy) }
