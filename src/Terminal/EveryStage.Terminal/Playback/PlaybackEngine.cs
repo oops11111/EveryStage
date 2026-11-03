@@ -422,7 +422,7 @@ public sealed partial class PlaybackEngine : IDisposable
     // device cast can need it before any local video ever plays).
     private VideoContentController VideoController =>
         _videoController ??= new VideoContentController(_videoSurface
-            ?? throw new InvalidOperationException("视频呈现不可用：显卡（D3D11）初始化失败，无法在此窗口播放视频。"));
+            ?? throw new InvalidOperationException("视频呈现不可用：显卡（D3D11）初始化失败，无法在此窗口播放视频。")) { AudioOutputFactory = _settingsStore.OpenAudioOutput };
 
     // Same laziness reasoning as VideoController, but there's no shared GPU resource to justify
     // eager construction the way TerminalApplicationContext eagerly builds _videoSurface for a
@@ -435,7 +435,7 @@ public sealed partial class PlaybackEngine : IDisposable
     {
         get
         {
-            _audioController ??= new AudioContentController { Volume = _pendingAudioVolume, Muted = _muted };
+            _audioController ??= new AudioContentController { Volume = _pendingAudioVolume, Muted = _muted, AudioOutputFactory = _settingsStore.OpenAudioOutput };
             return _audioController;
         }
     }
@@ -448,7 +448,7 @@ public sealed partial class PlaybackEngine : IDisposable
     // Volume is left at AudioContentController's own default (1.0, full) — no per-background-track
     // volume control is exposed anywhere yet; see this project's README for that being an accepted,
     // documented scope limit rather than an oversight.
-    private AudioContentController BackgroundAudioController => _backgroundAudioController ??= new AudioContentController { Muted = _muted };
+    private AudioContentController BackgroundAudioController => _backgroundAudioController ??= new AudioContentController { Muted = _muted, AudioOutputFactory = _settingsStore.OpenAudioOutput };
 
     private float _pendingAudioVolume = 1f;
 

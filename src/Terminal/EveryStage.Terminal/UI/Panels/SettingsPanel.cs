@@ -26,6 +26,8 @@ public sealed class SettingsPanel : UserControl
 
     private readonly CheckBox _castSwitchDefaultCheckbox;
     private readonly ComboBox _monitorComboBox;
+    private readonly ComboBox _audioOutputComboBox;
+    private bool _refreshingAudioOutputs;
     private readonly CheckBox _defaultStayDurationEnabledCheckbox;
     private readonly NumericUpDown _defaultStayDurationSeconds;
     private readonly TextBox _deviceNameTextBox;
@@ -139,6 +141,12 @@ public sealed class SettingsPanel : UserControl
             _defaultStayDurationSeconds.Enabled = _defaultStayDurationEnabledCheckbox.Checked;
         var output = Section("输出与播放");
         output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举", "重启后生效", UiForegroundRole.Muted, _monitorComboBox);
+        _audioOutputComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, AccessibleName = "音频输出设备" };
+        ModernUi.StyleComboBox(_audioOutputComboBox);
+        PopulateAudioOutputs(settings.AudioOutputDeviceId);
+        _audioOutputComboBox.SelectedIndexChanged += OnAudioOutputChanged;
+        output.AddRow("音频输出设备", "视频声音和背景音乐共用设备；新播放生效，当前播放不会切换。设备不可用时，新播放回退系统默认设备。",
+            "新播放生效", UiForegroundRole.Warning, _audioOutputComboBox);
         output.AddRow("图片 / 文档默认停留时长", "没有单独设置停留时长的项目停留多久后进入下一项；关闭则一直停留到手动切换",
             "保存后生效", UiForegroundRole.Warning, _defaultStayDurationEnabledCheckbox, _defaultStayDurationSeconds, secondsLabel);
         _transitionComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
@@ -414,7 +422,52 @@ public sealed class SettingsPanel : UserControl
     {
         string? currentSelection = (_monitorComboBox.SelectedItem as MonitorComboItem)?.DeviceName;
         PopulateMonitorComboBox(currentSelection ?? _settingsStore.Current.PreferredMonitorDeviceName);
+        PopulateAudioOutputs(_settingsStore.Current.AudioOutputDeviceId);
         RefreshDiagnostics();
+    }
+
+    private void PopulateAudioOutputs(string? preferredId)
+    {
+        _refreshingAudioOutputs = true;
+        try
+        {
+            _audioOutputComboBox.Items.Clear();
+            _audioOutputComboBox.AccessibleDescription = null;
+            _audioOutputComboBox.Items.Add(new AudioOutputItem(null, "跟随系统默认设备"));
+            try
+            {
+                foreach (var device in EveryStage.Rendering.Audio.AudioOutputDevices.Enumerate())
+                    _audioOutputComboBox.Items.Add(new AudioOutputItem(device.Id, device.Name));
+            }
+            catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or InvalidOperationException)
+            {
+                _audioOutputComboBox.AccessibleDescription = "设备列表暂不可用，请稍后重新打开设置";
+            }
+            int index = 0;
+            if (!string.IsNullOrEmpty(preferredId))
+            {
+                index = _audioOutputComboBox.Items.Cast<AudioOutputItem>().ToList().FindIndex(item => item.Id == preferredId);
+                if (index < 0)
+                {
+                    index = _audioOutputComboBox.Items.Add(new AudioOutputItem(preferredId, "已选择的设备不可用（将使用系统默认）"));
+                }
+            }
+            _audioOutputComboBox.SelectedIndex = index;
+        }
+        finally { _refreshingAudioOutputs = false; }
+    }
+
+    private void OnAudioOutputChanged(object? sender, EventArgs e)
+    {
+        if (_refreshingAudioOutputs || _audioOutputComboBox.SelectedItem is not AudioOutputItem item) return;
+        var updated = _settingsStore.Current.Clone();
+        updated.AudioOutputDeviceId = item.Id;
+        try { _settingsStore.Save(updated); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            PopulateAudioOutputs(_settingsStore.Current.AudioOutputDeviceId);
+            MessageBox.Show(this, $"音频设备设置未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void PopulateMonitorComboBox(string? preferredDeviceName)
@@ -642,6 +695,11 @@ public sealed class SettingsPanel : UserControl
             using (var accentBrush = new SolidBrush(theme.Accent))
                 g.FillRectangle(accentBrush, preview.Right - 43, preview.Y + 17, 31, 17);
         }
+    }
+
+    private sealed record AudioOutputItem(string? Id, string Label)
+    {
+        public override string ToString() => Label;
     }
 
     private sealed record MonitorComboItem(string DeviceName, string Label)

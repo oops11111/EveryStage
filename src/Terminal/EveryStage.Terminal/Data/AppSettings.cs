@@ -47,6 +47,9 @@ public sealed class AppSettings
 
     // --- 播放行为 ---
 
+    /// <summary>Windows render endpoint ID; null follows the system default for newly opened audio.</summary>
+    public string? AudioOutputDeviceId { get; set; }
+
     /// <summary>Fallback stay duration, in seconds, for a file whose own
     /// <c>MediaFile.StayDuration</c> isn't set — null (the default) preserves the existing
     /// behavior of holding indefinitely. A per-file value, when configured, always wins over this.

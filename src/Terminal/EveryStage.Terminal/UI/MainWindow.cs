@@ -239,6 +239,7 @@ public sealed class MainWindow : GradientForm
         foreach (Control page in new Control[] { _filesPanel, _devicesPanel, _activitiesPanel, _settingsPanel })
             _panelPalettes[page] = ModernUi.Palette;
         settingsStore.SettingsChanged += OnSettingsChanged;
+        settingsStore.AudioOutputFallback += OnAudioOutputFallback;
 
         filesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, filesButton); ShowPanel(_filesPanel); };
         activitiesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, activitiesButton); ShowPanel(_activitiesPanel); };
@@ -596,6 +597,18 @@ public sealed class MainWindow : GradientForm
         _emergencyHotkey.Configure(settings.GlobalEmergencyStopEnabled);
     }
 
+    private void OnAudioOutputFallback(string message)
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated) return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(() => OnAudioOutputFallback(message)); }
+            catch (InvalidOperationException) { }
+            return;
+        }
+        _toastStack.Show(message, ToastSeverity.Warning);
+    }
+
     private void UpdateStatusLabel()
     {
         bool active = _stateMachine.State == OutputState.Active;
@@ -698,6 +711,7 @@ public sealed class MainWindow : GradientForm
         {
             _stateMachine.StateChanged -= OnStateChanged;
             _settingsStore.SettingsChanged -= OnSettingsChanged;
+            _settingsStore.AudioOutputFallback -= OnAudioOutputFallback;
             _settingsPanel.Dispose();
             if (_playback != null)
             {

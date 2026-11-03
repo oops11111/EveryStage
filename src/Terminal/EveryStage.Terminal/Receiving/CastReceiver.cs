@@ -279,7 +279,8 @@ public sealed class CastReceiver : IDisposable
     public CastReceiver(VideoSurface surface, int width, int height, int listenPort,
         bool hasAudio = false, int audioSampleRate = 0, int audioChannels = 0, int audioListenPort = 0,
         bool audioIsAac = false, byte? payloadType = null, byte? audioPayloadType = null,
-        Guid mediaSessionId = default, byte[]? videoKey = null, byte[]? audioKey = null, System.Net.IPAddress? expectedAddress = null)
+        Guid mediaSessionId = default, byte[]? videoKey = null, byte[]? audioKey = null, System.Net.IPAddress? expectedAddress = null,
+        Func<int, int, AudioPlaybackClock>? audioOutputFactory = null)
     {
         if (mediaSessionId == Guid.Empty || videoKey == null || audioKey == null || expectedAddress == null)
             throw new ArgumentException("Authenticated media session is required.");
@@ -320,7 +321,8 @@ public sealed class CastReceiver : IDisposable
                 // away rather than surfacing later as an unhandled exception from inside
                 // OnAudioPayloadReceived on the RTP receive thread.
                 _sourceAudioChannels = audioChannels;
-                _audioClock = new AudioPlaybackClock(audioSampleRate, PcmDownmix.OutputChannels(audioChannels));
+                _audioClock = audioOutputFactory?.Invoke(audioSampleRate, PcmDownmix.OutputChannels(audioChannels))
+                    ?? new AudioPlaybackClock(audioSampleRate, PcmDownmix.OutputChannels(audioChannels));
                 _audioClock.Faulted += reason => DegradeAudio($"声音输出已断开（{reason}），投屏继续无声显示");
                 _audioSampleRate = (uint)audioSampleRate;
                 if (audioIsAac)

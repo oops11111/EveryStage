@@ -40,6 +40,7 @@ namespace EveryStage.Terminal.ContentEngine;
 /// </summary>
 public sealed class AudioContentController : IDisposable
 {
+    internal Func<int, int, AudioPlaybackClock>? AudioOutputFactory { get; set; }
     // See RunPlaybackLoopCore: how far ahead of actual playback position this loop lets itself
     // decode before pausing. AudioPlaybackClock's BufferedWaveProvider holds 5 seconds with
     // DiscardOnBufferOverflow — without some cap here, decode (typically much cheaper than video
@@ -269,11 +270,12 @@ public sealed class AudioContentController : IDisposable
 
     /// <summary>Opens the audio output for <paramref name="source"/>, turning a failure (no output device,
     /// audit B-20) into an error the Preview card can show.</summary>
-    private static AudioPlaybackClock OpenOutput(AudioDecodeSource source)
+    private AudioPlaybackClock OpenOutput(AudioDecodeSource source)
     {
         try
         {
-            return new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
+            return AudioOutputFactory?.Invoke(source.AudioSampleRate, source.AudioChannels)
+                ?? new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
         }
         catch (Exception ex)
         {

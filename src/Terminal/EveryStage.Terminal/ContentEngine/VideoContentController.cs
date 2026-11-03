@@ -38,6 +38,7 @@ namespace EveryStage.Terminal.ContentEngine;
 /// </summary>
 public sealed class VideoContentController : IDisposable
 {
+    internal Func<int, int, AudioPlaybackClock>? AudioOutputFactory { get; set; }
     private static readonly long FrameBudgetTicks = TimeSpan.TicksPerSecond / 30;
     private static readonly long AudioLeadTicks = TimeSpan.FromMilliseconds(250).Ticks;
 
@@ -256,7 +257,8 @@ public sealed class VideoContentController : IDisposable
         {
             try
             {
-                _audioClock = new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
+                _audioClock = AudioOutputFactory?.Invoke(source.AudioSampleRate, source.AudioChannels)
+                    ?? new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
             }
             catch (Exception ex)
             {

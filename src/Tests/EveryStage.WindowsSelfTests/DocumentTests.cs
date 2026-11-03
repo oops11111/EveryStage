@@ -26,7 +26,7 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestThemeRoles(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestThemeRoles(); TestAudioOutputSettings(directory); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -54,6 +54,27 @@ internal static class DocumentTests
         second.Configure(true);
         Require(second.Registered, "Disabling the first registration did not release the hotkey.");
         Console.WriteLine("PASS: global emergency hotkey defaults off, reports conflicts, releases and retries");
+    }
+
+    private static void TestAudioOutputSettings(string directory)
+    {
+        string path = Path.Combine(directory, "audio-ui-settings.json");
+        var settings = new SettingsStore(path);
+        var missing = settings.Current.Clone();
+        missing.AudioOutputDeviceId = "missing-audio-device";
+        settings.Save(missing);
+        using var panel = new SettingsPanel(settings, new EveryStage.Discovery.DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = "测试" });
+        var combo = (ComboBox)typeof(SettingsPanel).GetField("_audioOutputComboBox", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(panel)!;
+        Require(combo.SelectedItem?.ToString()?.Contains("不可用") == true && settings.Current.AudioOutputDeviceId == missing.AudioOutputDeviceId,
+            "An unavailable selected audio device was silently discarded in settings.");
+        combo.SelectedIndex = 0;
+        Require(new SettingsStore(path).Current.AudioOutputDeviceId == null, "Selecting the system default did not persist immediately.");
+        if (combo.Items.Count > 1 && !combo.Items[1]!.ToString()!.Contains("不可用"))
+        {
+            combo.SelectedIndex = 1;
+            Require(!string.IsNullOrEmpty(new SettingsStore(path).Current.AudioOutputDeviceId), "Selecting an audio device did not persist immediately.");
+        }
+        Console.WriteLine("PASS: audio settings preserve unavailable selections and save device choices immediately");
     }
 
     private static void TestThemeRoles()

@@ -73,6 +73,46 @@ internal static class PreviewProgramTests
                 Muted = true,
             };
 
+            if (hasAudio)
+            {
+                var devices = EveryStage.Rendering.Audio.AudioOutputDevices.Enumerate();
+                if (devices.Count > 0)
+                {
+                    var updated = settings.Current.Clone();
+                    updated.AudioOutputDeviceId = devices[0].Id;
+                    settings.Save(updated);
+                    Require(new SettingsStore(Path.Combine(directory, "settings.json")).Current.AudioOutputDeviceId == devices[0].Id,
+                        "Selected audio endpoint was not persisted.");
+                    using (var selected = settings.OpenAudioOutput(48000, 2))
+                        Require(selected.SelectedDeviceId == devices[0].Id, "Configured audio endpoint was not opened.");
+                    updated = settings.Current.Clone();
+                    updated.AudioOutputDeviceId = "EveryStage-missing-test-endpoint";
+                    settings.Save(updated);
+                    int fallbackCount = 0;
+                    void OnFallback(string _) => fallbackCount++;
+                    settings.AudioOutputFallback += OnFallback;
+                    preview.RequestPlay(Media(Path.Combine(media, "tone.mp3")));
+                    Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.Position > TimeSpan.FromMilliseconds(100), 5000)
+                        && fallbackCount == 1, "Standalone audio did not use and report the configured-device fallback.");
+                    if (hasVideo)
+                    {
+                        preview.RequestPlay(Media(Path.Combine(media, "av.mp4")));
+                        Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.VideoFrameStats.Presented >= 2, 5000)
+                            && fallbackCount == 2, "Video audio did not use and report the configured-device fallback.");
+                        using var cast = new CastReceiver(previewVideo!, 320, 240, 0, hasAudio: true, audioSampleRate: 48000,
+                            audioChannels: 2, audioListenPort: 0, mediaSessionId: Guid.NewGuid(), videoKey: new byte[32],
+                            audioKey: new byte[32], expectedAddress: IPAddress.Loopback, audioOutputFactory: settings.OpenAudioOutput);
+                        Require(cast.HasAudio && fallbackCount == 3, "New casts did not use and report the configured-device fallback.");
+                    }
+                    preview.Stop();
+                    settings.AudioOutputFallback -= OnFallback;
+                    updated = settings.Current.Clone();
+                    updated.AudioOutputDeviceId = null;
+                    settings.Save(updated);
+                    Console.WriteLine("PASS: audio endpoint setting persists; local audio, video and new cast open the default with a fallback notice");
+                }
+            }
+
             // ── 1. No extended display at all: everything previews internally ───────────────────────
             var matrix = new List<string>();
             foreach (var (name, note) in fixtures)
@@ -260,6 +300,25 @@ internal static class PreviewProgramTests
             };
             int localStarting = 0;
             program.LocalPlaybackStarting += () => localStarting++;
+
+            if (hasAudio)
+            {
+                var updated = settings.Current.Clone();
+                updated.AudioOutputDeviceId = "EveryStage-missing-test-endpoint";
+                settings.Save(updated);
+                int fallbackCount = 0;
+                void OnFallback(string _) => fallbackCount++;
+                settings.AudioOutputFallback += OnFallback;
+                var background = Media(Path.Combine(media, "tone.mp3"));
+                background.IsBackgroundAudio = true;
+                program.RequestPlay(background);
+                Require(fallbackCount == 1, "Background audio did not use and report the configured-device fallback.");
+                program.Stop();
+                settings.AudioOutputFallback -= OnFallback;
+                updated = settings.Current.Clone();
+                updated.AudioOutputDeviceId = null;
+                settings.Save(updated);
+            }
 
             preview.RequestPlay(onAir);
             Require(WaitFor(() => preview.State == PlaybackChannelState.Playing, 5000), "Preview content did not start.");

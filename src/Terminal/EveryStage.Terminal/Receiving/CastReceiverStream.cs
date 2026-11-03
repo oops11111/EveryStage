@@ -22,10 +22,11 @@ internal sealed class CastReceiverStream : IDeviceCastStream
         Guid mediaSessionId,
         byte[] videoKey,
         byte[] audioKey,
-        IPAddress allowedSender)
+        IPAddress allowedSender,
+        Func<int, int, EveryStage.Rendering.Audio.AudioPlaybackClock>? audioOutputFactory = null)
     {
         _receiver = new CastReceiver(surface, width, height, videoPort, hasAudio, audioSampleRate, audioChannels, audioPort,
-            audioIsAac, payloadType, audioPayloadType, mediaSessionId, videoKey, audioKey, allowedSender);
+            audioIsAac, payloadType, audioPayloadType, mediaSessionId, videoKey, audioKey, allowedSender, audioOutputFactory);
         _receiver.VideoPacketsMissing += missing => VideoPacketsMissing?.Invoke(missing);
         _receiver.AudioDegraded += reason => AudioDegraded?.Invoke(reason);
     }

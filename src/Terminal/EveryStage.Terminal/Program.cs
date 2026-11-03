@@ -208,7 +208,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity, _connectionLog);
         _deviceCastController = new DeviceCastController(
             _mainWindow, _identity.DeviceId, _discovery, _connectionLog, _stateMachine,
-            () => _overlay, () => _videoSurface, () => _playback);
+            () => _overlay, () => _videoSurface, () => _playback, audioOutputFactory: _settingsStore.OpenAudioOutput);
         _deviceCastController.SessionStarted += () =>
         {
             _castStatusTickCount = 0;

@@ -23,6 +23,21 @@ public sealed class SettingsStore
     /// another reader sees mid-edit.</summary>
     public AppSettings Current { get; private set; }
     public event Action<AppSettings>? SettingsChanged;
+    public event Action<string>? AudioOutputFallback;
+
+    internal EveryStage.Rendering.Audio.AudioPlaybackClock OpenAudioOutput(int sampleRate, int channels)
+    {
+        string? id = Current.AudioOutputDeviceId;
+        if (string.IsNullOrWhiteSpace(id)) return new(sampleRate, channels);
+        try { return new(sampleRate, channels, id); }
+        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException or NotSupportedException)
+        {
+            var fallback = new EveryStage.Rendering.Audio.AudioPlaybackClock(sampleRate, channels);
+            try { AudioOutputFallback?.Invoke("所选音频设备不可用，已切换到系统默认设备；当前播放结束后可在设置中重新选择。"); }
+            catch (Exception) { /* Notification must never interrupt audio output. */ }
+            return fallback;
+        }
+    }
 
     public SettingsStore(string? storePathOverride = null)
     {
