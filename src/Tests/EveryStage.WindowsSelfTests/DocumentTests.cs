@@ -26,12 +26,12 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestContainedThumbnails(directory); TestVisibleThumbnails(directory); TestActivityThumbnailAvailability(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestActivityThumbnailAvailability(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        if (!thread.Join(TimeSpan.FromSeconds(30))) throw new TimeoutException("Operator UI tests did not finish.");
+        if (!thread.Join(TimeSpan.FromSeconds(60))) throw new TimeoutException("Operator UI tests did not finish.");
         if (failure != null) throw new InvalidOperationException("Operator UI tests failed.", failure);
     }
 
@@ -116,6 +116,40 @@ internal static class DocumentTests
             && loaded.Keys.All(key => grid.VisibleItems().Any(item => item.File.Id.ToString() == key)), 5000),
             "Resizing did not update visible thumbnails.");
         Console.WriteLine("PASS: visible thumbnails, scrolling/resizing, offscreen release and missing/restored file status");
+    }
+
+    private static void TestThumbnailDiskCache(string directory)
+    {
+        string root = Path.Combine(directory, "disk-cache-test");
+        string source = Path.Combine(directory, "disk-cache-source.png");
+        static void WriteImage(string path, int width, int height, Color color)
+        {
+            using var bitmap = new Bitmap(width, height);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(color);
+            bitmap.Save(path, ImageFormat.Png);
+        }
+        WriteImage(source, 40, 30, Color.Red);
+        var file = new MediaFile { SourcePath = source, Kind = MediaKind.Image };
+        var cache = new ThumbnailDiskCache(root);
+        using (var image = (Bitmap)cache.GetOrBuild(file)) Require(image.GetPixel(120, 75).R > 200, "Initial thumbnail did not decode.");
+        string cached = Directory.GetFiles(root, "*.png").Single();
+        WriteImage(cached, 240, 150, Color.Blue);
+        using (var image = (Bitmap)new ThumbnailDiskCache(root).GetOrBuild(file))
+            Require(image.GetPixel(120, 75).B > 200, "A new cache instance did not read the existing disk thumbnail.");
+        File.WriteAllText(cached, "corrupt");
+        using (var image = (Bitmap)cache.GetOrBuild(file)) Require(image.GetPixel(120, 75).R > 200, "Corrupt disk cache did not rebuild.");
+        WriteImage(source, 80, 40, Color.Lime);
+        using (var image = (Bitmap)cache.GetOrBuild(file)) Require(image.GetPixel(120, 75).G > 200, "Changed source reused its old thumbnail.");
+        int entries = Directory.GetFiles(root, "*.png").Length;
+        var missing = new MediaFile { SourcePath = Path.Combine(directory, "missing-cache.png"), Kind = MediaKind.Image };
+        using (cache.GetOrBuild(missing)) { }
+        Require(Directory.GetFiles(root, "*.png").Length == entries, "Missing-file fallback was persisted.");
+        string notDirectory = Path.Combine(directory, "cache-is-a-file");
+        File.WriteAllText(notDirectory, "not a directory");
+        using (var image = (Bitmap)new ThumbnailDiskCache(notDirectory).GetOrBuild(file))
+            Require(image.GetPixel(120, 75).G > 200, "An unwritable cache blocked source decoding.");
+        Console.WriteLine("PASS: disk thumbnail reuse, source changes, corrupt cache, missing files and write failure");
     }
 
     private static void TestActivityThumbnailAvailability(string directory)

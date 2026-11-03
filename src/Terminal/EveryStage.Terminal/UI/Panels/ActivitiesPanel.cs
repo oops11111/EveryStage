@@ -1102,7 +1102,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             (thumbnail, unavailable) = await Task.Run(() =>
             {
                 bool missing = !File.Exists(file.SourcePath);
-                try { return (FilesPanel.BuildThumbnail(file), missing); }
+                try { return (ThumbnailDiskCache.Shared.GetOrBuild(file), missing); }
                 catch (Exception ex)
                 {
                     System.Diagnostics.Trace.TraceError("Activity thumbnail failed: {0}", ex);

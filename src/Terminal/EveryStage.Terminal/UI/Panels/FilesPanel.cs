@@ -950,7 +950,7 @@ public sealed class FilesPanel : UserControl
                             // One unreadable file gets a warning tile; an exception type BuildThumbnail's
                             // per-kind filters miss (e.g. InvalidDataException from a PDF with bad page
                             // sizes) used to end this whole pass, leaving every later card blank.
-                            try { return BuildThumbnail(file); }
+                            try { return ThumbnailDiskCache.Shared.GetOrBuild(file); }
                             catch (Exception ex)
                             {
                                 System.Diagnostics.Trace.TraceError("Thumbnail for {0} failed: {1}", file.SourcePath, ex);
@@ -1087,8 +1087,11 @@ public sealed class FilesPanel : UserControl
             "加入活动音轨", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
-    internal static Image BuildThumbnail(MediaFile file)
+    internal static Image BuildThumbnail(MediaFile file) => BuildThumbnail(file, out _);
+
+    internal static Image BuildThumbnail(MediaFile file, out bool cacheable)
     {
+        cacheable = false;
         const int tw = 240, th = 150;
         if (file.Kind == MediaKind.Document && new[] { ".docx", ".pptx", ".xlsx" }.Contains(Path.GetExtension(file.SourcePath), StringComparer.OrdinalIgnoreCase))
         {
@@ -1103,6 +1106,7 @@ public sealed class FilesPanel : UserControl
                         using var graphics = Graphics.FromImage(thumbnail);
                         graphics.Clear(Color.FromArgb(20, 37, 58));
                         graphics.DrawImageUnscaled(embedded, (tw - embedded.Width) / 2, (th - embedded.Height) / 2);
+                        cacheable = true;
                         return thumbnail;
                     }
                     catch { thumbnail.Dispose(); throw; }
@@ -1124,6 +1128,7 @@ public sealed class FilesPanel : UserControl
                     using var graphics = Graphics.FromImage(thumbnail);
                     graphics.Clear(Color.FromArgb(20, 37, 58));
                     graphics.DrawImageUnscaled(page, (tw - page.Width) / 2, (th - page.Height) / 2);
+                    cacheable = true;
                     return thumbnail;
                 }
                 catch { thumbnail.Dispose(); throw; }
@@ -1145,6 +1150,7 @@ public sealed class FilesPanel : UserControl
                 using var graphics = Graphics.FromImage(thumbnail);
                 graphics.Clear(Color.FromArgb(20, 37, 58));
                 ThumbnailDrawing.DrawContained(graphics, loaded, new Rectangle(0, 0, tw, th));
+                cacheable = true;
                 return thumbnail;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OutOfMemoryException or ArgumentException)
@@ -1168,6 +1174,7 @@ public sealed class FilesPanel : UserControl
                         using var graphics = Graphics.FromImage(thumbnail);
                         graphics.Clear(Color.FromArgb(20, 37, 58));
                         ThumbnailDrawing.DrawContained(graphics, shellPreview, new Rectangle(0, 0, tw, th));
+                        cacheable = true;
                         return thumbnail;
                     }
                     catch { thumbnail.Dispose(); throw; }
