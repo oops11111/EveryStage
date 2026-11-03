@@ -6,6 +6,8 @@ namespace EveryStage.Terminal.UI;
 
 public static class ThemeManager
 {
+    private sealed class RootPalette { public UiPalette? Value; }
+    private static readonly ConditionalWeakTable<Control, RootPalette> s_rootPalettes = new();
     // Test injection never writes Windows settings and is not exposed as a user override.
     internal static Func<bool>? HighContrastProbe { get; set; }
     internal static bool HighContrast => HighContrastProbe?.Invoke() ?? SystemInformation.HighContrast;
@@ -32,11 +34,13 @@ public static class ThemeManager
     public static void Apply(Control root, AppTheme theme)
     {
         theme = Resolve(theme);
-        var previous = ModernUi.Palette;
+        var rootPalette = s_rootPalettes.GetOrCreateValue(root);
+        var previous = rootPalette.Value ?? ModernUi.Palette;
         var palette = UiPalette.For(theme);
         ModernUi.SetPalette(palette, theme);
         if (root.FindForm() is Form form) WindowsAppearance.ApplyTitleBarTheme(form, !HighContrast && theme != AppTheme.Light);
         ApplyRecursive(root, palette, previous);
+        rootPalette.Value = palette;
         RefreshThemeAwareControls(root);
         ThemeScrollbars(root);
         root.Invalidate(true);

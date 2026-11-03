@@ -109,6 +109,11 @@ internal static class DocumentTests
         using var row = new ActivityRowView(rowHost, sampleActivity, activityNode, 1);
         row.FitToWidth(720);
         form.Controls.Add(row);
+        ThemeManager.Apply(form, AppTheme.Dark);
+        using var secondForm = new Form();
+        using var legacyLabel = new Label { ForeColor = UiPalette.Normal(AppTheme.Dark).Muted };
+        secondForm.Controls.Add(legacyLabel);
+        ThemeManager.Apply(secondForm, AppTheme.Dark);
         var monitorMenuColors = new EveryStage.Terminal.UI.Panels.FilesPanel.FileMenuColorTable(() => ModernUi.PaletteFor(dock));
         try
         {
@@ -117,7 +122,9 @@ internal static class DocumentTests
                 warningLabel.ForeColor = Color.Magenta; // role must win even when the old colour is unknown.
                 surfaceLabel.BackColor = Color.Magenta;
                 ThemeManager.Apply(form, theme);
+                ThemeManager.Apply(secondForm, theme);
                 var palette = UiPalette.For(theme);
+                Require(legacyLabel.ForeColor == palette.Muted, $"A second window kept a stale foreground under {theme}.");
                 Require(warningLabel.ForeColor == palette.Warning && accentLabel.ForeColor == palette.Accent,
                     $"Explicit text roles did not follow {theme}.");
                 Require(infoToast.BackColor == palette.SurfaceRaised && ToastStripe(infoToast).BackColor == palette.Accent
@@ -381,6 +388,7 @@ internal static class DocumentTests
         var readyFile = new MediaFile { SourcePath = readyImage, Kind = MediaKind.Image };
         feedbackProgram.RequestPlay(readyFile);
         Require(WaitFor(() => ReferenceEquals(lastFeedback.GetValue(window), readyFile), 3000), "Ready Program output did not generate feedback.");
+        TestFloatingPreviewTheme(window, feedbackProgram, outputState, dir);
         var dock = (SharedPreviewDock)typeof(MainWindow).GetField("_previewDock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
         Require(WaitFor(() => typeof(SharedPreviewDock).GetField("_flashingCard", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock) == null, 2000),
             "On-air flash did not finish.");
@@ -452,6 +460,64 @@ internal static class DocumentTests
         Console.WriteLine("PASS: background-music playlists persist");
 
         TestSlideTransitions();
+    }
+
+    private static void TestFloatingPreviewTheme(MainWindow owner, PlaybackEngine playback, OutputStateMachine machine, string directory)
+    {
+        var probe = ThemeManager.HighContrastProbe;
+        using var floating = new FloatingPreviewWindow(playback, machine, new SettingsStore(Path.Combine(directory, "floating-settings.json")));
+        floating.Opacity = 0;
+        floating.Location = new Point(-32000, -32000);
+        floating.ShowForActiveOutput();
+        Pump(150);
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var pin = (Button)typeof(FloatingPreviewWindow).GetField("_pinButton", flags)!.GetValue(floating)!;
+        var thumbnail = (PictureBox)typeof(FloatingPreviewWindow).GetField("_thumbnail", flags)!.GetValue(floating)!;
+        var save = (Button)typeof(FloatingPreviewWindow).GetField("_saveButton", flags)!.GetValue(floating)!;
+        var status = (Label)typeof(MainWindow).GetField("_statusLabel", flags)!.GetValue(owner)!;
+        var click = typeof(Button).GetMethod("OnClick", flags)!;
+        try
+        {
+            Require(save is RoundedActionButton && !save.Enabled, "Floating preview did not use a visible disabled state for image save.");
+            ThemeManager.HighContrastProbe = () => false;
+            foreach (var theme in new[] { AppTheme.Light, AppTheme.Tech, AppTheme.Dark })
+            {
+                ThemeManager.Apply(owner, theme);
+                ThemeManager.Apply(floating, theme);
+                var palette = UiPalette.For(theme);
+                Require(floating.TopMost && pin.BackColor == palette.AccentFill && pin.ForeColor == palette.AccentFillForeground
+                    && pin.Font.FontFamily.Name == "Segoe MDL2 Assets" && pin.Text == "\uE840",
+                    $"Pinned floating preview lost its selected role in {theme}.");
+                Require(status.ForeColor == palette.Danger, $"On-air status lost its danger role in {theme}.");
+                Require(thumbnail.BackColor == Color.Black, "Floating preview thumbnail did not keep its black media background.");
+                if (theme == AppTheme.Light)
+                {
+                    string output = Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots");
+                    Directory.CreateDirectory(output);
+                    using var screenshot = Capture(floating);
+                    screenshot.Save(Path.Combine(output, "floating-preview-light.png"), ImageFormat.Png);
+                }
+            }
+            click.Invoke(pin, new object[] { EventArgs.Empty });
+            ThemeManager.Apply(owner, AppTheme.Light);
+            ThemeManager.Apply(floating, AppTheme.Light);
+            Require(!floating.TopMost && pin.BackColor == UiPalette.For(AppTheme.Light).Surface && pin.Text == "\uE718",
+                "Unpinned floating preview did not retain its neutral role.");
+            click.Invoke(pin, new object[] { EventArgs.Empty });
+            ThemeManager.HighContrastProbe = () => true;
+            ThemeManager.Apply(owner, AppTheme.Tech);
+            ThemeManager.Apply(floating, AppTheme.Tech);
+            Require(floating.TopMost && pin.BackColor == SystemColors.Highlight && pin.ForeColor == SystemColors.HighlightText
+                && thumbnail.BackColor == Color.Black && status.ForeColor == SystemColors.WindowText,
+                "Floating preview or on-air status ignored system high contrast or changed the media background.");
+            using var contrast = Capture(floating);
+            contrast.Save(Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots", "floating-preview-simulated-highcontrast.png"), ImageFormat.Png);
+        }
+        finally
+        {
+            ThemeManager.HighContrastProbe = probe;
+            typeof(MainWindow).GetMethod("ApplyTheme", flags)!.Invoke(owner, new object[] { AppTheme.Dark });
+        }
     }
 
     private static Control? FindByTypeName(Control root, string name)
@@ -594,6 +660,10 @@ internal static class DocumentTests
                         var palette = UiPalette.For(theme);
                         Require(empty.BackColor == palette.Surface && empty.ForeColor == palette.Muted,
                             $"File empty state did not keep its surface and text roles in {theme}.");
+                        var search = FindByTypeName(files, "SearchBox")!;
+                        var input = search.Controls.OfType<TextBox>().Single();
+                        Require(input.BackColor == palette.Surface && input.ForeColor == palette.Text && input.AccessibleName == "搜索文件名",
+                            $"File search did not keep its field roles in {theme}.");
                     }
                     if (page == "_devicesPanel")
                     {

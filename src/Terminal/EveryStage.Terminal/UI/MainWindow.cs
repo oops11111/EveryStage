@@ -137,11 +137,11 @@ public sealed class MainWindow : GradientForm
         };
         rail.Paint += (_, e) => DrawEdge(e.Graphics, rail, right: true);
 
-        _statusLabel = new Label
+        _statusLabel = ModernUi.SetForegroundRole(new Label
         {
-            AutoSize = true, ForeColor = ModernUi.Success, Font = new Font(ModernUi.UiFont, 9F),
+            AutoSize = true, Font = new Font(ModernUi.UiFont, 9F),
             TextAlign = ContentAlignment.MiddleRight, Padding = new Padding(0, 8, 12, 0), BackColor = Color.Transparent,
-        };
+        }, UiForegroundRole.Muted);
 
         _contentHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(20, 16, 20, 12) };
         _panelHost = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
@@ -407,7 +407,7 @@ public sealed class MainWindow : GradientForm
     /// <summary>The 1px divider between the rail / monitor column and the page area.</summary>
     private static void DrawEdge(Graphics g, Control control, bool right)
     {
-        using var pen = new Pen(ModernUi.Mix(ModernUi.Rail, ModernUi.Border, 0.45f));
+        using var pen = new Pen(ModernUi.Palette.IsHighContrast ? ModernUi.Border : ModernUi.Mix(ModernUi.Rail, ModernUi.Border, 0.45f));
         int x = right ? control.ClientSize.Width - 1 : 0;
         g.DrawLine(pen, x, 0, x, control.ClientSize.Height);
     }
@@ -601,19 +601,21 @@ public sealed class MainWindow : GradientForm
         bool active = _stateMachine.State == OutputState.Active;
         _emergencyStop.Enabled = active || _preview.State != PlaybackChannelState.Idle || _music.IsPlaying;
         _onAir.Visible = active;
-        (_statusLabel.Text, _statusLabel.ForeColor) =
-            active && (_playback == null || _stateMachine.Source == ProgramSource.DeviceCast) ? ("● 大屏输出中 · 设备来投", ModernUi.Danger)
-            : active ? ("● 大屏输出中", ModernUi.Danger)
-            : _playback == null ? ("○ 未连接扩展屏 · 仅本地预览", ModernUi.Muted)
-            : _stateMachine.CastSwitchOn ? ("○ 大屏待机", ModernUi.Muted)
-            : ("○ 大屏待机 · 投屏开关已关闭", ModernUi.Warning);
+        var (message, role) =
+            active && (_playback == null || _stateMachine.Source == ProgramSource.DeviceCast) ? ("● 大屏输出中 · 设备来投", UiForegroundRole.Danger)
+            : active ? ("● 大屏输出中", UiForegroundRole.Danger)
+            : _playback == null ? ("○ 未连接扩展屏 · 仅本地预览", UiForegroundRole.Muted)
+            : _stateMachine.CastSwitchOn ? ("○ 大屏待机", UiForegroundRole.Muted)
+            : ("○ 大屏待机 · 投屏开关已关闭", UiForegroundRole.Warning);
+        _statusLabel.Text = message;
+        ModernUi.SetForegroundRole(_statusLabel, role);
         _filesPanel.SetOutputActive(active);
     }
 
     private void OnPlaybackDeclinedByCastSwitch(MediaFile file)
     {
         _statusLabel.Text = $"⚠ 投屏开关已关闭 · 未投放：{Path.GetFileName(file.SourcePath)}";
-        _statusLabel.ForeColor = ModernUi.Warning;
+        ModernUi.SetForegroundRole(_statusLabel, UiForegroundRole.Warning);
         _declinedMessageTimer.Stop(); // restart rather than stack — see the timer's own construction comment.
         _declinedMessageTimer.Start();
     }

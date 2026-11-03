@@ -1364,11 +1364,11 @@ public sealed class FilesPanel : UserControl
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
                 | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
             BackColor = Color.Transparent;
-            _text = new TextBox
+            _text = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(new TextBox
             {
-                BorderStyle = BorderStyle.None, BackColor = ModernUi.Surface, ForeColor = ModernUi.Text,
+                BorderStyle = BorderStyle.None, AccessibleName = "搜索文件名",
                 Font = new Font(ModernUi.UiFont, 10F), PlaceholderText = "搜索文件名",
-            };
+            }, UiForegroundRole.Text), UiBackgroundRole.Surface);
             _text.TextChanged += (_, _) => OnTextChanged(EventArgs.Empty);
             _text.KeyDown += (_, e) =>
             {
@@ -1407,8 +1407,6 @@ public sealed class FilesPanel : UserControl
             var g = e.Graphics;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-            if (_text.BackColor != ModernUi.Surface) _text.BackColor = ModernUi.Surface;
-            if (_text.ForeColor != ModernUi.Text) _text.ForeColor = ModernUi.Text;
             using (var path = RoundedCard(rect, 8))
             using (var fill = new SolidBrush(ModernUi.Surface))
             using (var border = new Pen(_text.Focused ? ModernUi.Accent : ModernUi.Border))

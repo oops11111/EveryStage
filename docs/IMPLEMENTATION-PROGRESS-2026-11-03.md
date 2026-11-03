@@ -139,3 +139,11 @@ OV 代码签名需要用户持有的有效证书/签名服务；目前不具备�
 - 普通主题的流程预览徽标改用 Preview 色及对应文字色，与上屏/选中状态区分。
 - WindowsSelfTests 严格构建和操作界面专项通过，日志 `artifacts/test-diagnostics/operator-activity-contrast-final.log`；模拟高对比度下检查选中线、预览标记、上屏/下一项边框、待播与空缩略图底色，已查看 `artifacts/screenshots/simulated-highcontrast-activities.png`。未切换真实系统高对比度或重跑完整媒体自检。
 - 其他未登记控件、菜单和 `ThemeManager` 的旧色反查仍待逐项迁移；真实双屏来投、音频设备选择、CI 和推送待完成。
+
+## 第十四批：多窗口主题与浮动预览
+
+- 主题管理按窗口分别记录上一次色板，避免主窗口先切换主题后，浮动预览窗错误地使用新色板作为旧色板而残留旧颜色；记录不延长窗口生命周期。未登记角色的旧控件仍保留旧色反查，尚未完成全量迁移。
+- 浮动预览的上屏状态、文件名、页码和置顶按钮使用明确颜色角色；媒体黑场始终保持黑色。置顶图标改用 Windows 图标字体并反映当前置顶状态；图片播放时不可用的保存按钮使用禁用态绘制。窗口释放时取消播放异常事件订阅。
+- 主窗口上屏状态和文件搜索框登记颜色角色；搜索框增加无障碍名称，高对比度下主窗口分隔线使用系统边框色。
+- WindowsSelfTests Release 严格构建和操作界面专项通过，日志 `artifacts/test-diagnostics/operator-floating-theme-final4.log`；覆盖多窗口顺序切换、置顶状态、媒体黑底、搜索框和模拟高对比度，并检查 `artifacts/screenshots/floating-preview-light.png`。本批未重跑完整媒体自检，未验证真实 Windows 高对比度、双屏或混合 DPI。
+- 其他未登记控件和自绘菜单仍需迁移；音频设备选择及断开回退、真实双屏来投、CI 和推送待完成。

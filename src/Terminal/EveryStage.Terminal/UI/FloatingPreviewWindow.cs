@@ -99,34 +99,31 @@ public sealed class FloatingPreviewWindow : Form
         StartPosition = FormStartPosition.Manual;
         Location = new Point(40, 40); // only used the very first time this instance is shown.
 
-        _liveBadge = new Label
+        _liveBadge = ModernUi.SetForegroundRole(new Label
         {
             Text = "● LIVE",
-            ForeColor = ModernUi.Danger,
             AutoSize = true,
             Location = new Point(8, 6),
-        };
+        }, UiForegroundRole.Danger);
 
-        _thumbnail = new PictureBox
+        _thumbnail = ModernUi.SetBackgroundRole(new PictureBox
         {
             SizeMode = PictureBoxSizeMode.Zoom,
-            BackColor = Color.Black,
             Bounds = new Rectangle(8, 28, 204, 114),
-        };
+        }, UiBackgroundRole.MediaBlack);
 
-        _fileLabel = new Label
+        _fileLabel = ModernUi.SetForegroundRole(new Label
         {
             AutoEllipsis = true,
             Bounds = new Rectangle(8, 146, 204, 32),
-        };
+        }, UiForegroundRole.Text);
 
         // Empty text (AutoSize-less Label collapses to nothing visible) whenever
         // PlaybackEngine.DocumentPageInfo is null — see this class's doc comment.
-        _pageLabel = new Label
+        _pageLabel = ModernUi.SetForegroundRole(new Label
         {
-            ForeColor = ModernUi.Muted,
             Bounds = new Rectangle(8, 178, 204, 16),
-        };
+        }, UiForegroundRole.Muted);
 
         // Shifted down 18px (was 182) from the original layout to make room for _pageLabel above —
         // ClientSize grown by the same 18px (was 214) to match, same "grow, don't reflow everything"
@@ -135,7 +132,7 @@ public sealed class FloatingPreviewWindow : Form
         _pauseButton = new Button { Text = "暂停", Bounds = new Rectangle(72, 200, 44, 24) };
         _nextButton = new Button { Text = "下一项 ▶", Bounds = new Rectangle(120, 200, 60, 24) };
         _disconnectButton = new Button { Text = "断", ForeColor = ModernUi.Danger, Bounds = new Rectangle(184, 200, 28, 24) };
-        _pinButton = new Button { Text = "📌", Bounds = new Rectangle(184, 6, 24, 20) };
+        _pinButton = new Button { Bounds = new Rectangle(184, 6, 24, 20) };
 
         // New row below the existing four buttons — grown ClientSize by the same 24px (row) + 4px
         // (gap) = 28px this file's own history already uses for adding a row without reflowing
@@ -163,7 +160,7 @@ public sealed class FloatingPreviewWindow : Form
         // Fourth row added below the seek row — same "grow ClientSize by row height (24) + gap (4) =
         // 28px, reflow nothing above" approach this file's own history already used three times (see
         // _pageLabel's/_volumeDownButton's/_seekBackButton's own comments above).
-        _saveButton = new Button { Text = "保存", Bounds = new Rectangle(8, 284, 204, 24) };
+        _saveButton = new RoundedActionButton { Text = "保存", Bounds = new Rectangle(8, 284, 204, 24) };
 
         ClientSize = new Size(220, 316);
 
@@ -182,6 +179,7 @@ public sealed class FloatingPreviewWindow : Form
                 danger: ReferenceEquals(button, _disconnectButton));
             button.Padding = Padding.Empty;
         }
+        UpdatePinAppearance();
 
         _previousButton.Click += (_, _) => _playback.PreviousManual();
         _nextButton.Click += (_, _) => _playback.NextManual();
@@ -194,7 +192,7 @@ public sealed class FloatingPreviewWindow : Form
         _pinButton.Click += (_, _) =>
         {
             TopMost = !TopMost;
-            _pinButton.BackColor = TopMost ? ModernUi.Accent : ModernUi.Surface;
+            UpdatePinAppearance();
         };
         // 10% fixed step — matches this window's existing preference for simple, discrete controls
         // (see _volumeDownButton's own doc comment) over a continuously-adjustable one.
@@ -228,7 +226,7 @@ public sealed class FloatingPreviewWindow : Form
         // window and the PlaybackEngine it was constructed with share the same process-lifetime
         // (same convention as this app's other long-lived paired singletons, e.g. Program.cs's own
         // _stateMachine.StateChanged subscription).
-        _playback.PlaybackAbnormallyInterrupted += (_, _) => RefreshFromEngine();
+        _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
 
         // "意外关闭后从主面板召回" (PLANNING.md §8.3) — this comment used to justify not building a
         // recall affordance by saying the Phase 4 main panel didn't exist yet; MainWindow has existed
@@ -251,11 +249,23 @@ public sealed class FloatingPreviewWindow : Form
 
     private void OnSettingsChanged(AppSettings settings) => ThemeManager.Apply(this, settings.Theme);
 
+    private void OnPlaybackAbnormallyInterrupted(MediaFile file, string message) => RefreshFromEngine();
+
+    private void UpdatePinAppearance()
+    {
+        ModernUi.StyleButton(_pinButton, primary: TopMost);
+        _pinButton.Padding = Padding.Empty;
+        _pinButton.Font = new Font("Segoe MDL2 Assets", 9F);
+        _pinButton.Text = TopMost ? "\uE840" : "\uE718";
+        _pinButton.AccessibleName = TopMost ? "取消窗口置顶" : "窗口置顶";
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
             _settingsStore.SettingsChanged -= OnSettingsChanged;
+            _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
             _refreshTimer.Dispose();
             _thumbnail.Image?.Dispose();
             _thumbnail.Image = null;
