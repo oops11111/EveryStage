@@ -1,6 +1,7 @@
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.Mathematics;
+using Microsoft.Win32.SafeHandles;
 
 namespace EveryStage.Rendering;
 
@@ -49,6 +50,8 @@ public sealed class SwapChainPresenter : IDisposable
     private readonly ID3D11VideoContext _videoContext;
 
     private IDXGISwapChain1 _swapChain;
+    private readonly SwapChainFlags _swapChainFlags;
+    private readonly EventWaitHandle? _frameReady;
     private ID3D11Texture2D _backBuffer;
     private ID3D11VideoProcessorOutputView? _outputView;
 
@@ -63,9 +66,10 @@ public sealed class SwapChainPresenter : IDisposable
     /// <summary>Applied on every <see cref="PresentFrame"/>; safe to change between frames.</summary>
     public VideoScaleMode ScaleMode { get; set; } = VideoScaleMode.Stretch;
 
-    public SwapChainPresenter(D3D11Device gpu, IntPtr hwnd, int width, int height)
+    public SwapChainPresenter(D3D11Device gpu, IntPtr hwnd, int width, int height, bool waitForFrame = false)
     {
         _gpu = gpu;
+        _swapChainFlags = waitForFrame ? SwapChainFlags.FrameLatencyWaitableObject : SwapChainFlags.None;
 
         // Bug fixed here: same "step N succeeds and gets kept, step N+1 throws, nothing disposes
         // step N" shape as D3D11Device's own constructor fix (see that class's doc comment) — this
@@ -81,6 +85,7 @@ public sealed class SwapChainPresenter : IDisposable
         ID3D11VideoContext? videoContext = null;
         IDXGISwapChain1? swapChain = null;
         ID3D11Texture2D? backBuffer = null;
+        EventWaitHandle? frameReady = null;
         try
         {
             videoDevice = gpu.Device.QueryInterface<ID3D11VideoDevice>();
@@ -96,21 +101,33 @@ public sealed class SwapChainPresenter : IDisposable
                 SwapEffect = SwapEffect.FlipDiscard,
                 SampleDescription = new SampleDescription(1, 0),
                 AlphaMode = Vortice.DXGI.AlphaMode.Ignore,
+                Flags = _swapChainFlags,
             };
 
             swapChain = gpu.DxgiFactory.CreateSwapChainForHwnd(gpu.Device, hwnd, desc);
+            if (waitForFrame)
+            {
+                using var swapChain2 = swapChain.QueryInterface<IDXGISwapChain2>();
+                swapChain2.MaximumFrameLatency = 1;
+                var handle = swapChain2.FrameLatencyWaitableObject;
+                if (handle == IntPtr.Zero) throw new InvalidOperationException("Swap chain did not provide a frame wait handle.");
+                frameReady = new EventWaitHandle(false, EventResetMode.AutoReset);
+                frameReady.SafeWaitHandle = new SafeWaitHandle(handle, ownsHandle: true);
+            }
             backBuffer = swapChain.GetBuffer<ID3D11Texture2D>(0);
 
             _videoDevice = videoDevice;
             _videoContext = videoContext;
             _swapChain = swapChain;
             _backBuffer = backBuffer;
+            _frameReady = frameReady;
             _outputWidth = width;
             _outputHeight = height;
             CreateOutputView();
         }
         catch
         {
+            frameReady?.Dispose();
             backBuffer?.Dispose();
             swapChain?.Dispose();
             videoContext?.Dispose();
@@ -131,7 +148,7 @@ public sealed class SwapChainPresenter : IDisposable
         // and keep the old dimensions so the presenter stays consistent, and report the failure from the
         // next PresentFrame — whose callers turn it into an error card — rather than throwing into the UI
         // handler that resized the window.
-        var result = _swapChain.ResizeBuffers(0, (uint)width, (uint)height, Format.Unknown, SwapChainFlags.None);
+        var result = _swapChain.ResizeBuffers(0, (uint)width, (uint)height, Format.Unknown, _swapChainFlags);
         _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
         if (result.Success)
         {
@@ -156,8 +173,16 @@ public sealed class SwapChainPresenter : IDisposable
     /// Blits one decoded frame (an NV12 texture-array slot from the DXVA decoder pool, identified
     /// by <paramref name="arraySlice"/>) directly onto the current back buffer, then presents.
     /// </summary>
-    public void PresentFrame(ID3D11Texture2D decodedTexture, int arraySlice, int frameWidth, int frameHeight, bool vsync)
+    public bool PresentFrame(ID3D11Texture2D decodedTexture, int arraySlice, int frameWidth, int frameHeight, bool vsync, CancellationToken cancellationToken = default, int waitMilliseconds = 250)
     {
+        // Bound the wait: an occluded/minimized output must not prevent stop or resize indefinitely.
+        if (_frameReady != null)
+        {
+            bool ready = cancellationToken.CanBeCanceled
+                ? WaitHandle.WaitAny(new[] { _frameReady, cancellationToken.WaitHandle }, waitMilliseconds) == 0
+                : _frameReady.WaitOne(waitMilliseconds);
+            if (!ready || cancellationToken.IsCancellationRequested) return false;
+        }
         if (_pendingResizeFailure is { } resizeFailure)
         {
             _pendingResizeFailure = null;
@@ -186,6 +211,7 @@ public sealed class SwapChainPresenter : IDisposable
         // so the success-category DXGI_STATUS_OCCLUDED (window minimised or covered, entirely normal)
         // still passes through untouched.
         _swapChain.Present(vsync ? 1u : 0u, PresentFlags.None).CheckError();
+        return true;
     }
 
     /// <summary>Source/destination rectangles for <paramref name="mode"/>. Pure and public so the
@@ -295,6 +321,7 @@ public sealed class SwapChainPresenter : IDisposable
 
     public void Dispose()
     {
+        _frameReady?.Dispose();
         _outputView?.Dispose();
         _processor?.Dispose();
         _enumerator?.Dispose();

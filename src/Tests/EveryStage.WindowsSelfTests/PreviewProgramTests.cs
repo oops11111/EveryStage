@@ -184,7 +184,13 @@ internal static class PreviewProgramTests
             Require(presented >= 75 && dropped <= 8, $"A/V pacing poor: presented {presented}, dropped {dropped} of 90.");
             Require(wall is > 2.6 and < 5.0, $"3 s video with audio took {wall:F2} s (clock not driving playback).");
             Console.WriteLine($"PASS: MP4 with audio stays in sync (presented {presented}/90, dropped {dropped}, {wall:F2}s for 3.0s)");
+            Require(Directory.GetFiles(Path.Combine(logs, "playback")).Any(f => File.ReadAllText(f).Contains("video_frames")),
+                "Completed video did not write its presented/dropped counters to the playback log.");
             TestTransport(preview, av, "video");
+            var beforeResize = preview.VideoFrameStats.Presented;
+            previewVideo!.Resize(320, 240);
+            Require(WaitFor(() => preview.VideoFrameStats.Presented > beforeResize, 5000), "Video stopped presenting after swap-chain resize.");
+            previewVideo.Resize(Math.Max(1, previewSurface.VideoHost.Width), Math.Max(1, previewSurface.VideoHost.Height));
             }
             else Console.WriteLine("SKIP: A/V sync and video transport (needs GPU video processing and an audio device)");
 
@@ -303,7 +309,7 @@ internal static class PreviewProgramTests
             Console.WriteLine("PASS: device cast and local Program output are mutually exclusive; Preview is never cleared");
 
             TestDeviceCastControllerFlow(directory, media, settings, scenarios, hasVideo);
-            TestCastReceiverAttachDetachSmoke(hasVideo);
+            TestCastReceiverAttachDetachSmoke(hasVideo, media);
 
             preview.Stop();
 
@@ -630,7 +636,7 @@ internal static class PreviewProgramTests
             new IPEndPoint(IPAddress.Loopback, DiscoveryProtocol.Port), Guid.NewGuid(),
             new byte[32], new byte[32], complete);
 
-    private static void TestCastReceiverAttachDetachSmoke(bool hasVideo)
+    private static void TestCastReceiverAttachDetachSmoke(bool hasVideo, string media)
     {
         if (!hasVideo)
         {
@@ -665,7 +671,18 @@ internal static class PreviewProgramTests
             receiver.DetachProgram();
             sw.Stop();
             Require(sw.ElapsedMilliseconds < 500, $"Attach/Detach without frames took {sw.ElapsedMilliseconds} ms.");
-            Console.WriteLine("PASS: CastReceiver Attach/Detach with two shared-GPU surfaces returns immediately without frames");
+            using var source = new EveryStage.Rendering.Decode.VideoDecodeSource(Path.Combine(media, "silent.mp4"), previewSurface.Gpu);
+            var decoded = source.ReadNextVideoFrame();
+            Require(decoded != null, "Could not decode a frame for the two-surface presentation check.");
+            var frame = decoded!.Value;
+            try
+            {
+                Require(programSurface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true),
+                    "Program swap chain did not present a decoded frame.");
+                previewSurface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true, waitMilliseconds: 0);
+            }
+            finally { frame.Release(); }
+            Console.WriteLine("PASS: CastReceiver Attach/Detach; Program presents a decoded frame and shared-GPU Preview is attempted without waiting");
         }
         finally
         {

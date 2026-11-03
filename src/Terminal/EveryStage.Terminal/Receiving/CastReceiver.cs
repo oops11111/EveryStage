@@ -650,7 +650,7 @@ public sealed class CastReceiver : IDisposable
             if (_audioOutputLost || !_syncOffsetEstimator.TryGetOffset(out long offset))
             {
                 // Also once audio has been given up (DegradeAudio): nothing left to pace against.
-                Present(frame);
+                Present(frame, token);
                 continue;
             }
 
@@ -682,18 +682,20 @@ public sealed class CastReceiver : IDisposable
                 continue;
             }
 
-            Present(frame);
+            Present(frame, token);
         }
     }
 
-    private void Present(PendingFrame frame)
+    private void Present(PendingFrame frame, CancellationToken token = default)
     {
         try
         {
             lock (_programGate)
             {
-                _surface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: false);
-                _programSurface?.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: false);
+                // Keep a hidden or busy preview from delaying the on-air display.
+                _programSurface?.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true, token);
+                _surface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true, token,
+                    waitMilliseconds: _programSurface == null ? 250 : 0);
             }
         }
         catch (Exception ex)

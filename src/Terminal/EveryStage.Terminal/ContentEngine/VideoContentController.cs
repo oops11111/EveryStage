@@ -457,7 +457,11 @@ public sealed class VideoContentController : IDisposable
 
             void PresentFrame(DecodedVideoFrame f, long skewTicks, AudioPlaybackClock? clock)
             {
-                _surface.PresentFrame(f.Texture, f.ArraySlice, f.Width, f.Height, vsync: false);
+                if (!_surface.PresentFrame(f.Texture, f.ArraySlice, f.Width, f.Height, vsync: true, token))
+                {
+                    if (!token.IsCancellationRequested) FramesDropped++;
+                    return;
+                }
                 sinceLastPresent.Restart();
                 FramesPresented++;
                 if (clock != null && clockStarted && !_audioLost)

@@ -67,7 +67,7 @@ public sealed class VideoSurface : IDisposable
         _ownsGpu = true;
         try
         {
-            Presenter = new SwapChainPresenter(Gpu, hostHandle, width, height);
+            Presenter = new SwapChainPresenter(Gpu, hostHandle, width, height, waitForFrame: true);
         }
         catch
         {
@@ -80,7 +80,7 @@ public sealed class VideoSurface : IDisposable
     {
         Gpu = sharedGpu ?? throw new ArgumentNullException(nameof(sharedGpu));
         _ownsGpu = false;
-        Presenter = new SwapChainPresenter(Gpu, hostHandle, width, height);
+        Presenter = new SwapChainPresenter(Gpu, hostHandle, width, height, waitForFrame: true);
     }
 
     /// <summary>Fit/Fill/Stretch for local media; device cast mirroring keeps the default Stretch.</summary>
@@ -107,12 +107,12 @@ public sealed class VideoSurface : IDisposable
     /// directly — see this class's own doc comment for why calling
     /// <see cref="SwapChainPresenter.PresentFrame"/> without going through this method (or
     /// concurrently with <see cref="Resize"/>) is unsafe.</summary>
-    public void PresentFrame(ID3D11Texture2D decodedTexture, int arraySlice, int frameWidth, int frameHeight, bool vsync)
+    public bool PresentFrame(ID3D11Texture2D decodedTexture, int arraySlice, int frameWidth, int frameHeight, bool vsync, CancellationToken cancellationToken = default, int waitMilliseconds = 250)
     {
         lock (_lock)
         {
-            if (_disposed) return; // a late frame during teardown is not an error
-            Presenter.PresentFrame(decodedTexture, arraySlice, frameWidth, frameHeight, vsync);
+            if (_disposed) return false; // a late frame during teardown is not an error
+            return Presenter.PresentFrame(decodedTexture, arraySlice, frameWidth, frameHeight, vsync, cancellationToken, waitMilliseconds);
         }
     }
 

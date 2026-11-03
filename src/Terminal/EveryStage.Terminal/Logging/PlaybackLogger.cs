@@ -51,4 +51,7 @@ public sealed class PlaybackLogger
     /// <summary>The machine could not decode a video in real time; frames were dropped.</summary>
     public void LogDecodeTooSlow(Guid mediaFileId, string detail) =>
         _writer.Write("video_decode_too_slow", new { mediaFileId, detail });
+
+    public void LogVideoFrames(Guid mediaFileId, string channel, string reason, long presented, long dropped) =>
+        _writer.Write("video_frames", new { mediaFileId, channel, reason, presented, dropped });
 }

@@ -343,6 +343,7 @@ public sealed partial class PlaybackEngine : IDisposable
     public void Stop()
     {
         ++_contentLoadVersion;
+        var stoppedFile = _currentFile;
         if (_currentFile != null) _playbackLogger.LogPlaybackEnded(_currentFile.Id, "stopped");
         _currentFile = null;
         _currentActivity = null;
@@ -353,6 +354,8 @@ public sealed partial class PlaybackEngine : IDisposable
         IsPaused = false;
         IsCompleted = false;
         _videoController?.Stop();
+        if (stoppedFile?.Kind == MediaKind.Video && _videoController != null)
+            _playbackLogger.LogVideoFrames(stoppedFile.Id, Channel.ToString(), "stopped", _videoController.FramesPresented, _videoController.FramesDropped);
         _audioController?.Stop();
         StopBackgroundAudio();
         StopWaveformTimer();
@@ -1420,6 +1423,8 @@ public sealed partial class PlaybackEngine : IDisposable
         if (!ReferenceEquals(file, _currentFile)) return; // stale callback from a file we've since left.
 
         _playbackLogger.LogPlaybackEnded(file.Id, file.OnCompletion.ToString());
+        if (file.Kind == MediaKind.Video && _videoController != null)
+            _playbackLogger.LogVideoFrames(file.Id, Channel.ToString(), "completed", _videoController.FramesPresented, _videoController.FramesDropped);
 
         // The transport's loop toggle overrides the file's saved completion action (not persisted).
         if (LoopCurrent)
