@@ -20,6 +20,7 @@ internal interface IActivityRowHost
     /// <summary>「♪ 开场歌单」 / 「♪ 音乐淡出」 for a section with a music cue, else null.</summary>
     string? MusicCueText(Activity activity);
     Image? ThumbnailFor(MediaFile file);
+    bool? IsUnavailable(MediaFile file);
     void RowNodeClicked(TreeNode node);
     void RowNodeDoubleClicked(TreeNode node);
     void RowContextMenu(TreeNode node, Control source, Point location);
@@ -331,6 +332,7 @@ internal sealed class ActivityRowView : Control
 
         var thumb = new Rectangle(c.Thumb, cy - S(22), S(76), S(43));
         DrawThumbnail(g, thumb, file);
+        bool unavailable = _host.IsUnavailable(file) == true;
         if (ReferenceEquals(preview, file) && state != RunRowState.Live)
         {
             var tag = new Rectangle(thumb.Left + S(3), thumb.Top + S(3), S(30), S(15));
@@ -345,9 +347,21 @@ internal sealed class ActivityRowView : Control
         TextRenderer.DrawText(g, Path.GetFileName(file.SourcePath), NameFont,
             Rectangle.FromLTRB(c.Name, bounds.Top + S(8), nameRight, cy + S(2)), text,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-        TextRenderer.DrawText(g, KindLine(file), SmallFont,
-            Rectangle.FromLTRB(c.Name, cy + S(2), nameRight, bounds.Bottom - S(8)), ModernUi.Muted,
+        TextRenderer.DrawText(g, unavailable ? "文件不可用" : KindLine(file), SmallFont,
+            Rectangle.FromLTRB(c.Name, cy + S(2), nameRight, bounds.Bottom - S(8)),
+            unavailable && !highContrast ? ModernUi.Danger : ModernUi.Muted,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+
+        if (unavailable)
+        {
+            var warning = new Rectangle(thumb.Right - S(19), thumb.Top + S(3), S(16), S(16));
+            using (var path = RoundedBox(warning, S(3)))
+            using (var brush = new SolidBrush(highContrast ? SystemColors.Highlight : ModernUi.Palette.DangerFill))
+                g.FillPath(brush, path);
+            TextRenderer.DrawText(g, "!", BadgeFont, warning,
+                highContrast ? SystemColors.HighlightText : ModernUi.Palette.DangerFillForeground,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
 
         if (c.Wide)
         {

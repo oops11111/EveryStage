@@ -26,7 +26,7 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestContainedThumbnails(directory); TestVisibleThumbnails(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestContainedThumbnails(directory); TestVisibleThumbnails(directory); TestActivityThumbnailAvailability(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -116,6 +116,36 @@ internal static class DocumentTests
             && loaded.Keys.All(key => grid.VisibleItems().Any(item => item.File.Id.ToString() == key)), 5000),
             "Resizing did not update visible thumbnails.");
         Console.WriteLine("PASS: visible thumbnails, scrolling/resizing, offscreen release and missing/restored file status");
+    }
+
+    private static void TestActivityThumbnailAvailability(string directory)
+    {
+        string path = Path.Combine(directory, "activity-missing.png");
+        var file = new MediaFile { SourcePath = path, Kind = MediaKind.Image };
+        using var form = new Form { ClientSize = new Size(700, 480), ShowInTaskbar = false, Opacity = 0,
+            StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
+        using var panel = new ActivitiesPanel(new ScenarioStore(), new ScenarioRepository(Path.Combine(directory, "activity-scenarios.json")),
+            new FileLibraryStore(Path.Combine(directory, "activity-library.json")), null,
+            new EveryStage.Terminal.Logging.FileOperationLogger(directory), new OutputStateMachine());
+        form.Controls.Add(panel);
+        form.Show();
+        var host = (IActivityRowHost)panel;
+        host.ThumbnailFor(file);
+        Require(WaitFor(() => host.IsUnavailable(file) == true, 5000), "Activity did not flag its missing file.");
+        using (var image = new Bitmap(40, 30)) image.Save(path, ImageFormat.Png);
+        panel.RefreshTree();
+        host.ThumbnailFor(file);
+        Require(WaitFor(() => host.IsUnavailable(file) == false && host.ThumbnailFor(file) != null, 5000),
+            "Activity did not reload its restored file after refresh.");
+        File.Delete(path);
+        panel.RefreshTree();
+        host.ThumbnailFor(file);
+        panel.RefreshTree(); // A pending result from the older refresh must not replace the new one.
+        using (var image = new Bitmap(40, 30)) image.Save(path, ImageFormat.Png);
+        host.ThumbnailFor(file);
+        Require(WaitFor(() => host.IsUnavailable(file) == false && host.ThumbnailFor(file) != null, 5000),
+            "Activity refresh published stale file availability.");
+        Console.WriteLine("PASS: activity file availability refresh, recovery and stale-result rejection");
     }
 
     private static void TestHotkeyRegistration()
@@ -511,6 +541,7 @@ internal static class DocumentTests
         public RunRowState StateOf(MediaFile file) => State;
         public string? MusicCueText(StageActivity activity) => null;
         public Image? ThumbnailFor(MediaFile file) => null;
+        public bool? IsUnavailable(MediaFile file) => null;
         public void RowNodeClicked(TreeNode node) { }
         public void RowNodeDoubleClicked(TreeNode node) { }
         public void RowContextMenu(TreeNode node, Control source, Point location) { }

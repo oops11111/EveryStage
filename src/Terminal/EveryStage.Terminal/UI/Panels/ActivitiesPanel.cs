@@ -102,6 +102,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     /// <see cref="FilesPanel.BuildThumbnail"/> (the same readers and fallback tiles the 文件 page uses).</summary>
     private readonly Dictionary<string, Image> _thumbnails = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _thumbnailsRequested = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> _thumbnailUnavailable = new(StringComparer.OrdinalIgnoreCase);
+    private int _thumbnailGeneration;
 
     /// <summary>File nodes Ctrl+Clicked into a multi-selection for "统一设置属性..." — see
     /// <see cref="OnTreeNodeMouseClick"/>. Deliberately separate from <see cref="TreeView.SelectedNode"/>
@@ -1084,18 +1086,34 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     {
         string key = $"{file.Kind}|{file.SourcePath}";
         if (_thumbnails.TryGetValue(key, out var cached)) return cached;
-        if (_thumbnailsRequested.Add(key)) _ = LoadThumbnailAsync(file, key);
+        if (_thumbnailsRequested.Add(key)) _ = LoadThumbnailAsync(file, key, _thumbnailGeneration);
         return null;
     }
 
-    private async Task LoadThumbnailAsync(MediaFile file, string key)
+    bool? IActivityRowHost.IsUnavailable(MediaFile file) =>
+        _thumbnailUnavailable.TryGetValue($"{file.Kind}|{file.SourcePath}", out bool unavailable) ? unavailable : null;
+
+    private async Task LoadThumbnailAsync(MediaFile file, string key, int generation)
     {
         Image? thumbnail = null;
-        try { thumbnail = await Task.Run(() => FilesPanel.BuildThumbnail(file)); }
+        bool unavailable = false;
+        try
+        {
+            (thumbnail, unavailable) = await Task.Run(() =>
+            {
+                bool missing = !File.Exists(file.SourcePath);
+                try { return (FilesPanel.BuildThumbnail(file), missing); }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Trace.TraceError("Activity thumbnail failed: {0}", ex);
+                    return ((Image?)null, missing);
+                }
+            });
+        }
         catch (Exception ex) { System.Diagnostics.Trace.TraceError("Activity thumbnail failed: {0}", ex); }
-        if (thumbnail == null) return;
-        if (IsDisposed) { thumbnail.Dispose(); return; }
-        _thumbnails[key] = thumbnail;
+        if (IsDisposed || Disposing || generation != _thumbnailGeneration) { thumbnail?.Dispose(); return; }
+        _thumbnailUnavailable[key] = unavailable;
+        if (thumbnail != null) _thumbnails[key] = thumbnail;
         foreach (Control row in _activityRows.Controls) row.Invalidate();
     }
 
@@ -1470,6 +1488,11 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     /// <summary>Call after the scenario store changes from outside this control.</summary>
     public void RefreshTree()
     {
+        _thumbnailGeneration++;
+        foreach (var image in _thumbnails.Values) image.Dispose();
+        _thumbnails.Clear();
+        _thumbnailsRequested.Clear();
+        _thumbnailUnavailable.Clear();
         // Old TreeNode references go stale the moment the tree they belonged to is torn down below —
         // see _multiSelectedFileNodes' own doc comment. No need to reset their BackColor/ForeColor
         // first (they're being discarded, not reused). The selection is carried over by Tag (the
@@ -1602,6 +1625,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     {
         if (disposing)
         {
+            _thumbnailGeneration++;
             if (_playback != null) _playback.FileStarted -= OnFileStarted;
             _stateMachine.StateChanged -= OnStateChanged;
             _saveFeedbackTimer.Dispose();
