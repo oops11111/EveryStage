@@ -2,6 +2,10 @@ using EveryStage.Terminal.Display;
 
 namespace EveryStage.Terminal.Receiving;
 
+/// <summary>Counts decoded frames and presentation submissions, not physical screen refreshes.</summary>
+internal readonly record struct CastFrameStatistics(long Decoded, long ProgramSubmitted, long ProgramSkipped,
+    long PreviewSubmitted, long PreviewSkipped, long QueueOverflow, long AudioLateDropped);
+
 internal interface IDeviceCastStream : IDisposable
 {
     event Action<IReadOnlyList<ushort>> VideoPacketsMissing;
@@ -13,6 +17,7 @@ internal interface IDeviceCastStream : IDisposable
     bool PresentLoopFailed { get; }
     bool DecodeLoopFailed { get; }
     long FramesDecoded { get; }
+    CastFrameStatistics FrameStatistics { get; }
     long BytesReceived { get; }
     string? LastError { get; }
     bool HasAudio { get; }

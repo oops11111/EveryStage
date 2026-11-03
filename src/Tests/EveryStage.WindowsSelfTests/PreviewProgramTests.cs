@@ -580,6 +580,20 @@ internal static class PreviewProgramTests
             Require(WaitFor(() => machine.Source == ProgramSource.LocalMedia && program.State == PlaybackChannelState.Playing, 5000),
                 "Device disconnect while on Program did not restore local Program content.");
             Require(!controller.HasReceiver, "Device disconnect did not release the receiver.");
+            bool loggedFrames = false;
+            foreach (var line in Directory.GetFiles(Path.Combine(dir, "device-connection"), "*.log").SelectMany(File.ReadLines))
+            {
+                using var entry = System.Text.Json.JsonDocument.Parse(line);
+                var root = entry.RootElement;
+                if (root.GetProperty("event").GetString() != "cast_video_frames"
+                    || root.GetProperty("deviceId").GetString() != accepted.DeviceId.ToString()) continue;
+                loggedFrames = root.GetProperty("Decoded").GetInt64() == 42
+                    && root.GetProperty("ProgramSubmitted").GetInt64() == 21
+                    && root.GetProperty("PreviewSkipped").GetInt64() == 3
+                    && root.GetProperty("QueueOverflow").GetInt64() == 4
+                    && root.GetProperty("AudioLateDropped").GetInt64() == 5;
+            }
+            Require(loggedFrames, "Disconnect did not record the stream's final frame statistics.");
 
             var timeoutDevice = CastInfo(Guid.NewGuid(), "超时电脑", (ready, error, pending) =>
             {
@@ -675,14 +689,16 @@ internal static class PreviewProgramTests
             var decoded = source.ReadNextVideoFrame();
             Require(decoded != null, "Could not decode a frame for the two-surface presentation check.");
             var frame = decoded!.Value;
-            try
-            {
-                Require(programSurface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true),
-                    "Program swap chain did not present a decoded frame.");
-                previewSurface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true, waitMilliseconds: 0);
-            }
-            finally { frame.Release(); }
-            Console.WriteLine("PASS: CastReceiver Attach/Detach; Program presents a decoded frame and shared-GPU Preview is attempted without waiting");
+            Require(frame.Sample != null, "Decoded frame did not retain its Media Foundation sample.");
+            receiver.AttachProgram(programSurface);
+            // The callback takes ownership and releases both texture and sample after presentation.
+            typeof(CastReceiver).GetMethod("OnFrameDecoded", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(receiver, new object[] { frame.Texture, frame.ArraySlice, frame.Width, frame.Height, frame.TimestampTicks, frame.Sample! });
+            var stats = receiver.FrameStatistics;
+            Require(stats.Decoded == 1 && stats.ProgramSubmitted == 1 && stats.ProgramSkipped == 0
+                    && stats.PreviewSubmitted + stats.PreviewSkipped == 1,
+                $"Cast frame counters did not reflect two-surface presentation: {stats}");
+            Console.WriteLine("PASS: CastReceiver counts a decoded frame, Program submission and Preview outcome across shared-GPU surfaces");
         }
         finally
         {
@@ -1120,6 +1136,7 @@ internal static class PreviewProgramTests
         public bool PresentLoopFailed { get; set; }
         public bool DecodeLoopFailed { get; set; }
         public long FramesDecoded { get; set; } = 42;
+        public CastFrameStatistics FrameStatistics => new(42, 21, 2, 32, 3, 4, 5);
         public long BytesReceived { get; set; } = 4096;
         public string? LastError { get; set; }
         public bool HasAudio { get; set; } = true;

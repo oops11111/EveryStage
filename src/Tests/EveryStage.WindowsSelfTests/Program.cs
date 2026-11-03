@@ -389,10 +389,12 @@ static void TestBoundedQueue()
     var released = new List<int>();
     using var queue = new EveryStage.Transport.BoundedLatestQueue<int>(3, released.Add);
     for (int i = 0; i < 100; i++) queue.Enqueue(i);
+    Require(queue.OverflowCount == 97, "Queue overflow counter did not count displaced frames.");
     Require(released.SequenceEqual(Enumerable.Range(0, 97)), "Overflow did not release oldest frames exactly once.");
     Require(queue.TryDequeue(out int frame) && frame == 97, "Queue did not retain latest frames in order.");
     queue.Dispose();
     queue.Enqueue(100);
+    Require(queue.OverflowCount == 97, "Shutdown releases were counted as queue overflow.");
     queue.Dispose();
     Require(released.SequenceEqual(Enumerable.Range(0, 97).Concat(new[] { 98, 99, 100 })),
         "Shutdown leaked or double-released queued/late frames.");

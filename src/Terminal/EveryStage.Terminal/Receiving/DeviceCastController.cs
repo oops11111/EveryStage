@@ -255,6 +255,7 @@ internal sealed class DeviceCastController : IDisposable
         {
             _connectionLog.LogDisconnected(_deviceId.ToString(), "cast_ended: " + reason);
             _receiver.Dispose();
+            _connectionLog.LogCastFrames(_deviceId.ToString(), reason, _receiver.FrameStatistics);
         }
         _receiver = null;
         _deviceSurface?.Dispose();

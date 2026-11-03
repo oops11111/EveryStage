@@ -150,7 +150,12 @@ public sealed class CastReceiver : IDisposable
 
     public int Width { get; }
     public int Height { get; }
-    public long FramesDecoded { get; private set; }
+    private long _framesDecoded, _programSubmitted, _programSkipped, _previewSubmitted, _previewSkipped, _audioLateDropped;
+    public long FramesDecoded => Interlocked.Read(ref _framesDecoded);
+    internal CastFrameStatistics FrameStatistics => new(FramesDecoded,
+        Interlocked.Read(ref _programSubmitted), Interlocked.Read(ref _programSkipped),
+        Interlocked.Read(ref _previewSubmitted), Interlocked.Read(ref _previewSkipped),
+        _pendingFrames.OverflowCount, Interlocked.Read(ref _audioLateDropped));
     public long BytesReceived { get; private set; }
 
     /// <summary>Access units dropped because the packet carrying their marker bit never
@@ -589,6 +594,7 @@ public sealed class CastReceiver : IDisposable
         if (Width > 0) width = Math.Min(width, Width);
         if (Height > 0) height = Math.Min(height, Height);
         var frame = new PendingFrame(texture, arraySlice, width, height, presentationTicks, sample);
+        Interlocked.Increment(ref _framesDecoded);
 
         if (!HasAudio)
         {
@@ -678,6 +684,7 @@ public sealed class CastReceiver : IDisposable
             {
                 // Fell far enough behind the audio clock that this frame is stale — drop it rather
                 // than present outdated video, same policy VideoContentController already applies.
+                Interlocked.Increment(ref _audioLateDropped);
                 frame.Release();
                 continue;
             }
@@ -693,9 +700,16 @@ public sealed class CastReceiver : IDisposable
             lock (_programGate)
             {
                 // Keep a hidden or busy preview from delaying the on-air display.
-                _programSurface?.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true, token);
-                _surface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true, token,
+                if (_programSurface != null)
+                {
+                    bool submitted = _programSurface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true, token);
+                    if (submitted) Interlocked.Increment(ref _programSubmitted);
+                    else if (!token.IsCancellationRequested) Interlocked.Increment(ref _programSkipped);
+                }
+                bool previewSubmitted = _surface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true, token,
                     waitMilliseconds: _programSurface == null ? 250 : 0);
+                if (previewSubmitted) Interlocked.Increment(ref _previewSubmitted);
+                else if (!token.IsCancellationRequested) Interlocked.Increment(ref _previewSkipped);
             }
         }
         catch (Exception ex)
@@ -707,7 +721,6 @@ public sealed class CastReceiver : IDisposable
         {
             frame.Release();
         }
-        if (!PresentLoopFailed) FramesDecoded++;
     }
 
     public void Dispose()

@@ -10,6 +10,10 @@ public sealed class BoundedLatestQueue<T> : IDisposable
     private readonly int _capacity;
     private readonly Action<T> _release;
     private bool _disposed;
+    private long _overflowCount;
+
+    /// <summary>Items displaced by newer items, excluding shutdown disposal.</summary>
+    public long OverflowCount { get { lock (_gate) return _overflowCount; } }
 
     public BoundedLatestQueue(int capacity, Action<T> release)
     {
@@ -24,7 +28,7 @@ public sealed class BoundedLatestQueue<T> : IDisposable
         lock (_gate)
         {
             if (_disposed) { _release(item); return; }
-            if (_items.Count == _capacity) _release(_items.Dequeue());
+            if (_items.Count == _capacity) { _release(_items.Dequeue()); _overflowCount++; }
             _items.Enqueue(item);
             Monitor.Pulse(_gate);
         }

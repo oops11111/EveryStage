@@ -39,6 +39,7 @@ internal sealed class CastReceiverStream : IDeviceCastStream
     public bool PresentLoopFailed => _receiver.PresentLoopFailed;
     public bool DecodeLoopFailed => _receiver.DecodeLoopFailed;
     public long FramesDecoded => _receiver.FramesDecoded;
+    public CastFrameStatistics FrameStatistics => _receiver.FrameStatistics;
     public long BytesReceived => _receiver.BytesReceived;
     public string? LastError => _receiver.LastError;
     public bool HasAudio => _receiver.HasAudio;

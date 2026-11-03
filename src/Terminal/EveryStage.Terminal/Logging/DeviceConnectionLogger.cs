@@ -49,6 +49,10 @@ public sealed class DeviceConnectionLogger
     public void LogCastAudioLost(string deviceId, string reason) =>
         _writer.Write("cast_audio_lost", new { deviceId, reason });
 
+    internal void LogCastFrames(string deviceId, string reason, EveryStage.Terminal.Receiving.CastFrameStatistics stats) =>
+        _writer.Write("cast_video_frames", new { deviceId, reason, stats.Decoded, stats.ProgramSubmitted, stats.ProgramSkipped,
+            stats.PreviewSubmitted, stats.PreviewSkipped, stats.QueueOverflow, stats.AudioLateDropped });
+
     /// <summary>An authenticated control message was refused as a replay or as too old / from the future
     /// (the two devices' clocks more than the allowed skew apart).</summary>
     public void LogMessageRejected(string deviceId, string messageKind, string reason) =>
