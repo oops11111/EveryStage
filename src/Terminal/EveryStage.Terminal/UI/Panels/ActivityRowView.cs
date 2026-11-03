@@ -390,11 +390,9 @@ internal sealed class ActivityRowView : Control
         g.SetClip(clip);
         if (image != null)
         {
-            // Cover-fit: fill the frame, cropping whichever axis overflows.
-            float scale = Math.Max((float)rect.Width / image.Width, (float)rect.Height / image.Height);
-            float dw = image.Width * scale, dh = image.Height * scale;
-            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            g.DrawImage(image, rect.Left + (rect.Width - dw) / 2, rect.Top + (rect.Height - dh) / 2, dw, dh);
+            using var background = new SolidBrush(ModernUi.Palette.IsHighContrast ? SystemColors.Window : Color.FromArgb(20, 37, 58));
+            g.FillRectangle(background, rect);
+            ThumbnailDrawing.DrawContained(g, image, rect);
         }
         else
         {

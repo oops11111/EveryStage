@@ -26,13 +26,49 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestContainedThumbnails(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         if (!thread.Join(TimeSpan.FromSeconds(30))) throw new TimeoutException("Operator UI tests did not finish.");
         if (failure != null) throw new InvalidOperationException("Operator UI tests failed.", failure);
+    }
+
+    private static void TestContainedThumbnails(string directory)
+    {
+        string path = Path.Combine(directory, "portrait-thumbnail.png");
+        using (var source = new Bitmap(80, 160))
+        using (var graphics = Graphics.FromImage(source))
+        {
+            graphics.Clear(Color.Lime);
+            graphics.FillRectangle(Brushes.Red, 0, 0, 80, 30);
+            graphics.FillRectangle(Brushes.Blue, 0, 130, 80, 30);
+            source.Save(path, ImageFormat.Png);
+        }
+        using var thumbnail = (Bitmap)FilesPanel.BuildThumbnail(new MediaFile { SourcePath = path, Kind = MediaKind.Image });
+        Require(thumbnail.GetPixel(120, 8).R > 200 && thumbnail.GetPixel(120, 141).B > 200,
+            "Portrait thumbnail cropped its top or bottom.");
+        Require(thumbnail.GetPixel(10, 75).ToArgb() == Color.FromArgb(20, 37, 58).ToArgb(),
+            "Portrait thumbnail did not leave centered side margins.");
+        using var landscape = new Bitmap(160, 80);
+        using (var graphics = Graphics.FromImage(landscape))
+        {
+            graphics.Clear(Color.Lime);
+            graphics.FillRectangle(Brushes.Red, 0, 0, 30, 80);
+            graphics.FillRectangle(Brushes.Blue, 130, 0, 30, 80);
+        }
+        using var canvas = new Bitmap(100, 100);
+        using (var graphics = Graphics.FromImage(canvas))
+        {
+            graphics.Clear(Color.Black);
+            ThumbnailDrawing.DrawContained(graphics, landscape, new Rectangle(0, 0, 100, 100));
+        }
+        Require(canvas.GetPixel(5, 50).R > 200 && canvas.GetPixel(94, 50).B > 200,
+            "Landscape thumbnail cropped its left or right edge.");
+        Require(canvas.GetPixel(50, 5).ToArgb() == Color.Black.ToArgb(),
+            "Landscape thumbnail did not leave centered top and bottom margins.");
+        Console.WriteLine("PASS: portrait and landscape thumbnails retain image edges and centered margins");
     }
 
     private static void TestHotkeyRegistration()

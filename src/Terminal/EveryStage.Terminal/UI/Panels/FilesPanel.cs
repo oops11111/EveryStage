@@ -1121,12 +1121,7 @@ public sealed class FilesPanel : UserControl
                 var thumbnail = new Bitmap(tw, th);
                 using var graphics = Graphics.FromImage(thumbnail);
                 graphics.Clear(Color.FromArgb(20, 37, 58));
-                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                // Cover-fill so the design's edge-to-edge thumbnail look holds for any aspect ratio.
-                float scale = Math.Max((float)tw / loaded.Width, (float)th / loaded.Height);
-                int width = Math.Max(1, (int)(loaded.Width * scale));
-                int height = Math.Max(1, (int)(loaded.Height * scale));
-                graphics.DrawImage(loaded, (tw - width) / 2, (th - height) / 2, width, height);
+                ThumbnailDrawing.DrawContained(graphics, loaded, new Rectangle(0, 0, tw, th));
                 return thumbnail;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OutOfMemoryException or ArgumentException)
@@ -1149,10 +1144,7 @@ public sealed class FilesPanel : UserControl
                     {
                         using var graphics = Graphics.FromImage(thumbnail);
                         graphics.Clear(Color.FromArgb(20, 37, 58));
-                        float scale = Math.Max((float)tw / shellPreview.Width, (float)th / shellPreview.Height);
-                        int width = Math.Max(1, (int)(shellPreview.Width * scale));
-                        int height = Math.Max(1, (int)(shellPreview.Height * scale));
-                        graphics.DrawImage(shellPreview, (tw - width) / 2, (th - height) / 2, width, height);
+                        ThumbnailDrawing.DrawContained(graphics, shellPreview, new Rectangle(0, 0, tw, th));
                         return thumbnail;
                     }
                     catch { thumbnail.Dispose(); throw; }
@@ -1207,10 +1199,7 @@ public sealed class FilesPanel : UserControl
                 g.FillRectangle(imgBg, imageRect);
             if (_thumbnailByFileId.TryGetValue(item.File.Id.ToString(), out var image))
             {
-                // Cover-fill the thumbnail area (crop to fill), edge to edge as in the design.
-                float scale = Math.Max((float)imageRect.Width / image.Width, (float)imageRect.Height / image.Height);
-                int dw = (int)(image.Width * scale), dh = (int)(image.Height * scale);
-                g.DrawImage(image, imageRect.Left + (imageRect.Width - dw) / 2, imageRect.Top + (imageRect.Height - dh) / 2, dw, dh);
+                ThumbnailDrawing.DrawContained(g, image, imageRect);
             }
             g.Restore(state);
 
