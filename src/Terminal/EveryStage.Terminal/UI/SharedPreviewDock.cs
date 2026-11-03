@@ -950,6 +950,7 @@ internal sealed class PresenterStrip : Panel
     private DateTime _started;
     private int _slide = -1;
     private int _version;
+    private bool _hasNotes;
 
     public PresenterStrip()
     {
@@ -969,7 +970,7 @@ internal sealed class PresenterStrip : Panel
         BackColor = palette.Background;
         _status.ForeColor = palette.Text;
         _nextCaption.ForeColor = palette.Muted;
-        _notes.ForeColor = palette.Text;
+        _notes.ForeColor = _hasNotes ? palette.Text : palette.Muted;
         _next.BackColor = palette.IsHighContrast ? SystemColors.Window : Color.Black;
     }
 
@@ -992,9 +993,18 @@ internal sealed class PresenterStrip : Panel
         RefreshTheme();
         if (!ReferenceEquals(show, _show))
         {
+            ++_version; // Invalidate notes and images still loading for the previous show.
             _show = show;
             _started = DateTime.Now;
             _slide = -1;
+            _status.Text = "";
+            _notes.Text = "";
+            _hasNotes = false;
+            _notes.ForeColor = ChromePalette.Muted;
+            var old = _next.Image;
+            _next.Image = null;
+            old?.Dispose();
+            _nextCaption.Text = "下一张";
         }
         if (show == null) return;
         var position = show.Position;
@@ -1025,12 +1035,18 @@ internal sealed class PresenterStrip : Panel
         if (slide < show.SlideCount)
             try { next = await show.GetSlideImageAsync(slide + 1, 480); } catch (Exception) { }
         if (IsDisposed || version != _version) { next?.Dispose(); return; }
-        _notes.Text = string.IsNullOrWhiteSpace(notes) ? "（这一页没有备注）" : notes.Trim();
-        _notes.ForeColor = string.IsNullOrWhiteSpace(notes) ? ChromePalette.Muted : ChromePalette.Text;
+        SetNotes(notes);
         var old = _next.Image;
         _next.Image = next;
         old?.Dispose();
         _nextCaption.Text = slide < show.SlideCount ? $"下一张 · 第 {slide + 1} 页" : "已是最后一页";
+    }
+
+    private void SetNotes(string notes)
+    {
+        _hasNotes = !string.IsNullOrWhiteSpace(notes);
+        _notes.Text = _hasNotes ? notes.Trim() : "（这一页没有备注）";
+        _notes.ForeColor = _hasNotes ? ChromePalette.Text : ChromePalette.Muted;
     }
 
     protected override void Dispose(bool disposing)

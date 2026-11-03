@@ -80,6 +80,27 @@ internal static class DocumentTests
         ModernUi.StyleComboBox(combo);
         using var presenter = new PresenterStrip();
         using var dock = new SharedPreviewDock(new OutputStateMachine());
+        using var documentTips = new ToolTip();
+        using var documentBar = new DocumentControlBar(null!, documentTips, 28);
+        dock.Controls.Add(documentBar);
+        typeof(DocumentControlBar).GetMethod("AddPageBox", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(documentBar, null);
+        var pageBox = documentBar.Controls.OfType<TextBox>().Single();
+        var pageCount = documentBar.Controls.OfType<Label>().Single();
+        var notes = (Label)typeof(PresenterStrip).GetField("_notes", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(presenter)!;
+        var setNotes = typeof(PresenterStrip).GetMethod("SetNotes", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        setNotes.Invoke(presenter, new object[] { "演讲备注" });
+        presenter.RefreshTheme();
+        Require(notes.ForeColor == UiPalette.Normal(AppTheme.Dark).Text, "Presenter notes lost their normal text role.");
+        setNotes.Invoke(presenter, new object[] { "" });
+        var showField = typeof(PresenterStrip).GetField("_show", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var versionField = typeof(PresenterStrip).GetField("_version", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        var nextSlide = (PictureBox)typeof(PresenterStrip).GetField("_next", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(presenter)!;
+        showField.SetValue(presenter, System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(showField.FieldType));
+        nextSlide.Image = new Bitmap(2, 2);
+        presenter.Update(null);
+        Require((int)versionField.GetValue(presenter)! == 1 && nextSlide.Image == null && notes.Text == "",
+            "Ending a show did not invalidate pending presenter data and clear the previous slide.");
+        setNotes.Invoke(presenter, new object[] { "" });
         var take = (Button)typeof(SharedPreviewDock).GetField("_takeButton", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock)!;
         ModernUi.StyleButton(button, primary: true);
         form.Controls.Add(button);
@@ -139,6 +160,10 @@ internal static class DocumentTests
                 Require(palette.Preview != palette.ProgramBorder && palette.ProgramBorder != palette.Accent, "Output roles share a colour.");
                 Require(presenter.BackColor == UiPalette.Normal(AppTheme.Dark).Background, "Presenter chrome changed with the app theme.");
                 var monitorPalette = UiPalette.Normal(AppTheme.Dark);
+                Require(pageBox.BackColor == monitorPalette.Surface && pageBox.ForeColor == monitorPalette.Text
+                    && pageCount.ForeColor == monitorPalette.Muted && pageBox.AccessibleName == "页码 / 幻灯片序号",
+                    $"Document page controls did not retain monitor roles under {theme}.");
+                Require(notes.ForeColor == monitorPalette.Muted, "Empty presenter notes lost their muted role after theme switching.");
                 Require(monitorMenuColors.ToolStripDropDownBackground == monitorPalette.Surface,
                     "Monitor menu followed the page palette instead of the monitor palette.");
                 Require(dock.BackColor == monitorPalette.Rail && take.BackColor == monitorPalette.AccentFill && take.ForeColor == monitorPalette.AccentFillForeground,
@@ -181,6 +206,9 @@ internal static class DocumentTests
                 Require(button.BackColor == SystemColors.Highlight && button.ForeColor == SystemColors.HighlightText,
                     "Button did not use the system high-contrast pair.");
                 Require(presenter.BackColor == SystemColors.Window, "Fixed-dark presenter blocked system high contrast.");
+                Require(pageBox.BackColor == SystemColors.Window && pageBox.ForeColor == SystemColors.WindowText
+                    && pageCount.ForeColor == SystemColors.WindowText && notes.ForeColor == SystemColors.WindowText,
+                    "Document page controls or empty presenter notes did not use high-contrast roles.");
                 Require(dock.BackColor == SystemColors.Control && take.BackColor == SystemColors.Highlight && take.ForeColor == SystemColors.HighlightText,
                     "Monitor did not yield to the system high-contrast palette.");
                 Require(runLabel.ForeColor == SystemColors.WindowText && runButton.BackColor == SystemColors.Highlight,
