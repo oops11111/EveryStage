@@ -1163,6 +1163,8 @@ public sealed partial class PlaybackEngine : IDisposable
     {
         if (!IsCompleted && _currentFile?.Kind == MediaKind.Audio && State is (PlaybackChannelState.Playing or PlaybackChannelState.Paused))
             _audioController?.TryMoveToCurrentDefault();
+        if (!IsCompleted && _currentFile?.Kind == MediaKind.Video && State is (PlaybackChannelState.Playing or PlaybackChannelState.Paused))
+            _videoController?.TryMoveToCurrentDefault();
         if (_backgroundAudioFile != null) _backgroundAudioController?.TryMoveToCurrentDefault();
     }
 
@@ -1345,19 +1347,21 @@ public sealed partial class PlaybackEngine : IDisposable
     private void OnVideoCompleted()
     {
         var file = _currentFile;
+        int generation = _videoController?.PlaybackGeneration ?? 0;
         if (file == null) return;
         // Raised from VideoContentController's background playback thread — marshal to the UI
         // thread before touching timers/overlay state.
-        _output.Post(new Action(() => HandleCompletion(file)));
+        _output.Post(new Action(() => { if (generation == _videoController?.PlaybackGeneration) HandleCompletion(file); }));
     }
 
     private void OnVideoFirstFrame()
     {
         var file = _currentFile;
+        int generation = _videoController?.PlaybackGeneration ?? 0;
         if (file == null) return;
         _output.Post(() =>
         {
-            if (!ReferenceEquals(file, _currentFile) || State != PlaybackChannelState.Loading) return;
+            if (generation != _videoController?.PlaybackGeneration || !ReferenceEquals(file, _currentFile) || State != PlaybackChannelState.Loading) return;
             SetState(IsPaused ? PlaybackChannelState.Paused : PlaybackChannelState.Playing);
         });
     }
@@ -1422,11 +1426,12 @@ public sealed partial class PlaybackEngine : IDisposable
     private void OnVideoFailed(Exception ex)
     {
         var file = _currentFile;
+        int generation = _videoController?.PlaybackGeneration ?? 0;
         if (file == null) return;
         // Also raised from the background playback thread.
         _output.Post(new Action(() =>
         {
-            if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
+            if (generation != _videoController?.PlaybackGeneration || !ReferenceEquals(file, _currentFile)) return;
             Fail(file, ex);
         }));
     }

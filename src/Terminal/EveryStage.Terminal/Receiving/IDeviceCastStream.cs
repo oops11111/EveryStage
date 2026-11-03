@@ -28,6 +28,7 @@ internal interface IDeviceCastStream : IDisposable
     long VideoPacketsLost { get; }
 
     void Start();
+    void RequestDefaultAudioMigration();
     void AttachProgram(VideoSurface surface);
     void DetachProgram();
 }

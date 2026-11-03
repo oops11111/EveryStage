@@ -52,6 +52,7 @@ internal sealed class CastReceiverStream : IDeviceCastStream
     public long VideoPacketsLost => _receiver.VideoPacketsLost;
 
     public void Start() => _receiver.Start();
+    public void RequestDefaultAudioMigration() => _receiver.RequestDefaultAudioMigration();
     public void AttachProgram(VideoSurface surface) => _receiver.AttachProgram(surface);
     public void DetachProgram() => _receiver.DetachProgram();
     public void Dispose() => _receiver.Dispose();

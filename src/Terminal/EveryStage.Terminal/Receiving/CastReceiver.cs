@@ -118,6 +118,7 @@ public sealed class CastReceiver : IDisposable
     private readonly Action<string>? _audioRecovered;
     private int _audioRecoveryPending;
     private int _audioRecoveryAttempted;
+    private int _defaultAudioMigrationPending;
 
     // Channels the Caster sends. A Caster whose system audio is 5.1 sends 6; the clock is built stereo
     // and the PCM folded down (audit B-20), since a 6-channel shared-mode stream on a stereo output fails.
@@ -422,6 +423,16 @@ public sealed class CastReceiver : IDisposable
         }
     }
 
+    /// <summary>Defer switching until the next audio packet so the new clock can be synchronized.</summary>
+    public void RequestDefaultAudioMigration()
+    {
+        lock (_audioLifetimeLock)
+        {
+            if (!_audioStopped && !AudioOutputLost && _audioState?.Clock.SelectedDeviceId == null && _audioState != null)
+                Volatile.Write(ref _defaultAudioMigrationPending, 1);
+        }
+    }
+
     private void OnAudioPayloadReceived(byte[] payload, uint timestamp)
     {
         // Unsubscribing does not cancel a delegate invocation already captured by the receiver.
@@ -453,6 +464,8 @@ public sealed class CastReceiver : IDisposable
         // AAC's timestamps landing on AacSamplesPerFrame-sized boundaries instead of arbitrary ones.
         long audioTimelineTicks = RtpVideoClock.ToElapsedTicks(
             _audioTimestampUnwrapper.Unwrap(timestamp), _audioSampleRate);
+        if (Interlocked.Exchange(ref _defaultAudioMigrationPending, 0) != 0 && !AudioOutputLost)
+            TryReplaceAudioOnDefault(recovering: false);
         if (AudioOutputLost) TryRecoverAudio();
         if (AudioOutputLost) return;
         var audio = _audioState!;
@@ -570,6 +583,11 @@ public sealed class CastReceiver : IDisposable
     private void TryRecoverAudio()
     {
         if (Interlocked.Exchange(ref _audioRecoveryPending, 0) == 0 || _audioStopped) return;
+        TryReplaceAudioOnDefault(recovering: true);
+    }
+
+    private void TryReplaceAudioOnDefault(bool recovering)
+    {
         AudioSyncState? replacement = null;
         try
         {
@@ -582,8 +600,11 @@ public sealed class CastReceiver : IDisposable
             replacement = null;
             AudioError = null;
             ConsecutiveAudioPlaybackErrors = 0;
-            Volatile.Write(ref _audioOutputLost, 0);
-            try { _audioRecovered?.Invoke("设备来投的音频输出已切换到系统默认设备。"); } catch (Exception) { }
+            if (recovering)
+            {
+                Volatile.Write(ref _audioOutputLost, 0);
+                try { _audioRecovered?.Invoke("设备来投的音频输出已切换到系统默认设备。"); } catch (Exception) { }
+            }
         }
         catch (Exception) { /* Continue presenting video without audio. */ }
         finally
@@ -591,6 +612,19 @@ public sealed class CastReceiver : IDisposable
             if (replacement != null)
                 try { DisposeAudioState(replacement); } catch (Exception) { }
         }
+    }
+
+    private void ReleaseRetiredAudioStates()
+    {
+        List<AudioSyncState> retired;
+        lock (_audioLifetimeLock)
+        {
+            if (_retiredAudioStates.Count == 0) return;
+            retired = new List<AudioSyncState>(_retiredAudioStates);
+            _retiredAudioStates.Clear();
+        }
+        foreach (var state in retired)
+            try { DisposeAudioState(state); } catch (Exception) { }
     }
 
     /// <summary>The H.264 decoder now runs an asynchronous MFT event loop, so a decode failure
@@ -715,6 +749,8 @@ public sealed class CastReceiver : IDisposable
 
         while (!token.IsCancellationRequested)
         {
+            // No old clock snapshot is in use between iterations; reclaim replaced outputs here.
+            ReleaseRetiredAudioStates();
             if (!_pendingFrames.WaitDequeue(token, out var frame)) return;
 
             // This loop only runs for casts WITH audio (video-only casts present straight from

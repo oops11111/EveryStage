@@ -157,6 +157,11 @@ internal static class PreviewProgramTests
                         preview.RequestPlay(Media(Path.Combine(media, "av.mp4")));
                         Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.VideoFrameStats.Presented >= 8, 5000),
                             "Selected-device video did not start.");
+                        var videoController = (EveryStage.Terminal.ContentEngine.VideoContentController)typeof(PlaybackEngine)
+                            .GetField("_videoController", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(preview)!;
+                        int videoGeneration = videoController.PlaybackGeneration;
+                        settings.NotifyDefaultAudioOutputChanged("simulated-new-default");
+                        Require(videoController.PlaybackGeneration == videoGeneration, "Pinned video audio moved when the default changed.");
                         int beforeVideoRecovery = recovered;
                         var positionBeforeVideoLoss = preview.Position;
                         var framesBeforeVideoLoss = preview.VideoFrameStats.Presented;
@@ -165,12 +170,24 @@ internal static class PreviewProgramTests
                             && preview.Position > positionBeforeVideoLoss + TimeSpan.FromMilliseconds(200)
                             && preview.VideoFrameStats.Presented > framesBeforeVideoLoss + 4, 7000),
                             "Video did not recover audio and continue presenting on the default device.");
-                        var videoController = typeof(PlaybackEngine).GetField("_videoController", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(preview)!;
                         var recoveredClock = (EveryStage.Rendering.Audio.AudioPlaybackClock)videoController.GetType()
                             .GetField("_audioClock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(videoController)!;
                         Require(recoveredClock.SelectedDeviceId == null && !recoveredClock.IsFaulted
                             && recoveredClock.PositionTicks > TimeSpan.FromMilliseconds(100).Ticks,
                             "Recovered video did not advance its new default-device audio clock.");
+                        videoGeneration = videoController.PlaybackGeneration;
+                        var beforeVideoDefaultChange = preview.Position;
+                        settings.NotifyDefaultAudioOutputChanged("simulated-new-default");
+                        Require(videoController.PlaybackGeneration > videoGeneration
+                            && WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.CurrentVideoHasAudio
+                                && preview.Position > beforeVideoDefaultChange + TimeSpan.FromMilliseconds(150), 5000),
+                            "Video following default did not move and continue after the default changed.");
+                        preview.Pause();
+                        videoGeneration = videoController.PlaybackGeneration;
+                        settings.NotifyDefaultAudioOutputChanged("simulated-next-default");
+                        Pump(150);
+                        Require(videoController.PlaybackGeneration > videoGeneration && preview.State == PlaybackChannelState.Paused,
+                            "Video default-device migration did not preserve pause.");
                         preview.Stop();
                         preview.RequestPlay(Media(Path.Combine(media, "av.mp4")));
                         Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.VideoFrameStats.Presented >= 8, 5000),
@@ -355,6 +372,12 @@ internal static class PreviewProgramTests
             {
             preview.RequestPlay(av);
             Require(WaitFor(() => preview.IsCompleted, 12000), "Video with audio never completed.");
+            var completedVideoController = (EveryStage.Terminal.ContentEngine.VideoContentController)typeof(PlaybackEngine)
+                .GetField("_videoController", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(preview)!;
+            int completedVideoGeneration = completedVideoController.PlaybackGeneration;
+            settings.NotifyDefaultAudioOutputChanged("simulated-after-video-completion");
+            Require(preview.IsCompleted && completedVideoController.PlaybackGeneration == completedVideoGeneration,
+                "A default-device change restarted completed video.");
             double wall = sw.Elapsed.TotalSeconds;
             var (presented, dropped) = preview.VideoFrameStats;
             Require(preview.CurrentVideoHasAudio, "Video's audio track was not used.");
@@ -721,6 +744,8 @@ internal static class PreviewProgramTests
             controller.Connect(first);
             Require(controller.HasReceiver && currentStream != null && currentStream.StartCount == 1, "Device did not connect to the preview stream.");
             Require(currentStream!.AudioMuted, "Preview stream should start muted.");
+            controller.OnDefaultAudioOutputChanged();
+            Require(currentStream.DefaultAudioMigrationRequests == 1, "Default output changes did not reach the active cast stream.");
             Require(machine.Source == ProgramSource.LocalMedia && program.State == PlaybackChannelState.Playing,
                 "Connecting a device changed Program before 投屏.");
             controller.SendStatus();
@@ -908,6 +933,9 @@ internal static class PreviewProgramTests
         clock.Start();
         var pcm = new byte[3840];
         receive.Invoke(receiver, new object[] { pcm, 0u });
+        receiver.RequestDefaultAudioMigration();
+        receive.Invoke(receiver, new object[] { pcm, 1920u });
+        Require(ReferenceEquals(oldState, stateField.GetValue(receiver)), "Pinned cast audio moved when the system default changed.");
         EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
         receive.Invoke(receiver, new object[] { pcm, 480000u }); // detects the failed output
         receive.Invoke(receiver, new object[] { pcm, 481920u }); // next packet triggers recovery
@@ -920,6 +948,25 @@ internal static class PreviewProgramTests
             "Cast audio did not restore the default device and reseed its RTP sync mapping.");
         typeof(CastReceiver).GetMethod("OnAudioClockFaulted", flags)!.Invoke(receiver, new[] { oldState, "late callback" });
         Require(!receiver.AudioOutputLost && notices == 1, "A stale clock callback disrupted recovered cast audio.");
+        receiver.RequestDefaultAudioMigration();
+        receive.Invoke(receiver, new object[] { pcm, 483840u });
+        var movedState = stateField.GetValue(receiver)!;
+        var movedOffset = (EveryStage.Transport.AvSyncOffsetEstimator)movedState.GetType().GetProperty("Offset")!.GetValue(movedState)!;
+        Require(!ReferenceEquals(newState, movedState) && receiver.AudioMuted && !receiver.AudioOutputLost
+            && notices == 1 && movedOffset.TryGetOffset(out var movedTicks) && movedTicks > TimeSpan.FromSeconds(9).Ticks,
+            "Cast did not move default output or reseed its sync while preserving mute.");
+        try
+        {
+            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+            receiver.RequestDefaultAudioMigration();
+            receive.Invoke(receiver, new object[] { pcm, 485760u });
+        }
+        finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+        Require(ReferenceEquals(movedState, stateField.GetValue(receiver)) && !receiver.AudioOutputLost,
+            "An unavailable new default disrupted the existing cast audio output.");
+        typeof(CastReceiver).GetMethod("ReleaseRetiredAudioStates", flags)!.Invoke(receiver, null);
+        var retired = (System.Collections.ICollection)typeof(CastReceiver).GetField("_retiredAudioStates", flags)!.GetValue(receiver)!;
+        Require(retired.Count == 0, "Retired cast audio outputs were not reclaimed.");
         int failedNotices = 0;
         using (var failed = new CastReceiver(surface, 320, 240, 0, hasAudio: true, audioSampleRate: 48000,
             audioChannels: 2, audioListenPort: 0, mediaSessionId: Guid.NewGuid(), videoKey: new byte[32],
@@ -1438,6 +1485,8 @@ internal static class PreviewProgramTests
     {
         public event Action<IReadOnlyList<ushort>>? VideoPacketsMissing;
         public event Action<string>? AudioDegraded;
+        public int DefaultAudioMigrationRequests { get; private set; }
+        public void RequestDefaultAudioMigration() => DefaultAudioMigrationRequests++;
 
         public bool AudioMuted { get; set; }
         public DateTime LastPacketReceivedAt { get; set; } = DateTime.UtcNow;

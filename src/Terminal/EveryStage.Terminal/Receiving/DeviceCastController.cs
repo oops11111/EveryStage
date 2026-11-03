@@ -73,6 +73,8 @@ internal sealed class DeviceCastController : IDisposable
     public event Action? SessionStarted;
     public event Action? SessionEnded;
 
+    public void OnDefaultAudioOutputChanged() => _receiver?.RequestDefaultAudioMigration();
+
     public void ResizeDeviceSurface(int width, int height)
     {
         try { _deviceSurface?.Resize(width, height); }

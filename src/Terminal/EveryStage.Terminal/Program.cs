@@ -229,7 +229,11 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             return (seen?.Address.ToString(), seen?.At, _discovery.ActiveCasterDeviceId == id);
         };
         _mainWindow.Show();
-        try { _defaultAudioDeviceMonitor = new DefaultAudioDeviceMonitor(_uiContext, _settingsStore.NotifyDefaultAudioOutputChanged); }
+        try { _defaultAudioDeviceMonitor = new DefaultAudioDeviceMonitor(_uiContext, id =>
+        {
+            _settingsStore.NotifyDefaultAudioOutputChanged(id);
+            _deviceCastController?.OnDefaultAudioOutputChanged();
+        }); }
         catch (Exception ex) { _crashLogger.LogUnhandledException("DefaultAudioDeviceMonitor.Start", ex); }
         _mainWindow.StartBackgroundMusic();
 

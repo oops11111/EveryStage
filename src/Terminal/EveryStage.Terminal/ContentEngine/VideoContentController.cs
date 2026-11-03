@@ -48,6 +48,8 @@ public sealed class VideoContentController : IDisposable
     private VideoDecodeSource? _source;
     private string? _sourcePath;
     private volatile bool _recoveryAttempted;
+    private int _playbackGeneration;
+    internal int PlaybackGeneration => Volatile.Read(ref _playbackGeneration);
     private AudioPlaybackClock? _audioClock;
     private readonly Stopwatch _wallClock = new();
 
@@ -258,6 +260,7 @@ public sealed class VideoContentController : IDisposable
 
     private void StartPlaybackThread(VideoDecodeSource source, bool firstStart, AudioPlaybackClock? preparedClock = null)
     {
+        Interlocked.Increment(ref _playbackGeneration);
         _audioClock = null;
         if (source.HasAudio)
         {
@@ -297,16 +300,27 @@ public sealed class VideoContentController : IDisposable
         if (_recoveryAttempted || !_audioLost || _sourcePath == null
             || _audioClock?.SelectedDeviceId == null || _source == null) return false;
         _recoveryAttempted = true;
+        return ReplaceAudioWithCurrentDefault();
+    }
+
+    internal bool TryMoveToCurrentDefault()
+    {
+        if (_audioLost || _sourcePath == null || _source == null || _audioClock is not { SelectedDeviceId: null, IsFaulted: false }) return false;
+        return ReplaceAudioWithCurrentDefault();
+    }
+
+    private bool ReplaceAudioWithCurrentDefault()
+    {
+        if (_sourcePath is not { } path || _source is not { } oldSource) return false;
         VideoDecodeSource? replacement = null;
         AudioPlaybackClock? clock = null;
         try
         {
-            replacement = new VideoDecodeSource(_sourcePath, _surface.Gpu);
+            replacement = new VideoDecodeSource(path, _surface.Gpu);
             if (!replacement.HasAudio) return false;
             clock = new AudioPlaybackClock(replacement.AudioSampleRate, replacement.AudioChannels);
             var position = Position;
             if (!replacement.TrySeek(position)) return false;
-            var oldSource = _source;
             StopPlaybackThreadAndClock();
             _source = replacement;
             replacement = null;
