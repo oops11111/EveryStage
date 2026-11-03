@@ -41,6 +41,8 @@ namespace EveryStage.Terminal.ContentEngine;
 public sealed class AudioContentController : IDisposable
 {
     internal Func<int, int, AudioPlaybackClock>? AudioOutputFactory { get; set; }
+    private bool _recoveringToDefault;
+    private bool _recoveryAttempted;
     // See RunPlaybackLoopCore: how far ahead of actual playback position this loop lets itself
     // decode before pausing. AudioPlaybackClock's BufferedWaveProvider holds 5 seconds with
     // DiscardOnBufferOverflow — without some cap here, decode (typically much cheaper than video
@@ -173,6 +175,7 @@ public sealed class AudioContentController : IDisposable
     public void Play(string path, TimeSpan? fadeDuration = null, TimeSpan startAt = default, bool startPaused = false)
     {
         Stop();
+        _recoveryAttempted = false;
 
         var source = new AudioDecodeSource(path);
         AudioPlaybackClock audioClock;
@@ -233,7 +236,9 @@ public sealed class AudioContentController : IDisposable
     /// <see cref="Pause"/> immediately afterward if the caller was paused before seeking, since only
     /// <c>PlaybackEngine</c> (via its own <c>IsPaused</c>) actually tracks that state — this class
     /// never has.</summary>
-    public bool TrySeekTo(TimeSpan position)
+    public bool TrySeekTo(TimeSpan position) => TrySeekTo(position, reportFailure: true);
+
+    private bool TrySeekTo(TimeSpan position, bool reportFailure)
     {
         if (_source == null || _audioClock == null) return false;
         if (position < TimeSpan.Zero) position = TimeSpan.Zero;
@@ -253,7 +258,7 @@ public sealed class AudioContentController : IDisposable
             // The old playback thread and clock are already gone. Escaping to the caller (a UI event
             // handler) used to leave the channel "playing" with nothing running and no error card (audit
             // B-21); report it the way a mid-play failure is reported instead.
-            PlaybackFailed?.Invoke(ex);
+            if (reportFailure) PlaybackFailed?.Invoke(ex);
             return false;
         }
         // Computed up front (rather than left at some default and corrected on the next loop
@@ -268,13 +273,26 @@ public sealed class AudioContentController : IDisposable
         return true;
     }
 
+    /// <summary>One bounded retry after a selected device disappears, preserving the last audible position.</summary>
+    internal bool TryRecoverOnDefault()
+    {
+        if (_recoveryAttempted || _audioClock is not { IsFaulted: true, SelectedDeviceId: not null }) return false;
+        _recoveryAttempted = true;
+        // PlaybackFailed is posted from this worker just before it exits; wait before seeking its source.
+        _playbackThread?.Join();
+        var position = CurrentPosition;
+        _recoveringToDefault = true;
+        try { return TrySeekTo(position, reportFailure: false); }
+        finally { _recoveringToDefault = false; }
+    }
+
     /// <summary>Opens the audio output for <paramref name="source"/>, turning a failure (no output device,
     /// audit B-20) into an error the Preview card can show.</summary>
     private AudioPlaybackClock OpenOutput(AudioDecodeSource source)
     {
         try
         {
-            return AudioOutputFactory?.Invoke(source.AudioSampleRate, source.AudioChannels)
+            return (_recoveringToDefault ? null : AudioOutputFactory)?.Invoke(source.AudioSampleRate, source.AudioChannels)
                 ?? new AudioPlaybackClock(source.AudioSampleRate, source.AudioChannels);
         }
         catch (Exception ex)
@@ -285,8 +303,12 @@ public sealed class AudioContentController : IDisposable
 
     /// <summary>The output stopped on its own mid-play (endpoint removed, audit A-24). A standalone
     /// audio item cannot continue without it, so the playback thread fails with this.</summary>
-    private static Exception OutputLost(AudioPlaybackClock clock) =>
-        new MediaOpenException(MediaFailureStage.Render, $"声音输出已断开（{clock.FaultReason}）", null);
+    private static Exception OutputLost(AudioPlaybackClock clock)
+    {
+        var error = new MediaOpenException(MediaFailureStage.Render, $"声音输出已断开（{clock.FaultReason}）", null);
+        error.Data["AudioOutputLost"] = true;
+        return error;
+    }
 
     /// <summary>Pauses in place — unlike <see cref="VideoContentController"/> (whose <c>Stop()</c>
     /// tears the decode source down entirely, see its own doc comment on why video pause-in-place

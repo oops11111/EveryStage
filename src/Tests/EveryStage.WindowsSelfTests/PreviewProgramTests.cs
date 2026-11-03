@@ -85,6 +85,32 @@ internal static class PreviewProgramTests
                         "Selected audio endpoint was not persisted.");
                     using (var selected = settings.OpenAudioOutput(48000, 2))
                         Require(selected.SelectedDeviceId == devices[0].Id, "Configured audio endpoint was not opened.");
+                    int recovered = 0;
+                    void OnRecovered(string _) => recovered++;
+                    settings.AudioOutputFallback += OnRecovered;
+                    preview.RequestPlay(Media(Path.Combine(media, "tone.mp3")));
+                    Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.Position > TimeSpan.FromMilliseconds(300), 5000),
+                        "Selected-device audio did not begin playing.");
+                    var beforeLoss = preview.Position;
+                    EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                    Require(WaitFor(() => recovered == 1 && preview.State == PlaybackChannelState.Playing
+                        && preview.Position > beforeLoss + TimeSpan.FromMilliseconds(200), 6000),
+                        "Selected-device audio did not recover and advance on the system default after output loss.");
+                    preview.Stop();
+                    preview.RequestPlay(Media(Path.Combine(media, "tone.mp3")));
+                    Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.Position > TimeSpan.FromMilliseconds(200), 5000),
+                        "Selected-device audio did not restart for the unavailable-default test.");
+                    try
+                    {
+                        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                        Require(WaitFor(() => preview.State == PlaybackChannelState.Failed, 6000)
+                            && (preview.LastError?.Message ?? "").Contains("声音输出已断开"),
+                            "Losing a selected device without a default did not produce the original error.");
+                    }
+                    finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                    preview.Stop();
+                    settings.AudioOutputFallback -= OnRecovered;
                     updated = settings.Current.Clone();
                     updated.AudioOutputDeviceId = "EveryStage-missing-test-endpoint";
                     settings.Save(updated);
@@ -304,6 +330,28 @@ internal static class PreviewProgramTests
             if (hasAudio)
             {
                 var updated = settings.Current.Clone();
+                var devices = EveryStage.Rendering.Audio.AudioOutputDevices.Enumerate();
+                if (devices.Count > 0)
+                {
+                    updated.AudioOutputDeviceId = devices[0].Id;
+                    settings.Save(updated);
+                    int recovered = 0;
+                    void OnRecovered(string _) => recovered++;
+                    settings.AudioOutputFallback += OnRecovered;
+                    var backgroundRecovery = Media(Path.Combine(media, "tone.mp3"));
+                    backgroundRecovery.IsBackgroundAudio = true;
+                    program.RequestPlay(backgroundRecovery);
+                    var controller = (EveryStage.Terminal.ContentEngine.AudioContentController)typeof(PlaybackEngine)
+                        .GetField("_backgroundAudioController", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(program)!;
+                    Require(WaitFor(() => controller.CurrentPosition > TimeSpan.FromMilliseconds(300), 5000), "Background audio did not start.");
+                    var beforeLoss = controller.CurrentPosition;
+                    EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                    Require(WaitFor(() => recovered == 1 && controller.CurrentPosition > beforeLoss + TimeSpan.FromMilliseconds(200), 6000),
+                        "Background audio did not recover and advance on the system default after output loss.");
+                    program.Stop();
+                    settings.AudioOutputFallback -= OnRecovered;
+                }
+                updated = settings.Current.Clone();
                 updated.AudioOutputDeviceId = "EveryStage-missing-test-endpoint";
                 settings.Save(updated);
                 int fallbackCount = 0;

@@ -33,10 +33,15 @@ public sealed class SettingsStore
         catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException or NotSupportedException)
         {
             var fallback = new EveryStage.Rendering.Audio.AudioPlaybackClock(sampleRate, channels);
-            try { AudioOutputFallback?.Invoke("所选音频设备不可用，已切换到系统默认设备；当前播放结束后可在设置中重新选择。"); }
-            catch (Exception) { /* Notification must never interrupt audio output. */ }
+            NotifyAudioOutputFallback("所选音频设备不可用，已切换到系统默认设备；可在设置中重新选择。");
             return fallback;
         }
+    }
+
+    internal void NotifyAudioOutputFallback(string message)
+    {
+        try { AudioOutputFallback?.Invoke(message); }
+        catch (Exception) { /* Notification must never interrupt audio output. */ }
     }
 
     public SettingsStore(string? storePathOverride = null)

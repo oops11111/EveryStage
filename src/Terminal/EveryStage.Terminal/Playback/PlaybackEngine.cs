@@ -74,6 +74,7 @@ public sealed partial class PlaybackEngine : IDisposable
     private readonly ScenarioStore _scenarioStore;
     private readonly ImageContentRenderer _imageRenderer = new();
     private int _contentLoadVersion;
+    private int _backgroundAudioGeneration;
     private readonly PlaybackLogger _playbackLogger;
     private VideoContentController? _videoController;
     private AudioContentController? _audioController;
@@ -943,6 +944,7 @@ public sealed partial class PlaybackEngine : IDisposable
     /// track that was never shown on the visual surface at all.</summary>
     private void PlayBackgroundAudio(MediaFile file)
     {
+        ++_backgroundAudioGeneration;
         _backgroundAudioFile = file;
         _backgroundAudioStartedAt = DateTime.UtcNow;
         // -= before += every time: same "avoid stacking subscriptions across plays" reasoning as
@@ -1012,11 +1014,17 @@ public sealed partial class PlaybackEngine : IDisposable
     private void OnBackgroundAudioFailed(Exception ex)
     {
         var file = _backgroundAudioFile;
+        int generation = _backgroundAudioGeneration;
         if (file == null) return;
         // Also raised from the background playback thread.
         _output.Post(new Action(() =>
         {
-            if (!ReferenceEquals(file, _backgroundAudioFile)) return; // stale — replaced/stopped since.
+            if (generation != _backgroundAudioGeneration || !ReferenceEquals(file, _backgroundAudioFile)) return;
+            if (ex.Data.Contains("AudioOutputLost") && _backgroundAudioController?.TryRecoverOnDefault() == true)
+            {
+                _settingsStore.NotifyAudioOutputFallback("背景音乐的输出设备已断开，已从当前位置切换到系统默认设备。");
+                return;
+            }
             _backgroundAudioFile = null;
             _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
             RaisePlaybackAbnormallyInterrupted(file, ex.Message);
@@ -1118,11 +1126,17 @@ public sealed partial class PlaybackEngine : IDisposable
     private void OnAudioFailed(Exception ex)
     {
         var file = _currentFile;
+        int generation = _contentLoadVersion;
         if (file == null) return;
         // Also raised from the background playback thread.
         _output.Post(new Action(() =>
         {
-            if (!ReferenceEquals(file, _currentFile)) return; // stale — we've since moved on.
+            if (generation != _contentLoadVersion || !ReferenceEquals(file, _currentFile)) return;
+            if (ex.Data.Contains("AudioOutputLost") && _audioController?.TryRecoverOnDefault() == true)
+            {
+                _settingsStore.NotifyAudioOutputFallback("音频输出设备已断开，已从当前位置切换到系统默认设备。");
+                return;
+            }
             Fail(file, ex);
         }));
     }
@@ -1567,6 +1581,7 @@ public sealed partial class PlaybackEngine : IDisposable
     private void StopBackgroundAudio()
     {
         if (_backgroundAudioFile == null) return;
+        ++_backgroundAudioGeneration;
         _playbackLogger.LogPlaybackEnded(_backgroundAudioFile.Id, "background_audio_stopped");
         _backgroundAudioController?.Stop();
         _backgroundAudioFile = null;
