@@ -63,6 +63,11 @@ internal static class DocumentTests
         using var button = new Button();
         using var warningLabel = ModernUi.SetForegroundRole(new Label(), UiForegroundRole.Warning);
         using var accentLabel = ModernUi.SetForegroundRole(new Label(), UiForegroundRole.Accent);
+        using var surfaceLabel = ModernUi.SetBackgroundRole(new Label(), UiBackgroundRole.Surface);
+        var requestType = typeof(EveryStage.Terminal.UI.Panels.DevicesPanel).GetNestedType("RequestCard", System.Reflection.BindingFlags.NonPublic)!;
+        using var requestCard = (Control)Activator.CreateInstance(requestType, nonPublic: true)!;
+        requestCard.Size = new Size(400, 96);
+        requestType.GetMethod("Show", new[] { typeof(string), typeof(string) })!.Invoke(requestCard, new object[] { "测试设备", "123 456" });
         using var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
         combo.Items.Add("测试");
         combo.SelectedIndex = 0;
@@ -74,6 +79,8 @@ internal static class DocumentTests
         form.Controls.Add(button);
         form.Controls.Add(warningLabel);
         form.Controls.Add(accentLabel);
+        form.Controls.Add(surfaceLabel);
+        form.Controls.Add(requestCard);
         form.Controls.Add(combo);
         form.Controls.Add(presenter);
         form.Controls.Add(dock);
@@ -89,10 +96,12 @@ internal static class DocumentTests
             foreach (var theme in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.Tech, AppTheme.System, AppTheme.Dark })
             {
                 warningLabel.ForeColor = Color.Magenta; // role must win even when the old colour is unknown.
+                surfaceLabel.BackColor = Color.Magenta;
                 ThemeManager.Apply(form, theme);
                 var palette = UiPalette.For(theme);
                 Require(warningLabel.ForeColor == palette.Warning && accentLabel.ForeColor == palette.Accent,
                     $"Explicit text roles did not follow {theme}.");
+                Require(surfaceLabel.BackColor == palette.Surface, $"Explicit background role did not follow {theme}.");
                 Require(button.BackColor == palette.AccentFill && button.ForeColor == Color.White, "Primary role drifted during theme switching.");
                 double Channel(byte value) { double c = value / 255d; return c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4); }
                 double L(Color c) => 0.2126 * Channel(c.R) + 0.7152 * Channel(c.G) + 0.0722 * Channel(c.B);
@@ -121,6 +130,13 @@ internal static class DocumentTests
                     && monitorMenuColors.MenuItemSelected == SystemColors.Highlight
                     && monitorMenuColors.MenuBorder == SystemColors.WindowText,
                     "Text or monitor menu roles did not yield to high contrast.");
+                Require(surfaceLabel.BackColor == SystemColors.Window, "Explicit background role did not yield to high contrast.");
+                using (var requestImage = new Bitmap(requestCard.Width, requestCard.Height))
+                {
+                    requestCard.DrawToBitmap(requestImage, requestCard.ClientRectangle);
+                    Require(requestImage.GetPixel(200, 90).ToArgb() == SystemColors.Window.ToArgb(),
+                        "Pairing request card used a blended colour in high contrast.");
+                }
                 using (var itemImage = new Bitmap(200, 26))
                 using (var graphics = Graphics.FromImage(itemImage))
                 {
@@ -457,6 +473,27 @@ internal static class DocumentTests
                             && tags.Where(label => label.Text.Contains("保存后生效")).All(label => label.ForeColor == palette.Warning)
                             && tags.Where(label => label.Text.Contains("即时生效")).All(label => label.ForeColor == palette.Accent),
                             $"Settings effect labels did not use their semantic roles in {theme}.");
+                    }
+                    if (page == "_filesPanel")
+                    {
+                        var files = (Control)type.GetField(page, flags)!.GetValue(window)!;
+                        var empty = (Label)files.GetType().GetField("_emptyStateLabel", flags)!.GetValue(files)!;
+                        var palette = UiPalette.For(theme);
+                        Require(empty.BackColor == palette.Surface && empty.ForeColor == palette.Muted,
+                            $"File empty state did not keep its surface and text roles in {theme}.");
+                    }
+                    if (page == "_devicesPanel")
+                    {
+                        var discoverable = Descendants(window).OfType<Label>().Single(label => label.Text.Contains("可被局域网发现"));
+                        Require(discoverable.ForeColor == UiPalette.For(theme).Success,
+                            $"Device discovery status did not keep its role in {theme}.");
+                    }
+                    if (page == "_activitiesPanel")
+                    {
+                        var activities = (Control)type.GetField(page, flags)!.GetValue(window)!;
+                        var nextName = (Label)activities.GetType().GetField("_nextName", flags)!.GetValue(activities)!;
+                        Require(nextName.ForeColor == UiPalette.Normal(AppTheme.Dark).Text,
+                            $"Activity next-item text did not retain the monitor's dark-palette role in {theme}.");
                     }
                     using var shot = new Bitmap(window.Width, window.Height);
                     window.DrawToBitmap(shot, new Rectangle(Point.Empty, window.Size));

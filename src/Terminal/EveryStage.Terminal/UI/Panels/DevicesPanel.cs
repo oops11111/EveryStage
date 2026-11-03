@@ -43,15 +43,15 @@ public sealed class DevicesPanel : UserControl
 
         // --- 页头：设备 · 本机：名称 · ● 可被局域网发现 …… 投屏开关 ---
         var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
-        var title = new Label { Text = "设备", AutoSize = true, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent };
-        var local = new Label { Text = localName == null ? "" : $"本机：{localName}", AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
-        var discoverable = new Label { Text = "● 可被局域网发现", AutoSize = true, ForeColor = ModernUi.Success, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9F) };
+        var title = ModernUi.SetForegroundRole(new Label { Text = "设备", AutoSize = true, Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent }, UiForegroundRole.Text);
+        var local = ModernUi.SetForegroundRole(new Label { Text = localName == null ? "" : $"本机：{localName}", AutoSize = true, BackColor = Color.Transparent }, UiForegroundRole.Muted);
+        var discoverable = ModernUi.SetForegroundRole(new Label { Text = "● 可被局域网发现", AutoSize = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9F) }, UiForegroundRole.Success);
         header.Controls.AddRange(new Control[] { title, local, discoverable });
         Label? switchLabel = null;
         if (stateMachine != null)
         {
             _castSwitch = new ToggleSwitch { Checked = stateMachine.CastSwitchOn };
-            switchLabel = new Label { Text = "投屏开关", AutoSize = true, ForeColor = ModernUi.Text, BackColor = Color.Transparent };
+            switchLabel = ModernUi.SetForegroundRole(new Label { Text = "投屏开关", AutoSize = true, BackColor = Color.Transparent }, UiForegroundRole.Text);
             _castSwitch.CheckedChanged += (_, _) => { if (stateMachine.CastSwitchOn != _castSwitch.Checked) stateMachine.SetCastSwitch(_castSwitch.Checked); };
             stateMachine.CastSwitchChanged += OnCastSwitchChanged;
             header.Controls.Add(_castSwitch);
@@ -76,12 +76,12 @@ public sealed class DevicesPanel : UserControl
 
         // --- 已配对设备：标题行 + 设备行 ---
         var listHeader = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = Color.Transparent };
-        var listTitle = new Label
+        var listTitle = ModernUi.SetForegroundRole(new Label
         {
-            Text = "已配对设备", AutoSize = true, ForeColor = ModernUi.Text, BackColor = Color.Transparent,
+            Text = "已配对设备", AutoSize = true, BackColor = Color.Transparent,
             Font = new Font(ModernUi.UiFontSemibold, 11.5F), Location = new Point(0, 6),
-        };
-        _deviceCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
+        }, UiForegroundRole.Text);
+        _deviceCount = ModernUi.SetForegroundRole(new Label { AutoSize = true, BackColor = Color.Transparent }, UiForegroundRole.Muted);
         listHeader.Controls.Add(listTitle);
         listHeader.Controls.Add(_deviceCount);
         listHeader.Layout += (_, _) => _deviceCount.Location = new Point(listTitle.Right + 8, listTitle.Top + 4);
@@ -91,12 +91,12 @@ public sealed class DevicesPanel : UserControl
             Padding = new Padding(0, 2, 0, 0), BackColor = Color.Transparent,
         };
         _deviceRows.Resize += (_, _) => LayoutRows();
-        _emptyState = new Label
+        _emptyState = ModernUi.SetForegroundRole(new Label
         {
             Text = "还没有已配对的设备\r\n投屏机发现本机并通过配对确认后，会出现在这里",
-            Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = ModernUi.Muted,
+            Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
             BackColor = Color.Transparent, Visible = false,
-        };
+        }, UiForegroundRole.Muted);
 
         // Dock order: the last Top control added sits highest, so the header goes in last.
         Controls.Add(_deviceRows);
@@ -261,11 +261,12 @@ public sealed class DevicesPanel : UserControl
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int S(int v) => LogicalToDeviceUnits(v);
             bool active = _device != null;
+            var palette = ModernUi.PaletteFor(this);
             using (var path = ActivityRowView.RoundedBox(new Rectangle(0, 0, Width - 1, Height - 1), S(10)))
             {
-                using var fill = new SolidBrush(active ? ModernUi.Mix(ModernUi.Background, ModernUi.Accent, 0.14f) : ModernUi.Surface);
+                using var fill = new SolidBrush(palette.IsHighContrast ? palette.Surface : active ? ModernUi.Mix(palette.Background, palette.Accent, 0.14f) : palette.Surface);
                 g.FillPath(fill, path);
-                using var pen = new Pen(active ? ModernUi.Accent : ModernUi.Mix(ModernUi.Surface, ModernUi.Border, 0.45f));
+                using var pen = new Pen(palette.IsHighContrast ? palette.Border : active ? palette.Accent : ModernUi.Mix(palette.Surface, palette.Border, 0.45f));
                 g.DrawPath(pen, path);
             }
             using var body = new Font(ModernUi.UiFont, 9.5F);
@@ -376,6 +377,7 @@ public sealed class DevicesPanel : UserControl
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
+            var palette = ModernUi.PaletteFor(this);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int w = Width, h = Height, cy = h / 2;
 
@@ -383,14 +385,14 @@ public sealed class DevicesPanel : UserControl
             {
                 using var fill = new SolidBrush(ModernUi.Surface);
                 g.FillPath(fill, path);
-                using var border = new Pen(ModernUi.Mix(ModernUi.Surface, ModernUi.Border, 0.45f));
+                using var border = new Pen(palette.IsHighContrast ? palette.Border : ModernUi.Mix(palette.Surface, palette.Border, 0.45f));
                 g.DrawPath(border, path);
             }
 
             // Device icon tile.
             var tile = new Rectangle(S(12), cy - S(18), S(36), S(36));
             using (var path = ActivityRowView.RoundedBox(tile, S(10)))
-            using (var fill = new SolidBrush(ActivityRowView.Blend(ModernUi.Background, ModernUi.Text, 0.06f)))
+            using (var fill = new SolidBrush(palette.IsHighContrast ? palette.Surface : ActivityRowView.Blend(palette.Background, palette.Text, 0.06f)))
                 g.FillPath(fill, path);
             VectorIcons.Draw(g, NavIcon.Devices, Rectangle.Inflate(tile, -S(11), -S(11)), ModernUi.Muted);
 
@@ -425,9 +427,10 @@ public sealed class DevicesPanel : UserControl
                 var tag = new Rectangle(x, lineTop + S(1), tagWidth, lineHeight - S(2));
                 using (var path = ActivityRowView.RoundedBox(tag, S(6)))
                 {
-                    using var fill = new SolidBrush(on ? ActivityRowView.Blend(ModernUi.Background, ModernUi.Accent, 0.16f)
-                        : ActivityRowView.Blend(ModernUi.Background, ModernUi.Text, 0.05f));
+                    using var fill = new SolidBrush(palette.IsHighContrast ? palette.Surface : on ? ActivityRowView.Blend(palette.Background, palette.Accent, 0.16f)
+                        : ActivityRowView.Blend(palette.Background, palette.Text, 0.05f));
                     g.FillPath(fill, path);
+                    if (palette.IsHighContrast) { using var outline = new Pen(palette.Border); g.DrawPath(outline, path); }
                 }
                 TextRenderer.DrawText(g, label, TagFont, tag, on ? ModernUi.Text : ModernUi.Muted,
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
@@ -457,13 +460,15 @@ public sealed class DevicesPanel : UserControl
         private void DrawButton(Graphics g, Rectangle r, string text, bool danger)
         {
             bool hot = r.Contains(_hover);
+            var palette = ModernUi.PaletteFor(this);
             using var path = ActivityRowView.RoundedBox(r, S(8));
-            using (var fill = new SolidBrush(hot
-                ? ActivityRowView.Blend(ModernUi.Surface, danger ? ModernUi.Danger : ModernUi.Text, danger ? 0.18f : 0.08f)
-                : ModernUi.Surface))
+            using (var fill = new SolidBrush(palette.IsHighContrast
+                ? hot ? SystemColors.Highlight : palette.Surface
+                : hot ? ActivityRowView.Blend(palette.Surface, danger ? palette.Danger : palette.Text, danger ? 0.18f : 0.08f)
+                : palette.Surface))
                 g.FillPath(fill, path);
-            using (var pen = new Pen(danger ? ModernUi.Danger : ModernUi.Border)) g.DrawPath(pen, path);
-            TextRenderer.DrawText(g, text, BodyFont, r, danger && hot ? ModernUi.Danger : ModernUi.Text,
+            using (var pen = new Pen(palette.IsHighContrast ? palette.Border : danger ? palette.Danger : palette.Border)) g.DrawPath(pen, path);
+            TextRenderer.DrawText(g, text, BodyFont, r, palette.IsHighContrast && hot ? SystemColors.HighlightText : danger && hot ? palette.Danger : palette.Text,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
         }
     }

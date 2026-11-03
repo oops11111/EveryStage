@@ -166,12 +166,12 @@ public sealed class FilesPanel : UserControl
         // Laid out by hand in LayoutHeader: a narrow page drops the count, then shrinks the search box,
         // then compacts the filter segments.
         var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
-        var pageTitle = new Label
+        var pageTitle = ModernUi.SetForegroundRole(new Label
         {
-            Text = "文件库", AutoSize = true, ForeColor = ModernUi.Text,
+            Text = "文件库", AutoSize = true,
             Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent,
-        };
-        _countLabel = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 9.5F), BackColor = Color.Transparent };
+        }, UiForegroundRole.Text);
+        _countLabel = ModernUi.SetForegroundRole(new Label { AutoSize = true, Font = new Font(ModernUi.UiFont, 9.5F), BackColor = Color.Transparent }, UiForegroundRole.Muted);
         // No 音频 tab: audio belongs to the background music (歌单), never to the library.
         MediaKind?[] filters = { null, MediaKind.Image, MediaKind.Video, MediaKind.Document };
         var filterTabs = new SegmentedFilter(new[] { "全部", "图片", "视频", "文档" }) { Height = 34 };
@@ -307,16 +307,14 @@ public sealed class FilesPanel : UserControl
         // No audio card here any more: background music has its own bar and playlists (MainWindow);
         // audio files are reachable through the 音频 filter and join playlists from their menu.
 
-        _emptyStateLabel = new Label
+        _emptyStateLabel = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(new Label
         {
             Text = "文件库还是空的\n\n点击“＋ 导入”或将文件拖到这里",
-            ForeColor = ModernUi.Muted,
-            BackColor = ModernUi.Surface,
             TextAlign = ContentAlignment.MiddleCenter,
             Font = new Font(ModernUi.UiFont, 12F),
             Size = new Size(420, 110),
             Visible = false,
-        };
+        }, UiForegroundRole.Muted), UiBackgroundRole.Surface);
         Controls.Add(_emptyStateLabel);
         _emptyStateLabel.BringToFront();
         Resize += (_, _) => PositionEmptyState();

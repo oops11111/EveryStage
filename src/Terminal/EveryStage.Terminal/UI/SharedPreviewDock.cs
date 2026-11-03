@@ -263,7 +263,7 @@ internal sealed class SharedPreviewDock : Panel
             foreach (Control child in controls.Controls)
             {
                 if (child is Button button) ModernUi.ApplyButtonRole(button, palette);
-                else if (child is Label label) label.ForeColor = palette.Text;
+                else if (child is Label label && !ModernUi.ApplyForegroundRole(label, palette)) label.ForeColor = palette.Text;
             }
         }
         PerformLayout();

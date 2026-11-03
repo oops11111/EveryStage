@@ -133,12 +133,12 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
 
         // --- 页头：流程 · 方案 [▾] · N 个环节 …… ＋ 环节 · ＋ 添加文件 · ⋯ ---
         var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
-        var title = new Label { Text = "流程", AutoSize = true, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent };
-        var scenarioLabel = new Label { Text = "方案", AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
+        var title = ModernUi.SetForegroundRole(new Label { Text = "流程", AutoSize = true, Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent }, UiForegroundRole.Text);
+        var scenarioLabel = ModernUi.SetForegroundRole(new Label { Text = "方案", AutoSize = true, BackColor = Color.Transparent }, UiForegroundRole.Muted);
         _scenarioCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 200 };
         ModernUi.StyleComboBox(_scenarioCombo);
         _scenarioCombo.SelectedIndexChanged += OnScenarioComboChanged;
-        _activityCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
+        _activityCount = ModernUi.SetForegroundRole(new Label { AutoSize = true, BackColor = Color.Transparent }, UiForegroundRole.Muted);
         _saveFeedbackTimer = new System.Windows.Forms.Timer { Interval = 2500 };
         _saveFeedbackTimer.Tick += (_, _) => { _saveFeedbackTimer.Stop(); UpdateCountLabel(); };
         var addSectionButton = ActionButton("＋ 环节", OnNewActivity, width: 84);
@@ -330,17 +330,17 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             BackColor = Color.Transparent,
         };
         _activityRows.Resize += (_, _) => LayoutRows();
-        _emptyState = new Label
+        _emptyState = ModernUi.SetForegroundRole(new Label
         {
             Text = "这个方案还没有环节\r\n点右上角「＋ 环节」开始编排流程",
-            Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = ModernUi.Muted,
+            Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
             BackColor = Color.Transparent, Visible = false,
-        };
+        }, UiForegroundRole.Muted);
 
         // --- 下一项 run controls (hosted by MainWindow's 监看 column) ---
         _runControls = new Panel { BackColor = Color.Transparent, Height = 128 };
         var nextCaption = new Badge("下一项");
-        _nextName = new Label { ForeColor = ModernUi.Text, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9.5F) };
+        _nextName = ModernUi.SetForegroundRole(new Label { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9.5F) }, UiForegroundRole.Text);
         _runNextButton = ActionButton("下一项  ▶", GoNext, primary: true, height: 52);
         _runNextButton.Font = new Font(ModernUi.UiFontSemibold, 13F);
         _runPreviousButton = ActionButton("◀ 上一项", GoPrevious, height: 34);
@@ -1036,8 +1036,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _nextName.Text = next < 0
             ? (live >= 0 ? "已是最后一项" : "流程里还没有可播放的文件")
             : $"{NumberOf(order[next])}  {Path.GetFileName(order[next].Activity.Files[order[next].Index].SourcePath)}";
-        var palette = ModernUi.PaletteFor(_runControls);
-        _nextName.ForeColor = next < 0 ? palette.Muted : palette.Text;
+        ModernUi.SetForegroundRole(_nextName, next < 0 ? UiForegroundRole.Muted : UiForegroundRole.Text);
         _runNextButton.Enabled = next >= 0;
         _runPreviewButton.Enabled = next >= 0 && _playback != null;
         _runPreviousButton.Enabled = live > 0;

@@ -4,11 +4,33 @@ using System.Runtime.InteropServices;
 namespace EveryStage.Terminal.UI;
 
 internal enum UiForegroundRole { Text, Muted, Accent, Warning, Success, Danger }
+internal enum UiBackgroundRole { Transparent, Background, Rail, Surface, SurfaceRaised }
 
 internal static class ModernUi
 {
     private sealed class ForegroundRole { public UiForegroundRole Value; }
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, ForegroundRole> ForegroundRoles = new();
+    private sealed class BackgroundRole { public UiBackgroundRole Value; }
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, BackgroundRole> BackgroundRoles = new();
+    internal static T SetBackgroundRole<T>(T control, UiBackgroundRole role) where T : Control
+    {
+        BackgroundRoles.GetOrCreateValue(control).Value = role;
+        ApplyBackgroundRole(control, PaletteFor(control));
+        return control;
+    }
+    internal static bool ApplyBackgroundRole(Control control, UiPalette palette)
+    {
+        if (!BackgroundRoles.TryGetValue(control, out var role)) return false;
+        control.BackColor = role.Value switch
+        {
+            UiBackgroundRole.Transparent => Color.Transparent,
+            UiBackgroundRole.Rail => palette.Rail,
+            UiBackgroundRole.Surface => palette.Surface,
+            UiBackgroundRole.SurfaceRaised => palette.SurfaceRaised,
+            _ => palette.Background,
+        };
+        return true;
+    }
     internal static Color Foreground(UiForegroundRole role, UiPalette palette) => role switch
     {
         UiForegroundRole.Muted => palette.Muted,

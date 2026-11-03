@@ -97,7 +97,7 @@ public static class ThemeManager
             control.ForeColor = MapForeground(control.ForeColor, palette, previous);
         if (control is GlassPanel glassPanel)
             glassPanel.GlassTint = palette.GlassTint;
-        control.BackColor = control switch
+        if (!ModernUi.ApplyBackgroundRole(control, palette)) control.BackColor = control switch
         {
             PillButton => Color.Transparent,
             ToggleSwitch => Color.Transparent,
