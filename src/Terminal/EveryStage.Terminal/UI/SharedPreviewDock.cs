@@ -26,6 +26,8 @@ namespace EveryStage.Terminal.UI;
 /// </summary>
 internal sealed class SharedPreviewDock : Panel
 {
+    internal UiPalette? AppliedPalette { get; set; }
+    private static UiPalette MonitorPalette => UiPalette.For(AppTheme.Dark);
     private readonly System.Windows.Forms.Timer _feedbackTimer = new() { Interval = 150 };
     private Control? _flashingCard;
     public void FlashProgram(bool device)
@@ -43,7 +45,7 @@ internal sealed class SharedPreviewDock : Panel
     private void PaintOnAirFeedback(object? sender, PaintEventArgs e)
     {
         if (!ReferenceEquals(sender, _flashingCard) || sender is not Control card) return;
-        using var pen = new Pen(ModernUi.Palette.ProgramBorder, 3);
+        using var pen = new Pen(MonitorPalette.ProgramBorder, 3);
         var rect = new Rectangle(2, 2, Math.Max(1, card.Width - 5), Math.Max(1, card.Height - 5));
         float d = Math.Min(12, Math.Min(rect.Width, rect.Height));
         using var outline = new GraphicsPath();
@@ -253,7 +255,17 @@ internal sealed class SharedPreviewDock : Panel
         if (ReferenceEquals(controls, _runControls)) return;
         if (_runControls != null) Controls.Remove(_runControls);
         _runControls = controls;
-        if (controls != null) Controls.Add(controls);
+        if (controls != null)
+        {
+            Controls.Add(controls);
+            // These controls are owned by the activities page and can be attached after a theme change.
+            var palette = MonitorPalette;
+            foreach (Control child in controls.Controls)
+            {
+                if (child is Button button) ModernUi.ApplyButtonRole(button, palette);
+                else if (child is Label label) label.ForeColor = palette.Text;
+            }
+        }
         PerformLayout();
     }
 
@@ -406,7 +418,19 @@ internal sealed class SharedPreviewDock : Panel
         PreviewSurface.ContentSurface.SetFrame(_placeholder);
     }
 
-    internal void RefreshTheme() => RefreshNow();
+    internal void RefreshTheme()
+    {
+        var palette = MonitorPalette;
+        BackColor = palette.Rail;
+        _title.ForeColor = palette.Text;
+        _timecode.ForeColor = _volumeIcon.ForeColor = palette.Muted;
+        // These are media surfaces, not theme chrome: an empty frame must stay black.
+        PreviewSurface.BackColor = Color.Black;
+        PreviewSurface.VideoHost.BackColor = Color.Black;
+        PreviewSurface.ContentSurface.BackColor = Color.Black;
+        _errorCard.RefreshTheme(palette);
+        RefreshNow();
+    }
 
     /// <summary>Adds the document control row (PDF / Word / presentation controls and Program sync).</summary>
     public void BindDocumentSync(DocumentProgramSync sync)
@@ -434,6 +458,7 @@ internal sealed class SharedPreviewDock : Panel
     private void RefreshNow()
     {
         if (IsDisposed) return;
+        var palette = MonitorPalette;
         _documentSync?.FollowProgramShow();
         RefreshDocumentBar();
         var show = _program?.DocumentMode == DocumentPlaybackMode.NativeShow ? _program.OfficeSession as EveryStage.Terminal.Documents.SlideShowSession : null;
@@ -453,18 +478,18 @@ internal sealed class SharedPreviewDock : Panel
         string fileLabel = file == null ? "" : Path.GetFileName(file.SourcePath) + (file.IsBackgroundAudio ? "（背景音乐）" : "") + " · ";
         (string text, Color color) = state switch
         {
-            PlaybackChannelState.Loading => (fileLabel + "加载中", ModernUi.Warning),
-            PlaybackChannelState.Playing => (fileLabel + "预览中", ModernUi.Muted),
-            PlaybackChannelState.Paused when preview!.IsCompleted => (fileLabel + "播放完成", ModernUi.Muted),
-            PlaybackChannelState.Paused => (fileLabel + "已暂停", ModernUi.Warning),
-            PlaybackChannelState.Failed => (fileLabel + "播放失败", ModernUi.Danger),
-            _ => ("待机 · 单击文件在此预览", ModernUi.Muted),
+            PlaybackChannelState.Loading => (fileLabel + "加载中", palette.Warning),
+            PlaybackChannelState.Playing => (fileLabel + "预览中", palette.Muted),
+            PlaybackChannelState.Paused when preview!.IsCompleted => (fileLabel + "播放完成", palette.Muted),
+            PlaybackChannelState.Paused => (fileLabel + "已暂停", palette.Warning),
+            PlaybackChannelState.Failed => (fileLabel + "播放失败", palette.Danger),
+            _ => ("待机 · 单击文件在此预览", palette.Muted),
         };
         if (preview?.CurrentContentNote is { } note && state == PlaybackChannelState.Playing) text += "（" + note + "）";
         if (preview?.Muted == true && state is PlaybackChannelState.Playing or PlaybackChannelState.Paused) text += " · 预监静音";
         SetText(_previewState, text, color);
         bool previewHasContent = state is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed);
-        var frameColor = previewHasContent ? ModernUi.Palette.Preview : ModernUi.Border;
+        var frameColor = previewHasContent ? palette.Preview : palette.Border;
         if (_previewFrame.BackColor != frameColor) _previewFrame.BackColor = frameColor;
         _previewBadge.Active = previewHasContent;
 
@@ -472,12 +497,12 @@ internal sealed class SharedPreviewDock : Panel
         var programState = ProgramStatus.Compute(_program != null, programLive, _program?.State);
         (string programText, Color programColor) = programState switch
         {
-            ProgramOutputState.Disconnected => ("未连接扩展屏 · 仅本地预览", ModernUi.Muted),
-            ProgramOutputState.Failed => ("播放失败", ModernUi.Danger),
-            ProgramOutputState.Live when source == ProgramSource.DeviceCast => ("输出中 · 设备来投", ModernUi.Text),
+            ProgramOutputState.Disconnected => ("未连接扩展屏 · 仅本地预览", palette.Muted),
+            ProgramOutputState.Failed => ("播放失败", palette.Danger),
+            ProgramOutputState.Live when source == ProgramSource.DeviceCast => ("输出中 · 设备来投", palette.Text),
             ProgramOutputState.Live => ((_program?.CurrentFile is { } pf ? Path.GetFileName(pf.SourcePath) : "本地媒体")
-                + (_program?.Position is { } pp && _program.CanSeek ? " · " + Format(pp) : "") + (_program?.IsPaused == true ? " · 已暂停" : ""), ModernUi.Text),
-            _ => (_stateMachine.CastSwitchOn ? "待机 · 没有输出" : "待机（投屏开关已关闭）", ModernUi.Muted),
+                + (_program?.Position is { } pp && _program.CanSeek ? " · " + Format(pp) : "") + (_program?.IsPaused == true ? " · 已暂停" : ""), palette.Text),
+            _ => (_stateMachine.CastSwitchOn ? "待机 · 没有输出" : "待机（投屏开关已关闭）", palette.Muted),
         };
         SetText(_programState, programText, programColor);
         _programBadge.Active = programState == ProgramOutputState.Live;
@@ -499,7 +524,7 @@ internal sealed class SharedPreviewDock : Panel
         if (!_progress.IsDragging) _progress.Value = duration is { Ticks: > 0 } dd ? (float)(position.Ticks / (double)dd.Ticks) : 0f;
 
         _loopButton.Enabled = hasFile;
-        _loopButton.ForeColor = preview?.LoopCurrent == true ? ModernUi.Accent : ModernUi.Text;
+        _loopButton.ForeColor = preview?.LoopCurrent == true ? palette.Accent : palette.Text;
         _scaleButton.Enabled = file?.Kind == MediaKind.Video && hasFile;
         SetText(_scaleButton, preview?.VideoScaleMode switch { VideoScaleMode.Fill => "填充", VideoScaleMode.Fit => "适应", _ => "满宽" }, null);
 
@@ -519,7 +544,7 @@ internal sealed class SharedPreviewDock : Panel
             _ => "预览中 · 未投屏",
         };
         _localCard.Update(source == ProgramSource.LocalMedia, localStatus,
-            source == ProgramSource.LocalMedia ? ModernUi.Danger : state == PlaybackChannelState.Failed ? ModernUi.Danger : state == PlaybackChannelState.Idle ? ModernUi.Muted : ModernUi.Success);
+            source == ProgramSource.LocalMedia ? palette.Danger : state == PlaybackChannelState.Failed ? palette.Danger : state == PlaybackChannelState.Idle ? palette.Muted : palette.Success);
         _deviceCard.Update(_deviceConnected, _deviceName ?? "设备来投", _deviceOnProgram,
             _program == null ? "未连接扩展屏" : "等待设备来投", _program != null);
 
@@ -581,7 +606,8 @@ internal sealed class SharedPreviewDock : Panel
             {
                 int s = 20;
                 var r = new Rectangle((_thumb.Width - s) / 2, (_thumb.Height - s) / 2, s, s);
-                VectorIcons.Draw(e.Graphics, NavIcon.Devices, r, _selected ? ModernUi.Palette.ProgramBorder : ModernUi.Muted);
+                var palette = MonitorPalette;
+                VectorIcons.Draw(e.Graphics, NavIcon.Devices, r, _selected ? palette.ProgramBorder : palette.Muted);
             };
             var labels = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(10, 0, 0, 0) };
             var name = new Label
@@ -600,12 +626,13 @@ internal sealed class SharedPreviewDock : Panel
         {
             SetText(_state, "● " + status, color);
             _selected = selected;
+            var palette = MonitorPalette;
             Card.GlassTint = selected
-                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Palette.ProgramBorder, 0.19f))
-                : ModernUi.Palette.GlassTint;
+                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(palette.GlassTint, palette.ProgramBorder, 0.19f))
+                : palette.GlassTint;
             _thumb.GlassTint = selected
-                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Palette.ProgramBorder, 0.11f))
-                : ModernUi.Palette.GlassTint;
+                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(palette.GlassTint, palette.ProgramBorder, 0.11f))
+                : palette.GlassTint;
             Card.Invalidate(true);
         }
     }
@@ -674,6 +701,7 @@ internal sealed class SharedPreviewDock : Panel
 
         public void Update(bool connected, string title, bool onProgram, string idleStatus, bool displayBound)
         {
+            var palette = MonitorPalette;
             _onProgram = onProgram;
             _videoFrame.Visible = connected;
             _labels.Visible = !connected;
@@ -684,14 +712,17 @@ internal sealed class SharedPreviewDock : Panel
             _state.Text = connected
                 ? (onProgram ? "● 大屏输出中" : "● 预览中（未上屏）")
                 : "● " + idleStatus;
-            _state.ForeColor = connected ? (onProgram ? ModernUi.Danger : ModernUi.Success) : ModernUi.Muted;
+            _state.ForeColor = connected ? (onProgram ? palette.Danger : palette.Success) : palette.Muted;
+            _title.ForeColor = _caption.ForeColor = palette.Text;
+            _caption.BackColor = palette.SurfaceRaised;
+            _videoFrame.BackColor = VideoHost.BackColor = Color.Black;
             _actionButton.Text = onProgram ? "回退" : "投屏";
             _actionButton.Enabled = connected && (displayBound || onProgram);
             ModernUi.StyleButton(_actionButton, primary: !onProgram, danger: onProgram);
             _actionButton.BringToFront();
             Card.GlassTint = onProgram
-                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(ModernUi.Palette.GlassTint, ModernUi.Palette.ProgramBorder, 0.19f))
-                : ModernUi.Palette.GlassTint;
+                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(palette.GlassTint, palette.ProgramBorder, 0.19f))
+                : palette.GlassTint;
             Card.Invalidate(true);
         }
     }
@@ -745,6 +776,24 @@ internal sealed class SharedPreviewDock : Panel
             _detail.Text = $"失败阶段：{error.Stage}　·　格式：{(error.Extension.Length > 0 ? error.Extension : "未知")}"
                 + (codecs.Length > 0 ? $"　·　编码：{codecs}" : "") + $"　·　{error.Message}";
             _suggestion.Text = "建议：" + error.Suggestion;
+            RefreshTheme(MonitorPalette);
+        }
+
+        public void RefreshTheme(UiPalette palette)
+        {
+            BackColor = palette.Surface;
+            _title.ForeColor = palette.Danger;
+            _detail.ForeColor = palette.Text;
+            _suggestion.ForeColor = palette.Muted;
+            void ApplyButtons(Control parent)
+            {
+                foreach (Control child in parent.Controls)
+                {
+                    if (child is Button button) ModernUi.ApplyButtonRole(button, palette);
+                    ApplyButtons(child);
+                }
+            }
+            ApplyButtons(this);
         }
     }
 }
@@ -819,11 +868,12 @@ internal sealed class MediaTrack : Control
         g.SmoothingMode = SmoothingMode.AntiAlias;
         int cy = Height / 2;
         var track = new Rectangle(6, cy - 2, Math.Max(1, Width - 12), 4);
-        using (var bg = new SolidBrush(ModernUi.Border)) g.FillRectangle(bg, track);
+        var palette = ModernUi.PaletteFor(this);
+        using (var bg = new SolidBrush(palette.Border)) g.FillRectangle(bg, track);
         if (!Enabled) return;
         int filled = (int)(track.Width * _value);
-        using (var fg = new SolidBrush(ModernUi.Accent)) g.FillRectangle(fg, track.X, track.Y, filled, track.Height);
-        using var knob = new SolidBrush(Color.White);
+        using (var fg = new SolidBrush(palette.Accent)) g.FillRectangle(fg, track.X, track.Y, filled, track.Height);
+        using var knob = new SolidBrush(palette.IsHighContrast ? SystemColors.HighlightText : Color.White);
         g.FillEllipse(knob, track.X + filled - 6, cy - 6, 12, 12);
     }
 }
@@ -864,19 +914,20 @@ internal sealed class Badge : Control
         path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
         path.AddArc(rect.Left, rect.Bottom - d, d, d, 90, 90);
         path.CloseFigure();
-        Color channel = Danger ? ModernUi.Palette.DangerFill : ModernUi.Palette.Preview;
+        var palette = ModernUi.PaletteFor(this);
+        Color channel = Danger ? palette.DangerFill : palette.Preview;
         Color fore;
         if (_active)
         {
             using var fill = new SolidBrush(channel);
             g.FillPath(fill, path);
-            fore = Danger ? ModernUi.Palette.DangerFillForeground : ModernUi.Palette.PreviewForeground;
+            fore = Danger ? palette.DangerFillForeground : palette.PreviewForeground;
         }
         else
         {
-            using var pen = new Pen(ModernUi.Border);
+            using var pen = new Pen(palette.Border);
             g.DrawPath(pen, path);
-            fore = ModernUi.Muted;
+            fore = palette.Muted;
         }
         TextRenderer.DrawText(g, Text, Font, ClientRectangle, fore,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);

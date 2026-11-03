@@ -42,6 +42,13 @@ internal static class ModernUi
     private static UiPalette _palette = UiPalette.For(EveryStage.Terminal.Data.AppTheme.Dark);
     private static EveryStage.Terminal.Data.AppTheme _currentTheme = EveryStage.Terminal.Data.AppTheme.Dark;
     internal static UiPalette Palette => _palette;
+    /// <summary>Monitor controls use a fixed dark palette; Windows high contrast still takes precedence.</summary>
+    internal static UiPalette PaletteFor(Control control)
+    {
+        for (Control? current = control; current != null; current = current.Parent)
+            if (current is SharedPreviewDock) return UiPalette.For(EveryStage.Terminal.Data.AppTheme.Dark);
+        return _palette;
+    }
     internal static EveryStage.Terminal.Data.AppTheme CurrentTheme => _currentTheme;
     public static Color Background => _palette.Background;
     public static Color Rail => _palette.Rail;
@@ -86,7 +93,7 @@ internal static class ModernUi
         button.FlatAppearance.BorderColor = danger ? Danger : Border;
         button.BackColor = primary ? (danger ? Danger : Accent) : Surface;
         button.ForeColor = primary ? (danger ? Color.White : AccentForeground) : Text;
-        ApplyButtonRole(button, Palette);
+        ApplyButtonRole(button, PaletteFor(button));
         button.Cursor = Cursors.Hand;
         button.Font = new Font(ModernUi.UiFont, 10F, FontStyle.Regular);
         button.Padding = new Padding(8, 0, 8, 0);
@@ -561,10 +568,11 @@ internal class GlassPanel : Panel
         if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
         int scaledRadius = LogicalToDeviceUnits(CornerRadius);
         using var path = Rounded(ClientRectangle, scaledRadius);
-        if (ModernUi.Palette.IsHighContrast)
+        var palette = ModernUi.PaletteFor(this);
+        if (palette.IsHighContrast)
         {
-            using var flat = new SolidBrush(ModernUi.Surface);
-            using var edge = new Pen(ModernUi.Border, 2);
+            using var flat = new SolidBrush(palette.Surface);
+            using var edge = new Pen(palette.Border, 2);
             e.Graphics.FillPath(flat, path);
             e.Graphics.DrawPath(edge, path);
             return;
@@ -572,7 +580,7 @@ internal class GlassPanel : Panel
         using var fill = new LinearGradientBrush(ClientRectangle,
             Color.FromArgb(Math.Min(255, GlassTint.A + 24), GlassTint), GlassTint, 110F);
         e.Graphics.FillPath(fill, path);
-        using var highlight = new Pen(Color.FromArgb(70, ModernUi.Accent.R, ModernUi.Accent.G, ModernUi.Accent.B), 1F);
+        using var highlight = new Pen(Color.FromArgb(70, palette.Accent.R, palette.Accent.G, palette.Accent.B), 1F);
         e.Graphics.DrawPath(highlight, path);
         var inset = ClientRectangle;
         inset.Inflate(-2, -2);
@@ -779,15 +787,16 @@ internal sealed class RoundedActionButton : Button
         using var path = Rounded(bounds, Math.Min(8, bounds.Height / 2));
         // Disabled: fade the fill toward the surface and drop the accent/danger border, so a primary or
         // danger button that can't be used right now doesn't look exactly like one that can.
-        Color fillColor = Enabled ? BackColor : ModernUi.Palette.IsHighContrast ? SystemColors.Control : Blend(BackColor, ModernUi.Surface, 0.7);
+        var palette = ModernUi.PaletteFor(this);
+        Color fillColor = Enabled ? BackColor : palette.IsHighContrast ? SystemColors.Control : Blend(BackColor, palette.Surface, 0.7);
         using var fill = new SolidBrush(fillColor);
         e.Graphics.FillPath(fill, path);
         if (FlatAppearance.BorderSize > 0)
         {
-            using var border = new Pen(Enabled ? FlatAppearance.BorderColor : ModernUi.Border, FlatAppearance.BorderSize);
+            using var border = new Pen(Enabled ? FlatAppearance.BorderColor : palette.Border, FlatAppearance.BorderSize);
             e.Graphics.DrawPath(border, path);
         }
-        Color textColor = Enabled ? ForeColor : ModernUi.Palette.IsHighContrast ? SystemColors.GrayText : ModernUi.Muted;
+        Color textColor = Enabled ? ForeColor : palette.IsHighContrast ? SystemColors.GrayText : palette.Muted;
         var textBounds = bounds;
         if (ShowDropDownArrow)
         {
@@ -820,7 +829,7 @@ internal sealed class RoundedActionButton : Button
         }
         if (Focused && ShowFocusCues)
         {
-            using var focus = new Pen(ModernUi.Palette.IsHighContrast ? ForeColor : ModernUi.Palette.Focus, 2) { DashStyle = DashStyle.Dot };
+            using var focus = new Pen(palette.IsHighContrast ? ForeColor : palette.Focus, 2) { DashStyle = DashStyle.Dot };
             e.Graphics.DrawRectangle(focus, Rectangle.Inflate(bounds, -5, -5));
         }
     }

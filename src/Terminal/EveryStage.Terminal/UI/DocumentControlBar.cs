@@ -79,6 +79,7 @@ internal sealed class DocumentControlBar : Panel
 
     public void RefreshState()
     {
+        var palette = ModernUi.PaletteFor(this);
         var status = Status;
         string key = status == null ? "" : $"{status.Format}|{status.Mode}";
         if (key != _layoutKey)
@@ -94,8 +95,9 @@ internal sealed class DocumentControlBar : Panel
             if (item.Checked != null && item.Control is RoundedActionButton button)
             {
                 bool on = item.Checked();
-                var color = on ? ModernUi.Accent : ModernUi.Surface;
+                var color = on ? palette.AccentFill : palette.Surface;
                 if (button.BackColor != color) { button.BackColor = color; button.Invalidate(); }
+                button.ForeColor = on ? palette.AccentFillForeground : palette.Text;
             }
         }
         if (_pageBox != null && !_pageBox.Focused && status != null)
@@ -196,6 +198,7 @@ internal sealed class DocumentControlBar : Panel
     {
         var button = new RoundedActionButton { Text = text, Height = _buttonHeight, Margin = Padding.Empty, Padding = new Padding(6, 0, 6, 0) };
         ModernUi.StyleButton(button);
+        ModernUi.ApplyButtonRole(button, ModernUi.PaletteFor(this));
         button.Font = new Font("Microsoft YaHei UI", 8.5F);
         if (text.Contains('') || text.Contains('')) button.Text = text.Replace(" ", "‹ ").Replace(" ", " ›");
         button.Width = TextRenderer.MeasureText(button.Text, button.Font).Width + 18;
@@ -226,7 +229,7 @@ internal sealed class DocumentControlBar : Panel
         _pageBox = new TextBox
         {
             Width = 38, Margin = Padding.Empty, TextAlign = HorizontalAlignment.Center, BorderStyle = BorderStyle.FixedSingle,
-            BackColor = ModernUi.Surface, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFont, 9F),
+            BackColor = ModernUi.PaletteFor(this).Surface, ForeColor = ModernUi.PaletteFor(this).Text, Font = new Font(ModernUi.UiFont, 9F),
         };
         _toolTip.SetToolTip(_pageBox, "输入页码 / 幻灯片序号后按回车跳转");
         var box = _pageBox;
@@ -239,7 +242,7 @@ internal sealed class DocumentControlBar : Panel
         };
         _items.Add(new Item(box, "跳转页码", () => Status is { PageCount: > 0 }, null, null));
         Controls.Add(box);
-        _pageCount = new Label { AutoSize = true, ForeColor = ModernUi.Muted, Margin = Padding.Empty, Font = new Font(ModernUi.UiFont, 8.5F), BackColor = Color.Transparent };
+        _pageCount = new Label { AutoSize = true, ForeColor = ModernUi.PaletteFor(this).Muted, Margin = Padding.Empty, Font = new Font(ModernUi.UiFont, 8.5F), BackColor = Color.Transparent };
         _items.Add(new Item(_pageCount, "", () => true, null, null));
         Controls.Add(_pageCount);
     }

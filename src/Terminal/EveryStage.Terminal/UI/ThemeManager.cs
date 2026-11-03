@@ -87,6 +87,12 @@ public static class ThemeManager
 
     private static void ApplyRecursive(Control control, UiPalette palette, UiPalette previous)
     {
+        if (control is SharedPreviewDock dock)
+        {
+            previous = dock.AppliedPalette ?? previous;
+            palette = UiPalette.For(AppTheme.Dark);
+            dock.AppliedPalette = palette;
+        }
         control.ForeColor = MapForeground(control.ForeColor, palette, previous);
         if (control is GlassPanel glassPanel)
             glassPanel.GlassTint = palette.GlassTint;

@@ -62,9 +62,18 @@ internal static class DocumentTests
         using var form = new Form();
         using var button = new Button();
         using var presenter = new PresenterStrip();
+        using var dock = new SharedPreviewDock(new OutputStateMachine());
+        var take = (Button)typeof(SharedPreviewDock).GetField("_takeButton", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock)!;
         ModernUi.StyleButton(button, primary: true);
         form.Controls.Add(button);
         form.Controls.Add(presenter);
+        form.Controls.Add(dock);
+        var runControls = new Panel();
+        var runLabel = new Label { Text = "下一项" };
+        var runButton = new Button { Text = "播放" };
+        ModernUi.StyleButton(runButton, primary: true);
+        runControls.Controls.AddRange(new Control[] { runLabel, runButton });
+        dock.SetRunControls(runControls);
         try
         {
             foreach (var theme in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.Tech, AppTheme.System, AppTheme.Dark })
@@ -78,6 +87,13 @@ internal static class DocumentTests
                     $"White button text contrast below 4.5:1 in {theme}.");
                 Require(palette.Preview != palette.ProgramBorder && palette.ProgramBorder != palette.Accent, "Output roles share a colour.");
                 Require(presenter.BackColor == UiPalette.Normal(AppTheme.Dark).Background, "Presenter chrome changed with the app theme.");
+                var monitorPalette = UiPalette.Normal(AppTheme.Dark);
+                Require(dock.BackColor == monitorPalette.Rail && take.BackColor == monitorPalette.AccentFill && take.ForeColor == monitorPalette.AccentFillForeground,
+                    $"Monitor chrome did not keep its dark palette under {theme}.");
+                Require(runLabel.ForeColor == monitorPalette.Text && runButton.BackColor == monitorPalette.AccentFill,
+                    $"Dynamically attached run controls did not use monitor colours under {theme}.");
+                Require(dock.PreviewSurface.ContentSurface.BackColor == Color.Black && dock.PreviewSurface.VideoHost.BackColor == Color.Black,
+                    "Theme switching changed a media surface away from black.");
             }
             ThemeManager.HighContrastProbe = () => true;
             foreach (var theme in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.Tech, AppTheme.System })
@@ -88,11 +104,18 @@ internal static class DocumentTests
                 Require(button.BackColor == SystemColors.Highlight && button.ForeColor == SystemColors.HighlightText,
                     "Button did not use the system high-contrast pair.");
                 Require(presenter.BackColor == SystemColors.Window, "Fixed-dark presenter blocked system high contrast.");
+                Require(dock.BackColor == SystemColors.Control && take.BackColor == SystemColors.Highlight && take.ForeColor == SystemColors.HighlightText,
+                    "Monitor did not yield to the system high-contrast palette.");
+                Require(runLabel.ForeColor == SystemColors.WindowText && runButton.BackColor == SystemColors.Highlight,
+                    "Dynamically attached run controls did not use high-contrast colours.");
+                Require(dock.PreviewSurface.ContentSurface.BackColor == Color.Black, "High contrast changed the media output's black background.");
             }
             ThemeManager.HighContrastProbe = () => false;
             ThemeManager.Apply(form, AppTheme.Tech);
             Require(!ModernUi.Palette.IsHighContrast && button.BackColor == UiPalette.Normal(AppTheme.Tech).AccentFill,
                 "Leaving high contrast did not restore the configured theme.");
+            Require(dock.BackColor == UiPalette.Normal(AppTheme.Dark).Rail && take.BackColor == UiPalette.Normal(AppTheme.Dark).AccentFill,
+                "Monitor did not restore its dark palette after high contrast.");
             Console.WriteLine("PASS: role-based primary buttons survive theme switches; primary/danger fill white-text contrast >=4.5:1");
             Console.WriteLine("PASS: simulated system high contrast overrides every app theme and restores; presenter stays dark outside high contrast");
         }

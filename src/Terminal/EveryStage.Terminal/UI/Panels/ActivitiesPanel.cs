@@ -1036,7 +1036,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _nextName.Text = next < 0
             ? (live >= 0 ? "已是最后一项" : "流程里还没有可播放的文件")
             : $"{NumberOf(order[next])}  {Path.GetFileName(order[next].Activity.Files[order[next].Index].SourcePath)}";
-        _nextName.ForeColor = next < 0 ? ModernUi.Muted : ModernUi.Text;
+        var palette = ModernUi.PaletteFor(_runControls);
+        _nextName.ForeColor = next < 0 ? palette.Muted : palette.Text;
         _runNextButton.Enabled = next >= 0;
         _runPreviewButton.Enabled = next >= 0 && _playback != null;
         _runPreviousButton.Enabled = live > 0;
