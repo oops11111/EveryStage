@@ -55,7 +55,10 @@ public sealed class AudioContentController : IDisposable
     private CancellationTokenSource? _playbackCts;
     private Thread? _playbackThread;
     private AudioDecodeSource? _source;
+    private string? _sourcePath;
     private AudioPlaybackClock? _audioClock;
+    private int _playbackGeneration;
+    internal int PlaybackGeneration => Volatile.Read(ref _playbackGeneration);
 
     // Set fresh by each Play() call (unlike _volume below) — null means "no fade in/out for the
     // current file", not "fade finished", so RunPlaybackLoopCore can tell the two apart. Used for
@@ -200,6 +203,7 @@ public sealed class AudioContentController : IDisposable
         _fadeMultiplier = _fadeDuration.HasValue ? ComputeFadeMultiplier(_seekBaseTicks) : 1.0;
         audioClock.Volume = EffectiveVolume; // see _volume's own doc comment — a fresh clock otherwise starts at full volume regardless of what was set for the previous file.
         _source = source;
+        _sourcePath = path;
         _audioClock = audioClock;
 
         StartPlaybackThread(source, audioClock);
@@ -287,6 +291,37 @@ public sealed class AudioContentController : IDisposable
         finally { _recoveringToDefault = false; }
     }
 
+    /// <summary>Move a stream already following Windows default to its new endpoint.</summary>
+    internal bool TryMoveToCurrentDefault()
+    {
+        if (_sourcePath == null || _source == null || _audioClock is not { SelectedDeviceId: null }
+            || Thread.CurrentThread == _playbackThread) return false;
+        AudioDecodeSource? replacement = null;
+        AudioPlaybackClock? clock = null;
+        try
+        {
+            replacement = new AudioDecodeSource(_sourcePath);
+            clock = new AudioPlaybackClock(replacement.AudioSampleRate, replacement.AudioChannels);
+            var position = CurrentPosition;
+            if (!replacement.TrySeek(position)) return false;
+            var newFade = _fadeDuration.HasValue ? ComputeFadeMultiplier(position.Ticks) : 1.0;
+            clock.Volume = _muted ? 0f : (float)(_volume * newFade);
+            var oldSource = _source;
+            StopPlaybackThreadAndClock();
+            _source = replacement;
+            replacement = null;
+            _seekBaseTicks = _seekTargetTicks = position.Ticks;
+            _fadeMultiplier = newFade;
+            _audioClock = clock;
+            StartPlaybackThread(_source, clock);
+            clock = null;
+            oldSource.Dispose();
+            return true;
+        }
+        catch (Exception) { return false; }
+        finally { clock?.Dispose(); replacement?.Dispose(); }
+    }
+
     /// <summary>Opens the audio output for <paramref name="source"/>, turning a failure (no output device,
     /// audit B-20) into an error the Preview card can show.</summary>
     private AudioPlaybackClock OpenOutput(AudioDecodeSource source)
@@ -333,6 +368,7 @@ public sealed class AudioContentController : IDisposable
         StopPlaybackThreadAndClock();
         _source?.Dispose();
         _source = null;
+        _sourcePath = null;
         _seekBaseTicks = 0;
         _seekTargetTicks = 0;
         _paused = false;
@@ -361,6 +397,7 @@ public sealed class AudioContentController : IDisposable
     /// <see cref="_seekBaseTicks"/> appropriately.</summary>
     private void StartPlaybackThread(AudioDecodeSource source, AudioPlaybackClock audioClock)
     {
+        Interlocked.Increment(ref _playbackGeneration);
         var cts = new CancellationTokenSource();
         _playbackCts = cts;
 

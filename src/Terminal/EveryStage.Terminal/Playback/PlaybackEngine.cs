@@ -413,6 +413,7 @@ public sealed partial class PlaybackEngine : IDisposable
         // Preview fills its width (vertical overflow cropped); the extended display shows the whole frame.
         _videoScaleMode = channel == PlaybackChannel.Preview ? EveryStage.Rendering.VideoScaleMode.FitWidth : EveryStage.Rendering.VideoScaleMode.Fit;
         _settingsStore = settingsStore;
+        _settingsStore.DefaultAudioOutputChanged += OnDefaultAudioOutputChanged;
         _scenarioStore = scenarioStore;
         if (_stateMachine != null) _stateMachine.StateChanged += OnOutputStateChanged;
     }
@@ -985,12 +986,13 @@ public sealed partial class PlaybackEngine : IDisposable
     private void OnBackgroundAudioCompleted()
     {
         var file = _backgroundAudioFile;
+        int generation = _backgroundAudioController?.PlaybackGeneration ?? 0;
         if (file == null) return;
         // Raised from AudioContentController's background playback thread — marshal before touching
         // this class's own state, same reasoning as OnAudioCompleted/OnVideoCompleted.
         _output.Post(new Action(() =>
         {
-            if (!ReferenceEquals(file, _backgroundAudioFile)) return; // stale — replaced/stopped since.
+            if (!ReferenceEquals(file, _backgroundAudioFile) || generation != _backgroundAudioController?.PlaybackGeneration) return;
             _playbackLogger.LogPlaybackEnded(file.Id, file.OnCompletion.ToString());
             if (file.OnCompletion == CompletionAction.Loop)
             {
@@ -1017,11 +1019,13 @@ public sealed partial class PlaybackEngine : IDisposable
     {
         var file = _backgroundAudioFile;
         int generation = _backgroundAudioGeneration;
+        int audioGeneration = _backgroundAudioController?.PlaybackGeneration ?? 0;
         if (file == null) return;
         // Also raised from the background playback thread.
         _output.Post(new Action(() =>
         {
-            if (generation != _backgroundAudioGeneration || !ReferenceEquals(file, _backgroundAudioFile)) return;
+            if (generation != _backgroundAudioGeneration || audioGeneration != _backgroundAudioController?.PlaybackGeneration
+                || !ReferenceEquals(file, _backgroundAudioFile)) return;
             if (ex.Data.Contains("AudioOutputLost") && _backgroundAudioController?.TryRecoverOnDefault() == true)
             {
                 _settingsStore.NotifyAudioOutputFallback("背景音乐的输出设备已断开，已从当前位置切换到系统默认设备。");
@@ -1119,21 +1123,24 @@ public sealed partial class PlaybackEngine : IDisposable
     private void OnAudioCompleted()
     {
         var file = _currentFile;
+        int generation = _audioController?.PlaybackGeneration ?? 0;
         if (file == null) return;
         // Raised from AudioContentController's background playback thread — same marshal-before-
         // touching-timers/overlay-state reasoning as OnVideoCompleted.
-        _output.Post(new Action(() => HandleCompletion(file)));
+        _output.Post(new Action(() => { if (generation == _audioController?.PlaybackGeneration) HandleCompletion(file); }));
     }
 
     private void OnAudioFailed(Exception ex)
     {
         var file = _currentFile;
         int generation = _contentLoadVersion;
+        int audioGeneration = _audioController?.PlaybackGeneration ?? 0;
         if (file == null) return;
         // Also raised from the background playback thread.
         _output.Post(new Action(() =>
         {
-            if (generation != _contentLoadVersion || !ReferenceEquals(file, _currentFile)) return;
+            if (generation != _contentLoadVersion || audioGeneration != _audioController?.PlaybackGeneration
+                || !ReferenceEquals(file, _currentFile)) return;
             if (ex.Data.Contains("AudioOutputLost") && _audioController?.TryRecoverOnDefault() == true)
             {
                 _settingsStore.NotifyAudioOutputFallback("音频输出设备已断开，已从当前位置切换到系统默认设备。");
@@ -1150,6 +1157,13 @@ public sealed partial class PlaybackEngine : IDisposable
         // record the value: _waveformTimer's UI-thread Tick (see ApplyAudioVisual) is what actually
         // touches Bitmaps/ContentSurface, at a bounded ~15fps regardless of how fast chunks arrive.
         _latestAudioLevel = level;
+    }
+
+    private void OnDefaultAudioOutputChanged(string _)
+    {
+        if (!IsCompleted && _currentFile?.Kind == MediaKind.Audio && State is (PlaybackChannelState.Playing or PlaybackChannelState.Paused))
+            _audioController?.TryMoveToCurrentDefault();
+        if (_backgroundAudioFile != null) _backgroundAudioController?.TryMoveToCurrentDefault();
     }
 
     private void ArmStayDurationTimer(MediaFile file) => ArmStayDurationTimer(file, file.StayDuration ?? DefaultStayDurationOrZero(), isFreshStart: true);
@@ -1607,6 +1621,7 @@ public sealed partial class PlaybackEngine : IDisposable
     public void Dispose()
     {
         ++_contentLoadVersion;
+        _settingsStore.DefaultAudioOutputChanged -= OnDefaultAudioOutputChanged;
         if (_stateMachine != null) _stateMachine.StateChanged -= OnOutputStateChanged;
         _stayDurationTimer?.Dispose();
         StopWaveformTimer();

@@ -112,6 +112,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private FloatingPreviewWindow? _previewWindow;
     private readonly MainWindow _mainWindow;
     private DeviceCastController? _deviceCastController;
+    private DefaultAudioDeviceMonitor? _defaultAudioDeviceMonitor;
     private readonly System.Windows.Forms.Timer _castStatusTimer;
     private readonly DeviceConnectionLogger _connectionLog = new();
     private readonly CrashLogger _crashLogger;
@@ -228,6 +229,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             return (seen?.Address.ToString(), seen?.At, _discovery.ActiveCasterDeviceId == id);
         };
         _mainWindow.Show();
+        try { _defaultAudioDeviceMonitor = new DefaultAudioDeviceMonitor(_uiContext, _settingsStore.NotifyDefaultAudioOutputChanged); }
+        catch (Exception ex) { _crashLogger.LogUnhandledException("DefaultAudioDeviceMonitor.Start", ex); }
         _mainWindow.StartBackgroundMusic();
 
         _tray = new TrayIconController(_stateMachine);
@@ -498,6 +501,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // Unconditional now, matching the unconditional subscribe above (this event is subscribed
         // regardless of whether _overlay ever ended up non-null).
         SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
+
+        try { _defaultAudioDeviceMonitor?.Dispose(); }
+        catch (Exception ex) { _crashLogger.LogUnhandledException("DefaultAudioDeviceMonitor.Stop", ex); }
 
         _tray.Dispose();
         _discovery.Dispose();

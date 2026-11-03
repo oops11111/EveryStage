@@ -26,7 +26,7 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestThemeRoles(); TestAudioOutputSettings(directory); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -75,6 +75,45 @@ internal static class DocumentTests
             Require(!string.IsNullOrEmpty(new SettingsStore(path).Current.AudioOutputDeviceId), "Selecting an audio device did not persist immediately.");
         }
         Console.WriteLine("PASS: audio settings preserve unavailable selections and save device choices immediately");
+    }
+
+    private sealed class QueuedContext : SynchronizationContext
+    {
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> _pending = new();
+        public override void Post(SendOrPostCallback callback, object? state) => _pending.Enqueue((callback, state));
+        public void Drain() { while (_pending.TryDequeue(out var item)) item.Callback(item.State); }
+    }
+
+    private static void TestDefaultAudioNotifications()
+    {
+        var ui = new QueuedContext();
+        var changes = new List<string>();
+        using var monitor = new EveryStage.Terminal.Audio.DefaultAudioDeviceMonitor(ui, changes.Add, register: false, initialId: "a");
+        monitor.OnDefaultDeviceChanged(NAudio.CoreAudioApi.DataFlow.Capture, NAudio.CoreAudioApi.Role.Console, "ignored");
+        monitor.OnDefaultDeviceChanged(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia, "ignored");
+        monitor.OnDefaultDeviceChanged(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Console, "a");
+        monitor.OnDefaultDeviceChanged(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Console, "b");
+        monitor.OnDefaultDeviceChanged(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Console, "c");
+        ui.Drain();
+        Require(changes.SequenceEqual(new[] { "c" }), "Default audio notifications were not filtered or coalesced.");
+        monitor.OnDefaultDeviceChanged(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Console, null!);
+        monitor.OnDefaultDeviceChanged(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Console, "c");
+        ui.Drain();
+        Require(changes.SequenceEqual(new[] { "c", "c" }), "Returning after no default endpoint did not trigger a notification.");
+        monitor.OnDefaultDeviceChanged(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Console, "d");
+        monitor.Dispose();
+        ui.Drain();
+        Require(changes.Count == 2, "A disposed monitor delivered a queued notification.");
+        try
+        {
+            using var nativeMonitor = new EveryStage.Terminal.Audio.DefaultAudioDeviceMonitor(ui, _ => { });
+            Console.WriteLine("PASS: native default audio notification registration and disposal");
+        }
+        catch (System.Runtime.InteropServices.COMException ex)
+        {
+            Console.WriteLine($"SKIP: native default audio notification registration unavailable: {ex.Message}");
+        }
+        Console.WriteLine("PASS: default audio endpoint notifications filter role, coalesce and stop after disposal");
     }
 
     private static void TestThemeRoles()

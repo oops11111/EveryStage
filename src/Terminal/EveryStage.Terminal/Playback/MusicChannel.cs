@@ -33,7 +33,11 @@ public sealed class MusicChannel : IDisposable
     {
         _store = store;
         _settingsStore = settingsStore;
-        if (settingsStore != null) _audio.AudioOutputFactory = settingsStore.OpenAudioOutput;
+        if (settingsStore != null)
+        {
+            _audio.AudioOutputFactory = settingsStore.OpenAudioOutput;
+            settingsStore.DefaultAudioOutputChanged += OnDefaultAudioOutputChanged;
+        }
         _ui = SynchronizationContext.Current;
         // The generation is read on the playback thread when the event fires: a completion that was
         // already on its way when the operator skipped to another track must not skip that one too.
@@ -220,6 +224,15 @@ public sealed class MusicChannel : IDisposable
         Changed?.Invoke();
     }
 
+    private void OnDefaultAudioOutputChanged(string _)
+    {
+        if (IsPlaying && _audio.TryMoveToCurrentDefault())
+        {
+            _generation++;
+            Changed?.Invoke();
+        }
+    }
+
     private int RandomOtherIndex(Playlist playlist)
     {
         if (playlist.Tracks.Count <= 1) return 0;
@@ -259,6 +272,7 @@ public sealed class MusicChannel : IDisposable
 
     public void Dispose()
     {
+        if (_settingsStore != null) _settingsStore.DefaultAudioOutputChanged -= OnDefaultAudioOutputChanged;
         _timer.Dispose();
         _audio.Dispose();
     }

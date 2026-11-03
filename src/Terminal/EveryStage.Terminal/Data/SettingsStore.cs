@@ -24,6 +24,14 @@ public sealed class SettingsStore
     public AppSettings Current { get; private set; }
     public event Action<AppSettings>? SettingsChanged;
     public event Action<string>? AudioOutputFallback;
+    internal event Action<string>? DefaultAudioOutputChanged;
+
+    internal void NotifyDefaultAudioOutputChanged(string deviceId)
+    {
+        if (DefaultAudioOutputChanged is not { } handlers) return;
+        foreach (Action<string> handler in handlers.GetInvocationList())
+            try { handler(deviceId); } catch (Exception) { }
+    }
 
     internal EveryStage.Rendering.Audio.AudioPlaybackClock OpenAudioOutput(int sampleRate, int channels)
     {

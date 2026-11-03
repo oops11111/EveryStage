@@ -101,11 +101,28 @@ internal static class PreviewProgramTests
                         var musicClock = (EveryStage.Rendering.Audio.AudioPlaybackClock)musicController.GetType()
                             .GetField("_audioClock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(musicController)!;
                         Require(musicClock.SelectedDeviceId == devices[0].Id, "Music playlist ignored the selected output device.");
+                        settings.NotifyDefaultAudioOutputChanged("simulated-new-default");
+                        Require(ReferenceEquals(musicClock, musicController.GetType().GetField("_audioClock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(musicController)),
+                            "A pinned music output moved when the system default changed.");
                         var beforeMusicLoss = music.Position;
                         EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
                         Require(WaitFor(() => musicNotices == 1 && music.IsPlaying
                             && music.Position > beforeMusicLoss + TimeSpan.FromMilliseconds(200), 6000),
                             $"Music playlist did not recover from device loss: {music.LastError}");
+                        var clockField = musicController.GetType().GetField("_audioClock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+                        var priorDefaultClock = clockField.GetValue(musicController);
+                        var beforeMusicDefaultChange = music.Position;
+                        settings.NotifyDefaultAudioOutputChanged("simulated-new-default");
+                        Require(!ReferenceEquals(priorDefaultClock, clockField.GetValue(musicController))
+                            && WaitFor(() => music.IsPlaying && music.Position > beforeMusicDefaultChange + TimeSpan.FromMilliseconds(150), 5000),
+                            "Music following default did not move and continue after a default-device change.");
+                        music.PlayPause();
+                        Require(music.IsPaused, "Music did not pause for the default-device test.");
+                        priorDefaultClock = clockField.GetValue(musicController);
+                        settings.NotifyDefaultAudioOutputChanged("simulated-next-default");
+                        Pump(200);
+                        Require(!ReferenceEquals(priorDefaultClock, clockField.GetValue(musicController)) && music.IsPaused,
+                            "A default-device change did not preserve the music pause state.");
                         music.Stop();
                         settings.AudioOutputFallback -= OnMusicFallback;
                         Console.WriteLine("PASS: independent music playlist uses the selected output and recovers on default after loss");
@@ -196,6 +213,39 @@ internal static class PreviewProgramTests
                     updated = settings.Current.Clone();
                     updated.AudioOutputDeviceId = null;
                     settings.Save(updated);
+                    preview.RequestPlay(Media(Path.Combine(media, "tone.mp3")));
+                    Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.Position > TimeSpan.FromMilliseconds(250), 5000),
+                        "Default-device preview audio did not start.");
+                    var previewController = (EveryStage.Terminal.ContentEngine.AudioContentController)typeof(PlaybackEngine)
+                        .GetField("_audioController", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(preview)!;
+                    int oldGeneration = previewController.PlaybackGeneration;
+                    var beforeDefaultChange = preview.Position;
+                    settings.NotifyDefaultAudioOutputChanged("simulated-new-default");
+                    Require(previewController.PlaybackGeneration > oldGeneration
+                        && WaitFor(() => preview.State == PlaybackChannelState.Playing
+                            && preview.Position > beforeDefaultChange + TimeSpan.FromMilliseconds(150), 5000),
+                        "Preview audio did not move to the new default and continue.");
+                    preview.Pause();
+                    oldGeneration = previewController.PlaybackGeneration;
+                    settings.NotifyDefaultAudioOutputChanged("simulated-next-default");
+                    Pump(200);
+                    Require(previewController.PlaybackGeneration > oldGeneration && preview.State == PlaybackChannelState.Paused,
+                        "Preview audio did not preserve pause on a default-device change.");
+                    preview.Resume();
+                    Require(WaitFor(() => preview.Position > TimeSpan.FromMilliseconds(300), 3000), "Preview audio did not resume after migration.");
+                    oldGeneration = previewController.PlaybackGeneration;
+                    var beforeFailedMigration = preview.Position;
+                    try
+                    {
+                        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                        settings.NotifyDefaultAudioOutputChanged("simulated-unavailable-default");
+                    }
+                    finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                    Require(previewController.PlaybackGeneration == oldGeneration
+                        && WaitFor(() => preview.State == PlaybackChannelState.Playing
+                            && preview.Position > beforeFailedMigration + TimeSpan.FromMilliseconds(150), 4000),
+                        "A failed default-device migration disrupted the existing audio stream.");
+                    preview.Stop();
                     Console.WriteLine("PASS: audio endpoint setting persists; local audio, video and new cast open the default with a fallback notice");
                 }
             }
@@ -354,6 +404,12 @@ internal static class PreviewProgramTests
             preview.RequestPlay(Media(Path.Combine(media, "tone.wav")));
             Require(WaitFor(() => preview.IsCompleted, 10000), "3 s WAV never completed.");
             Require(sw.Elapsed.TotalSeconds >= 2.8, $"Audio reported completion after {sw.Elapsed.TotalSeconds:F2} s of a 3.0 s file (tail cut off).");
+            var completedController = (EveryStage.Terminal.ContentEngine.AudioContentController)typeof(PlaybackEngine)
+                .GetField("_audioController", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(preview)!;
+            int completedGeneration = completedController.PlaybackGeneration;
+            settings.NotifyDefaultAudioOutputChanged("simulated-after-completion");
+            Require(preview.IsCompleted && completedController.PlaybackGeneration == completedGeneration,
+                "A default-device change restarted completed audio.");
             Console.WriteLine($"PASS: audio completes only after the tail has played ({sw.Elapsed.TotalSeconds:F2}s for 3.0s)");
             }
             else Console.WriteLine("SKIP: audio transport and completion timing (needs an audio output device)");
@@ -412,6 +468,22 @@ internal static class PreviewProgramTests
                     program.Stop();
                     settings.AudioOutputFallback -= OnRecovered;
                 }
+                updated = settings.Current.Clone();
+                updated.AudioOutputDeviceId = null;
+                settings.Save(updated);
+                var defaultBackground = Media(Path.Combine(media, "tone.mp3"));
+                defaultBackground.IsBackgroundAudio = true;
+                program.RequestPlay(defaultBackground);
+                var backgroundController = (EveryStage.Terminal.ContentEngine.AudioContentController)typeof(PlaybackEngine)
+                    .GetField("_backgroundAudioController", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(program)!;
+                Require(WaitFor(() => backgroundController.CurrentPosition > TimeSpan.FromMilliseconds(250), 5000), "Default background audio did not start.");
+                int backgroundGeneration = backgroundController.PlaybackGeneration;
+                var backgroundPosition = backgroundController.CurrentPosition;
+                settings.NotifyDefaultAudioOutputChanged("simulated-new-default");
+                Require(backgroundController.PlaybackGeneration > backgroundGeneration
+                    && WaitFor(() => backgroundController.CurrentPosition > backgroundPosition + TimeSpan.FromMilliseconds(150), 5000),
+                    "Background audio did not move and continue after the default-device change.");
+                program.Stop();
                 updated = settings.Current.Clone();
                 updated.AudioOutputDeviceId = "EveryStage-missing-test-endpoint";
                 settings.Save(updated);
