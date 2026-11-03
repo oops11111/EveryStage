@@ -47,7 +47,8 @@ internal sealed class DeviceCastController : IDisposable
         Func<PlaybackEngine?> playback,
         Func<VideoSurface, int, int, int, bool, int, int, int, bool, byte, byte, Guid, byte[], byte[], IPAddress, IDeviceCastStream>? streamFactory = null,
         Func<DiscoveryService.CastStartInfo, string, bool, OverlayWindow, bool>? confirmReplacement = null,
-        Func<int, int, EveryStage.Rendering.Audio.AudioPlaybackClock>? audioOutputFactory = null)
+        Func<int, int, EveryStage.Rendering.Audio.AudioPlaybackClock>? audioOutputFactory = null,
+        Action<string>? audioRecovered = null)
     {
         _mainWindow = mainWindow;
         _terminalDeviceId = terminalDeviceId;
@@ -60,7 +61,7 @@ internal sealed class DeviceCastController : IDisposable
         _streamFactory = streamFactory ?? ((surface, width, height, videoPort, hasAudio, audioSampleRate, audioChannels, audioPort,
             audioIsAac, payloadType, audioPayloadType, mediaSessionId, videoKey, audioKey, allowedSender) =>
             new CastReceiverStream(surface, width, height, videoPort, hasAudio, audioSampleRate, audioChannels, audioPort,
-                audioIsAac, payloadType, audioPayloadType, mediaSessionId, videoKey, audioKey, allowedSender, audioOutputFactory));
+                audioIsAac, payloadType, audioPayloadType, mediaSessionId, videoKey, audioKey, allowedSender, audioOutputFactory, audioRecovered));
         _confirmReplacement = confirmReplacement ?? ShowReplacementDialog;
     }
 

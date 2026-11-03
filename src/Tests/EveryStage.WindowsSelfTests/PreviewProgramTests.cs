@@ -167,6 +167,7 @@ internal static class PreviewProgramTests
                     }
                     preview.Stop();
                     settings.AudioOutputFallback -= OnFallback;
+                    if (hasVideo) TestCastAudioRecovery(previewVideo!, devices[0].Id);
                     updated = settings.Current.Clone();
                     updated.AudioOutputDeviceId = null;
                     settings.Save(updated);
@@ -791,6 +792,75 @@ internal static class PreviewProgramTests
             true, 48000, 2, 97, false,
             new IPEndPoint(IPAddress.Loopback, DiscoveryProtocol.Port), Guid.NewGuid(),
             new byte[32], new byte[32], complete);
+
+    private static void TestCastAudioRecovery(VideoSurface surface, string selectedDevice)
+    {
+        int notices = 0;
+        using var receiver = new CastReceiver(surface, 320, 240, 0, hasAudio: true, audioSampleRate: 48000,
+            audioChannels: 2, audioListenPort: 0, mediaSessionId: Guid.NewGuid(), videoKey: new byte[32],
+            audioKey: new byte[32], expectedAddress: IPAddress.Loopback,
+            audioOutputFactory: (rate, channels) => new EveryStage.Rendering.Audio.AudioPlaybackClock(rate, channels, selectedDevice),
+            audioRecovered: _ => notices++);
+        Require(receiver.HasAudio, $"Cast audio setup failed: {receiver.AudioError}");
+        receiver.AudioMuted = true;
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var stateField = typeof(CastReceiver).GetField("_audioState", flags)!;
+        var receive = typeof(CastReceiver).GetMethod("OnAudioPayloadReceived", flags)!;
+        var oldState = stateField.GetValue(receiver)!;
+        var clock = (EveryStage.Rendering.Audio.AudioPlaybackClock)oldState.GetType().GetProperty("Clock")!.GetValue(oldState)!;
+        clock.Start();
+        var pcm = new byte[3840];
+        receive.Invoke(receiver, new object[] { pcm, 0u });
+        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+        receive.Invoke(receiver, new object[] { pcm, 480000u }); // detects the failed output
+        receive.Invoke(receiver, new object[] { pcm, 481920u }); // next packet triggers recovery
+        var newState = stateField.GetValue(receiver)!;
+        var newClock = (EveryStage.Rendering.Audio.AudioPlaybackClock)newState.GetType().GetProperty("Clock")!.GetValue(newState)!;
+        var offset = (EveryStage.Transport.AvSyncOffsetEstimator)newState.GetType().GetProperty("Offset")!.GetValue(newState)!;
+        Require(!ReferenceEquals(oldState, newState) && !receiver.AudioOutputLost && notices == 1
+            && newClock.SelectedDeviceId == null && receiver.AudioMuted && offset.TryGetOffset(out var ticks)
+            && ticks > TimeSpan.FromSeconds(9).Ticks,
+            "Cast audio did not restore the default device and reseed its RTP sync mapping.");
+        typeof(CastReceiver).GetMethod("OnAudioClockFaulted", flags)!.Invoke(receiver, new[] { oldState, "late callback" });
+        Require(!receiver.AudioOutputLost && notices == 1, "A stale clock callback disrupted recovered cast audio.");
+        int failedNotices = 0;
+        using (var failed = new CastReceiver(surface, 320, 240, 0, hasAudio: true, audioSampleRate: 48000,
+            audioChannels: 2, audioListenPort: 0, mediaSessionId: Guid.NewGuid(), videoKey: new byte[32],
+            audioKey: new byte[32], expectedAddress: IPAddress.Loopback,
+            audioOutputFactory: (rate, channels) => new EveryStage.Rendering.Audio.AudioPlaybackClock(rate, channels, selectedDevice),
+            audioRecovered: _ => failedNotices++))
+        {
+            var failedState = stateField.GetValue(failed)!;
+            var failedClock = (EveryStage.Rendering.Audio.AudioPlaybackClock)failedState.GetType().GetProperty("Clock")!.GetValue(failedState)!;
+            failedClock.Start();
+            try
+            {
+                EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                receive.Invoke(failed, new object[] { pcm, 0u });
+                receive.Invoke(failed, new object[] { pcm, 1920u });
+            }
+            finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+            receive.Invoke(failed, new object[] { pcm, 3840u });
+            Require(failed.AudioOutputLost && failedNotices == 0 && ReferenceEquals(stateField.GetValue(failed), failedState),
+                "Failed cast recovery retried or announced success after the default output was unavailable.");
+        }
+
+        var closing = new CastReceiver(surface, 320, 240, 0, hasAudio: true, audioSampleRate: 48000,
+            audioChannels: 2, audioListenPort: 0, mediaSessionId: Guid.NewGuid(), videoKey: new byte[32],
+            audioKey: new byte[32], expectedAddress: IPAddress.Loopback,
+            audioOutputFactory: (rate, channels) => new EveryStage.Rendering.Audio.AudioPlaybackClock(rate, channels, selectedDevice));
+        using var started = new ManualResetEventSlim();
+        var packets = Task.Run(() =>
+        {
+            started.Set();
+            for (uint i = 0; i < 2000; i++) receive.Invoke(closing, new object[] { pcm, i * 960 });
+        });
+        Require(started.Wait(TimeSpan.FromSeconds(2)), "Concurrent cast packet test did not start.");
+        closing.Dispose();
+        Require(packets.Wait(TimeSpan.FromSeconds(5)), "Cast packet handling did not finish after disposal.");
+        Console.WriteLine("PASS: cast audio recovers once on default, preserves mute and reseeds sync; stale faults are ignored");
+    }
 
     private static void TestCastReceiverAttachDetachSmoke(bool hasVideo, string media)
     {
