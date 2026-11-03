@@ -57,6 +57,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     /// always-visible buttons until the reference-design rework, and kept their names so the comments
     /// and handlers that refer to them stay valid.</summary>
     private readonly ContextMenuStrip _editMenu;
+    private readonly ContextMenuStrip _scenarioMenu;
     private readonly ToolStripMenuItem _playSelectedItem;
     private readonly ToolStripMenuItem _renameActivityItem;
     private readonly ToolStripMenuItem _deleteActivityItem;
@@ -143,7 +144,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _saveFeedbackTimer.Tick += (_, _) => { _saveFeedbackTimer.Stop(); UpdateCountLabel(); };
         var addSectionButton = ActionButton("＋ 环节", OnNewActivity, width: 84);
         var addFileButton = ActionButton("＋ 添加文件", OnAddFile, width: 104);
-        var scenarioMenu = new ContextMenuStrip { ShowImageMargin = false, BackColor = ModernUi.Surface, ForeColor = ModernUi.Text, Renderer = new ThemedMenuRenderer() };
+        var scenarioMenu = _scenarioMenu = ModernUi.CreateThemedMenu(this);
         scenarioMenu.Items.Add("新建方案...", null, (_, _) => OnNewScenario());
         scenarioMenu.Items.Add("保存方案", null, (_, _) => OnSaveScenario());
         scenarioMenu.Items.Add("方案另存为...", null, (_, _) => OnSaveAsScenario());
@@ -249,13 +250,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _moveUpButton.Click += (_, _) => MoveSelectedFile(-1);
         _moveDownButton = new ToolStripMenuItem("下移") { Enabled = false };
         _moveDownButton.Click += (_, _) => MoveSelectedFile(1);
-        _editMenu = new ContextMenuStrip
-        {
-            ShowImageMargin = false,
-            BackColor = ModernUi.Surface,
-            ForeColor = ModernUi.Text,
-            Renderer = new ThemedMenuRenderer(),
-        };
+        _editMenu = ModernUi.CreateThemedMenu(this);
         // 「进入本环节时的背景音乐」: keep / fade out / switch to a playlist (filled when the menu opens).
         _musicCueItem = new ToolStripMenuItem("进入本环节时的背景音乐") { Enabled = false };
         _musicCueItem.DropDownItems.Add(new ToolStripMenuItem("(placeholder)"));
@@ -1612,6 +1607,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             _saveFeedbackTimer.Dispose();
             _liveTimer.Dispose();
             _editMenu.Dispose();
+            _scenarioMenu.Dispose();
             _toolTip.Dispose();
             foreach (var image in _thumbnails.Values) image.Dispose();
             _thumbnails.Clear();

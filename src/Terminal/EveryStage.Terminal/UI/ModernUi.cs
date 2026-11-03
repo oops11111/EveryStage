@@ -67,6 +67,23 @@ internal static class ModernUi
         button.FlatAppearance.BorderColor = role.Danger ? palette.Danger : palette.Border;
         return true;
     }
+
+    internal static ContextMenuStrip CreateThemedMenu(Control owner, bool showCheckMargin = false)
+    {
+        var menu = new ContextMenuStrip
+        {
+            ShowImageMargin = false,
+            ShowCheckMargin = showCheckMargin,
+            Renderer = new ThemedMenuRenderer(() => PaletteFor(owner)),
+        };
+        menu.Opening += (_, _) =>
+        {
+            var palette = PaletteFor(owner);
+            menu.BackColor = palette.Surface;
+            menu.ForeColor = palette.Text;
+        };
+        return menu;
+    }
     /// <summary>The UI text font: Windows 11's Segoe UI Variable (Text optical size) when it is installed
     /// AND Windows links it to Microsoft YaHei UI for Chinese (HKLM FontLink\SystemLink); otherwise Segoe
     /// UI. The link check matters: the UI is mostly Chinese, Segoe UI Variable has no CJK glyphs, and a
@@ -1301,8 +1318,10 @@ internal sealed class ThemedMenuRenderer : ToolStripProfessionalRenderer
 
     protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
     {
-        if (_palette().IsHighContrast)
-            e.TextColor = !e.Item.Enabled ? SystemColors.GrayText : e.Item.Selected ? SystemColors.HighlightText : SystemColors.WindowText;
+        var palette = _palette();
+        e.TextColor = palette.IsHighContrast
+            ? !e.Item.Enabled ? SystemColors.GrayText : e.Item.Selected ? SystemColors.HighlightText : SystemColors.WindowText
+            : e.Item.Enabled ? palette.Text : palette.Muted;
         base.OnRenderItemText(e);
     }
 

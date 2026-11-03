@@ -145,6 +145,30 @@ internal static class DocumentTests
         ModernUi.StyleComboBox(combo);
         using var presenter = new PresenterStrip();
         using var dock = new SharedPreviewDock(new OutputStateMachine());
+        var menuTemp = Path.Combine(Path.GetTempPath(), "EveryStage-menu-test-" + Guid.NewGuid());
+        using var menuMusic = new MusicChannel(new MusicLibraryStore(Path.Combine(menuTemp, "music.json")));
+        using var menuDrawer = new MusicDrawer(menuMusic, new FileLibraryStore(Path.Combine(menuTemp, "library.json")));
+        form.Controls.Add(menuDrawer);
+        using var musicMenu = menuDrawer.BuildLibraryMenu();
+        var disabledMenuItem = (ToolStripMenuItem)musicMenu.Items[0];
+        var enabledMenuItem = new ToolStripMenuItem("测试菜单") { ForeColor = Color.Magenta };
+        musicMenu.Items.Add(enabledMenuItem);
+        using var dockMenu = ModernUi.CreateThemedMenu(dock);
+        var dockMenuItem = new ToolStripMenuItem("监看菜单") { ForeColor = Color.Magenta };
+        dockMenu.Items.Add(dockMenuItem);
+        static void OpenMenuForTest(ContextMenuStrip menu) => typeof(ToolStripDropDown)
+            .GetMethod("OnOpening", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .Invoke(menu, new object[] { new System.ComponentModel.CancelEventArgs() });
+        static Color RenderMenuText(ContextMenuStrip menu, ToolStripItem item)
+        {
+            using var bitmap = new Bitmap(240, 32);
+            using var graphics = Graphics.FromImage(bitmap);
+            var args = new ToolStripItemTextRenderEventArgs(graphics, item, item.Text, new Rectangle(0, 0, 240, 32), Color.Magenta, item.Font,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            typeof(ThemedMenuRenderer).GetMethod("OnRenderItemText", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(menu.Renderer, new object[] { args });
+            return args.TextColor;
+        }
         using var documentTips = new ToolTip();
         using var documentBar = new DocumentControlBar(null!, documentTips, 28);
         dock.Controls.Add(documentBar);
@@ -212,6 +236,12 @@ internal static class DocumentTests
                 ThemeManager.Apply(pairingDialog, theme);
                 ThemeManager.Apply(fadeDialog, theme);
                 var palette = UiPalette.For(theme);
+                OpenMenuForTest(musicMenu);
+                OpenMenuForTest(dockMenu);
+                Require(musicMenu.Renderer is ThemedMenuRenderer && musicMenu.BackColor == palette.Surface
+                    && RenderMenuText(musicMenu, enabledMenuItem) == palette.Text
+                    && RenderMenuText(musicMenu, disabledMenuItem) == palette.Muted,
+                    $"Music library menu did not use enabled/disabled theme roles under {theme}.");
                 Require(pairingCode.ForeColor == palette.Accent && pairingHint.ForeColor == palette.Muted && fadeWarning.ForeColor == palette.Danger,
                     $"Dialog verification code, hint, or warning lost its role under {theme}.");
                 Require(legacyLabel.ForeColor == palette.Muted, $"A second window kept a stale foreground under {theme}.");
@@ -229,6 +259,8 @@ internal static class DocumentTests
                 Require(palette.Preview != palette.ProgramBorder && palette.ProgramBorder != palette.Accent, "Output roles share a colour.");
                 Require(presenter.BackColor == UiPalette.Normal(AppTheme.Dark).Background, "Presenter chrome changed with the app theme.");
                 var monitorPalette = UiPalette.Normal(AppTheme.Dark);
+                Require(dockMenu.BackColor == monitorPalette.Surface && RenderMenuText(dockMenu, dockMenuItem) == monitorPalette.Text,
+                    "A monitor menu followed the page theme instead of its local dark palette.");
                 Require(pageBox.BackColor == monitorPalette.Surface && pageBox.ForeColor == monitorPalette.Text
                     && pageCount.ForeColor == monitorPalette.Muted && pageBox.AccessibleName == "页码 / 幻灯片序号",
                     $"Document page controls did not retain monitor roles under {theme}.");
@@ -248,6 +280,11 @@ internal static class DocumentTests
                 ThemeManager.Apply(form, theme);
                 ThemeManager.Apply(pairingDialog, theme);
                 ThemeManager.Apply(fadeDialog, theme);
+                OpenMenuForTest(musicMenu);
+                Require(musicMenu.BackColor == SystemColors.Window
+                    && RenderMenuText(musicMenu, enabledMenuItem) == SystemColors.WindowText
+                    && RenderMenuText(musicMenu, disabledMenuItem) == SystemColors.GrayText,
+                    "Music library menu did not use high-contrast text and background roles.");
                 Require(pairingCode.ForeColor == SystemColors.WindowText && pairingHint.ForeColor == SystemColors.WindowText
                     && fadeWarning.ForeColor == SystemColors.WindowText,
                     "Dialog text did not yield to system high contrast.");
@@ -817,6 +854,14 @@ internal static class DocumentTests
                     if (page == "_activitiesPanel")
                     {
                         var activities = (Control)type.GetField(page, flags)!.GetValue(window)!;
+                        foreach (var menuField in new[] { "_scenarioMenu", "_editMenu" })
+                        {
+                            var activityMenu = (ContextMenuStrip)activities.GetType().GetField(menuField, flags)!.GetValue(activities)!;
+                            typeof(ToolStripDropDown).GetMethod("OnOpening", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                                .Invoke(activityMenu, new object[] { new System.ComponentModel.CancelEventArgs() });
+                            Require(activityMenu.Renderer is ThemedMenuRenderer && activityMenu.BackColor == UiPalette.For(theme).Surface,
+                                $"{menuField} did not follow the {theme} theme when opened.");
+                        }
                         var nextName = (Label)activities.GetType().GetField("_nextName", flags)!.GetValue(activities)!;
                         Require(nextName.ForeColor == UiPalette.Normal(AppTheme.Dark).Text,
                             $"Activity next-item text did not retain the monitor's dark-palette role in {theme}.");

@@ -540,8 +540,15 @@ internal sealed class MusicDrawer : Panel
     /// or 「全部添加」.</summary>
     private void AddFromLibrary()
     {
+        var menu = BuildLibraryMenu();
+        menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
+        menu.Show(_addFromLibrary, new Point(0, _addFromLibrary.Height), ToolStripDropDownDirection.AboveRight);
+    }
+
+    internal ContextMenuStrip BuildLibraryMenu()
+    {
         var audio = _fileLibrary.Files.Where(f => f.Kind == MediaKind.Audio).ToList();
-        var menu = new ContextMenuStrip { ShowImageMargin = false };
+        var menu = ModernUi.CreateThemedMenu(this);
         if (audio.Count == 0)
         {
             menu.Items.Add(new ToolStripMenuItem("文件库里没有音频") { Enabled = false });
@@ -559,8 +566,7 @@ internal sealed class MusicDrawer : Panel
                 menu.Items.Add(Path.GetFileName(path), null, (_, _) => AddTracks(new[] { path }));
             }
         }
-        menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
-        menu.Show(_addFromLibrary, new Point(0, _addFromLibrary.Height), ToolStripDropDownDirection.AboveRight);
+        return menu;
     }
 
     private void ImportFiles()
