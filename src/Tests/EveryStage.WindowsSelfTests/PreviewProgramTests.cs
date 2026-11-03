@@ -85,6 +85,31 @@ internal static class PreviewProgramTests
                         "Selected audio endpoint was not persisted.");
                     using (var selected = settings.OpenAudioOutput(48000, 2))
                         Require(selected.SelectedDeviceId == devices[0].Id, "Configured audio endpoint was not opened.");
+                    var musicStore = new MusicLibraryStore(Path.Combine(directory, "routing-playlists.json"));
+                    var musicPlaylist = new Playlist { Name = "输出设备测试", Tracks = { Path.Combine(media, "tone.mp3") } };
+                    using (var music = new MusicChannel(musicStore, settings))
+                    {
+                        music.Volume = 0;
+                        int musicNotices = 0;
+                        void OnMusicFallback(string _) => musicNotices++;
+                        settings.AudioOutputFallback += OnMusicFallback;
+                        music.Play(musicPlaylist);
+                        Require(WaitFor(() => music.IsPlaying && music.Position > TimeSpan.FromMilliseconds(300), 5000),
+                            $"Music playlist did not start: {music.LastError}");
+                        var musicController = (EveryStage.Terminal.ContentEngine.AudioContentController)typeof(MusicChannel)
+                            .GetField("_audio", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(music)!;
+                        var musicClock = (EveryStage.Rendering.Audio.AudioPlaybackClock)musicController.GetType()
+                            .GetField("_audioClock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(musicController)!;
+                        Require(musicClock.SelectedDeviceId == devices[0].Id, "Music playlist ignored the selected output device.");
+                        var beforeMusicLoss = music.Position;
+                        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                        Require(WaitFor(() => musicNotices == 1 && music.IsPlaying
+                            && music.Position > beforeMusicLoss + TimeSpan.FromMilliseconds(200), 6000),
+                            $"Music playlist did not recover from device loss: {music.LastError}");
+                        music.Stop();
+                        settings.AudioOutputFallback -= OnMusicFallback;
+                        Console.WriteLine("PASS: independent music playlist uses the selected output and recovers on default after loss");
+                    }
                     int recovered = 0;
                     void OnRecovered(string _) => recovered++;
                     settings.AudioOutputFallback += OnRecovered;

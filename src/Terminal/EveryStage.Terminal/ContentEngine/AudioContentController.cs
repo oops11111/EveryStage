@@ -276,7 +276,8 @@ public sealed class AudioContentController : IDisposable
     /// <summary>One bounded retry after a selected device disappears, preserving the last audible position.</summary>
     internal bool TryRecoverOnDefault()
     {
-        if (_recoveryAttempted || _audioClock is not { IsFaulted: true, SelectedDeviceId: not null }) return false;
+        if (_recoveryAttempted || Thread.CurrentThread == _playbackThread
+            || _audioClock is not { IsFaulted: true, SelectedDeviceId: not null }) return false;
         _recoveryAttempted = true;
         // PlaybackFailed is posted from this worker just before it exits; wait before seeking its source.
         _playbackThread?.Join();

@@ -19,6 +19,7 @@ public sealed class MusicChannel : IDisposable
     private const double FadeOutSeconds = 3;
 
     private readonly MusicLibraryStore _store;
+    private readonly SettingsStore? _settingsStore;
     private readonly AudioContentController _audio = new();
     private readonly SynchronizationContext? _ui;
     private readonly System.Windows.Forms.Timer _timer;
@@ -28,9 +29,11 @@ public sealed class MusicChannel : IDisposable
     private bool _fadingOut;
     private int _generation;             // bumps on every Play/Stop, so stale completions are ignored
 
-    public MusicChannel(MusicLibraryStore store)
+    public MusicChannel(MusicLibraryStore store, SettingsStore? settingsStore = null)
     {
         _store = store;
+        _settingsStore = settingsStore;
+        if (settingsStore != null) _audio.AudioOutputFactory = settingsStore.OpenAudioOutput;
         _ui = SynchronizationContext.Current;
         // The generation is read on the playback thread when the event fires: a completion that was
         // already on its way when the operator skipped to another track must not skip that one too.
@@ -206,6 +209,12 @@ public sealed class MusicChannel : IDisposable
 
     private void OnTrackFailed(Exception ex)
     {
+        if (ex.Data.Contains("AudioOutputLost") && _audio.TryRecoverOnDefault())
+        {
+            _settingsStore?.NotifyAudioOutputFallback("背景音乐的输出设备已断开，已从当前位置切换到系统默认设备。");
+            Changed?.Invoke();
+            return;
+        }
         LastError = $"播放中断：{ex.Message}";
         IsPlaying = false;
         Changed?.Invoke();

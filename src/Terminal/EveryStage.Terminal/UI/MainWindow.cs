@@ -204,7 +204,7 @@ public sealed class MainWindow : GradientForm
         // the same track can be controlled from every page. Shown while the column has room for it.
         // Background music: its own channel and the mini bar along the bottom of every page.
         _musicStore = new MusicLibraryStore();
-        _music = new MusicChannel(_musicStore)
+        _music = new MusicChannel(_musicStore, _settingsStore)
         {
             // Give way while the big screen plays video with sound (or audio).
             ShouldDuck = () => _stateMachine.State == OutputState.Active && _playback is { State: PlaybackChannelState.Playing, Muted: false } program
