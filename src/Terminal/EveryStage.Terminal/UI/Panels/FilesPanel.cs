@@ -250,6 +250,7 @@ public sealed class FilesPanel : UserControl
         };
         _fileContextMenu = BuildFileContextMenu();
         _grid.DrawCard += DrawMediaCard;
+        _grid.ViewportChanged += OnThumbnailViewportChanged;
         _grid.SelectionChanged += () =>
         {
             bool hasSelection = _grid.SelectedItems.Count > 0;
@@ -904,6 +905,18 @@ public sealed class FilesPanel : UserControl
         if (_thumbnailLoad != null) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
     }
 
+    private void OnThumbnailViewportChanged()
+    {
+        if (_thumbnailLoad == null || IsDisposed || Disposing) return;
+        var visibleIds = _grid.VisibleItems().Select(item => item.File.Id.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (string key in _thumbnailByFileId.Keys.Where(key => !visibleIds.Contains(key)).ToArray())
+        {
+            _thumbnailByFileId[key].Dispose();
+            _thumbnailByFileId.Remove(key);
+        }
+        if (IsHandleCreated) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
+    }
+
     private async Task LoadThumbnailsAsync(CancellationToken token)
     {
         // One running pass per token: Refresh_ and OnHandleCreated (handles are recreated on some property
@@ -912,12 +925,14 @@ public sealed class FilesPanel : UserControl
         if (_thumbnailPassRunning && _thumbnailPassToken == token) return;
         _thumbnailPassToken = token;
         _thumbnailPassRunning = true;
-        var files = _grid.Items.Select(item => item.File).ToArray();
         try
         {
-            foreach (var file in files)
+            while (true)
             {
                 token.ThrowIfCancellationRequested();
+                var file = _grid.VisibleItems().Select(item => item.File)
+                    .FirstOrDefault(candidate => !_thumbnailByFileId.ContainsKey(candidate.Id.ToString()));
+                if (file == null) break;
                 await _thumbnailWorker.WaitAsync(token);
                 Image thumbnail;
                 string? cacheKey = null;
@@ -956,7 +971,7 @@ public sealed class FilesPanel : UserControl
                         _thumbnailCacheOrder.Enqueue(cacheKey);
                     }
                     string key = file.Id.ToString();
-                    if (!_thumbnailByFileId.ContainsKey(key))
+                    if (_grid.VisibleItems().Any(item => item.File.Id == file.Id) && !_thumbnailByFileId.ContainsKey(key))
                         _thumbnailByFileId.Add(key, (Image)thumbnail.Clone());
                     _grid.Invalidate();
                 }

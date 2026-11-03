@@ -55,6 +55,7 @@ internal sealed class MediaGrid : Control
 
     /// <summary>Paints one card into its rectangle.</summary>
     public event Action<Graphics, Item, Rectangle>? DrawCard;
+    public event Action? ViewportChanged;
     public event Action? SelectionChanged;
     /// <summary>A plain left click on a card (not a Ctrl/Shift selection click, not the end of a drag).</summary>
     public event Action<Item, MouseEventArgs>? ItemClicked;
@@ -73,7 +74,7 @@ internal sealed class MediaGrid : Control
         TabStop = true;
         BackColor = ModernUi.Background;
         _scrollBar.Dock = DockStyle.Right;
-        _scrollBar.Scroll += (_, _) => { _scroll = _scrollBar.Value; Invalidate(); };
+        _scrollBar.Scroll += (_, _) => { _scroll = _scrollBar.Value; Invalidate(); ViewportChanged?.Invoke(); };
         Controls.Add(_scrollBar);
         _autoScroll.Tick += (_, _) => AutoScrollStep();
         AccessibleName = "文件库";
@@ -82,6 +83,20 @@ internal sealed class MediaGrid : Control
 
     public IReadOnlyList<Item> Items => _items;
     public IReadOnlyList<Item> SelectedItems => _items.Where(i => i.Selected).ToList();
+
+    public IReadOnlyList<Item> VisibleItems()
+    {
+        var visible = new List<Item>();
+        if (!Visible || ClientSize.Width <= 0 || ClientSize.Height <= 0) return visible;
+        var viewport = new Rectangle(0, 0, ViewWidth, ClientSize.Height);
+        for (int i = FirstVisible(); i < _items.Count; i++)
+        {
+            var bounds = CardBounds(i);
+            if (bounds.Top >= viewport.Bottom) break;
+            if (bounds.IntersectsWith(viewport)) visible.Add(_items[i]);
+        }
+        return visible;
+    }
 
     public void SetItems(IEnumerable<Item> items)
     {
@@ -129,6 +144,7 @@ internal sealed class MediaGrid : Control
         _scrollBar.Maximum = Math.Max(0, ContentHeight - 1);
         _scrollBar.Value = Math.Min(_scroll, Math.Max(0, _scrollBar.Maximum - _scrollBar.LargeChange + 1));
         Invalidate();
+        ViewportChanged?.Invoke();
 
         void Measure()
         {
@@ -179,6 +195,13 @@ internal sealed class MediaGrid : Control
         _scroll = value;
         if (_scrollBar.Visible) _scrollBar.Value = Math.Min(_scroll, Math.Max(0, _scrollBar.Maximum - _scrollBar.LargeChange + 1));
         Invalidate();
+        ViewportChanged?.Invoke();
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        ViewportChanged?.Invoke();
     }
 
     protected override void OnResize(EventArgs e)

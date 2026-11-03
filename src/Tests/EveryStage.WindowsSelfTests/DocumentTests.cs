@@ -26,7 +26,7 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestContainedThumbnails(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestContainedThumbnails(directory); TestVisibleThumbnails(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -69,6 +69,40 @@ internal static class DocumentTests
         Require(canvas.GetPixel(50, 5).ToArgb() == Color.Black.ToArgb(),
             "Landscape thumbnail did not leave centered top and bottom margins.");
         Console.WriteLine("PASS: portrait and landscape thumbnails retain image edges and centered margins");
+    }
+
+    private static void TestVisibleThumbnails(string directory)
+    {
+        string imagePath = Path.Combine(directory, "viewport.png");
+        using (var image = new Bitmap(40, 30)) image.Save(imagePath, ImageFormat.Png);
+        var library = new FileLibraryStore(Path.Combine(directory, "viewport-library.json"));
+        for (int i = 0; i < 35; i++) library.Import(imagePath);
+        using var form = new Form { ClientSize = new Size(700, 480), ShowInTaskbar = false, Opacity = 0,
+            StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
+        using var panel = new FilesPanel(library, new EveryStage.Terminal.Logging.FileOperationLogger(directory),
+            new ScenarioStore(), new ScenarioRepository(Path.Combine(directory, "viewport-scenarios.json")), null);
+        form.Controls.Add(panel);
+        form.Show();
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var grid = (MediaGrid)typeof(FilesPanel).GetField("_grid", flags)!.GetValue(panel)!;
+        var loaded = (Dictionary<string, Image>)typeof(FilesPanel).GetField("_thumbnailByFileId", flags)!.GetValue(panel)!;
+        Require(WaitFor(() => grid.VisibleItems().Count > 0 && grid.VisibleItems().All(item => loaded.ContainsKey(item.File.Id.ToString())), 5000),
+            "Visible thumbnails did not load.");
+        Require(loaded.Count < grid.Items.Count && !loaded.ContainsKey(grid.Items[^1].File.Id.ToString()),
+            "Offscreen thumbnails were loaded eagerly.");
+        string initial = grid.Items[0].File.Id.ToString();
+        grid.EnsureVisible(grid.Items[^1]);
+        Require(WaitFor(() => loaded.ContainsKey(grid.Items[^1].File.Id.ToString()), 5000),
+            "Scrolling did not load the newly visible thumbnail.");
+        Require(!loaded.ContainsKey(initial) && loaded.Keys.All(key => grid.VisibleItems().Any(item => item.File.Id.ToString() == key)),
+            "Offscreen thumbnail images were retained after scrolling.");
+        grid.EnsureVisible(grid.Items[0]);
+        Require(WaitFor(() => loaded.ContainsKey(initial), 5000), "Returning to the first row did not restore its thumbnail.");
+        form.ClientSize = new Size(500, 380);
+        Require(WaitFor(() => grid.VisibleItems().All(item => loaded.ContainsKey(item.File.Id.ToString()))
+            && loaded.Keys.All(key => grid.VisibleItems().Any(item => item.File.Id.ToString() == key)), 5000),
+            "Resizing did not update visible thumbnails.");
+        Console.WriteLine("PASS: thumbnails load for visible rows, update on scrolling/resizing and release offscreen images");
     }
 
     private static void TestHotkeyRegistration()
