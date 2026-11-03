@@ -25,6 +25,9 @@ public sealed class AudioPlaybackClock : IDisposable
     private readonly WaveFormat _format;
     private readonly BufferedWaveProvider _buffer;
     private readonly WasapiOut _output;
+    private readonly MMDevice? _device;
+    /// <summary>The explicit render endpoint, or null when this clock uses the system default.</summary>
+    public string? SelectedDeviceId { get; }
     private readonly object _gate = new();
     private volatile bool _stopRequested;
     private long _lastPositionTicks;
@@ -48,7 +51,7 @@ public sealed class AudioPlaybackClock : IDisposable
         }
     }
 
-    public AudioPlaybackClock(int sampleRate, int channels)
+    public AudioPlaybackClock(int sampleRate, int channels, string? deviceId = null)
     {
         if (SimulateNoOutputDevice)
             throw new COMException("找不到元素。（模拟：没有音频输出设备）", unchecked((int)0x80070490));
@@ -61,7 +64,8 @@ public sealed class AudioPlaybackClock : IDisposable
         // Shared mode + a modest latency: this validates/serves the decode->render pipeline, not
         // a separately-optimized low-latency audio path, so we don't fight for exclusive-mode
         // access here.
-        _output = new WasapiOut(AudioClientShareMode.Shared, useEventSync: true, latency: 50);
+        WasapiOut? output = null;
+        MMDevice? device = null;
         // Bug fixed here: same "step one succeeds and gets kept, step two throws, nothing disposes
         // step one" shape as EveryStage.Rendering's D3D11Device/SwapChainPresenter constructor
         // fixes (see that library's README) — Init() is a real WASAPI call that can genuinely fail
@@ -74,13 +78,26 @@ public sealed class AudioPlaybackClock : IDisposable
         // never succeeded is untested territory this fix has no reason to risk.
         try
         {
-            _output.Init(_buffer);
+            if (!string.IsNullOrWhiteSpace(deviceId))
+            {
+                using var enumerator = new MMDeviceEnumerator();
+                device = enumerator.GetDevice(deviceId);
+                if (device.State != DeviceState.Active || device.DataFlow != DataFlow.Render)
+                    throw new InvalidOperationException("所选音频输出设备不可用");
+                output = new WasapiOut(device, AudioClientShareMode.Shared, useEventSync: true, latency: 50);
+            }
+            else output = new WasapiOut(AudioClientShareMode.Shared, useEventSync: true, latency: 50);
+            output.Init(_buffer);
         }
         catch
         {
-            _output.Dispose();
+            output?.Dispose();
+            device?.Dispose();
             throw;
         }
+        _output = output;
+        _device = device;
+        SelectedDeviceId = device == null ? null : deviceId;
         _output.PlaybackStopped += OnPlaybackStopped;
         lock (Live)
         {
@@ -201,7 +218,8 @@ public sealed class AudioPlaybackClock : IDisposable
         lock (_gate) _stopRequested = true;
         _output.PlaybackStopped -= OnPlaybackStopped;
         try { _output.Stop(); } catch (Exception) { }
-        _output.Dispose();
+        try { _output.Dispose(); }
+        finally { _device?.Dispose(); }
         lock (Live) Live.RemoveAll(w => !w.TryGetTarget(out var c) || ReferenceEquals(c, this));
     }
 }

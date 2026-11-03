@@ -27,6 +27,7 @@ static async Task RunTests()
 {
     TestBoundedQueue();
     TestAspectRatioSizing();
+    TestAudioOutputSelection();
     string directory = Path.Combine(Path.GetTempPath(), "EveryStage-WindowsTests", Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(directory);
     try
@@ -112,6 +113,40 @@ static async Task RunTests()
         CastAudioTests.Run();
     }
     finally { Directory.Delete(directory, true); }
+}
+
+static void TestAudioOutputSelection()
+{
+    IReadOnlyList<EveryStage.Rendering.Audio.AudioOutputDevice> devices;
+    try { devices = EveryStage.Rendering.Audio.AudioOutputDevices.Enumerate(); }
+    catch (System.Runtime.InteropServices.COMException ex)
+    {
+        Console.WriteLine($"SKIP: audio endpoint enumeration unavailable: {ex.Message}");
+        return;
+    }
+    Require(devices.All(device => !string.IsNullOrWhiteSpace(device.Id) && !string.IsNullOrWhiteSpace(device.Name)),
+        "Audio endpoint enumeration returned a missing ID or name.");
+    bool rejected = false;
+    try { using var missing = new EveryStage.Rendering.Audio.AudioPlaybackClock(48000, 2, "EveryStage-nonexistent-endpoint"); }
+    catch (Exception) { rejected = true; }
+    Require(rejected, "An invalid audio endpoint silently opened another device.");
+    if (devices.Count == 0)
+    {
+        Console.WriteLine("SKIP: explicit audio output opening (no active render endpoint)");
+        return;
+    }
+    try
+    {
+        using var selected = new EveryStage.Rendering.Audio.AudioPlaybackClock(48000, 2, devices[0].Id);
+        Require(selected.SelectedDeviceId == devices[0].Id, "Explicit audio output opened a different endpoint.");
+        using var systemDefault = new EveryStage.Rendering.Audio.AudioPlaybackClock(48000, 2);
+        Require(systemDefault.SelectedDeviceId == null, "Default audio output unexpectedly became an explicit selection.");
+        Console.WriteLine($"PASS: enumerated {devices.Count} audio output(s); selected and default WASAPI outputs opened");
+    }
+    catch (System.Runtime.InteropServices.COMException ex)
+    {
+        Console.WriteLine($"SKIP: audio endpoint opening unavailable: {ex.Message}");
+    }
 }
 
 static async Task TestPairingV2DiscoveryServiceUdpAsync(string directory)
