@@ -449,6 +449,7 @@ internal sealed class ActivityRowView : Control
         {
             CompletionAction.Loop => "循环",
             CompletionAction.HoldOnLastFrame => "停留",
+            CompletionAction.BlackScreen => "切黑",
             _ => "下一项",
         };
     }

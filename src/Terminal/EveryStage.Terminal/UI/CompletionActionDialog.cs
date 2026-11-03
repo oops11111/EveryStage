@@ -8,7 +8,7 @@ namespace EveryStage.Terminal.UI;
 /// round that first gave <see cref="PlaybackEngine"/> any real playback behavior at all, and
 /// <see cref="MediaFile.Clone"/> has always deep-copied it — but, like <c>MediaFile.StayDuration</c>
 /// before this dialog existed (see this project's README "已知风险"), nothing ever let anyone actually
-/// change it away from its default (<see cref="CompletionAction.NextItem"/>) for a specific file.
+/// change it away from its default (<see cref="CompletionAction.HoldOnLastFrame"/>) for a specific file.
 /// Non-nullable, unlike <see cref="PlayModeDialog"/>'s per-file case — <c>OnCompletion</c> has no
 /// "inherit the activity's default" concept in the data model at all, so this is the simpler,
 /// no-override-checkbox layout <see cref="PlayModeDialog"/> itself already uses for
@@ -34,12 +34,14 @@ public sealed class CompletionActionDialog : Form
         _comboBox.Items.Add(new ComboItem(CompletionAction.NextItem, "自动下一项"));
         _comboBox.Items.Add(new ComboItem(CompletionAction.Loop, "循环播放本文件"));
         _comboBox.Items.Add(new ComboItem(CompletionAction.HoldOnLastFrame, "停留等待（保持在最后一帧/最后画面）"));
+        _comboBox.Items.Add(new ComboItem(CompletionAction.BlackScreen, "播完切黑"));
         _comboBox.SelectedIndex = initialValue switch
         {
             CompletionAction.NextItem => 0,
             CompletionAction.Loop => 1,
             CompletionAction.HoldOnLastFrame => 2,
-            _ => 0,
+            CompletionAction.BlackScreen => 3,
+            _ => 2,
         };
 
         var okButton = new Button { Text = "确定", DialogResult = DialogResult.OK, Bounds = new Rectangle(140, 76, 80, 28) };

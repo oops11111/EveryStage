@@ -147,6 +147,7 @@ public sealed class BatchPropertiesDialog : Form
                 combo.Items.Add(new CompletionComboItem(CompletionAction.NextItem, "自动下一项"));
                 combo.Items.Add(new CompletionComboItem(CompletionAction.Loop, "循环播放本文件"));
                 combo.Items.Add(new CompletionComboItem(CompletionAction.HoldOnLastFrame, "停留等待（保持在最后一帧/最后画面）"));
+                combo.Items.Add(new CompletionComboItem(CompletionAction.BlackScreen, "播完切黑"));
                 combo.SelectedIndex = 0;
             });
 

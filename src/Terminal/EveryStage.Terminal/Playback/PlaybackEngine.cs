@@ -1448,6 +1448,12 @@ public sealed partial class PlaybackEngine : IDisposable
                 break;
             case CompletionAction.HoldOnLastFrame:
                 break; // leave the current frame/video's last frame displayed.
+            case CompletionAction.BlackScreen:
+                // Video uses a separate swap-chain HWND. Switch back to the image surface and clear
+                // its frame so both raster and video output end on the same intentional black state.
+                _output.ShowImageSurface();
+                _output.ContentSurface.SetFrame(null);
+                break;
             default:
                 // A value outside the enum (hand-edited or damaged store: the JSON converter accepts any
                 // number) used to match nothing and stop the activity with no record (audit C-5).

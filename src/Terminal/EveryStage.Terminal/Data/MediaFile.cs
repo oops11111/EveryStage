@@ -30,7 +30,7 @@ public sealed class MediaFile
     /// False (the default) means no fade regardless of what <see cref="FadeDuration"/> holds.</summary>
     public bool VolumeFollowsFade { get; set; }
 
-    public CompletionAction OnCompletion { get; set; } = CompletionAction.NextItem;
+    public CompletionAction OnCompletion { get; set; } = CompletionAction.HoldOnLastFrame;
     public bool AllowManualSkip { get; set; } = true;
 
     /// <summary>Only meaningful when Kind == Audio (PLANNING.md §6 "音频特殊性").</summary>

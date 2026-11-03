@@ -498,7 +498,7 @@ static void TestAudioLayout(string directory)
             Require(reloaded.Files.Single().OnCompletion == EveryStage.Terminal.Data.CompletionAction.Loop,
                 "Keyboard loop setting was not persisted.");
             keyHandler.Invoke(bar, new object[] { new KeyEventArgs(Keys.L) });
-            Require(audio.OnCompletion == EveryStage.Terminal.Data.CompletionAction.NextItem, "Keyboard could not disable looping.");
+            Require(audio.OnCompletion == EveryStage.Terminal.Data.CompletionAction.HoldOnLastFrame, "Keyboard could not disable looping back to the default hold behavior.");
             type.GetEvent("PlayRequested")!.RemoveEventHandler(bar, onPlay);
 
             // Several audio files: the bar shows the first until the operator picks another in the

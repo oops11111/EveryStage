@@ -202,7 +202,7 @@ internal sealed class AudioPlayerBar : GlassPanel
     public void ToggleLoop()
     {
         if (_boundFile == null) return;
-        var newValue = _boundFile.OnCompletion == CompletionAction.Loop ? CompletionAction.NextItem : CompletionAction.Loop;
+        var newValue = _boundFile.OnCompletion == CompletionAction.Loop ? CompletionAction.HoldOnLastFrame : CompletionAction.Loop;
         var oldValue = _boundFile.OnCompletion;
         _boundFile.OnCompletion = newValue;
         try { _library.Save(); }

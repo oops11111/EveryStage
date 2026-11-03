@@ -191,12 +191,23 @@ internal static class PreviewProgramTests
             if (hasVideo)
             {
             var silent = Media(Path.Combine(media, "silent.mp4"));
+            silent.OnCompletion = CompletionAction.BlackScreen;
             sw.Restart();
             preview.RequestPlay(silent);
             Require(WaitFor(() => preview.IsCompleted, 12000), "Video without audio never completed.");
             Require(!preview.CurrentVideoHasAudio && preview.VideoFrameStats.Presented >= 75, "Silent MP4 did not play all frames.");
+            Require(previewSurface.Controls.GetChildIndex(previewSurface.ContentSurface) == 0
+                    && previewSurface.Controls.GetChildIndex(previewSurface.VideoHost) > 0
+                    && previewSurface.ContentSurface.CurrentFrame == null,
+                $"Video did not switch to the cleared image surface at the configured black-screen end action (image z={previewSurface.Controls.GetChildIndex(previewSurface.ContentSurface)}, video z={previewSurface.Controls.GetChildIndex(previewSurface.VideoHost)}, frameNull={previewSurface.ContentSurface.CurrentFrame == null}, action={silent.OnCompletion}, loop={preview.LoopCurrent}).");
+            using (var black = new Bitmap(Math.Max(1, previewSurface.ContentSurface.Width), Math.Max(1, previewSurface.ContentSurface.Height)))
+            {
+                previewSurface.ContentSurface.DrawToBitmap(black, previewSurface.ContentSurface.ClientRectangle);
+                var pixel = black.GetPixel(black.Width / 2, black.Height / 2);
+                Require(pixel.R < 8 && pixel.G < 8 && pixel.B < 8, $"Black-screen completion drew {pixel} at center.");
+            }
             Require(sw.Elapsed.TotalSeconds is > 2.6 and < 5.0, $"Silent 3 s video took {sw.Elapsed.TotalSeconds:F2} s.");
-            Console.WriteLine("PASS: MP4 without an audio track plays (wall-clock paced)");
+            Console.WriteLine("PASS: silent MP4 plays to completion, then clears the video layer to black");
             }
             else Console.WriteLine("SKIP: silent video playback (needs GPU video processing)");
 
@@ -555,8 +566,8 @@ internal static class PreviewProgramTests
                     && currentStream != null && !ReferenceEquals(currentStream, firstStreamBeforeAccept)
                     && currentStream.AudioMuted && !controller.IsOnProgram,
                 "Accepting a second device did not dispose the old stream and leave the new one muted in preview.");
-            Require(machine.Source == ProgramSource.LocalMedia && program.State == PlaybackChannelState.Playing,
-                "Accepting a second device while the first was on Program did not restore local Program output.");
+            Require(WaitFor(() => machine.Source == ProgramSource.LocalMedia && program.State == PlaybackChannelState.Playing, 5000),
+                $"Accepting a second device while the first was on Program did not restore local Program output (source={machine.Source}, state={program.State}).");
 
             controller.TakeToProgram();
             controller.StopForDevice(accepted.DeviceId);

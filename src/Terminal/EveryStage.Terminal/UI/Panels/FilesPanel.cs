@@ -435,6 +435,7 @@ public sealed class FilesPanel : UserControl
         menu.Items.Add("投到大屏", null, (_, _) => { if (_contextFile != null) TakeRequested?.Invoke(_contextFile); });
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("循环播放", null, (_, _) => SetCompletionAndPlay(CompletionAction.Loop));
+        menu.Items.Add("播完切黑", null, (_, _) => SetCompletionAndPlay(CompletionAction.BlackScreen));
         menu.Items.Add("顺序播放", null, (_, _) => StartSequentialPlayback());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("停止预览", null, (_, _) => PlaybackStopRequested?.Invoke());
