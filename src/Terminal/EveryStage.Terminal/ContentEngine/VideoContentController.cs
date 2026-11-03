@@ -429,7 +429,8 @@ public sealed class VideoContentController : IDisposable
                 while (!token.IsCancellationRequested && ClockTicks(audioClock) < frameTicks - FrameBudgetTicks)
                 {
                     TopUpAudio();
-                    Thread.Sleep(1);
+                    // Keep audio fed and respond promptly to stop/seek while avoiding 1 ms polling.
+                    if (token.WaitHandle.WaitOne(5)) break;
                 }
                 if (token.IsCancellationRequested) return;
 

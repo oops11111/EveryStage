@@ -397,6 +397,17 @@ static void TestBoundedQueue()
     Require(released.SequenceEqual(Enumerable.Range(0, 97).Concat(new[] { 98, 99, 100 })),
         "Shutdown leaked or double-released queued/late frames.");
     Require(!queue.TryDequeue(out _), "Disposed queue retained a frame.");
+    using var waitingQueue = new EveryStage.Transport.BoundedLatestQueue<int>(1, _ => { });
+    using var cancelled = new CancellationTokenSource();
+    var cancelledWait = Task.Run(() => waitingQueue.WaitDequeue(cancelled.Token, out _));
+    cancelled.Cancel();
+    Require(cancelledWait.Wait(2000) && !cancelledWait.Result, "Cancelling did not wake an empty queue consumer.");
+    var frameWait = Task.Run(() => waitingQueue.WaitDequeue(CancellationToken.None, out var value) ? value : -1);
+    waitingQueue.Enqueue(42);
+    Require(frameWait.Wait(2000) && frameWait.Result == 42, "Enqueue did not wake the waiting consumer.");
+    var disposeWait = Task.Run(() => waitingQueue.WaitDequeue(CancellationToken.None, out _));
+    waitingQueue.Dispose();
+    Require(disposeWait.Wait(2000) && !disposeWait.Result, "Disposal did not wake the waiting consumer.");
     Console.WriteLine("PASS: live frame queue capacity, latest-frame retention and exactly-once release");
 }
 

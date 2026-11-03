@@ -640,11 +640,7 @@ public sealed class CastReceiver : IDisposable
 
         while (!token.IsCancellationRequested)
         {
-            if (!_pendingFrames.TryDequeue(out var frame))
-            {
-                Thread.Sleep(1);
-                continue;
-            }
+            if (!_pendingFrames.WaitDequeue(token, out var frame)) return;
 
             // This loop only runs for casts WITH audio (video-only casts present straight from
             // OnFrameDecoded and never queue). Within such a cast, the estimator is unavailable only
@@ -667,7 +663,8 @@ public sealed class CastReceiver : IDisposable
                    && waitStopwatch.Elapsed.Ticks < MaxWaitTicks)
             {
                 if (_audioClock.IsFaulted) DegradeAudio($"声音输出已断开（{_audioClock.FaultReason}），投屏继续无声显示");
-                Thread.Sleep(1);
+                // Recheck the audio clock regularly while allowing stop/disconnect to wake immediately.
+                if (token.WaitHandle.WaitOne(5)) break;
             }
 
             if (token.IsCancellationRequested)
