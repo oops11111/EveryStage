@@ -123,6 +123,40 @@ internal static class PreviewProgramTests
                         Pump(200);
                         Require(!ReferenceEquals(priorDefaultClock, clockField.GetValue(musicController)) && music.IsPaused,
                             "A default-device change did not preserve the music pause state.");
+                        music.PlayPause();
+                        Require(WaitFor(() => music.IsPlaying && !music.IsPaused && music.Position > TimeSpan.FromMilliseconds(250), 3000),
+                            "Music did not resume before the missing-default test.");
+                        try
+                        {
+                            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                            Require(WaitFor(() => !music.IsPlaying && music.LastError != null, 5000),
+                                "Music did not report loss when no default device was available.");
+                        }
+                        finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                        settings.NotifyDefaultAudioOutputChanged("default-returned");
+                        Require(WaitFor(() => music.IsPlaying && music.LastError == null && music.Position > TimeSpan.FromMilliseconds(250), 5000),
+                            "Music did not resume after a default device returned.");
+                        try
+                        {
+                            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                            Require(WaitFor(() => !music.IsPlaying && music.LastError != null, 5000), "Music did not enter the waiting state.");
+                        }
+                        finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                        music.Stop();
+                        settings.NotifyDefaultAudioOutputChanged("default-after-music-stop");
+                        Require(!music.IsPlaying, "Default-device return restarted music after the user stopped it.");
+                        try
+                        {
+                            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                            music.Play(musicPlaylist);
+                            Require(!music.IsPlaying && music.LastError != null, "Music unexpectedly started without an output device.");
+                        }
+                        finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                        settings.NotifyDefaultAudioOutputChanged("default-after-music-open-failed");
+                        Require(WaitFor(() => music.IsPlaying && music.Position > TimeSpan.FromMilliseconds(150), 5000),
+                            "Music did not start when a default output appeared after its initial open failed.");
                         music.Stop();
                         settings.AudioOutputFallback -= OnMusicFallback;
                         Console.WriteLine("PASS: independent music playlist uses the selected output and recovers on default after loss");
@@ -151,6 +185,43 @@ internal static class PreviewProgramTests
                             "Losing a selected device without a default did not produce the original error.");
                     }
                     finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                    settings.NotifyDefaultAudioOutputChanged("default-returned-after-loss");
+                    Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.Position > TimeSpan.FromMilliseconds(200), 5000),
+                        "Interrupted audio did not resume after a default device returned.");
+                    try
+                    {
+                        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                        Require(WaitFor(() => preview.State == PlaybackChannelState.Failed, 5000), "Preview did not enter the waiting state.");
+                    }
+                    finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                    preview.Stop();
+                    settings.NotifyDefaultAudioOutputChanged("default-after-preview-stop");
+                    Require(preview.State == PlaybackChannelState.Idle, "Default-device return restarted audio after stop.");
+                    try
+                    {
+                        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                        preview.RequestPlay(Media(Path.Combine(media, "tone.mp3")));
+                        Require(preview.State == PlaybackChannelState.Failed, "Preview unexpectedly opened audio without an output.");
+                    }
+                    finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                    settings.NotifyDefaultAudioOutputChanged("default-after-preview-open-failed");
+                    Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.Position > TimeSpan.FromMilliseconds(150), 5000),
+                        "Preview audio did not start when an output appeared after its initial open failed.");
+                    preview.Stop();
+                    try
+                    {
+                        EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                        preview.RequestPlay(Media(Path.Combine(media, "tone.mp3")));
+                        Require(preview.State == PlaybackChannelState.Failed, "Preview did not wait after initial audio output failure.");
+                        preview.RequestPlay(Media(Path.Combine(media, "photo.jpg")));
+                        Require(WaitFor(() => preview.State == PlaybackChannelState.Playing, 5000), "Replacement image did not start.");
+                    }
+                    finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                    var replacementFile = preview.CurrentFile;
+                    settings.NotifyDefaultAudioOutputChanged("default-after-replacement");
+                    Require(ReferenceEquals(preview.CurrentFile, replacementFile) && preview.CurrentFile?.Kind == MediaKind.Image,
+                        "Default-device return replaced content the user had already switched to.");
                     preview.Stop();
                     if (hasVideo)
                     {
@@ -202,6 +273,21 @@ internal static class PreviewProgramTests
                                 "Video did not continue silently when the fallback output was unavailable.");
                         }
                         finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                        settings.NotifyDefaultAudioOutputChanged("default-returned-to-video");
+                        Require(WaitFor(() => preview.CurrentVideoHasAudio && preview.State == PlaybackChannelState.Playing, 5000),
+                            "Silent video did not restore audio when a default device returned.");
+                        preview.Stop();
+                        try
+                        {
+                            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                            preview.RequestPlay(Media(Path.Combine(media, "av.mp4")));
+                            Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && !preview.CurrentVideoHasAudio, 5000),
+                                "Video did not continue silently when no output existed at startup.");
+                        }
+                        finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                        settings.NotifyDefaultAudioOutputChanged("default-after-video-open-failed");
+                        Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.CurrentVideoHasAudio, 5000),
+                            "Video did not restore audio after an output appeared following startup failure.");
                         preview.Stop();
                     }
                     settings.AudioOutputFallback -= OnRecovered;
@@ -506,6 +592,39 @@ internal static class PreviewProgramTests
                 Require(backgroundController.PlaybackGeneration > backgroundGeneration
                     && WaitFor(() => backgroundController.CurrentPosition > backgroundPosition + TimeSpan.FromMilliseconds(150), 5000),
                     "Background audio did not move and continue after the default-device change.");
+                var backgroundFileField = typeof(PlaybackEngine).GetField("_backgroundAudioFile", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+                try
+                {
+                    EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                    EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                    Require(WaitFor(() => backgroundFileField.GetValue(program) == null, 5000), "Background audio did not report a missing output.");
+                }
+                finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                settings.NotifyDefaultAudioOutputChanged("default-returned-for-background");
+                Require(WaitFor(() => ReferenceEquals(backgroundFileField.GetValue(program), defaultBackground)
+                    && backgroundController.CurrentPosition > TimeSpan.FromMilliseconds(250), 5000),
+                    "Background audio did not resume when the default output returned.");
+                try
+                {
+                    EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                    EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                    Require(WaitFor(() => backgroundFileField.GetValue(program) == null, 5000), "Background audio did not enter the waiting state.");
+                }
+                finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                program.Stop();
+                settings.NotifyDefaultAudioOutputChanged("default-after-background-stop");
+                Require(backgroundFileField.GetValue(program) == null, "Default-device return restarted stopped background audio.");
+                try
+                {
+                    EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                    program.RequestPlay(defaultBackground);
+                    Require(backgroundFileField.GetValue(program) == null, "Background audio unexpectedly opened without an output.");
+                }
+                finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                settings.NotifyDefaultAudioOutputChanged("default-after-background-open-failed");
+                Require(WaitFor(() => ReferenceEquals(backgroundFileField.GetValue(program), defaultBackground)
+                    && backgroundController.CurrentPosition > TimeSpan.FromMilliseconds(150), 5000),
+                    "Background audio did not start when an output appeared after its initial open failed.");
                 program.Stop();
                 updated = settings.Current.Clone();
                 updated.AudioOutputDeviceId = "EveryStage-missing-test-endpoint";
@@ -522,6 +641,25 @@ internal static class PreviewProgramTests
                 updated = settings.Current.Clone();
                 updated.AudioOutputDeviceId = null;
                 settings.Save(updated);
+            }
+
+            if (hasAudio)
+            {
+                machine.SetCastSwitch(true);
+                program.RequestPlay(Media(Path.Combine(media, "tone.mp3")));
+                Require(WaitFor(() => program.State == PlaybackChannelState.Playing && program.Position > TimeSpan.FromMilliseconds(200), 5000),
+                    "Program audio did not start for the stop-during-device-loss test.");
+                try
+                {
+                    EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+                    EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateOutputLossForTests();
+                    Require(WaitFor(() => program.State == PlaybackChannelState.Failed, 5000), "Program audio did not enter the waiting state.");
+                    machine.Disconnect();
+                }
+                finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+                settings.NotifyDefaultAudioOutputChanged("default-after-program-disconnect");
+                Require(program.State == PlaybackChannelState.Idle && program.CurrentFile == null && machine.State == OutputState.Idle,
+                    "Default-device return restarted output after disconnect.");
             }
 
             preview.RequestPlay(onAir);
@@ -988,6 +1126,38 @@ internal static class PreviewProgramTests
             receive.Invoke(failed, new object[] { pcm, 3840u });
             Require(failed.AudioOutputLost && failedNotices == 0 && ReferenceEquals(stateField.GetValue(failed), failedState),
                 "Failed cast recovery retried or announced success after the default output was unavailable.");
+            failed.RequestDefaultAudioMigration();
+            receive.Invoke(failed, new object[] { pcm, 5760u });
+            Require(!failed.AudioOutputLost && failedNotices == 1 && !ReferenceEquals(stateField.GetValue(failed), failedState),
+                "Cast audio did not recover after the default output returned.");
+        }
+
+        CastReceiver? noInitialOutput = null;
+        int initialNotices = 0;
+        try
+        {
+            EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = true;
+            noInitialOutput = new CastReceiver(surface, 320, 240, 0, hasAudio: true, audioSampleRate: 48000,
+                audioChannels: 2, audioListenPort: 0, mediaSessionId: Guid.NewGuid(), videoKey: new byte[32],
+                audioKey: new byte[32], expectedAddress: IPAddress.Loopback, audioRecovered: _ => initialNotices++);
+            Require(!noInitialOutput.HasAudio && noInitialOutput.AudioOutputLost && noInitialOutput.AudioError != null,
+                "Cast did not report its missing initial audio output.");
+        }
+        finally { EveryStage.Rendering.Audio.AudioPlaybackClock.SimulateNoOutputDevice = false; }
+        using (noInitialOutput)
+        {
+            noInitialOutput!.AudioMuted = true;
+            noInitialOutput.RequestDefaultAudioMigration();
+            receive.Invoke(noInitialOutput, new object[] { pcm, 1920u });
+            Require(noInitialOutput.HasAudio && !noInitialOutput.AudioOutputLost && initialNotices == 1,
+                "Cast did not recover when its first output device appeared.");
+        }
+        using (var invalidFormat = new CastReceiver(surface, 320, 240, 0, hasAudio: true, audioSampleRate: 0,
+            audioChannels: 2, audioListenPort: 0, mediaSessionId: Guid.NewGuid(), videoKey: new byte[32],
+            audioKey: new byte[32], expectedAddress: IPAddress.Loopback))
+        {
+            Require(!invalidFormat.HasAudio && invalidFormat.AudioError != null,
+                "Cast accepted an invalid audio format as a recoverable output failure.");
         }
 
         var closing = new CastReceiver(surface, 320, 240, 0, hasAudio: true, audioSampleRate: 48000,

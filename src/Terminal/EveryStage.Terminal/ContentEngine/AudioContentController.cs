@@ -292,17 +292,28 @@ public sealed class AudioContentController : IDisposable
     }
 
     /// <summary>Move a stream already following Windows default to its new endpoint.</summary>
-    internal bool TryMoveToCurrentDefault()
+    internal bool TryMoveToCurrentDefault() => TryOpenCurrentDefault(null, allowFaulted: false);
+
+    internal bool TryResumeOnDefault(TimeSpan position, string path, TimeSpan? fadeDuration, bool paused = false)
     {
-        if (_sourcePath == null || _source == null || _audioClock is not { SelectedDeviceId: null }
-            || Thread.CurrentThread == _playbackThread) return false;
+        if (_source != null && _sourcePath != null) return TryOpenCurrentDefault(position, allowFaulted: true);
+        _recoveringToDefault = true;
+        try { Play(path, fadeDuration, position, paused); return true; }
+        catch (Exception) { return false; }
+        finally { _recoveringToDefault = false; }
+    }
+
+    private bool TryOpenCurrentDefault(TimeSpan? resumePosition, bool allowFaulted)
+    {
+        if (_sourcePath == null || _source == null || Thread.CurrentThread == _playbackThread) return false;
+        if (!allowFaulted && _audioClock is not { SelectedDeviceId: null }) return false;
         AudioDecodeSource? replacement = null;
         AudioPlaybackClock? clock = null;
         try
         {
             replacement = new AudioDecodeSource(_sourcePath);
             clock = new AudioPlaybackClock(replacement.AudioSampleRate, replacement.AudioChannels);
-            var position = CurrentPosition;
+            var position = resumePosition ?? CurrentPosition;
             if (!replacement.TrySeek(position)) return false;
             var newFade = _fadeDuration.HasValue ? ComputeFadeMultiplier(position.Ticks) : 1.0;
             clock.Volume = _muted ? 0f : (float)(_volume * newFade);

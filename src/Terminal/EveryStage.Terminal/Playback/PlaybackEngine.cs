@@ -75,6 +75,8 @@ public sealed partial class PlaybackEngine : IDisposable
     private readonly ImageContentRenderer _imageRenderer = new();
     private int _contentLoadVersion;
     private int _backgroundAudioGeneration;
+    private (MediaFile File, TimeSpan Position, int Generation)? _waitingAudioOutput;
+    private (MediaFile File, TimeSpan Position, int Generation)? _waitingBackgroundOutput;
     private readonly PlaybackLogger _playbackLogger;
     private VideoContentController? _videoController;
     private AudioContentController? _audioController;
@@ -344,6 +346,7 @@ public sealed partial class PlaybackEngine : IDisposable
     public void Stop()
     {
         ++_contentLoadVersion;
+        _waitingAudioOutput = null;
         var stoppedFile = _currentFile;
         if (_currentFile != null) _playbackLogger.LogPlaybackEnded(_currentFile.Id, "stopped");
         _currentFile = null;
@@ -685,6 +688,7 @@ public sealed partial class PlaybackEngine : IDisposable
     private void PlayFile(MediaFile file, PlaybackTrigger trigger)
     {
         ++_contentLoadVersion;
+        _waitingAudioOutput = null;
         _stayDurationTimer?.Stop();
         _stayDurationTimer?.Dispose();
         _stayDurationTimer = null;
@@ -913,6 +917,8 @@ public sealed partial class PlaybackEngine : IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is EveryStage.Rendering.Decode.MediaOpenException { Stage: EveryStage.Rendering.Decode.MediaFailureStage.Render })
+                _waitingAudioOutput = (file, startAt, _contentLoadVersion);
             OnImageOrDocumentFailed(file, ex);
         }
     }
@@ -948,6 +954,7 @@ public sealed partial class PlaybackEngine : IDisposable
     private void PlayBackgroundAudio(MediaFile file)
     {
         ++_backgroundAudioGeneration;
+        _waitingBackgroundOutput = null;
         _backgroundAudioFile = file;
         _backgroundAudioStartedAt = DateTime.UtcNow;
         // -= before += every time: same "avoid stacking subscriptions across plays" reasoning as
@@ -963,6 +970,8 @@ public sealed partial class PlaybackEngine : IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is EveryStage.Rendering.Decode.MediaOpenException { Stage: EveryStage.Rendering.Decode.MediaFailureStage.Render })
+                _waitingBackgroundOutput = (file, TimeSpan.Zero, _backgroundAudioGeneration);
             _backgroundAudioFile = null;
             _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
             RaisePlaybackAbnormallyInterrupted(file, ex.Message);
@@ -1026,11 +1035,13 @@ public sealed partial class PlaybackEngine : IDisposable
         {
             if (generation != _backgroundAudioGeneration || audioGeneration != _backgroundAudioController?.PlaybackGeneration
                 || !ReferenceEquals(file, _backgroundAudioFile)) return;
+            var interruptedPosition = _backgroundAudioController?.CurrentPosition ?? TimeSpan.Zero;
             if (ex.Data.Contains("AudioOutputLost") && _backgroundAudioController?.TryRecoverOnDefault() == true)
             {
                 _settingsStore.NotifyAudioOutputFallback("背景音乐的输出设备已断开，已从当前位置切换到系统默认设备。");
                 return;
             }
+            if (ex.Data.Contains("AudioOutputLost")) _waitingBackgroundOutput = (file, interruptedPosition, generation);
             _backgroundAudioFile = null;
             _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
             RaisePlaybackAbnormallyInterrupted(file, ex.Message);
@@ -1141,11 +1152,13 @@ public sealed partial class PlaybackEngine : IDisposable
         {
             if (generation != _contentLoadVersion || audioGeneration != _audioController?.PlaybackGeneration
                 || !ReferenceEquals(file, _currentFile)) return;
+            var interruptedPosition = _audioController?.CurrentPosition ?? TimeSpan.Zero;
             if (ex.Data.Contains("AudioOutputLost") && _audioController?.TryRecoverOnDefault() == true)
             {
                 _settingsStore.NotifyAudioOutputFallback("音频输出设备已断开，已从当前位置切换到系统默认设备。");
                 return;
             }
+            if (ex.Data.Contains("AudioOutputLost")) _waitingAudioOutput = (file, interruptedPosition, generation);
             Fail(file, ex);
         }));
     }
@@ -1161,11 +1174,34 @@ public sealed partial class PlaybackEngine : IDisposable
 
     private void OnDefaultAudioOutputChanged(string _)
     {
-        if (!IsCompleted && _currentFile?.Kind == MediaKind.Audio && State is (PlaybackChannelState.Playing or PlaybackChannelState.Paused))
+        bool resumedForeground = false, resumedBackground = false;
+        if (_waitingAudioOutput is { } waiting && waiting.Generation == _contentLoadVersion
+            && ReferenceEquals(waiting.File, _currentFile) && State == PlaybackChannelState.Failed
+            && _audioController?.TryResumeOnDefault(waiting.Position, waiting.File.SourcePath, FadeDurationFor(waiting.File), IsPaused) == true)
+        {
+            _waitingAudioOutput = null;
+            _stayDurationTimer?.Stop();
+            _stayDurationTimer?.Dispose();
+            _stayDurationTimer = null;
+            LastError = null;
+            ApplyAudioVisual(waiting.File);
+            SetState(IsPaused ? PlaybackChannelState.Paused : PlaybackChannelState.Playing);
+            _settingsStore.NotifyAudioOutputFallback("音频输出设备已恢复，已从中断位置继续播放。");
+            resumedForeground = true;
+        }
+        if (_waitingBackgroundOutput is { } background && background.Generation == _backgroundAudioGeneration
+            && _backgroundAudioFile == null && _backgroundAudioController?.TryResumeOnDefault(background.Position, background.File.SourcePath, FadeDurationFor(background.File)) == true)
+        {
+            _waitingBackgroundOutput = null;
+            _backgroundAudioFile = background.File;
+            _settingsStore.NotifyAudioOutputFallback("背景音频输出设备已恢复，已从中断位置继续播放。");
+            resumedBackground = true;
+        }
+        if (!resumedForeground && !IsCompleted && _currentFile?.Kind == MediaKind.Audio && State is (PlaybackChannelState.Playing or PlaybackChannelState.Paused))
             _audioController?.TryMoveToCurrentDefault();
         if (!IsCompleted && _currentFile?.Kind == MediaKind.Video && State is (PlaybackChannelState.Playing or PlaybackChannelState.Paused))
             _videoController?.TryMoveToCurrentDefault();
-        if (_backgroundAudioFile != null) _backgroundAudioController?.TryMoveToCurrentDefault();
+        if (!resumedBackground && _backgroundAudioFile != null) _backgroundAudioController?.TryMoveToCurrentDefault();
     }
 
     private void ArmStayDurationTimer(MediaFile file) => ArmStayDurationTimer(file, file.StayDuration ?? DefaultStayDurationOrZero(), isFreshStart: true);
@@ -1545,6 +1581,7 @@ public sealed partial class PlaybackEngine : IDisposable
     public void StopForDeviceCast()
     {
         ++_contentLoadVersion;
+        _waitingAudioOutput = null;
         if (_currentFile != null)
         {
             _playbackLogger.LogPlaybackEnded(_currentFile.Id, "preempted_by_device_cast");
@@ -1585,6 +1622,7 @@ public sealed partial class PlaybackEngine : IDisposable
         // cannot draw afterwards, drop the frame the surface holds (its owner may dispose it), and
         // dispose the stay timer rather than only stopping it.
         ++_contentLoadVersion;
+        _waitingAudioOutput = null;
         _output.ContentSurface.SetFrame(null);
         IsPaused = false;
         IsCompleted = false;
@@ -1615,7 +1653,13 @@ public sealed partial class PlaybackEngine : IDisposable
 
     private void StopBackgroundAudio()
     {
-        if (_backgroundAudioFile == null) return;
+        bool wasWaiting = _waitingBackgroundOutput != null;
+        _waitingBackgroundOutput = null;
+        if (_backgroundAudioFile == null)
+        {
+            if (wasWaiting) ++_backgroundAudioGeneration;
+            return;
+        }
         ++_backgroundAudioGeneration;
         _playbackLogger.LogPlaybackEnded(_backgroundAudioFile.Id, "background_audio_stopped");
         _backgroundAudioController?.Stop();

@@ -48,6 +48,7 @@ public sealed class VideoContentController : IDisposable
     private VideoDecodeSource? _source;
     private string? _sourcePath;
     private volatile bool _recoveryAttempted;
+    private volatile bool _waitingDefaultAudio;
     private int _playbackGeneration;
     internal int PlaybackGeneration => Volatile.Read(ref _playbackGeneration);
     private AudioPlaybackClock? _audioClock;
@@ -233,6 +234,7 @@ public sealed class VideoContentController : IDisposable
         _source?.Dispose();
         _source = null;
         _sourcePath = null;
+        _waitingDefaultAudio = false;
         _clockBaseTicks = 0;
         _seekTargetTicks = 0;
         _paused = false;
@@ -275,6 +277,7 @@ public sealed class VideoContentController : IDisposable
                 // silently, the same way a video whose audio codec cannot be decoded does. Thrown here this
                 // used to refuse the whole file — or, on a seek, escape to the UI with playback stopped.
                 source.DisableAudio();
+                _waitingDefaultAudio = true;
                 string reason = $"无法输出声音（{ex.Message.Trim()}），无声播放";
                 _audioNote = reason;
                 AudioOutputLost?.Invoke(reason);
@@ -305,7 +308,8 @@ public sealed class VideoContentController : IDisposable
 
     internal bool TryMoveToCurrentDefault()
     {
-        if (_audioLost || _sourcePath == null || _source == null || _audioClock is not { SelectedDeviceId: null, IsFaulted: false }) return false;
+        if (_sourcePath == null || _source == null) return false;
+        if (!_waitingDefaultAudio && (_audioLost || _audioClock is not { SelectedDeviceId: null, IsFaulted: false })) return false;
         return ReplaceAudioWithCurrentDefault();
     }
 
@@ -328,6 +332,7 @@ public sealed class VideoContentController : IDisposable
             _audioNote = null;
             StartPlaybackThread(_source, firstStart: false, preparedClock: clock);
             clock = null;
+            _waitingDefaultAudio = false;
             oldSource.Dispose();
             return true;
         }
@@ -420,6 +425,7 @@ public sealed class VideoContentController : IDisposable
             }
             audioDone = true;
             source.DisableAudio();
+            _waitingDefaultAudio = true;
             string reason = $"声音输出已断开（{audioClock.FaultReason}），继续无声播放";
             _audioNote = reason;
             AudioOutputLost?.Invoke(reason);

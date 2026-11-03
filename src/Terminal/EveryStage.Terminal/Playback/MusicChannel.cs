@@ -28,6 +28,7 @@ public sealed class MusicChannel : IDisposable
     private double _fadeOut = 1.0;       // 1 = no fade-out; 0 = silent (then stopped)
     private bool _fadingOut;
     private int _generation;             // bumps on every Play/Stop, so stale completions are ignored
+    private (string Track, TimeSpan Position, int Generation)? _waitingAudioOutput;
 
     public MusicChannel(MusicLibraryStore store, SettingsStore? settingsStore = null)
     {
@@ -142,6 +143,7 @@ public sealed class MusicChannel : IDisposable
     public void Stop()
     {
         _generation++;
+        _waitingAudioOutput = null;
         _audio.Stop();
         IsPlaying = false;
         _fadingOut = false;
@@ -181,6 +183,7 @@ public sealed class MusicChannel : IDisposable
         if (Playlist is not { } playlist || playlist.Tracks.Count == 0) { Stop(); return; }
         index = Math.Clamp(index, 0, playlist.Tracks.Count - 1);
         _generation++;
+        _waitingAudioOutput = null;
         TrackIndex = index;
         _fadingOut = false;
         _fadeOut = 1.0;
@@ -193,6 +196,9 @@ public sealed class MusicChannel : IDisposable
         }
         catch (Exception ex)
         {
+            if (ex is EveryStage.Rendering.Decode.MediaOpenException { Stage: EveryStage.Rendering.Decode.MediaFailureStage.Render }
+                && CurrentTrack is { } track)
+                _waitingAudioOutput = (track, TimeSpan.Zero, _generation);
             IsPlaying = false;
             LastError = $"无法播放 {Path.GetFileName(playlist.Tracks[index])}：{ex.Message}";
         }
@@ -213,12 +219,15 @@ public sealed class MusicChannel : IDisposable
 
     private void OnTrackFailed(Exception ex)
     {
+        var interruptedPosition = _audio.CurrentPosition;
         if (ex.Data.Contains("AudioOutputLost") && _audio.TryRecoverOnDefault())
         {
             _settingsStore?.NotifyAudioOutputFallback("背景音乐的输出设备已断开，已从当前位置切换到系统默认设备。");
             Changed?.Invoke();
             return;
         }
+        if (ex.Data.Contains("AudioOutputLost") && CurrentTrack is { } track)
+            _waitingAudioOutput = (track, interruptedPosition, _generation);
         LastError = $"播放中断：{ex.Message}";
         IsPlaying = false;
         Changed?.Invoke();
@@ -226,6 +235,18 @@ public sealed class MusicChannel : IDisposable
 
     private void OnDefaultAudioOutputChanged(string _)
     {
+        if (_waitingAudioOutput is { } waiting && waiting.Generation == _generation
+            && string.Equals(waiting.Track, CurrentTrack, StringComparison.OrdinalIgnoreCase)
+            && _audio.TryResumeOnDefault(waiting.Position, waiting.Track, TrackFade, _audio.IsPaused))
+        {
+            _waitingAudioOutput = null;
+            _generation++;
+            IsPlaying = true;
+            LastError = null;
+            _settingsStore?.NotifyAudioOutputFallback("背景音乐输出设备已恢复，已从中断位置继续播放。");
+            Changed?.Invoke();
+            return;
+        }
         if (IsPlaying && _audio.TryMoveToCurrentDefault())
         {
             _generation++;

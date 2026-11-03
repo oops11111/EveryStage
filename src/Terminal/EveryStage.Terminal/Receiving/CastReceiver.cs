@@ -247,21 +247,11 @@ public sealed class CastReceiver : IDisposable
     public long PayloadTypeMismatches => _rtpReceiver.PayloadTypeMismatches + (_audioRtpReceiver?.PayloadTypeMismatches ?? 0);
     public long VideoPacketsLost => _rtpReceiver.PacketsLost;
 
-    public bool HasAudio { get; private set; }
+    private bool _hasAudioTransport;
+    public bool HasAudio => _hasAudioTransport && !AudioOutputLost;
     public long AudioBytesReceived { get; private set; }
 
-    /// <summary>Two distinct failure modes share this one property, never at the same time: set once
-    /// at construction if audio setup itself fails (unlike a video-side failure, which fails this
-    /// whole constructor since there's no cast without video, an audio setup failure here degrades to
-    /// video-only, matching <c>LiveCastSession</c>'s own audio-is-best-effort handling on the Caster
-    /// side — see <see cref="HasAudio"/>); or, once <see cref="HasAudio"/> is true, set/cleared per
-    /// <see cref="OnAudioPayloadReceived"/> call the same latest-error-not-sticky way
-    /// <see cref="LastError"/> works for video (see that property's own doc comment on why sticky was
-    /// a bug). The two modes never overlap in practice: a setup failure sets <see cref="HasAudio"/> to
-    /// false, which means <see cref="OnAudioPayloadReceived"/> is never wired up to run at all. Video-
-    /// only mode presents each decoded frame immediately (see <see cref="OnFrameDecoded"/>) rather
-    /// than routing it through the audio-paced presentation thread, since there's no audio clock left
-    /// to pace against.</summary>
+    /// <summary>Latest audio setup or playback error; output loss remains visible until recovery.</summary>
     public string? AudioError { get; private set; }
     public bool AudioMuted { get; set; }
 
@@ -272,8 +262,8 @@ public sealed class CastReceiver : IDisposable
     /// rather than disconnecting it.</summary>
     public int ConsecutiveAudioPlaybackErrors { get; private set; }
 
-    /// <summary>True once audio has been given up for the rest of this cast (output device gone, or
-    /// persistent audio failure); video keeps being presented, unpaced. <see cref="AudioError"/> says why.</summary>
+    /// <summary>True while audio output is unavailable; video continues without audio pacing.
+    /// A later default-device notification may recover it. <see cref="AudioError"/> says why.</summary>
     public bool AudioOutputLost => Volatile.Read(ref _audioOutputLost) != 0;
 
     /// <summary>Raised once when the cast switches to video-only mid-way, with the reason (for the
@@ -329,14 +319,24 @@ public sealed class CastReceiver : IDisposable
         {
             try
             {
+                if (audioSampleRate <= 0 || audioChannels <= 0)
+                    throw new ArgumentException("无效的来投音频采样率或声道数");
                 // Constructed here (not lazily on first packet) so a WASAPI failure is caught right
                 // away rather than surfacing later as an unhandled exception from inside
                 // OnAudioPayloadReceived on the RTP receive thread.
                 _sourceAudioChannels = audioChannels;
-                var clock = audioOutputFactory?.Invoke(audioSampleRate, PcmDownmix.OutputChannels(audioChannels))
-                    ?? new AudioPlaybackClock(audioSampleRate, PcmDownmix.OutputChannels(audioChannels));
-                _audioState = CreateAudioState(clock);
                 _audioSampleRate = (uint)audioSampleRate;
+                try
+                {
+                    var clock = audioOutputFactory?.Invoke(audioSampleRate, PcmDownmix.OutputChannels(audioChannels))
+                        ?? new AudioPlaybackClock(audioSampleRate, PcmDownmix.OutputChannels(audioChannels));
+                    _audioState = CreateAudioState(clock);
+                }
+                catch (Exception ex)
+                {
+                    AudioError = $"无法打开音频输出（{ex.Message}），投屏继续无声显示";
+                    Volatile.Write(ref _audioOutputLost, 1);
+                }
                 if (audioIsAac)
                 {
                     // Same "catch it here, not later on the RTP receive thread" reasoning as
@@ -351,7 +351,7 @@ public sealed class CastReceiver : IDisposable
                 _audioRtpReceiver = new RawRtpReceiver(audioListenPort, audioPayloadType,
                     new MediaPacketAuthentication(audioKey, mediaSessionId), expectedAddress);
                 _audioRtpReceiver.PayloadReceived += OnAudioPayloadReceived;
-                HasAudio = true;
+                _hasAudioTransport = true;
             }
             catch (Exception ex)
             {
@@ -369,7 +369,7 @@ public sealed class CastReceiver : IDisposable
                 _audioDecoder = null;
                 _audioRtpReceiver?.Dispose();
                 _audioRtpReceiver = null;
-                HasAudio = false;
+                _hasAudioTransport = false;
             }
         }
     }
@@ -391,9 +391,9 @@ public sealed class CastReceiver : IDisposable
             }
         }
         _rtpReceiver.Start();
-        if (HasAudio)
+        if (_hasAudioTransport)
         {
-            _audioState!.Clock.Start();
+            _audioState?.Clock.Start();
             _audioRtpReceiver!.Start();
 
             var cts = new CancellationTokenSource();
@@ -428,7 +428,16 @@ public sealed class CastReceiver : IDisposable
     {
         lock (_audioLifetimeLock)
         {
-            if (!_audioStopped && !AudioOutputLost && _audioState?.Clock.SelectedDeviceId == null && _audioState != null)
+            if (_audioStopped || !_hasAudioTransport) return;
+            if (AudioOutputLost && _audioState == null)
+            {
+                Volatile.Write(ref _audioRecoveryPending, 1);
+                return;
+            }
+            if (_audioState == null) return;
+            if (AudioOutputLost && _audioState.Clock.IsFaulted)
+                Volatile.Write(ref _audioRecoveryPending, 1);
+            else if (!AudioOutputLost && _audioState.Clock.SelectedDeviceId == null)
                 Volatile.Write(ref _defaultAudioMigrationPending, 1);
         }
     }
@@ -450,7 +459,7 @@ public sealed class CastReceiver : IDisposable
         AudioBytesReceived += payload.Length;
 
         // Establishes the mapping between "audio RTP timestamp" and "AudioPlaybackClock.PositionTicks"
-        // exactly once, from the first audio packet this receiver ever sees. RtpVideoClock.ToElapsedTicks
+        // from the first decoded audio packet for each output clock. RtpVideoClock.ToElapsedTicks
         // converts that packet's RTP timestamp back into "ticks elapsed since the Caster's cast-session
         // clock started" — call it C. At the moment this packet is handed to _audioClock.Enqueue below,
         // AudioPlaybackClock.PositionTicks is ~0 (nothing has played yet). So from here on,
@@ -593,9 +602,11 @@ public sealed class CastReceiver : IDisposable
         {
             replacement = CreateAudioState(new AudioPlaybackClock((int)_audioSampleRate, PcmDownmix.OutputChannels(_sourceAudioChannels)));
             replacement.Clock.Start();
-            var old = _audioState!;
-            if (old.FaultHandler != null) old.Clock.Faulted -= old.FaultHandler;
-            _retiredAudioStates.Add(old);
+            if (_audioState is { } old)
+            {
+                if (old.FaultHandler != null) old.Clock.Faulted -= old.FaultHandler;
+                _retiredAudioStates.Add(old);
+            }
             _audioState = replacement;
             replacement = null;
             AudioError = null;
@@ -699,7 +710,7 @@ public sealed class CastReceiver : IDisposable
         var frame = new PendingFrame(texture, arraySlice, width, height, presentationTicks, sample);
         Interlocked.Increment(ref _framesDecoded);
 
-        if (!HasAudio)
+        if (!_hasAudioTransport)
         {
             // No audio clock to pace against — present immediately, same as before this round.
             Present(frame);
