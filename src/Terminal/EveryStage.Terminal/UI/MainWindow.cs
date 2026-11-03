@@ -92,7 +92,8 @@ public sealed class MainWindow : GradientForm
     public MainWindow(
         OutputStateMachine stateMachine, PlaybackEngine? playback, FileLibraryStore library,
         PairedDeviceStore pairedDevices, ScenarioStore scenarioStore, ScenarioRepository scenarioRepository,
-        SettingsStore settingsStore, DeviceIdentity identity, DeviceConnectionLogger connectionLog)
+        SettingsStore settingsStore, DeviceIdentity identity, DeviceConnectionLogger connectionLog,
+        MusicLibraryStore? musicStore = null, FileOperationLogger? fileOperationLogger = null)
     {
         _stateMachine = stateMachine;
         _settingsStore = settingsStore;
@@ -189,7 +190,7 @@ public sealed class MainWindow : GradientForm
         // lock against themselves only, not each other, reopening a small chance of one write
         // failing with a sharing violation right as the other holds the file open. Sharing one
         // instance (and therefore one lock) removes that risk entirely rather than just accepting it.
-        _fileOpLog = new FileOperationLogger();
+        _fileOpLog = fileOperationLogger ?? new FileOperationLogger();
 
         _filesPanel = new FilesPanel(library, _fileOpLog, scenarioStore, scenarioRepository, _preview);
         _filesPanel.FilePlayRequested += OnFilePlayRequested;
@@ -203,7 +204,7 @@ public sealed class MainWindow : GradientForm
         // Background-music card under the 大屏 section: a second view of the file page's audio bar, so
         // the same track can be controlled from every page. Shown while the column has room for it.
         // Background music: its own channel and the mini bar along the bottom of every page.
-        _musicStore = new MusicLibraryStore();
+        _musicStore = musicStore ?? new MusicLibraryStore();
         _music = new MusicChannel(_musicStore, _settingsStore)
         {
             // Give way while the big screen plays video with sound (or audio).

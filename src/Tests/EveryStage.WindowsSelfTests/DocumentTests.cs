@@ -76,7 +76,10 @@ internal static class DocumentTests
         string imagePath = Path.Combine(directory, "viewport.png");
         using (var image = new Bitmap(40, 30)) image.Save(imagePath, ImageFormat.Png);
         var library = new FileLibraryStore(Path.Combine(directory, "viewport-library.json"));
-        for (int i = 0; i < 35; i++) library.Import(imagePath);
+        library.Import(imagePath);
+        // The viewport test does not exercise persistence; avoid 34 redundant atomic file replacements.
+        var files = (List<MediaFile>)library.Files;
+        for (int i = 1; i < 35; i++) files.Add(new MediaFile { SourcePath = imagePath, Kind = MediaKind.Image });
         using var form = new Form { ClientSize = new Size(700, 480), ShowInTaskbar = false, Opacity = 0,
             StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
         using var panel = new FilesPanel(library, new EveryStage.Terminal.Logging.FileOperationLogger(directory),
@@ -576,7 +579,8 @@ internal static class DocumentTests
             new EveryStage.Terminal.Devices.PairedDeviceStore(Path.Combine(dir, "paired.json")), new ScenarioStore(),
             new ScenarioRepository(Path.Combine(dir, "scenarios.json")), new SettingsStore(Path.Combine(dir, "settings.json")),
             EveryStage.Discovery.DeviceIdentity.LoadOrCreate("selftest", Path.Combine(dir, "identity.json")),
-            new EveryStage.Terminal.Logging.DeviceConnectionLogger(dir))
+            new EveryStage.Terminal.Logging.DeviceConnectionLogger(dir), new MusicLibraryStore(Path.Combine(dir, "music.json")),
+            new EveryStage.Terminal.Logging.FileOperationLogger(dir))
         { Opacity = 0, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
         window.Show();
         Pump(400);
@@ -698,7 +702,7 @@ internal static class DocumentTests
         Console.WriteLine("PASS: main window starts, lays out and closes with the document controls");
 
         // Background-music playlists persist (mode, tracks, startup flag, mixer settings).
-        string musicPath = Path.Combine(dir, "music.json");
+        string musicPath = Path.Combine(dir, "music-roundtrip.json");
         var music = new MusicLibraryStore(musicPath);
         music.Library.Playlists.Add(new Playlist { Name = "开场歌单", Tracks = { "a.mp3", "b.mp3" }, Mode = PlaylistMode.Shuffle, AutoPlayOnStartup = true });
         music.Library.Volume = 0.5f;
