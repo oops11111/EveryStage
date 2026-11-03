@@ -93,7 +93,8 @@ public static class ThemeManager
             palette = UiPalette.For(AppTheme.Dark);
             dock.AppliedPalette = palette;
         }
-        control.ForeColor = MapForeground(control.ForeColor, palette, previous);
+        if (!ModernUi.ApplyForegroundRole(control, palette))
+            control.ForeColor = MapForeground(control.ForeColor, palette, previous);
         if (control is GlassPanel glassPanel)
             glassPanel.GlassTint = palette.GlassTint;
         control.BackColor = control switch

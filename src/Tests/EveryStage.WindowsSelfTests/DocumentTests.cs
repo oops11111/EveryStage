@@ -61,11 +61,20 @@ internal static class DocumentTests
         ThemeManager.HighContrastProbe = () => false;
         using var form = new Form();
         using var button = new Button();
+        using var warningLabel = ModernUi.SetForegroundRole(new Label(), UiForegroundRole.Warning);
+        using var accentLabel = ModernUi.SetForegroundRole(new Label(), UiForegroundRole.Accent);
+        using var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        combo.Items.Add("测试");
+        combo.SelectedIndex = 0;
+        ModernUi.StyleComboBox(combo);
         using var presenter = new PresenterStrip();
         using var dock = new SharedPreviewDock(new OutputStateMachine());
         var take = (Button)typeof(SharedPreviewDock).GetField("_takeButton", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock)!;
         ModernUi.StyleButton(button, primary: true);
         form.Controls.Add(button);
+        form.Controls.Add(warningLabel);
+        form.Controls.Add(accentLabel);
+        form.Controls.Add(combo);
         form.Controls.Add(presenter);
         form.Controls.Add(dock);
         var runControls = new Panel();
@@ -74,12 +83,16 @@ internal static class DocumentTests
         ModernUi.StyleButton(runButton, primary: true);
         runControls.Controls.AddRange(new Control[] { runLabel, runButton });
         dock.SetRunControls(runControls);
+        var monitorMenuColors = new EveryStage.Terminal.UI.Panels.FilesPanel.FileMenuColorTable(() => ModernUi.PaletteFor(dock));
         try
         {
             foreach (var theme in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.Tech, AppTheme.System, AppTheme.Dark })
             {
+                warningLabel.ForeColor = Color.Magenta; // role must win even when the old colour is unknown.
                 ThemeManager.Apply(form, theme);
                 var palette = UiPalette.For(theme);
+                Require(warningLabel.ForeColor == palette.Warning && accentLabel.ForeColor == palette.Accent,
+                    $"Explicit text roles did not follow {theme}.");
                 Require(button.BackColor == palette.AccentFill && button.ForeColor == Color.White, "Primary role drifted during theme switching.");
                 double Channel(byte value) { double c = value / 255d; return c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4); }
                 double L(Color c) => 0.2126 * Channel(c.R) + 0.7152 * Channel(c.G) + 0.0722 * Channel(c.B);
@@ -88,6 +101,8 @@ internal static class DocumentTests
                 Require(palette.Preview != palette.ProgramBorder && palette.ProgramBorder != palette.Accent, "Output roles share a colour.");
                 Require(presenter.BackColor == UiPalette.Normal(AppTheme.Dark).Background, "Presenter chrome changed with the app theme.");
                 var monitorPalette = UiPalette.Normal(AppTheme.Dark);
+                Require(monitorMenuColors.ToolStripDropDownBackground == monitorPalette.Surface,
+                    "Monitor menu followed the page palette instead of the monitor palette.");
                 Require(dock.BackColor == monitorPalette.Rail && take.BackColor == monitorPalette.AccentFill && take.ForeColor == monitorPalette.AccentFillForeground,
                     $"Monitor chrome did not keep its dark palette under {theme}.");
                 Require(runLabel.ForeColor == monitorPalette.Text && runButton.BackColor == monitorPalette.AccentFill,
@@ -101,6 +116,20 @@ internal static class DocumentTests
                 ThemeManager.Apply(form, theme);
                 Require(ModernUi.Palette.IsHighContrast && ModernUi.Background == SystemColors.Window,
                     "System high contrast did not override a configured theme.");
+                Require(warningLabel.ForeColor == SystemColors.WindowText && accentLabel.ForeColor == SystemColors.WindowText
+                    && monitorMenuColors.ToolStripDropDownBackground == SystemColors.Window
+                    && monitorMenuColors.MenuItemSelected == SystemColors.Highlight
+                    && monitorMenuColors.MenuBorder == SystemColors.WindowText,
+                    "Text or monitor menu roles did not yield to high contrast.");
+                using (var itemImage = new Bitmap(200, 26))
+                using (var graphics = Graphics.FromImage(itemImage))
+                {
+                    var draw = new DrawItemEventArgs(graphics, combo.Font, new Rectangle(0, 0, 200, 26), 0, DrawItemState.Selected);
+                    typeof(ComboBox).GetMethod("OnDrawItem", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                        .Invoke(combo, new object[] { draw });
+                    Require(itemImage.GetPixel(190, 4).ToArgb() == SystemColors.Highlight.ToArgb(),
+                        "Selected combo item did not use the system highlight background.");
+                }
                 Require(button.BackColor == SystemColors.Highlight && button.ForeColor == SystemColors.HighlightText,
                     "Button did not use the system high-contrast pair.");
                 Require(presenter.BackColor == SystemColors.Window, "Fixed-dark presenter blocked system high contrast.");
@@ -306,6 +335,15 @@ internal static class DocumentTests
         return null;
     }
 
+    private static IEnumerable<Control> Descendants(Control root)
+    {
+        foreach (Control child in root.Controls)
+        {
+            yield return child;
+            foreach (var descendant in Descendants(child)) yield return descendant;
+        }
+    }
+
     /// <summary>PPT 翻页过场: every effect × direction starts on the old page, ends on the new one and
     /// shows both halfway; the surface's transition layer paints and finishes.</summary>
     private static void TestSlideTransitions()
@@ -411,6 +449,15 @@ internal static class DocumentTests
                 {
                     showPanel.Invoke(window, new[] { type.GetField(page, flags)!.GetValue(window)! });
                     Pump(150);
+                    if (page == "_settingsPanel")
+                    {
+                        var tags = Descendants(window).OfType<Label>().Where(label => Equals(label.Tag, "effect")).ToArray();
+                        var palette = UiPalette.For(theme);
+                        Require(tags.Any(label => label.Text.Contains("保存后生效"))
+                            && tags.Where(label => label.Text.Contains("保存后生效")).All(label => label.ForeColor == palette.Warning)
+                            && tags.Where(label => label.Text.Contains("即时生效")).All(label => label.ForeColor == palette.Accent),
+                            $"Settings effect labels did not use their semantic roles in {theme}.");
+                    }
                     using var shot = new Bitmap(window.Width, window.Height);
                     window.DrawToBitmap(shot, new Rectangle(Point.Empty, window.Size));
                     shot.Save(Path.Combine(output, $"{size.Width}x{size.Height}-{theme}-{page.TrimStart('_').Replace("Panel", "")}.png"), ImageFormat.Png);

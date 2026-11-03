@@ -3,8 +3,33 @@ using System.Runtime.InteropServices;
 
 namespace EveryStage.Terminal.UI;
 
+internal enum UiForegroundRole { Text, Muted, Accent, Warning, Success, Danger }
+
 internal static class ModernUi
 {
+    private sealed class ForegroundRole { public UiForegroundRole Value; }
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, ForegroundRole> ForegroundRoles = new();
+    internal static Color Foreground(UiForegroundRole role, UiPalette palette) => role switch
+    {
+        UiForegroundRole.Muted => palette.Muted,
+        UiForegroundRole.Accent => palette.IsHighContrast ? palette.Text : palette.Accent,
+        UiForegroundRole.Warning => palette.Warning,
+        UiForegroundRole.Success => palette.Success,
+        UiForegroundRole.Danger => palette.Danger,
+        _ => palette.Text,
+    };
+    internal static T SetForegroundRole<T>(T control, UiForegroundRole role) where T : Control
+    {
+        ForegroundRoles.GetOrCreateValue(control).Value = role;
+        ApplyForegroundRole(control, PaletteFor(control));
+        return control;
+    }
+    internal static bool ApplyForegroundRole(Control control, UiPalette palette)
+    {
+        if (!ForegroundRoles.TryGetValue(control, out var role)) return false;
+        control.ForeColor = Foreground(role.Value, palette);
+        return true;
+    }
     private sealed class ButtonRole { public bool Primary; public bool Danger; }
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Button, ButtonRole> ButtonRoles = new();
     internal static bool ApplyButtonRole(Button button, UiPalette palette)
@@ -163,11 +188,16 @@ internal static class ModernUi
         {
             if (e.Index < 0) return;
             bool selected = (e.State & DrawItemState.Selected) != 0;
-            using var background = new SolidBrush(selected ? Color.FromArgb(64, Accent.R, Accent.G, Accent.B) : SurfaceRaised);
+            var palette = PaletteFor(comboBox);
+            Color fill = selected
+                ? palette.IsHighContrast ? SystemColors.Highlight : Mix(palette.SurfaceRaised, palette.Accent, 0.18f)
+                : palette.SurfaceRaised;
+            Color foreground = selected && palette.IsHighContrast ? SystemColors.HighlightText : palette.Text;
+            using var background = new SolidBrush(fill);
             e.Graphics.FillRectangle(background, e.Bounds);
             TextRenderer.DrawText(e.Graphics, comboBox.GetItemText(comboBox.Items[e.Index]),
                 comboBox.Font, new Rectangle(e.Bounds.Left + 8, e.Bounds.Top, e.Bounds.Width - 12, e.Bounds.Height),
-                Text, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+                foreground, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
             if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
         };
         // The drop-down list above is owner-drawn, but the closed box is still WinForms' Flat frame,
@@ -291,6 +321,7 @@ internal static class ModernUi
             g.SmoothingMode = SmoothingMode.AntiAlias;
             bool enabled = _combo.Enabled;
             bool active = enabled && (_combo.Focused || _combo.DroppedDown);
+            var palette = PaletteFor(_combo);
 
             // Same geometry as ApplyRoundedButtonRegion's clip, one pixel further in for the border.
             var box = new Rectangle(1, 1, w - 3, h - 3);
@@ -302,23 +333,23 @@ internal static class ModernUi
             path.AddArc(box.Left, box.Bottom - diameter, diameter, diameter, 90, 90);
             path.CloseFigure();
 
-            Color fill = enabled && _hot ? Blend(SurfaceRaised, Text, 0.05f) : SurfaceRaised;
+            Color fill = enabled && _hot && !palette.IsHighContrast ? Blend(palette.SurfaceRaised, palette.Text, 0.05f) : palette.SurfaceRaised;
             // Fill only the region-shaped area, never Clear(): under WM_PRINT the DC is the whole target
             // bitmap, not this control's clipped window.
             using (var brush = new SolidBrush(fill))
             {
                 g.FillRectangle(brush, 1, 1, w - 2, h - 2);
             }
-            using (var pen = new Pen(active ? Accent : enabled && _hot ? Blend(Border, Text, 0.25f) : Border, 1F))
+            using (var pen = new Pen(active ? palette.Accent : enabled && _hot && !palette.IsHighContrast ? Blend(palette.Border, palette.Text, 0.25f) : palette.Border, 1F))
                 g.DrawPath(pen, path);
 
             int button = Math.Min(h, 28);
             var textRect = Rectangle.FromLTRB(10, 0, w - button - 2, h);
             TextRenderer.DrawText(g, _combo.GetItemText(_combo.SelectedItem), _combo.Font, textRect,
-                enabled ? Text : Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                enabled ? palette.Text : palette.IsHighContrast ? SystemColors.GrayText : palette.Muted, TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
             float cx = w - button / 2f - 2, cy = h / 2f;
-            using var chevron = new Pen(enabled ? Muted : Border, 1.6F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+            using var chevron = new Pen(enabled ? palette.Muted : palette.IsHighContrast ? SystemColors.GrayText : palette.Border, 1.6F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
             g.DrawLines(chevron, new[] { new PointF(cx - 4.5f, cy - 2f), new PointF(cx, cy + 2.5f), new PointF(cx + 4.5f, cy - 2f) });
         }
 
@@ -1227,7 +1258,16 @@ internal sealed class CaptionButton : Control
 /// plus Windows 11 small rounded corners on every menu window it draws, submenus included.</summary>
 internal sealed class ThemedMenuRenderer : ToolStripProfessionalRenderer
 {
-    public ThemedMenuRenderer() : base(new Panels.FilesPanel.FileMenuColorTable()) { }
+    private readonly Func<UiPalette> _palette;
+    public ThemedMenuRenderer(Func<UiPalette>? palette = null) : base(new Panels.FilesPanel.FileMenuColorTable(palette)) =>
+        _palette = palette ?? (() => ModernUi.Palette);
+
+    protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+    {
+        if (_palette().IsHighContrast)
+            e.TextColor = !e.Item.Enabled ? SystemColors.GrayText : e.Item.Selected ? SystemColors.HighlightText : SystemColors.WindowText;
+        base.OnRenderItemText(e);
+    }
 
     protected override void Initialize(ToolStrip toolStrip)
     {

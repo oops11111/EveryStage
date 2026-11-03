@@ -59,13 +59,22 @@ internal sealed class DocumentControlBar : Panel
             _zoomMenu.Items.Add(text, null, (_, _) => Act(() => View?.SetZoom(mode, zoom)));
     }
 
-    private static ContextMenuStrip Menu() => new()
+    private ContextMenuStrip Menu()
     {
-        ShowImageMargin = false,
-        BackColor = ModernUi.Surface,
-        ForeColor = ModernUi.Text,
-        Renderer = new ThemedMenuRenderer(),
-    };
+        var menu = new ContextMenuStrip
+        {
+            ShowImageMargin = false,
+            Renderer = new ThemedMenuRenderer(() => ModernUi.PaletteFor(this)),
+        };
+        menu.Opening += (_, _) =>
+        {
+            var palette = ModernUi.PaletteFor(this);
+            menu.BackColor = palette.Surface;
+            menu.ForeColor = palette.Text;
+            foreach (ToolStripItem item in menu.Items) item.ForeColor = palette.Text;
+        };
+        return menu;
+    }
 
     private PlaybackEngine? Target => _sync.Target;
     private PdfDocumentView? View => Target?.PdfView;
@@ -345,14 +354,14 @@ internal sealed class DocumentControlBar : Panel
         _moreMenu.Items.Clear();
         foreach (var item in _items.Where(i => !i.Control.Visible && i.Run != null))
         {
-            var menuItem = new ToolStripMenuItem(item.Text) { Enabled = item.Enabled(), ForeColor = ModernUi.Text, Checked = item.Checked?.Invoke() == true };
+            var menuItem = new ToolStripMenuItem(item.Text) { Enabled = item.Enabled(), ForeColor = ModernUi.PaletteFor(this).Text, Checked = item.Checked?.Invoke() == true };
             var run = item.Run!;
             menuItem.Click += (_, _) => Act(run);
             _moreMenu.Items.Add(menuItem);
         }
         if (_items.Any(i => !i.Control.Visible && i.Control is TextBox))
         {
-            var jump = new ToolStripMenuItem("跳转到页码…") { ForeColor = ModernUi.Text, Enabled = Status is { PageCount: > 0 } };
+            var jump = new ToolStripMenuItem("跳转到页码…") { ForeColor = ModernUi.PaletteFor(this).Text, Enabled = Status is { PageCount: > 0 } };
             jump.Click += (_, _) =>
             {
                 using var dialog = new TextInputDialog("跳转", $"页码 / 幻灯片序号（1 - {Status?.PageCount}）：", "");

@@ -51,7 +51,6 @@ public sealed class SettingsPanel : UserControl
         Dock = DockStyle.Fill;
 
         var settings = _settingsStore.Current;
-        var amberEffect = Color.FromArgb(243, 178, 76);
 
         // One scrolling page of sections (design): 外观 · 通用 · 输出与播放 · 网络与设备 · 诊断 · 关于.
         // Each row: title + description on the left, its control(s) on the right, an effect tag
@@ -62,9 +61,9 @@ public sealed class SettingsPanel : UserControl
             BackColor = Color.Transparent, Padding = new Padding(0, 0, 0, 16),
         };
         var sections = new List<SettingsSection>();
-        SettingsSection Section(string title, string? effect = null, Color? effectColor = null)
+        SettingsSection Section(string title, string? effect = null, UiForegroundRole effectRole = UiForegroundRole.Muted)
         {
-            var section = new SettingsSection(title, effect, effectColor ?? ModernUi.Muted);
+            var section = new SettingsSection(title, effect, effectRole);
             sections.Add(section);
             page.Controls.Add(section);
             return section;
@@ -96,7 +95,7 @@ public sealed class SettingsPanel : UserControl
             };
             themeCards.Controls.Add(card);
         }
-        var appearance = Section("外观", "即时生效", ModernUi.Accent);
+        var appearance = Section("外观", "即时生效", UiForegroundRole.Accent);
         appearance.AddBlock(themeCards);
         appearance.AddNote("「跟随系统」跟随 Windows 应用的浅色或深色模式，切换时即时生效；不跟随系统强调色。");
         appearance.Controls.Add(_themeComboBox);
@@ -104,10 +103,10 @@ public sealed class SettingsPanel : UserControl
         // --- 通用 ---
         _castSwitchDefaultCheckbox = new CheckBox { Text = "开启", AutoSize = true, Checked = settings.CastSwitchDefaultOn };
         Section("通用").AddRow("启动时投屏开关默认开启", "只设置终端机启动时的默认值，不改变当前开关（当前开关在「设备」页和托盘菜单）",
-            "重启后生效", ModernUi.Muted, _castSwitchDefaultCheckbox);
+            "重启后生效", UiForegroundRole.Muted, _castSwitchDefaultCheckbox);
         var globalEmergency = new CheckBox { Text = "启用", AutoSize = true, Checked = settings.GlobalEmergencyStopEnabled, AccessibleName = "全局急停快捷键 Shift+Esc" };
         Section("急停快捷键").AddRow("Shift+Esc 全局急停", "默认关闭。开启后即使其他应用获得焦点也能停止输出；应用内及本应用对话框中始终可用。",
-            "即时生效", ModernUi.Accent, globalEmergency);
+            "即时生效", UiForegroundRole.Accent, globalEmergency);
         bool revertingEmergency = false;
         globalEmergency.CheckedChanged += (_, _) =>
         {
@@ -135,20 +134,20 @@ public sealed class SettingsPanel : UserControl
             Value = Math.Clamp(settings.DefaultStayDurationSeconds ?? 10, 1, 3600),
             Enabled = settings.DefaultStayDurationSeconds.HasValue,
         };
-        var secondsLabel = new Label { Text = "秒", AutoSize = true, ForeColor = ModernUi.Muted };
+        var secondsLabel = ModernUi.SetForegroundRole(new Label { Text = "秒", AutoSize = true }, UiForegroundRole.Muted);
         _defaultStayDurationEnabledCheckbox.CheckedChanged += (_, _) =>
             _defaultStayDurationSeconds.Enabled = _defaultStayDurationEnabledCheckbox.Checked;
         var output = Section("输出与播放");
-        output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举", "重启后生效", ModernUi.Muted, _monitorComboBox);
+        output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举", "重启后生效", UiForegroundRole.Muted, _monitorComboBox);
         output.AddRow("图片 / 文档默认停留时长", "没有单独设置停留时长的项目停留多久后进入下一项；关闭则一直停留到手动切换",
-            "保存后生效", amberEffect, _defaultStayDurationEnabledCheckbox, _defaultStayDurationSeconds, secondsLabel);
+            "保存后生效", UiForegroundRole.Warning, _defaultStayDurationEnabledCheckbox, _defaultStayDurationSeconds, secondsLabel);
         _transitionComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
         _transitionComboBox.Items.AddRange(new object[] { "直切", "叠化", "经黑场" });
         _transitionComboBox.SelectedIndex = (int)settings.Transition;
         ModernUi.StyleComboBox(_transitionComboBox);
         _transitionMilliseconds = new NumericUpDown { Minimum = 100, Maximum = 3000, Increment = 100, Width = 70, Value = Math.Clamp(settings.TransitionMilliseconds, 100, 3000) };
         output.AddRow("大屏过场", "大屏从一项切到下一项时的过渡；PPT 放映启动较慢时，过场会等到放映第一帧出现再显示。流程里每一项可以单独设置",
-            "保存后生效", amberEffect, _transitionComboBox, _transitionMilliseconds, new Label { Text = "毫秒", AutoSize = true, ForeColor = ModernUi.Muted });
+            "保存后生效", UiForegroundRole.Warning, _transitionComboBox, _transitionMilliseconds, ModernUi.SetForegroundRole(new Label { Text = "毫秒", AutoSize = true }, UiForegroundRole.Muted));
         output.AddRow("PPT 没有扩展屏时", "原生放映（含动画）只在扩展屏上进行，避免占用本机屏幕；没有扩展屏时以静态幻灯片预览", null, null,
             new Label { Text = "静态幻灯片", AutoSize = true, ForeColor = ModernUi.Text });
 
@@ -163,7 +162,7 @@ public sealed class SettingsPanel : UserControl
         _keepMorph = new CheckBox { Text = "保留", AutoSize = true, Checked = settings.KeepMorphTransitions };
         _keepAutoAdvance = new CheckBox { Text = "保留", AutoSize = true, Checked = settings.KeepAutoAdvanceTransitions };
         _transitionOnBlack = new CheckBox { Text = "使用", AutoSize = true, Checked = settings.TransitionOnBlackScreen };
-        var slides = Section("PPT 翻页过场", "保存后生效", amberEffect);
+        var slides = Section("PPT 翻页过场", "保存后生效", UiForegroundRole.Warning);
         slides.AddRow("转场来源", "统一后，所有演示文稿的翻页动画一致（静态幻灯片和大屏原生放映都适用）；单个文件仍可在「文档播放设置」里改回原转场",
             null, null, _slideTransitionSource);
         slides.AddBlock(_slideTransitionPicker);
@@ -177,11 +176,11 @@ public sealed class SettingsPanel : UserControl
         var saveDeviceNameButton = new RoundedActionButton { Text = "保存", Width = 72, Height = 30 };
         ModernUi.StyleButton(saveDeviceNameButton);
         saveDeviceNameButton.Click += OnSaveDeviceNameClick;
-        Section("网络与设备").AddRow("设备名称", "投屏机列表中显示的名字；下一次广播就会带上新名字", "即时生效", ModernUi.Accent,
+        Section("网络与设备").AddRow("设备名称", "投屏机列表中显示的名字；下一次广播就会带上新名字", "即时生效", UiForegroundRole.Accent,
             _deviceNameTextBox, saveDeviceNameButton);
 
         // --- 诊断 ---
-        _diagnosticsLabel = new Label { AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent };
+        _diagnosticsLabel = ModernUi.SetForegroundRole(new Label { AutoSize = true, BackColor = Color.Transparent }, UiForegroundRole.Muted);
         var refreshDiagnosticsButton = new RoundedActionButton { Text = "刷新诊断", Width = 96, Height = 30 };
         ModernUi.StyleButton(refreshDiagnosticsButton);
         refreshDiagnosticsButton.Click += (_, _) => RefreshDiagnostics();
@@ -214,7 +213,7 @@ public sealed class SettingsPanel : UserControl
         var saveSettingsButton = new RoundedActionButton { Text = "保存设置", Width = 120, Height = 34, Margin = new Padding(0, 7, 0, 0) };
         ModernUi.StyleButton(saveSettingsButton, primary: true);
         saveSettingsButton.Click += OnSaveSettingsClick;
-        _savedLabel = new Label { ForeColor = ModernUi.Success, AutoSize = true, Margin = new Padding(12, 16, 6, 0) };
+        _savedLabel = ModernUi.SetForegroundRole(new Label { AutoSize = true, Margin = new Padding(12, 16, 6, 0) }, UiForegroundRole.Success);
         var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 50, BackColor = Color.Transparent };
         var saveRow = new FlowLayoutPanel
         {
@@ -244,15 +243,15 @@ public sealed class SettingsPanel : UserControl
     {
         private readonly string _title;
         private readonly string? _effect;
-        private readonly Color _effectColor;
+        private readonly UiForegroundRole _effectRole;
         private readonly List<(Control Item, int Kind)> _items = new(); // 0 block, 1 row, 2 note, 3 buttons
         private readonly List<int> _dividers = new();
 
-        public SettingsSection(string title, string? effect, Color effectColor)
+        public SettingsSection(string title, string? effect, UiForegroundRole effectRole)
         {
             _title = title;
             _effect = effect;
-            _effectColor = effectColor;
+            _effectRole = effectRole;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw
                 | ControlStyles.SupportsTransparentBackColor | ControlStyles.UserPaint, true);
             BackColor = Color.Transparent;
@@ -267,7 +266,7 @@ public sealed class SettingsPanel : UserControl
             _items.Add((control, 0));
         }
 
-        public void AddNote(string text) => AddBlockOf(new Label { Text = text, AutoSize = false, ForeColor = ModernUi.Muted, BackColor = Color.Transparent }, 2);
+        public void AddNote(string text) => AddBlockOf(ModernUi.SetForegroundRole(new Label { Text = text, AutoSize = false, BackColor = Color.Transparent }, UiForegroundRole.Muted), 2);
 
         public void AddButtons(params Control[] buttons)
         {
@@ -276,8 +275,8 @@ public sealed class SettingsPanel : UserControl
             AddBlockOf(row, 3);
         }
 
-        public void AddRow(string title, string description, string? effect, Color? effectColor, params Control[] controls) =>
-            AddBlockOf(new SettingRow(title, description, effect, effectColor ?? ModernUi.Muted, controls), 1);
+        public void AddRow(string title, string description, string? effect, UiForegroundRole? effectRole, params Control[] controls) =>
+            AddBlockOf(new SettingRow(title, description, effect, effectRole ?? UiForegroundRole.Muted, controls), 1);
 
         private void AddBlockOf(Control control, int kind)
         {
@@ -322,21 +321,22 @@ public sealed class SettingsPanel : UserControl
         {
             base.OnPaintBackground(e);
             var g = e.Graphics;
+            var palette = ModernUi.PaletteFor(this);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             using (var path = ActivityRowView.RoundedBox(new Rectangle(0, 0, Width - 1, Height - 1), S(10)))
-            using (var fill = new SolidBrush(ModernUi.Surface))
-            using (var border = new Pen(ModernUi.Mix(ModernUi.Surface, ModernUi.Border, 0.45f)))
+            using (var fill = new SolidBrush(palette.Surface))
+            using (var border = new Pen(palette.IsHighContrast ? palette.Border : ModernUi.Mix(palette.Surface, palette.Border, 0.45f)))
             {
                 g.FillPath(fill, path);
                 g.DrawPath(border, path);
             }
             using var titleFont = new Font(ModernUi.UiFontSemibold, 11.5F);
             var titleSize = TextRenderer.MeasureText(_title, titleFont);
-            TextRenderer.DrawText(g, _title, titleFont, new Point(S(18), S(14)), ModernUi.Text);
+            TextRenderer.DrawText(g, _title, titleFont, new Point(S(18), S(14)), palette.Text);
             if (_effect != null)
                 using (var effectFont = new Font(ModernUi.UiFont, 8.5F))
-                    TextRenderer.DrawText(g, "● " + _effect, effectFont, new Point(S(18) + titleSize.Width + S(6), S(18)), _effectColor);
-            using var divider = new Pen(ModernUi.Mix(ModernUi.Surface, ModernUi.Border, 0.35f));
+                    TextRenderer.DrawText(g, "● " + _effect, effectFont, new Point(S(18) + titleSize.Width + S(6), S(18)), ModernUi.Foreground(_effectRole, palette));
+            using var divider = new Pen(palette.IsHighContrast ? palette.Border : ModernUi.Mix(palette.Surface, palette.Border, 0.35f));
             foreach (int y in _dividers) g.DrawLine(divider, S(18), y, Width - S(18), y);
         }
     }
@@ -349,15 +349,15 @@ public sealed class SettingsPanel : UserControl
         private readonly Label _description;
         private readonly Control[] _controls;
 
-        public SettingRow(string title, string description, string? effect, Color effectColor, Control[] controls)
+        public SettingRow(string title, string description, string? effect, UiForegroundRole effectRole, Control[] controls)
         {
             BackColor = Color.Transparent;
-            _title = new Label { Text = title, AutoSize = true, ForeColor = ModernUi.Text, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 10F) };
-            _description = new Label { Text = description, AutoSize = false, ForeColor = ModernUi.Muted, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8.5F) };
+            _title = ModernUi.SetForegroundRole(new Label { Text = title, AutoSize = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 10F) }, UiForegroundRole.Text);
+            _description = ModernUi.SetForegroundRole(new Label { Text = description, AutoSize = false, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8.5F) }, UiForegroundRole.Muted);
             Controls.Add(_title);
             Controls.Add(_description);
             if (effect != null)
-                Controls.Add(new Label { Text = "● " + effect, AutoSize = true, ForeColor = effectColor, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8F), Tag = "effect" });
+                Controls.Add(ModernUi.SetForegroundRole(new Label { Text = "● " + effect, AutoSize = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8F), Tag = "effect" }, effectRole));
             _controls = controls;
             Controls.AddRange(controls);
             Height = 64;

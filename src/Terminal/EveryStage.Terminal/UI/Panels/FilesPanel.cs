@@ -577,19 +577,21 @@ public sealed class FilesPanel : UserControl
 
     internal sealed class FileMenuColorTable : ProfessionalColorTable
     {
-        public override Color ToolStripDropDownBackground => ModernUi.Surface;
+        private readonly Func<UiPalette> _palette;
+        public FileMenuColorTable(Func<UiPalette>? palette = null) => _palette = palette ?? (() => ModernUi.Palette);
+        public override Color ToolStripDropDownBackground => _palette().Surface;
         // Windows 11 draws its own outline around a rounded menu window; a square inner border would
         // show at the corners. Hover is a soft fill without an accent outline, as in Win11 menus.
-        public override Color MenuBorder => WindowsAppearance.IsWindows11 ? ModernUi.Surface : ModernUi.Border;
-        public override Color MenuItemBorder => ModernUi.SurfaceRaised;
-        public override Color MenuItemSelected => ModernUi.SurfaceRaised;
-        public override Color MenuItemSelectedGradientBegin => ModernUi.SurfaceRaised;
-        public override Color MenuItemSelectedGradientEnd => ModernUi.SurfaceRaised;
-        public override Color ImageMarginGradientBegin => ModernUi.Surface;
-        public override Color ImageMarginGradientMiddle => ModernUi.Surface;
-        public override Color ImageMarginGradientEnd => ModernUi.Surface;
-        public override Color SeparatorDark => ModernUi.Border;
-        public override Color SeparatorLight => ModernUi.Surface;
+        public override Color MenuBorder => _palette().IsHighContrast ? _palette().Border : WindowsAppearance.IsWindows11 ? _palette().Surface : _palette().Border;
+        public override Color MenuItemBorder => _palette().IsHighContrast ? _palette().Border : _palette().SurfaceRaised;
+        public override Color MenuItemSelected => _palette().IsHighContrast ? SystemColors.Highlight : _palette().SurfaceRaised;
+        public override Color MenuItemSelectedGradientBegin => MenuItemSelected;
+        public override Color MenuItemSelectedGradientEnd => MenuItemSelected;
+        public override Color ImageMarginGradientBegin => _palette().Surface;
+        public override Color ImageMarginGradientMiddle => _palette().Surface;
+        public override Color ImageMarginGradientEnd => _palette().Surface;
+        public override Color SeparatorDark => _palette().Border;
+        public override Color SeparatorLight => _palette().Surface;
     }
 
     /// <summary>效果图的分段筛选「全部 | 图片 | 视频 | 文档」：一个圆角容器，选中段填主蓝，未选中段之间
