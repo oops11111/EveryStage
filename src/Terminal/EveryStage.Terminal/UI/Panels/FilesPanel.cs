@@ -936,9 +936,11 @@ public sealed class FilesPanel : UserControl
                 await _thumbnailWorker.WaitAsync(token);
                 Image thumbnail;
                 string? cacheKey = null;
+                string meta = "", toolTip = "";
                 try
                 {
-                    cacheKey = await Task.Run(() => ThumbnailCacheKey(file), token);
+                    (cacheKey, meta, toolTip) = await Task.Run(() =>
+                        (ThumbnailCacheKey(file), CardMeta(file), CardToolTip(file)), token);
                     token.ThrowIfCancellationRequested();
                     if (cacheKey != null && _thumbnailCache.TryGetValue(cacheKey, out var cached))
                         thumbnail = (Image)cached.Clone();
@@ -971,8 +973,14 @@ public sealed class FilesPanel : UserControl
                         _thumbnailCacheOrder.Enqueue(cacheKey);
                     }
                     string key = file.Id.ToString();
-                    if (_grid.VisibleItems().Any(item => item.File.Id == file.Id) && !_thumbnailByFileId.ContainsKey(key))
+                    var visibleItem = _grid.VisibleItems().FirstOrDefault(item => item.File.Id == file.Id);
+                    if (visibleItem != null && !_thumbnailByFileId.ContainsKey(key))
+                    {
+                        visibleItem.Unavailable = cacheKey == null;
+                        visibleItem.Meta = meta;
+                        visibleItem.ToolTip = toolTip;
                         _thumbnailByFileId.Add(key, (Image)thumbnail.Clone());
+                    }
                     _grid.Invalidate();
                 }
             }
@@ -1246,6 +1254,14 @@ public sealed class FilesPanel : UserControl
         }
         if (onProgram) DrawChip(g, "大屏", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Palette.DangerFill, ModernUi.Palette.DangerFillForeground);
         else if (inPreview) DrawChip(g, "预览", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Palette.Preview, ModernUi.Palette.PreviewForeground);
+        if (item.Unavailable)
+        {
+            const string unavailable = "不可用";
+            int width = TextRenderer.MeasureText(unavailable, badgeFont, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
+            DrawChip(g, unavailable, badgeFont, new Point(thumb.Right - width - 6, thumb.Top + 6),
+                ModernUi.Palette.IsHighContrast ? SystemColors.Highlight : ModernUi.Palette.DangerFill,
+                ModernUi.Palette.IsHighContrast ? SystemColors.HighlightText : ModernUi.Palette.DangerFillForeground);
+        }
 
         // Name (with ⋯ on the same row) and the meta line (kind · size).
         string name = Path.GetFileName(item.File.SourcePath);
@@ -1254,7 +1270,8 @@ public sealed class FilesPanel : UserControl
                 TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
         if (item.Meta.Length > 0)
             using (var metaFont = new Font(ModernUi.UiFont, 8F))
-                TextRenderer.DrawText(g, item.Meta, metaFont, layout.Meta, ModernUi.Muted,
+                TextRenderer.DrawText(g, item.Meta, metaFont, layout.Meta,
+                    item.Unavailable && !ModernUi.Palette.IsHighContrast ? ModernUi.Palette.Danger : ModernUi.Muted,
                     TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
 
         using (var dots = new SolidBrush(ModernUi.Muted))

@@ -80,6 +80,9 @@ internal static class DocumentTests
         // The viewport test does not exercise persistence; avoid 34 redundant atomic file replacements.
         var files = (List<MediaFile>)library.Files;
         for (int i = 1; i < 35; i++) files.Add(new MediaFile { SourcePath = imagePath, Kind = MediaKind.Image });
+        string missingPath = Path.Combine(directory, "missing-viewport.png");
+        var missing = new MediaFile { SourcePath = missingPath, Kind = MediaKind.Image };
+        files.Insert(0, missing);
         using var form = new Form { ClientSize = new Size(700, 480), ShowInTaskbar = false, Opacity = 0,
             StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
         using var panel = new FilesPanel(library, new EveryStage.Terminal.Logging.FileOperationLogger(directory),
@@ -91,6 +94,13 @@ internal static class DocumentTests
         var loaded = (Dictionary<string, Image>)typeof(FilesPanel).GetField("_thumbnailByFileId", flags)!.GetValue(panel)!;
         Require(WaitFor(() => grid.VisibleItems().Count > 0 && grid.VisibleItems().All(item => loaded.ContainsKey(item.File.Id.ToString())), 5000),
             "Visible thumbnails did not load.");
+        var missingItem = grid.Items[0];
+        Require(missingItem.Unavailable && missingItem.ToolTip.Contains("文件不可用") && missingItem.Meta.Contains("文件不可用"),
+            "A missing visible file was not marked unavailable.");
+        using (var restored = new Bitmap(40, 30)) restored.Save(missingPath, ImageFormat.Png);
+        panel.Refresh_();
+        Require(WaitFor(() => loaded.ContainsKey(missing.Id.ToString()) && !grid.Items[0].Unavailable, 5000)
+            && !grid.Items[0].ToolTip.Contains("文件不可用"), "A restored file retained its unavailable status after refresh.");
         Require(loaded.Count < grid.Items.Count && !loaded.ContainsKey(grid.Items[^1].File.Id.ToString()),
             "Offscreen thumbnails were loaded eagerly.");
         string initial = grid.Items[0].File.Id.ToString();
@@ -105,7 +115,7 @@ internal static class DocumentTests
         Require(WaitFor(() => grid.VisibleItems().All(item => loaded.ContainsKey(item.File.Id.ToString()))
             && loaded.Keys.All(key => grid.VisibleItems().Any(item => item.File.Id.ToString() == key)), 5000),
             "Resizing did not update visible thumbnails.");
-        Console.WriteLine("PASS: thumbnails load for visible rows, update on scrolling/resizing and release offscreen images");
+        Console.WriteLine("PASS: visible thumbnails, scrolling/resizing, offscreen release and missing/restored file status");
     }
 
     private static void TestHotkeyRegistration()

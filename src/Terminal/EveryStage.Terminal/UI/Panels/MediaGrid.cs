@@ -17,8 +17,9 @@ internal sealed class MediaGrid : Control
     public sealed class Item
     {
         public required MediaFile File { get; init; }
-        public string Meta { get; init; } = "";
-        public string ToolTip { get; init; } = "";
+        public string Meta { get; set; } = "";
+        public string ToolTip { get; set; } = "";
+        public bool Unavailable { get; set; }
         public bool Selected { get; set; }
     }
 
