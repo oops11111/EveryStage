@@ -69,6 +69,10 @@ internal static class DocumentTests
         requestCard.Size = new Size(400, 96);
         requestType.GetMethod("Show", new[] { typeof(string), typeof(string) })!.Invoke(requestCard, new object[] { "测试设备", "123 456" });
         using var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
+        using var infoToast = new ToastNotification("已上屏", ToastSeverity.Info);
+        using var warningToast = new ToastNotification("提示", ToastSeverity.Warning);
+        using var criticalToast = new ToastNotification("错误", ToastSeverity.Critical);
+        static Panel ToastStripe(ToastNotification toast) => toast.Controls.OfType<Panel>().Single();
         combo.Items.Add("测试");
         combo.SelectedIndex = 0;
         ModernUi.StyleComboBox(combo);
@@ -82,6 +86,9 @@ internal static class DocumentTests
         form.Controls.Add(surfaceLabel);
         form.Controls.Add(requestCard);
         form.Controls.Add(combo);
+        form.Controls.Add(infoToast);
+        form.Controls.Add(warningToast);
+        form.Controls.Add(criticalToast);
         form.Controls.Add(presenter);
         form.Controls.Add(dock);
         var runControls = new Panel();
@@ -101,6 +108,9 @@ internal static class DocumentTests
                 var palette = UiPalette.For(theme);
                 Require(warningLabel.ForeColor == palette.Warning && accentLabel.ForeColor == palette.Accent,
                     $"Explicit text roles did not follow {theme}.");
+                Require(infoToast.BackColor == palette.SurfaceRaised && ToastStripe(infoToast).BackColor == palette.Accent
+                    && ToastStripe(warningToast).BackColor == palette.Warning && ToastStripe(criticalToast).BackColor == palette.Danger,
+                    $"Open notification colours did not follow {theme}.");
                 Require(surfaceLabel.BackColor == palette.Surface, $"Explicit background role did not follow {theme}.");
                 Require(button.BackColor == palette.AccentFill && button.ForeColor == Color.White, "Primary role drifted during theme switching.");
                 double Channel(byte value) { double c = value / 255d; return c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4); }
@@ -131,6 +141,9 @@ internal static class DocumentTests
                     && monitorMenuColors.MenuBorder == SystemColors.WindowText,
                     "Text or monitor menu roles did not yield to high contrast.");
                 Require(surfaceLabel.BackColor == SystemColors.Window, "Explicit background role did not yield to high contrast.");
+                Require(infoToast.BackColor == SystemColors.Window && ToastStripe(infoToast).BackColor == SystemColors.WindowText
+                    && ToastStripe(warningToast).BackColor == SystemColors.WindowText && ToastStripe(criticalToast).BackColor == SystemColors.WindowText,
+                    "Open notification colours did not yield to high contrast.");
                 using (var requestImage = new Bitmap(requestCard.Width, requestCard.Height))
                 {
                     requestCard.DrawToBitmap(requestImage, requestCard.ClientRectangle);
@@ -313,6 +326,31 @@ internal static class DocumentTests
             var emergency = (Button)typeof(MainWindow).GetField("_emergencyStop", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
             Require(emergency.BackColor == SystemColors.Highlight && emergency.ForeColor == SystemColors.HighlightText,
                 "Emergency button ignored system high contrast.");
+            var drawer = (Control)typeof(MainWindow).GetField("_musicDrawer", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+            var tracks = (ListBox)drawer.GetType().GetField("_tracks", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(drawer)!;
+            using (var selectedRow = new Bitmap(300, 26))
+            using (var graphics = Graphics.FromImage(selectedRow))
+            {
+                var draw = new DrawItemEventArgs(graphics, tracks.Font, new Rectangle(0, 0, 300, 26), 0, DrawItemState.Selected);
+                drawer.GetType().GetMethod("DrawRow", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                    .Invoke(drawer, new object[] { tracks, draw, "歌曲", "文件不存在", true, true });
+                Require(selectedRow.GetPixel(295, 3).ToArgb() == SystemColors.Highlight.ToArgb(),
+                    "Music selection did not use the high-contrast highlight background.");
+                bool foregroundFound = false;
+                for (int y = 2; y < 24 && !foregroundFound; y++)
+                    for (int x = 8; x < 280; x++)
+                        if (selectedRow.GetPixel(x, y).ToArgb() == SystemColors.HighlightText.ToArgb()) { foregroundFound = true; break; }
+                Require(foregroundFound, "Selected music row did not draw text with the matching system foreground.");
+            }
+            drawer.GetType().GetMethod("Open")!.Invoke(drawer, null);
+            Pump(300);
+            using (var drawerShot = new Bitmap(window.Width, window.Height))
+            {
+                window.DrawToBitmap(drawerShot, new Rectangle(Point.Empty, window.Size));
+                drawerShot.Save(Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots", "simulated-highcontrast-music-drawer.png"), ImageFormat.Png);
+            }
+            drawer.GetType().GetMethod("Close")!.Invoke(drawer, null);
+            Pump(300);
             using var contrastShot = new Bitmap(window.Width, window.Height);
             window.DrawToBitmap(contrastShot, new Rectangle(Point.Empty, window.Size));
             contrastShot.Save(Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots", "simulated-system-highcontrast.png"), ImageFormat.Png);

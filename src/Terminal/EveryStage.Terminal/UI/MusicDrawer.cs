@@ -62,7 +62,7 @@ internal sealed class MusicDrawer : Panel
         Visible = false;
 
         _sheet = new SheetPanel { BackColor = Color.Transparent };
-        _heading = new Label { Text = "背景音乐歌单", AutoEllipsis = true, BackColor = Color.Transparent, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFont, 10.5F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
+        _heading = ModernUi.SetForegroundRole(new Label { Text = "背景音乐歌单", AutoEllipsis = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 10.5F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft }, UiForegroundRole.Text);
         _collapse = Button("收起 ▾", "收起歌单（Esc）", Close);
 
         _playlistLabel = Caption("歌单");
@@ -155,9 +155,9 @@ internal sealed class MusicDrawer : Panel
 
         RefreshPlaylists(Library.Current);
 
-        Label Caption(string text) => new() { Text = text, AutoEllipsis = true, BackColor = Color.Transparent, ForeColor = ModernUi.Muted, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.BottomLeft };
+        Label Caption(string text) => ModernUi.SetForegroundRole(new Label { Text = text, AutoEllipsis = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.BottomLeft }, UiForegroundRole.Muted);
 
-        CheckBox Check(string text) => new() { Text = text, AutoSize = true, BackColor = Color.Transparent, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFont, 9F) };
+        CheckBox Check(string text) => ModernUi.SetForegroundRole(new CheckBox { Text = text, AutoSize = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9F) }, UiForegroundRole.Text);
 
         RoundedActionButton Button(string text, string tip, Action onClick)
         {
@@ -406,22 +406,27 @@ internal sealed class MusicDrawer : Panel
     {
         var g = e.Graphics;
         bool selected = (e.State & DrawItemState.Selected) != 0;
-        using (var background = new SolidBrush(selected ? ModernUi.Mix(list.BackColor, ModernUi.Accent, 0.22f) : list.BackColor))
+        var palette = ModernUi.PaletteFor(this);
+        bool selectedHighContrast = selected && palette.IsHighContrast;
+        using (var background = new SolidBrush(selectedHighContrast ? SystemColors.Highlight : selected ? ModernUi.Mix(list.BackColor, palette.Accent, 0.22f) : list.BackColor))
             g.FillRectangle(background, e.Bounds);
+        Color textColor = selectedHighContrast ? SystemColors.HighlightText : playing ? ModernUi.AccentText : palette.Text;
+        Color noteColor = selectedHighContrast ? SystemColors.HighlightText : warn ? palette.Danger : palette.Muted;
         int left = e.Bounds.Left + S(8);
         if (playing)
         {
             using var font = new Font(ModernUi.UiFont, 8F);
-            TextRenderer.DrawText(g, "♪", font, new Rectangle(left, e.Bounds.Top, S(14), e.Bounds.Height), ModernUi.AccentText, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, "♪", font, new Rectangle(left, e.Bounds.Top, S(14), e.Bounds.Height), textColor, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             left += S(14);
         }
         int noteWidth = note.Length == 0 ? 0 : TextRenderer.MeasureText(note, e.Font).Width + S(8);
         var textRect = Rectangle.FromLTRB(left, e.Bounds.Top, e.Bounds.Right - S(6) - noteWidth, e.Bounds.Bottom);
-        TextRenderer.DrawText(g, text, e.Font, textRect, playing ? ModernUi.AccentText : ModernUi.Text,
+        TextRenderer.DrawText(g, text, e.Font, textRect, textColor,
             TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         if (noteWidth > 0)
             TextRenderer.DrawText(g, note, e.Font, Rectangle.FromLTRB(e.Bounds.Right - S(6) - noteWidth, e.Bounds.Top, e.Bounds.Right - S(6), e.Bounds.Bottom),
-                warn ? ModernUi.Danger : ModernUi.Muted, TextFormatFlags.VerticalCenter | TextFormatFlags.Right | TextFormatFlags.NoPrefix);
+                noteColor, TextFormatFlags.VerticalCenter | TextFormatFlags.Right | TextFormatFlags.NoPrefix);
+        if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
     }
 
     private void RefreshPlaylists(Playlist? select)
@@ -610,7 +615,8 @@ internal sealed class MusicDrawer : Panel
         protected override void OnPaintBackground(PaintEventArgs e)
         {
             var g = e.Graphics;
-            using (var page = new SolidBrush(ModernUi.Background)) g.FillRectangle(page, ClientRectangle);
+            var palette = ModernUi.PaletteFor(this);
+            using (var page = new SolidBrush(palette.Background)) g.FillRectangle(page, ClientRectangle);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             int r = LogicalToDeviceUnits(12);
             var rect = new Rectangle(0, 0, Width - 1, Height + r); // bottom corners hidden below the edge
@@ -620,11 +626,11 @@ internal sealed class MusicDrawer : Panel
             path.AddLine(rect.Right, rect.Top + r, rect.Right, rect.Bottom);
             path.AddLine(rect.Left, rect.Bottom, rect.Left, rect.Top + r);
             path.CloseFigure();
-            using (var fill = new SolidBrush(ModernUi.SurfaceRaised)) g.FillPath(fill, path);
-            using (var border = new Pen(ModernUi.Mix(ModernUi.SurfaceRaised, ModernUi.Border, 0.6f))) g.DrawPath(border, path);
+            using (var fill = new SolidBrush(palette.IsHighContrast ? palette.Surface : palette.SurfaceRaised)) g.FillPath(fill, path);
+            using (var border = new Pen(palette.IsHighContrast ? palette.Border : ModernUi.Mix(palette.SurfaceRaised, palette.Border, 0.6f))) g.DrawPath(border, path);
             // Grab handle.
             int hw = LogicalToDeviceUnits(36), hh = LogicalToDeviceUnits(4);
-            using var handle = new SolidBrush(ModernUi.Mix(ModernUi.SurfaceRaised, ModernUi.Muted, 0.45f));
+            using var handle = new SolidBrush(palette.IsHighContrast ? palette.Text : ModernUi.Mix(palette.SurfaceRaised, palette.Muted, 0.45f));
             using var pill = new GraphicsPath();
             var hr = new Rectangle((Width - hw) / 2, LogicalToDeviceUnits(5), hw, hh);
             pill.AddArc(hr.Left, hr.Top, hh, hh, 90, 180);

@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 namespace EveryStage.Terminal.UI;
 
 internal enum UiForegroundRole { Text, Muted, Accent, Warning, Success, Danger }
-internal enum UiBackgroundRole { Transparent, Background, Rail, Surface, SurfaceRaised }
+internal enum UiBackgroundRole { Transparent, Background, Rail, Surface, SurfaceRaised, ContentRaised, Accent, Warning, Danger }
 
 internal static class ModernUi
 {
@@ -27,6 +27,10 @@ internal static class ModernUi
             UiBackgroundRole.Rail => palette.Rail,
             UiBackgroundRole.Surface => palette.Surface,
             UiBackgroundRole.SurfaceRaised => palette.SurfaceRaised,
+            UiBackgroundRole.ContentRaised => palette.IsHighContrast ? palette.Surface : palette.SurfaceRaised,
+            UiBackgroundRole.Accent => palette.IsHighContrast ? palette.Text : palette.Accent,
+            UiBackgroundRole.Warning => palette.Warning,
+            UiBackgroundRole.Danger => palette.Danger,
             _ => palette.Background,
         };
         return true;

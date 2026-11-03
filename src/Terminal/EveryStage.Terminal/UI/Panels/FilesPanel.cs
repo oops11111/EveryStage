@@ -1193,7 +1193,7 @@ public sealed class FilesPanel : UserControl
         cardRect.Width -= 1;
         cardRect.Height -= 1;
         bool flashing = string.Equals(media?.SourcePath, _flashPath, StringComparison.OrdinalIgnoreCase) && _flashPath != null;
-        Color borderColor = onProgram || flashing ? ModernUi.Palette.ProgramBorder : inPreview ? ModernUi.Palette.Preview : selected ? ModernUi.Accent : Blend(ModernUi.Surface, ModernUi.Border, 0.45);
+        Color borderColor = onProgram || flashing ? ModernUi.Palette.ProgramBorder : inPreview ? ModernUi.Palette.Preview : selected ? ModernUi.Accent : ModernUi.Palette.IsHighContrast ? ModernUi.Border : Blend(ModernUi.Surface, ModernUi.Border, 0.45);
         float borderWidth = flashing ? 3F : onProgram || inPreview ? 2F : selected ? 1.6F : 1F;
         using (var path = RoundedCard(cardRect, 9))
         {

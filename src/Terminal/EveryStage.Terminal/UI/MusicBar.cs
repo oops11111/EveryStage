@@ -48,16 +48,16 @@ internal sealed class MusicBar : Panel
         DoubleBuffered = true;
         Height = 56;
 
-        _title = new Label { AutoEllipsis = true, ForeColor = ModernUi.Text, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9.5F), TextAlign = ContentAlignment.BottomLeft };
-        _subtitle = new Label { AutoEllipsis = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8F), TextAlign = ContentAlignment.TopLeft };
+        _title = ModernUi.SetForegroundRole(new Label { AutoEllipsis = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9.5F), TextAlign = ContentAlignment.BottomLeft }, UiForegroundRole.Text);
+        _subtitle = ModernUi.SetForegroundRole(new Label { AutoEllipsis = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8F), TextAlign = ContentAlignment.TopLeft }, UiForegroundRole.Muted);
         _previous = IconButton("", "上一首（播放 3 秒后为从头播放）");
         _playPause = IconButton("", "播放 / 暂停背景音乐");
         ModernUi.StyleButton(_playPause, primary: true);
         _playPause.Font = new Font(IconFont, 10F);
         _next = IconButton("", "下一首");
         _progress = new MediaTrack();
-        _time = new Label { ForeColor = ModernUi.Muted, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft };
-        _volumeIcon = new Label { Text = "", Font = new Font(IconFont, 10F), ForeColor = ModernUi.Muted, BackColor = Color.Transparent, TextAlign = ContentAlignment.MiddleCenter };
+        _time = ModernUi.SetForegroundRole(new Label { BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft }, UiForegroundRole.Muted);
+        _volumeIcon = ModernUi.SetForegroundRole(new Label { Text = "", Font = new Font(IconFont, 10F), BackColor = Color.Transparent, TextAlign = ContentAlignment.MiddleCenter }, UiForegroundRole.Muted);
         _volume = new MediaTrack { Value = music.Volume };
         _fadeOut = TextButton("淡出", "3 秒内淡出后停止");
         _playlists = TextButton("歌单 ▴", "展开歌单");
@@ -157,10 +157,11 @@ internal sealed class MusicBar : Panel
         base.OnPaint(e);
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var line = new Pen(ModernUi.Mix(ModernUi.Background, ModernUi.Border, 0.45f)))
+        var palette = ModernUi.PaletteFor(this);
+        using (var line = new Pen(palette.IsHighContrast ? palette.Border : ModernUi.Mix(palette.Background, palette.Border, 0.45f)))
             g.DrawLine(line, 0, 0, Width, 0);
         // ♪ glyph in the music colour.
-        var color = Color.FromArgb(139, 116, 240);
+        var color = palette.IsHighContrast ? palette.Text : Color.FromArgb(139, 116, 240);
         int cy = Height / 2 + S(2);
         using var pen = new Pen(color, S(2)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
         using var brush = new SolidBrush(color);
@@ -177,19 +178,19 @@ internal sealed class MusicBar : Panel
         string? track = _music.CurrentTrack;
         if (_music.LastError is { } error)
         {
-            Set(_title, "背景音乐", ModernUi.Text);
-            Set(_subtitle, error, ModernUi.Danger);
+            Set(_title, "背景音乐", UiForegroundRole.Text);
+            Set(_subtitle, error, UiForegroundRole.Danger);
         }
         else if (track == null || !_music.IsPlaying)
         {
-            Set(_title, playlist == null ? "背景音乐" : playlist.Name, ModernUi.Text);
-            Set(_subtitle, playlist == null ? "还没有歌单 · 点这里新建" : $"{playlist.Tracks.Count} 首 · {ModeText(playlist.Mode)} · 未播放", ModernUi.Muted);
+            Set(_title, playlist == null ? "背景音乐" : playlist.Name, UiForegroundRole.Text);
+            Set(_subtitle, playlist == null ? "还没有歌单 · 点这里新建" : $"{playlist.Tracks.Count} 首 · {ModeText(playlist.Mode)} · 未播放", UiForegroundRole.Muted);
         }
         else
         {
-            Set(_title, Path.GetFileName(track), ModernUi.Text);
+            Set(_title, Path.GetFileName(track), UiForegroundRole.Text);
             string state = _music.IsFadingOut ? " · 淡出中" : _music.IsPaused ? " · 已暂停" : _music.IsDucked ? " · 已压低（大屏视频有声音）" : "";
-            Set(_subtitle, $"{playlist!.Name} · 第 {_music.TrackIndex + 1} / {playlist.Tracks.Count} 首 · {ModeText(playlist.Mode)}{state}", ModernUi.Muted);
+            Set(_subtitle, $"{playlist!.Name} · 第 {_music.TrackIndex + 1} / {playlist.Tracks.Count} 首 · {ModeText(playlist.Mode)}{state}", UiForegroundRole.Muted);
         }
         bool playing = _music.IsPlaying && !_music.IsPaused;
         if (_playPause.Text != (playing ? "" : "")) _playPause.Text = playing ? "" : "";
@@ -213,10 +214,10 @@ internal sealed class MusicBar : Panel
 
     private static string Format(TimeSpan t) => t.TotalHours >= 1 ? $"{(int)t.TotalHours}:{t.Minutes:D2}:{t.Seconds:D2}" : $"{(int)t.TotalMinutes:D2}:{t.Seconds:D2}";
 
-    private static void Set(Control control, string text, Color? color)
+    private static void Set(Control control, string text, UiForegroundRole? role)
     {
         if (control.Text != text) control.Text = text;
-        if (color is { } c && control.ForeColor != c) control.ForeColor = c;
+        if (role is { } r) ModernUi.SetForegroundRole(control, r);
     }
 
     protected override void Dispose(bool disposing)

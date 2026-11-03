@@ -38,34 +38,30 @@ public sealed class ToastNotification : Panel
     {
         int width = ToastStack.ToastWidth;
         const int height = 96; // fixed regardless of action count — see class doc comment on why.
-        BackColor = ModernUi.SurfaceRaised; // themed chrome, same token the nav rail / raised surfaces use.
+        ModernUi.SetBackgroundRole(this, UiBackgroundRole.ContentRaised);
         Width = width;
         Height = height;
 
-        var accentBar = new Panel
+        var accentBar = ModernUi.SetBackgroundRole(new Panel
         {
-            BackColor = severity switch { ToastSeverity.Critical => ModernUi.Danger, ToastSeverity.Info => ModernUi.Accent, _ => ModernUi.Warning },
             Bounds = new Rectangle(0, 0, AccentBarWidth, height),
-        };
+        }, severity switch { ToastSeverity.Critical => UiBackgroundRole.Danger, ToastSeverity.Info => UiBackgroundRole.Accent, _ => UiBackgroundRole.Warning });
 
-        var closeButton = new Button
+        var closeButton = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(new Button
         {
             Text = "×",
             FlatStyle = FlatStyle.Flat,
-            ForeColor = ModernUi.Muted,
-            BackColor = ModernUi.SurfaceRaised,
             Bounds = new Rectangle(width - 28, 6, 20, 20),
-        };
+        }, UiForegroundRole.Muted), UiBackgroundRole.ContentRaised);
         closeButton.FlatAppearance.BorderSize = 0;
         closeButton.Click += (_, _) => Dismissed?.Invoke();
 
-        var messageLabel = new Label
+        var messageLabel = ModernUi.SetForegroundRole(new Label
         {
             Text = message,
-            ForeColor = ModernUi.Text,
             AutoEllipsis = true,
             Bounds = new Rectangle(AccentBarWidth + 8, 8, width - AccentBarWidth - 8 - 28, height - 8 - ActionButtonHeight - 12),
-        };
+        }, UiForegroundRole.Text);
 
         Controls.Add(accentBar);
         Controls.Add(messageLabel);
