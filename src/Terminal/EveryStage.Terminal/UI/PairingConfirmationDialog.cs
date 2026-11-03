@@ -40,6 +40,7 @@ public sealed class PairingConfirmationDialog : Form
             Font = new Font(ModernUi.UiFontSemibold, 28F),
             ForeColor = ModernUi.Accent,
         };
+        ModernUi.SetForegroundRole(codeLabel, UiForegroundRole.Accent);
         var codeHint = new Label
         {
             Text = "请核对投屏机上的数字一致后再接受",

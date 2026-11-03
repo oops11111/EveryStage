@@ -257,9 +257,16 @@ internal static class ModernUi
     {
         foreach (Control child in parent.Controls)
         {
-            child.ForeColor = child.ForeColor is var existing &&
-                (existing == Color.DimGray || existing == Color.DarkRed || existing == Danger)
-                    ? existing : Text;
+            // Translate the legacy dialog hint colours once into semantic roles. Keeping DimGray or
+            // DarkRed as literal colours makes help and warning text unreadable on dark/system themes.
+            if (!ApplyForegroundRole(child, Palette))
+            {
+                var existing = child.ForeColor;
+                var role = existing == Color.DimGray ? UiForegroundRole.Muted
+                    : existing == Color.DarkRed ? UiForegroundRole.Danger
+                    : UiForegroundRole.Text;
+                SetForegroundRole(child, role);
+            }
             child.BackColor = child switch
             {
                 Label or CheckBox or RadioButton => Color.Transparent,

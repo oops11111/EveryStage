@@ -62,6 +62,11 @@ internal static class DocumentTests
         var originalProbe = ThemeManager.HighContrastProbe;
         ThemeManager.HighContrastProbe = () => false;
         using var form = new Form();
+        using var pairingDialog = new PairingConfirmationDialog(new EveryStage.Terminal.Devices.PairingRequest("test", Guid.NewGuid(), "测试设备", "127.0.0.1", "123456"));
+        using var fadeDialog = new FadeDialog("淡入淡出", false, null);
+        var pairingCode = pairingDialog.Controls.OfType<Label>().Single(label => label.Text == "123 456");
+        var pairingHint = pairingDialog.Controls.OfType<Label>().Single(label => label.Text.Contains("监看功能本身"));
+        var fadeWarning = fadeDialog.Controls.OfType<Label>().Single(label => label.Text.Contains("淡出依赖"));
         using var button = new Button();
         using var warningLabel = ModernUi.SetForegroundRole(new Label(), UiForegroundRole.Warning);
         using var accentLabel = ModernUi.SetForegroundRole(new Label(), UiForegroundRole.Accent);
@@ -144,7 +149,11 @@ internal static class DocumentTests
                 surfaceLabel.BackColor = Color.Magenta;
                 ThemeManager.Apply(form, theme);
                 ThemeManager.Apply(secondForm, theme);
+                ThemeManager.Apply(pairingDialog, theme);
+                ThemeManager.Apply(fadeDialog, theme);
                 var palette = UiPalette.For(theme);
+                Require(pairingCode.ForeColor == palette.Accent && pairingHint.ForeColor == palette.Muted && fadeWarning.ForeColor == palette.Danger,
+                    $"Dialog verification code, hint, or warning lost its role under {theme}.");
                 Require(legacyLabel.ForeColor == palette.Muted, $"A second window kept a stale foreground under {theme}.");
                 Require(warningLabel.ForeColor == palette.Warning && accentLabel.ForeColor == palette.Accent,
                     $"Explicit text roles did not follow {theme}.");
@@ -177,6 +186,11 @@ internal static class DocumentTests
             foreach (var theme in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.Tech, AppTheme.System })
             {
                 ThemeManager.Apply(form, theme);
+                ThemeManager.Apply(pairingDialog, theme);
+                ThemeManager.Apply(fadeDialog, theme);
+                Require(pairingCode.ForeColor == SystemColors.WindowText && pairingHint.ForeColor == SystemColors.WindowText
+                    && fadeWarning.ForeColor == SystemColors.WindowText,
+                    "Dialog text did not yield to system high contrast.");
                 Require(ModernUi.Palette.IsHighContrast && ModernUi.Background == SystemColors.Window,
                     "System high contrast did not override a configured theme.");
                 Require(warningLabel.ForeColor == SystemColors.WindowText && accentLabel.ForeColor == SystemColors.WindowText
@@ -254,8 +268,15 @@ internal static class DocumentTests
                     rowHost.SelectedNode = fileNode;
                 }
             }
+            using var contrastFadeDialog = new FadeDialog("淡入淡出", false, null);
+            var contrastWarning = contrastFadeDialog.Controls.OfType<Label>().Single(label => label.Text.Contains("淡出依赖"));
+            var contrastPlainLabel = contrastFadeDialog.Controls.OfType<Label>().Single(label => label.Text == "秒");
             ThemeManager.HighContrastProbe = () => false;
             ThemeManager.Apply(form, AppTheme.Tech);
+            ThemeManager.Apply(contrastFadeDialog, AppTheme.Tech);
+            Require(contrastWarning.ForeColor == UiPalette.Normal(AppTheme.Tech).Danger
+                && contrastPlainLabel.ForeColor == UiPalette.Normal(AppTheme.Tech).Text,
+                "A dialog created in high contrast could not restore distinct warning and ordinary text roles.");
             Require(!ModernUi.Palette.IsHighContrast && button.BackColor == UiPalette.Normal(AppTheme.Tech).AccentFill,
                 "Leaving high contrast did not restore the configured theme.");
             Require(dock.BackColor == UiPalette.Normal(AppTheme.Dark).Rail && take.BackColor == UiPalette.Normal(AppTheme.Dark).AccentFill,
