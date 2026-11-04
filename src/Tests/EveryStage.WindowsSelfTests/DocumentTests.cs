@@ -576,6 +576,7 @@ internal static class DocumentTests
         public string? MusicCueText(StageActivity activity) => null;
         public Image? ThumbnailFor(MediaFile file) => null;
         public bool? IsUnavailable(MediaFile file) => null;
+        public (FilesPanel.CardProgress Progress, bool OnProgram)? ProgressFor(MediaFile file) => null;
         public void RowNodeClicked(TreeNode node) { }
         public void RowNodeDoubleClicked(TreeNode node) { }
         public void RowContextMenu(TreeNode node, Control source, Point location) { }
@@ -730,13 +731,31 @@ internal static class DocumentTests
         Require(WaitFor(() => previewEngine.State == PlaybackChannelState.Playing && previewEngine.PdfView != null, 10000),
             "Progress PDF did not open in preview.");
         Require(FilesPanel.CardPlaybackProgress(progressFile, previewEngine)?.PageLabel == "1/3", "File card did not report the first PDF page.");
+        var activityHost = (IActivityRowHost)typeof(MainWindow).GetField("_activitiesPanel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+        Require(activityHost.ProgressFor(progressFile) is { OnProgram: false, Progress.PageLabel: "1/3" },
+            "Activity row did not report the preview PDF page.");
+        Require(activityHost.ProgressFor(progressFile.Clone()) == null, "Another activity item sharing the same path showed preview progress.");
         previewEngine.PdfView!.GoToPage(2);
         Require(FilesPanel.CardPlaybackProgress(progressFile, previewEngine)?.PageLabel == "2/3", "File card did not follow PDF page navigation.");
+        Require(activityHost.ProgressFor(progressFile) is { OnProgram: false, Progress.PageLabel: "2/3" },
+            "Activity row did not follow preview PDF navigation.");
+        feedbackProgram.RequestPlay(progressFile);
+        Require(WaitFor(() => feedbackProgram.State == PlaybackChannelState.Playing && feedbackProgram.PdfView != null, 10000),
+            "Progress PDF did not open on program.");
+        Require(activityHost.ProgressFor(progressFile) is { OnProgram: true, Progress.PageLabel: "1/3" },
+            "Activity row did not prefer the live program page to the preview page.");
+        feedbackProgram.PdfView!.GoToPage(3);
+        Require(activityHost.ProgressFor(progressFile) is { OnProgram: true, Progress.PageLabel: "3/3" },
+            "Activity row did not follow the program PDF page.");
+        feedbackProgram.Stop();
+        Require(activityHost.ProgressFor(progressFile) is { OnProgram: false, Progress.PageLabel: "2/3" },
+            "Activity row did not return to preview progress after program stopped.");
         Require(FilesPanel.CardPlaybackProgress(new MediaFile { SourcePath = Path.Combine(dir, "other.pdf"), Kind = MediaKind.Document }, previewEngine) == null,
             "File card showed another file's playback position.");
         previewEngine.Stop();
         Require(FilesPanel.CardPlaybackProgress(progressFile, previewEngine) == null, "Stopped playback retained file card progress.");
-        Console.WriteLine("PASS: file card progress tracks real PDF pages and clears on stop");
+        Require(activityHost.ProgressFor(progressFile) == null, "Stopped playback retained activity row progress.");
+        Console.WriteLine("PASS: file and activity progress track real PDF pages, item identity and stop");
         CaptureMainWindow(window, dir);
         var savedProbe = ThemeManager.HighContrastProbe;
         try

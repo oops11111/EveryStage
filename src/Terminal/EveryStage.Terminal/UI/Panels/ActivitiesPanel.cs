@@ -365,7 +365,13 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _liveTimer.Tick += (_, _) =>
         {
             var live = LiveEngine?.CurrentFile;
-            if (ReferenceEquals(live, _lastLiveFile)) return;
+            if (ReferenceEquals(live, _lastLiveFile))
+            {
+                if (Visible && (ProgramEngine?.Invoke() is { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused }
+                    || _playback is { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused }))
+                    foreach (Control row in _activityRows.Controls) row.Invalidate();
+                return;
+            }
             _lastLiveFile = live;
             RefreshCardStyles();
         };
@@ -989,12 +995,24 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         int index = order.FindIndex(o => ReferenceEquals(o.Activity.Files[o.Index], file));
         if (index < 0) return RunRowState.Pending;
         int live = LivePosition(order);
-        if (index == live) return RunRowState.Live;
+        if (index == live) return ProgramIsOnAir(file) ? RunRowState.Live : RunRowState.Pending;
         if (index == NextPosition(order)) return RunRowState.Next;
         return live >= 0 && index < live ? RunRowState.Done : RunRowState.Pending;
     }
 
     MediaFile? IActivityRowHost.PreviewFile => _playback is { State: not PlaybackChannelState.Idle } preview ? preview.CurrentFile : null;
+
+    private bool ProgramIsOnAir(MediaFile file) => _stateMachine.State == OutputState.Active
+        && _stateMachine.Source == ProgramSource.LocalMedia && ReferenceEquals(ProgramEngine?.Invoke()?.CurrentFile, file);
+
+    (FilesPanel.CardProgress Progress, bool OnProgram)? IActivityRowHost.ProgressFor(MediaFile file)
+    {
+        if (ProgramIsOnAir(file) && FilesPanel.CardPlaybackProgress(file, ProgramEngine?.Invoke()) is { } program)
+            return (program, true);
+        if (ReferenceEquals(_playback?.CurrentFile, file) && FilesPanel.CardPlaybackProgress(file, _playback) is { } preview)
+            return (preview, false);
+        return null;
+    }
 
     /// <summary>「下一项 ▶」 / space: put the next item on the big screen.</summary>
     private void GoNext()

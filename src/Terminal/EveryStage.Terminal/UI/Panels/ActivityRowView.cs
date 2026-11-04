@@ -21,6 +21,7 @@ internal interface IActivityRowHost
     string? MusicCueText(Activity activity);
     Image? ThumbnailFor(MediaFile file);
     bool? IsUnavailable(MediaFile file);
+    (FilesPanel.CardProgress Progress, bool OnProgram)? ProgressFor(MediaFile file);
     void RowNodeClicked(TreeNode node);
     void RowNodeDoubleClicked(TreeNode node);
     void RowContextMenu(TreeNode node, Control source, Point location);
@@ -361,6 +362,28 @@ internal sealed class ActivityRowView : Control
             TextRenderer.DrawText(g, "!", BadgeFont, warning,
                 highContrast ? SystemColors.HighlightText : ModernUi.Palette.DangerFillForeground,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        }
+
+        if (!unavailable && _host.ProgressFor(file) is { } progress)
+        {
+            Color fillColor = highContrast ? SystemColors.Highlight : progress.OnProgram ? ModernUi.Palette.DangerFill : ModernUi.Palette.Preview;
+            Color textColor = highContrast ? SystemColors.HighlightText : progress.OnProgram ? ModernUi.Palette.DangerFillForeground : ModernUi.Palette.PreviewForeground;
+            if (progress.Progress.PageLabel is { } page)
+            {
+                var measured = TextRenderer.MeasureText(page, BadgeFont, Size.Empty, TextFormatFlags.NoPadding);
+                var label = new Rectangle(thumb.Right - measured.Width - S(9), thumb.Top + S(3), measured.Width + S(6), S(15));
+                using (var path = RoundedBox(label, S(3)))
+                using (var brush = new SolidBrush(fillColor)) g.FillPath(brush, path);
+                TextRenderer.DrawText(g, page, BadgeFont, label, textColor,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            }
+            if (progress.Progress.Fraction is { } fraction)
+            {
+                var bar = new Rectangle(thumb.Left + S(2), thumb.Bottom - S(3), Math.Max(1, thumb.Width - S(4)), Math.Max(1, S(2)));
+                using (var background = new SolidBrush(highContrast ? SystemColors.Window : Color.FromArgb(160, 0, 0, 0))) g.FillRectangle(background, bar);
+                using var progressBrush = new SolidBrush(fillColor);
+                g.FillRectangle(progressBrush, bar.Left, bar.Top, (int)Math.Round(bar.Width * fraction), bar.Height);
+            }
         }
 
         if (c.Wide)
