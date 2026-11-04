@@ -78,6 +78,9 @@ public sealed class FilesPanel : UserControl
     // Managed keyed images are reliable for owner-drawn Tile items even when the native
     // LargeImageList is intentionally not assigned.
     private readonly Dictionary<string, Image> _thumbnailByFileId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string?> _visibleThumbnailKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Windows.Forms.Timer _visibleFileCheckTimer = new() { Interval = 3000 };
+    private bool _visibleFileCheckRunning;
     private CancellationTokenSource? _thumbnailLoad;
     private CancellationToken _thumbnailPassToken; // token of the thumbnail pass already running (or done)
     private bool _thumbnailPassRunning;
@@ -342,6 +345,9 @@ public sealed class FilesPanel : UserControl
         };
         _audioBarRefreshTimer.Start();
 
+        _visibleFileCheckTimer.Tick += (_, _) => _ = RefreshVisibleFileStatesAsync();
+        _visibleFileCheckTimer.Start();
+
         Refresh_();
     }
 
@@ -353,9 +359,11 @@ public sealed class FilesPanel : UserControl
             _thumbnailLoad?.Cancel();
             _thumbnailLoad?.Dispose();
             _thumbnailLoad = null;
+            _visibleFileCheckTimer.Dispose();
             _toolbarMenu.Dispose();
             foreach (var image in _thumbnailByFileId.Values) image.Dispose();
             _thumbnailByFileId.Clear();
+            _visibleThumbnailKeys.Clear();
             foreach (var image in _thumbnailCache.Values) image.Dispose();
             _thumbnailCache.Clear();
             _thumbnailCacheOrder.Clear();
@@ -877,6 +885,7 @@ public sealed class FilesPanel : UserControl
         _thumbnailLoad = new CancellationTokenSource();
         foreach (var image in _thumbnailByFileId.Values) image.Dispose();
         _thumbnailByFileId.Clear();
+        _visibleThumbnailKeys.Clear();
         var items = new List<MediaGrid.Item>();
 
         // Audio has its own persistent horizontal player area; keep it out of the visual-media
@@ -916,8 +925,44 @@ public sealed class FilesPanel : UserControl
         {
             _thumbnailByFileId[key].Dispose();
             _thumbnailByFileId.Remove(key);
+            _visibleThumbnailKeys.Remove(key);
         }
         if (IsHandleCreated) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
+    }
+
+    private async Task RefreshVisibleFileStatesAsync()
+    {
+        if (_visibleFileCheckRunning || !Visible || !IsHandleCreated || _thumbnailLoad == null || IsDisposed || Disposing) return;
+        var token = _thumbnailLoad.Token;
+        var snapshot = _grid.VisibleItems()
+            .Where(item => _visibleThumbnailKeys.ContainsKey(item.File.Id.ToString()))
+            .Select(item => (Item: item, PreviousKey: _visibleThumbnailKeys[item.File.Id.ToString()])).ToArray();
+        if (snapshot.Length == 0) return;
+        _visibleFileCheckRunning = true;
+        try
+        {
+            var observed = await Task.Run(() => snapshot.Select(entry =>
+                (entry.Item, entry.PreviousKey, CurrentKey: ThumbnailCacheKey(entry.Item.File))).ToArray());
+            if (token.IsCancellationRequested || IsDisposed || Disposing || !Visible) return;
+            var visible = _grid.VisibleItems().ToHashSet();
+            bool changed = false;
+            foreach (var entry in observed)
+            {
+                string id = entry.Item.File.Id.ToString();
+                if (!visible.Contains(entry.Item) || !_visibleThumbnailKeys.TryGetValue(id, out var current)
+                    || current != entry.PreviousKey || current == entry.CurrentKey) continue;
+                if (_thumbnailByFileId.Remove(id, out var old)) old.Dispose();
+                _visibleThumbnailKeys.Remove(id);
+                changed = true;
+            }
+            if (changed)
+            {
+                _grid.Invalidate();
+                _ = LoadThumbnailsAsync(token);
+            }
+        }
+        catch (Exception ex) { System.Diagnostics.Trace.TraceError("Visible file check failed: {0}", ex); }
+        finally { _visibleFileCheckRunning = false; }
     }
 
     private async Task LoadThumbnailsAsync(CancellationToken token)
@@ -983,6 +1028,7 @@ public sealed class FilesPanel : UserControl
                         visibleItem.Meta = meta;
                         visibleItem.ToolTip = toolTip;
                         _thumbnailByFileId.Add(key, (Image)thumbnail.Clone());
+                        _visibleThumbnailKeys[key] = cacheKey;
                     }
                     _grid.Invalidate();
                 }

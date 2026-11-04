@@ -98,9 +98,22 @@ internal static class DocumentTests
         Require(missingItem.Unavailable && missingItem.ToolTip.Contains("文件不可用") && missingItem.Meta.Contains("文件不可用"),
             "A missing visible file was not marked unavailable.");
         using (var restored = new Bitmap(40, 30)) restored.Save(missingPath, ImageFormat.Png);
-        panel.Refresh_();
-        Require(WaitFor(() => loaded.ContainsKey(missing.Id.ToString()) && !grid.Items[0].Unavailable, 5000)
-            && !grid.Items[0].ToolTip.Contains("文件不可用"), "A restored file retained its unavailable status after refresh.");
+        Require(WaitFor(() => loaded.ContainsKey(missing.Id.ToString()) && !grid.Items[0].Unavailable, 9000)
+            && !grid.Items[0].ToolTip.Contains("文件不可用"), "A restored visible file retained its unavailable status.");
+        File.Delete(missingPath);
+        Require(WaitFor(() => loaded.ContainsKey(missing.Id.ToString()) && grid.Items[0].Unavailable, 9000),
+            "A removed visible file was not marked unavailable automatically.");
+        using (var restored = new Bitmap(40, 30)) restored.Save(missingPath, ImageFormat.Png);
+        Require(WaitFor(() => loaded.ContainsKey(missing.Id.ToString()) && !grid.Items[0].Unavailable, 9000),
+            "A visible file did not recover after being restored again.");
+        using (var changed = new Bitmap(80, 40))
+        using (var graphics = Graphics.FromImage(changed))
+        {
+            graphics.Clear(Color.Lime);
+            changed.Save(missingPath, ImageFormat.Png);
+        }
+        Require(WaitFor(() => loaded.TryGetValue(missing.Id.ToString(), out var image)
+            && ((Bitmap)image).GetPixel(120, 75).G > 200, 9000), "An edited visible image did not refresh its thumbnail.");
         Require(loaded.Count < grid.Items.Count && !loaded.ContainsKey(grid.Items[^1].File.Id.ToString()),
             "Offscreen thumbnails were loaded eagerly.");
         string initial = grid.Items[0].File.Id.ToString();
@@ -115,7 +128,7 @@ internal static class DocumentTests
         Require(WaitFor(() => grid.VisibleItems().All(item => loaded.ContainsKey(item.File.Id.ToString()))
             && loaded.Keys.All(key => grid.VisibleItems().Any(item => item.File.Id.ToString() == key)), 5000),
             "Resizing did not update visible thumbnails.");
-        Console.WriteLine("PASS: visible thumbnails, scrolling/resizing, offscreen release and missing/restored file status");
+        Console.WriteLine("PASS: visible thumbnails, scrolling/resizing, offscreen release and automatic missing/restored/edited file updates");
     }
 
     private static void TestThumbnailDiskCache(string directory)
