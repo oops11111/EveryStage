@@ -911,6 +911,8 @@ internal static class DocumentTests
         var pin = (Button)typeof(FloatingPreviewWindow).GetField("_pinButton", flags)!.GetValue(floating)!;
         var thumbnail = (PictureBox)typeof(FloatingPreviewWindow).GetField("_thumbnail", flags)!.GetValue(floating)!;
         var save = (Button)typeof(FloatingPreviewWindow).GetField("_saveButton", flags)!.GetValue(floating)!;
+        var volume = (Label)typeof(FloatingPreviewWindow).GetField("_volumeLabel", flags)!.GetValue(floating)!;
+        var position = (Label)typeof(FloatingPreviewWindow).GetField("_positionLabel", flags)!.GetValue(floating)!;
         var status = (Label)typeof(MainWindow).GetField("_statusLabel", flags)!.GetValue(owner)!;
         var click = typeof(Button).GetMethod("OnClick", flags)!;
         try
@@ -920,8 +922,12 @@ internal static class DocumentTests
             foreach (var theme in new[] { AppTheme.Light, AppTheme.Tech, AppTheme.Dark })
             {
                 ThemeManager.Apply(owner, theme);
+                floating.BackColor = floating.ForeColor = volume.ForeColor = position.ForeColor = Color.Magenta;
                 ThemeManager.Apply(floating, theme);
                 var palette = UiPalette.For(theme);
+                Require(floating.BackColor == palette.Background && floating.ForeColor == palette.Text
+                    && volume.ForeColor == palette.Text && position.ForeColor == palette.Text,
+                    $"Floating preview labels or background lost their theme roles in {theme}.");
                 Require(floating.TopMost && pin.BackColor == palette.AccentFill && pin.ForeColor == palette.AccentFillForeground
                     && pin.Font.FontFamily.Name == "Segoe MDL2 Assets" && pin.Text == "\uE840",
                     $"Pinned floating preview lost its selected role in {theme}.");
@@ -945,7 +951,9 @@ internal static class DocumentTests
             ThemeManager.Apply(owner, AppTheme.Tech);
             ThemeManager.Apply(floating, AppTheme.Tech);
             Require(floating.TopMost && pin.BackColor == SystemColors.Highlight && pin.ForeColor == SystemColors.HighlightText
-                && thumbnail.BackColor == Color.Black && status.ForeColor == SystemColors.WindowText,
+                && thumbnail.BackColor == Color.Black && status.ForeColor == SystemColors.WindowText
+                && floating.BackColor == SystemColors.Window && floating.ForeColor == SystemColors.WindowText
+                && volume.ForeColor == SystemColors.WindowText && position.ForeColor == SystemColors.WindowText,
                 "Floating preview or on-air status ignored system high contrast or changed the media background.");
             using var contrast = Capture(floating);
             contrast.Save(Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots", "floating-preview-simulated-highcontrast.png"), ImageFormat.Png);

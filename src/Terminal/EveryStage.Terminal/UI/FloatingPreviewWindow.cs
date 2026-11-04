@@ -91,8 +91,8 @@ public sealed class FloatingPreviewWindow : Form
         Text = "EveryStage";
         FormBorderStyle = FormBorderStyle.SizableToolWindow;
         AutoScaleMode = AutoScaleMode.Dpi;
-        BackColor = ModernUi.Background;
-        ForeColor = ModernUi.Text;
+        ModernUi.SetBackgroundRole(this, UiBackgroundRole.Background);
+        ModernUi.SetForegroundRole(this, UiForegroundRole.Text);
         Font = new Font(ModernUi.UiFont, 9F);
         ShowInTaskbar = false;
         TopMost = true;
@@ -139,22 +139,22 @@ public sealed class FloatingPreviewWindow : Form
         // anything above it (see the comment on _previousButton etc. above for the last time this
         // happened, for _pageLabel).
         _volumeDownButton = new Button { Text = "－", Bounds = new Rectangle(8, 228, 32, 24) };
-        _volumeLabel = new Label
+        _volumeLabel = ModernUi.SetForegroundRole(new Label
         {
             TextAlign = ContentAlignment.MiddleCenter,
             Bounds = new Rectangle(44, 228, 128, 24),
-        };
+        }, UiForegroundRole.Text);
         _volumeUpButton = new Button { Text = "＋", Bounds = new Rectangle(180, 228, 32, 24) };
 
         // Third row added below the volume row — same "grow ClientSize by row height (24) + gap
         // (4) = 28px, reflow nothing above" approach this file's own history already used twice
         // (see _pageLabel's and _volumeDownButton's own comments above).
         _seekBackButton = new Button { Text = "◀ 10秒", Bounds = new Rectangle(8, 256, 56, 24) };
-        _positionLabel = new Label
+        _positionLabel = ModernUi.SetForegroundRole(new Label
         {
             TextAlign = ContentAlignment.MiddleCenter,
             Bounds = new Rectangle(68, 256, 84, 24),
-        };
+        }, UiForegroundRole.Text);
         _seekForwardButton = new Button { Text = "10秒 ▶", Bounds = new Rectangle(156, 256, 56, 24) };
 
         // Fourth row added below the seek row — same "grow ClientSize by row height (24) + gap (4) =
