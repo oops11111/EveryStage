@@ -200,6 +200,8 @@ public sealed class MainWindow : GradientForm
         _filesPanel.IsProgramLive = () => _stateMachine.State == OutputState.Active;
         _filesPanel.ProgramFile = () => _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
             ? _playback?.CurrentFile : null;
+        _filesPanel.ProgramPlayback = () => _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
+            ? _playback : null;
 
         // Background-music card under the 大屏 section: a second view of the file page's audio bar, so
         // the same track can be controlled from every page. Shown while the column has room for it.

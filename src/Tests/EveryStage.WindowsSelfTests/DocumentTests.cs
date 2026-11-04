@@ -722,6 +722,21 @@ internal static class DocumentTests
         Require(WaitFor(() => typeof(SharedPreviewDock).GetField("_flashingCard", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock) == null, 2000),
             "On-air flash did not finish.");
         Console.WriteLine("PASS: failed load never announces success; ready Program generates feedback; on-air flash expires");
+        string progressPdf = Path.Combine(dir, "progress.pdf");
+        WriteColoredPdf(progressPdf, 3);
+        var progressFile = new MediaFile { SourcePath = progressPdf, Kind = MediaKind.Document };
+        var previewEngine = (PlaybackEngine)typeof(MainWindow).GetField("_preview", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+        previewEngine.RequestPlay(progressFile);
+        Require(WaitFor(() => previewEngine.State == PlaybackChannelState.Playing && previewEngine.PdfView != null, 10000),
+            "Progress PDF did not open in preview.");
+        Require(FilesPanel.CardPlaybackProgress(progressFile, previewEngine)?.PageLabel == "1/3", "File card did not report the first PDF page.");
+        previewEngine.PdfView!.GoToPage(2);
+        Require(FilesPanel.CardPlaybackProgress(progressFile, previewEngine)?.PageLabel == "2/3", "File card did not follow PDF page navigation.");
+        Require(FilesPanel.CardPlaybackProgress(new MediaFile { SourcePath = Path.Combine(dir, "other.pdf"), Kind = MediaKind.Document }, previewEngine) == null,
+            "File card showed another file's playback position.");
+        previewEngine.Stop();
+        Require(FilesPanel.CardPlaybackProgress(progressFile, previewEngine) == null, "Stopped playback retained file card progress.");
+        Console.WriteLine("PASS: file card progress tracks real PDF pages and clears on stop");
         CaptureMainWindow(window, dir);
         var savedProbe = ThemeManager.HighContrastProbe;
         try

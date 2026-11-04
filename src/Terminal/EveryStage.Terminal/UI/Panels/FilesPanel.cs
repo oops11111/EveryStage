@@ -119,6 +119,7 @@ public sealed class FilesPanel : UserControl
 
     /// <summary>What Program shows right now (null when nothing local is on air) — the 「大屏」 badge.</summary>
     public Func<MediaFile?>? ProgramFile { get; set; }
+    public Func<PlaybackEngine?>? ProgramPlayback { get; set; }
 
     /// <summary>Raised when the user double-clicks a file to play it standalone (no activity
     /// context — see <c>PlaybackEngine.RequestPlay(MediaFile)</c>'s own doc comment on what that
@@ -333,7 +334,9 @@ public sealed class FilesPanel : UserControl
             _audioBar.RefreshLiveState();
             // Repaint the grid only when what is on the big screen changed (the 「大屏」 badge).
             string? programPath = ProgramFile?.Invoke()?.SourcePath;
-            if (programPath == _lastProgramPath) return;
+            if (programPath == _lastProgramPath && (!Visible ||
+                (ProgramPlayback?.Invoke() is not { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused }
+                 && _playback is not { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused }))) return;
             _lastProgramPath = programPath;
             _grid.Invalidate();
         };
@@ -1270,6 +1273,24 @@ public sealed class FilesPanel : UserControl
                 ModernUi.Palette.IsHighContrast ? SystemColors.HighlightText : ModernUi.Palette.DangerFillForeground);
         }
 
+        if (!item.Unavailable && CardPlaybackProgress(media, onProgram ? ProgramPlayback?.Invoke() : inPreview ? _playback : null) is { } progress)
+        {
+            Color color = ModernUi.Palette.IsHighContrast ? SystemColors.Highlight : onProgram ? ModernUi.Palette.DangerFill : ModernUi.Palette.Preview;
+            Color ink = ModernUi.Palette.IsHighContrast ? SystemColors.HighlightText : onProgram ? ModernUi.Palette.DangerFillForeground : ModernUi.Palette.PreviewForeground;
+            if (progress.PageLabel is { } page)
+            {
+                int width = TextRenderer.MeasureText(page, badgeFont, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
+                DrawChip(g, page, badgeFont, new Point(thumb.Right - width - 6, thumb.Bottom - 23), color, ink);
+            }
+            if (progress.Fraction is { } fraction)
+            {
+                var track = new Rectangle(thumb.Left + 1, thumb.Bottom - 4, Math.Max(1, thumb.Width - 2), 3);
+                using (var background = new SolidBrush(ModernUi.Palette.IsHighContrast ? SystemColors.Window : Color.FromArgb(160, 0, 0, 0))) g.FillRectangle(background, track);
+                using var foreground = new SolidBrush(color);
+                g.FillRectangle(foreground, track.Left, track.Top, (int)Math.Round(track.Width * fraction), track.Height);
+            }
+        }
+
         // Name (with ⋯ on the same row) and the meta line (kind · size).
         string name = Path.GetFileName(item.File.SourcePath);
         using (var nameFont = new Font(ModernUi.UiFont, 9.5F))
@@ -1298,6 +1319,19 @@ public sealed class FilesPanel : UserControl
             g.FillPath(brush, path);
         TextRenderer.DrawText(g, text, font, chip, fore,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix);
+    }
+
+    internal readonly record struct CardProgress(double? Fraction, string? PageLabel);
+
+    internal static CardProgress? CardPlaybackProgress(MediaFile? file, PlaybackEngine? engine)
+    {
+        if (file == null || engine is not { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused, CurrentFile: { } current }
+            || !SameFile(file, current)) return null;
+        if (engine.DocumentPageInfo is { } page && page.CurrentPage >= 1 && page.CurrentPage <= page.PageCount)
+            return new CardProgress(null, $"{page.CurrentPage}/{page.PageCount}");
+        if (current.Kind is MediaKind.Video or MediaKind.Audio && engine.Duration is { Ticks: > 0 } duration)
+            return new CardProgress(Math.Clamp((double)engine.Position.Ticks / duration.Ticks, 0, 1), null);
+        return null;
     }
 
     /// <summary>The card's muted second line: 「图片 · 4.2 MB」.</summary>
