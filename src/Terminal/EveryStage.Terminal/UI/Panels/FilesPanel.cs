@@ -1045,7 +1045,7 @@ public sealed class FilesPanel : UserControl
         }
     }
 
-    private static string? ThumbnailCacheKey(MediaFile file)
+    internal static string? ThumbnailCacheKey(MediaFile file)
     {
         try
         {

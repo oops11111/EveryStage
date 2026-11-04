@@ -169,9 +169,15 @@ internal static class DocumentTests
     {
         string path = Path.Combine(directory, "activity-missing.png");
         var file = new MediaFile { SourcePath = path, Kind = MediaKind.Image };
+        var activity = new StageActivity { Name = "测试环节" };
+        activity.Files.Add(file);
+        var scenario = new Scenario { Name = "测试方案" };
+        scenario.Activities.Add(activity);
+        var store = new ScenarioStore { CurrentScenarioId = scenario.Id };
+        store.Scenarios.Add(scenario);
         using var form = new Form { ClientSize = new Size(700, 480), ShowInTaskbar = false, Opacity = 0,
             StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
-        using var panel = new ActivitiesPanel(new ScenarioStore(), new ScenarioRepository(Path.Combine(directory, "activity-scenarios.json")),
+        using var panel = new ActivitiesPanel(store, new ScenarioRepository(Path.Combine(directory, "activity-scenarios.json")),
             new FileLibraryStore(Path.Combine(directory, "activity-library.json")), null,
             new EveryStage.Terminal.Logging.FileOperationLogger(directory), new OutputStateMachine());
         form.Controls.Add(panel);
@@ -180,10 +186,14 @@ internal static class DocumentTests
         host.ThumbnailFor(file);
         Require(WaitFor(() => host.IsUnavailable(file) == true, 5000), "Activity did not flag its missing file.");
         using (var image = new Bitmap(40, 30)) image.Save(path, ImageFormat.Png);
-        panel.RefreshTree();
-        host.ThumbnailFor(file);
-        Require(WaitFor(() => host.IsUnavailable(file) == false && host.ThumbnailFor(file) != null, 5000),
-            "Activity did not reload its restored file after refresh.");
+        Require(WaitFor(() => host.IsUnavailable(file) == false && host.ThumbnailFor(file) != null, 9000),
+            "Activity did not automatically reload its restored visible file.");
+        File.Delete(path);
+        Require(WaitFor(() => host.IsUnavailable(file) == true, 9000), "Activity did not automatically flag a removed visible file.");
+        using (var image = new Bitmap(80, 40))
+        using (var graphics = Graphics.FromImage(image)) { graphics.Clear(Color.Lime); image.Save(path, ImageFormat.Png); }
+        Require(WaitFor(() => host.IsUnavailable(file) == false && host.ThumbnailFor(file) is Bitmap thumbnail
+            && thumbnail.GetPixel(120, 75).G > 200, 9000), "Activity did not update its restored visible thumbnail.");
         File.Delete(path);
         panel.RefreshTree();
         host.ThumbnailFor(file);
@@ -192,7 +202,7 @@ internal static class DocumentTests
         host.ThumbnailFor(file);
         Require(WaitFor(() => host.IsUnavailable(file) == false && host.ThumbnailFor(file) != null, 5000),
             "Activity refresh published stale file availability.");
-        Console.WriteLine("PASS: activity file availability refresh, recovery and stale-result rejection");
+        Console.WriteLine("PASS: activity visible file changes, refresh recovery and stale-result rejection");
     }
 
     private static void TestHotkeyRegistration()

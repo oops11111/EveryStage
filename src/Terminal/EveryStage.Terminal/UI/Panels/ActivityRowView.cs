@@ -82,6 +82,14 @@ internal sealed class ActivityRowView : Control
 
     public Activity Activity => _activity;
 
+    internal IEnumerable<MediaFile> VisibleFiles(Rectangle parentViewport)
+    {
+        var localViewport = parentViewport;
+        localViewport.Offset(-Left, -Top);
+        return _rows.Where(row => row.Bounds.IntersectsWith(localViewport))
+            .Select(row => row.Node.Tag).OfType<MediaFile>();
+    }
+
     private int S(int value) => LogicalToDeviceUnits(value);
     private IEnumerable<TreeNode> FileNodes => _activityNode.Nodes.Cast<TreeNode>();
 
@@ -261,7 +269,7 @@ internal sealed class ActivityRowView : Control
         var columns = ColumnsFor(Width, S);
         var preview = _host.PreviewFile;
         foreach (var (bounds, node, index) in _rows)
-            DrawItemRow(g, bounds, node, index, columns, preview);
+            if (bounds.IntersectsWith(e.ClipRectangle)) DrawItemRow(g, bounds, node, index, columns, preview);
 
         if (_dragging && _dragTo >= 0 && _rows.Count > 0)
         {

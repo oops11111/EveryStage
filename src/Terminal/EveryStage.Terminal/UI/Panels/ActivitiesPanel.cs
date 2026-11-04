@@ -103,6 +103,9 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     private readonly Dictionary<string, Image> _thumbnails = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _thumbnailsRequested = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> _thumbnailUnavailable = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string?> _thumbnailSourceKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Windows.Forms.Timer _visibleFileCheckTimer = new() { Interval = 3000 };
+    private bool _visibleFileCheckRunning;
     private int _thumbnailGeneration;
 
     /// <summary>File nodes Ctrl+Clicked into a multi-selection for "统一设置属性..." — see
@@ -376,6 +379,8 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             RefreshCardStyles();
         };
         _liveTimer.Start();
+        _visibleFileCheckTimer.Tick += (_, _) => _ = RefreshVisibleFileStatesAsync();
+        _visibleFileCheckTimer.Start();
 
         // Dock order: the last Top control added sits highest, so the header goes in last.
         Controls.Add(_activityRows);
@@ -1115,24 +1120,65 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     {
         Image? thumbnail = null;
         bool unavailable = false;
+        string? sourceKey = null;
         try
         {
-            (thumbnail, unavailable) = await Task.Run(() =>
+            (thumbnail, unavailable, sourceKey) = await Task.Run(() =>
             {
-                bool missing = !File.Exists(file.SourcePath);
-                try { return (ThumbnailDiskCache.Shared.GetOrBuild(file), missing); }
+                string? observed = FilesPanel.ThumbnailCacheKey(file);
+                bool missing = observed == null;
+                try { return (ThumbnailDiskCache.Shared.GetOrBuild(file), missing, observed); }
                 catch (Exception ex)
                 {
                     System.Diagnostics.Trace.TraceError("Activity thumbnail failed: {0}", ex);
-                    return ((Image?)null, missing);
+                    return ((Image?)null, missing, observed);
                 }
             });
         }
         catch (Exception ex) { System.Diagnostics.Trace.TraceError("Activity thumbnail failed: {0}", ex); }
         if (IsDisposed || Disposing || generation != _thumbnailGeneration) { thumbnail?.Dispose(); return; }
         _thumbnailUnavailable[key] = unavailable;
+        _thumbnailSourceKeys[key] = sourceKey;
         if (thumbnail != null) _thumbnails[key] = thumbnail;
         foreach (Control row in _activityRows.Controls) row.Invalidate();
+    }
+
+    private Dictionary<string, MediaFile> VisibleFiles() => _activityRows.Controls.OfType<ActivityRowView>()
+        .Where(row => row.Visible && row.Bounds.IntersectsWith(_activityRows.ClientRectangle))
+        .SelectMany(row => row.VisibleFiles(_activityRows.ClientRectangle))
+        .GroupBy(file => $"{file.Kind}|{file.SourcePath}", StringComparer.OrdinalIgnoreCase)
+        .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+    private async Task RefreshVisibleFileStatesAsync()
+    {
+        if (_visibleFileCheckRunning || !Visible || !IsHandleCreated || IsDisposed || Disposing) return;
+        int generation = _thumbnailGeneration;
+        var snapshot = VisibleFiles().Where(entry => _thumbnailSourceKeys.ContainsKey(entry.Key))
+            .Select(entry => (entry.Key, File: entry.Value, Previous: _thumbnailSourceKeys[entry.Key])).ToArray();
+        if (snapshot.Length == 0) return;
+        _visibleFileCheckRunning = true;
+        try
+        {
+            var observed = await Task.Run(() => snapshot.Select(entry =>
+                (entry.Key, entry.File, entry.Previous, Current: FilesPanel.ThumbnailCacheKey(entry.File))).ToArray());
+            if (IsDisposed || Disposing || !Visible || generation != _thumbnailGeneration) return;
+            var visible = VisibleFiles();
+            bool changed = false;
+            foreach (var entry in observed)
+            {
+                if (!visible.ContainsKey(entry.Key) || !_thumbnailSourceKeys.TryGetValue(entry.Key, out var current)
+                    || current != entry.Previous || current == entry.Current) continue;
+                if (_thumbnails.Remove(entry.Key, out var old)) old.Dispose();
+                _thumbnailSourceKeys.Remove(entry.Key);
+                _thumbnailUnavailable.Remove(entry.Key);
+                _thumbnailsRequested.Remove(entry.Key);
+                ((IActivityRowHost)this).ThumbnailFor(entry.File);
+                changed = true;
+            }
+            if (changed) foreach (Control row in _activityRows.Controls) row.Invalidate();
+        }
+        catch (Exception ex) { System.Diagnostics.Trace.TraceError("Visible activity file check failed: {0}", ex); }
+        finally { _visibleFileCheckRunning = false; }
     }
 
     /// <summary>「保存」: every edit here already saves immediately, so this is an explicit, visible
@@ -1511,6 +1557,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _thumbnails.Clear();
         _thumbnailsRequested.Clear();
         _thumbnailUnavailable.Clear();
+        _thumbnailSourceKeys.Clear();
         // Old TreeNode references go stale the moment the tree they belonged to is torn down below —
         // see _multiSelectedFileNodes' own doc comment. No need to reset their BackColor/ForeColor
         // first (they're being discarded, not reused). The selection is carried over by Tag (the
@@ -1648,6 +1695,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             _stateMachine.StateChanged -= OnStateChanged;
             _saveFeedbackTimer.Dispose();
             _liveTimer.Dispose();
+            _visibleFileCheckTimer.Dispose();
             _editMenu.Dispose();
             _scenarioMenu.Dispose();
             _toolTip.Dispose();
