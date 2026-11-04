@@ -927,9 +927,28 @@ internal static class DocumentTests
         errorTitle.ForeColor = Color.Magenta;
         Require(ModernUi.ApplyForegroundRole(errorTitle, UiPalette.For(AppTheme.Dark)) && errorTitle.ForeColor == UiPalette.For(AppTheme.Dark).Danger,
             "Visible preview error did not retain its danger role.");
-        previewEngine.RequestPlay(progressFile);
+        string corruptPdf = Path.Combine(dir, "corrupt-progress.pdf");
+        File.WriteAllText(corruptPdf, "not a PDF");
+        failedThread = -1;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(null);
+            previewEngine.RequestPlay(new MediaFile { SourcePath = corruptPdf, Kind = MediaKind.Document });
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
+        Require(WaitFor(() => previewEngine.State == PlaybackChannelState.Failed && errorCard.Parent == statusDock.PreviewSurface, 5000)
+            && failedThread == ownerThread, "PDF failure did not return to the UI thread without a synchronization context.");
+        playingThread = -1;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(null);
+            previewEngine.RequestPlay(progressFile);
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
         Require(WaitFor(() => previewEngine.State == PlaybackChannelState.Playing && previewEngine.PdfView != null, 10000),
             "Progress PDF did not open in preview.");
+        Require(playingThread == ownerThread && ReferenceEquals(SynchronizationContext.Current, previousContext),
+            "PDF completion used the wrong thread or changed the caller's synchronization context.");
         Require(errorCard.Parent == null, "Preview error card remained visible after successful playback.");
         Require(FilesPanel.CardPlaybackProgress(progressFile, previewEngine)?.PageLabel == "1/3", "File card did not report the first PDF page.");
         var activityHost = (IActivityRowHost)typeof(MainWindow).GetField("_activitiesPanel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
@@ -1521,9 +1540,14 @@ internal static class DocumentTests
         var baseline = OfficeProcessIds();
         // Automatic editor choice (WPS first, then Word) — the product default.
         var file = new MediaFile { SourcePath = docx, Kind = MediaKind.Document, Document = new DocumentPlaybackSettings { OpenMode = OfficeOpenMode.Auto } };
-        preview.RequestPlay(file);
+        int uiThread = Environment.CurrentManagedThreadId, playingThread = -1;
+        void RecordState(PlaybackChannelState state) { if (state == PlaybackChannelState.Playing) playingThread = Environment.CurrentManagedThreadId; }
+        preview.StateChanged += RecordState;
+        WithoutSynchronizationContext(() => preview.RequestPlay(file));
         Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.OfficeSession?.Status == OfficeSessionStatus.Ready, 60000),
             $"Word document did not open live: {preview.LastError?.Message ?? preview.CurrentContentNote}");
+        preview.StateChanged -= RecordState;
+        Require(playingThread == uiThread, "Word opening published playback state off the UI thread.");
         var session = (WriterSession)preview.OfficeSession!;
         Require(WaitFor(() => session.FrameCount > 3, 8000), "The editor window is not being captured.");
         Console.WriteLine($"INFO: {session.SuiteName} {session.Version}, capture {session.CaptureMethod}");
@@ -1574,9 +1598,16 @@ internal static class DocumentTests
         Require(WaitFor(() => preview.State == PlaybackChannelState.Playing && preview.PdfView != null, 90000),
             $"Preview did not show the deck as static slides: {preview.LastError?.Message ?? preview.CurrentContentNote}");
         Require(preview.DocumentMode == DocumentPlaybackMode.StaticSlides && preview.OfficeSession == null, "Preview started a native show.");
-        Require(program.RequestPlay(preview.CaptureSnapshot()!.Value), "Program refused the deck.");
+        int uiThread = Environment.CurrentManagedThreadId, playingThread = -1;
+        void RecordState(PlaybackChannelState state) { if (state == PlaybackChannelState.Playing) playingThread = Environment.CurrentManagedThreadId; }
+        program.StateChanged += RecordState;
+        bool accepted = false;
+        WithoutSynchronizationContext(() => accepted = program.RequestPlay(preview.CaptureSnapshot()!.Value));
+        Require(accepted, "Program refused the deck.");
         Require(WaitFor(() => program.State == PlaybackChannelState.Playing && program.OfficeSession?.Status == OfficeSessionStatus.Ready, 60000),
             $"Native show did not start on Program: {program.LastError?.Message ?? program.CurrentContentNote}");
+        program.StateChanged -= RecordState;
+        Require(playingThread == uiThread, "Native PowerPoint opening published playback state off the UI thread.");
         Require(program.DocumentMode == DocumentPlaybackMode.NativeShow, "An animated deck was not played as a native show on Program.");
         var show = (SlideShowSession)program.OfficeSession!;
         Require(WaitFor(() => show.FrameCount > 3, 8000), "The slide show is not being captured.");
@@ -1772,6 +1803,13 @@ internal static class DocumentTests
 
     private static bool Near(this Color a, Color b, int tolerance) =>
         Math.Abs(a.R - b.R) <= tolerance && Math.Abs(a.G - b.G) <= tolerance && Math.Abs(a.B - b.B) <= tolerance;
+
+    private static void WithoutSynchronizationContext(Action action)
+    {
+        var previous = SynchronizationContext.Current;
+        try { SynchronizationContext.SetSynchronizationContext(null); action(); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+    }
 
     private static bool WaitFor(Func<bool> condition, int timeoutMs)
     {

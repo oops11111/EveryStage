@@ -410,6 +410,7 @@ public sealed partial class PlaybackEngine : IDisposable
         Channel = channel;
         _stateMachine = channel == PlaybackChannel.Program ? stateMachine : null;
         _output = output;
+        _documentUiContext = new PlaybackOutputSynchronizationContext(output);
         _videoSurface = videoSurface;
         // Preview fills its width (vertical overflow cropped); the extended display shows the whole frame.
         _videoScaleMode = channel == PlaybackChannel.Preview ? EveryStage.Rendering.VideoScaleMode.FitWidth : EveryStage.Rendering.VideoScaleMode.Fit;
@@ -743,7 +744,7 @@ public sealed partial class PlaybackEngine : IDisposable
 
             case MediaKind.Document:
                 _videoController?.Stop();
-                PlayDocument(file);
+                WithDocumentUiContext(() => PlayDocument(file));
                 break;
 
             case MediaKind.Video:

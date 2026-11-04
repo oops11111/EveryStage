@@ -348,3 +348,9 @@ OV 代码签名需要用户持有的有效证书/签名服务；目前不具备�
 - 当前产品模型仍是 Program 原生放映、Preview 静态浏览、监看栏 `PresenterStrip`；本批防护针对保留的旧预览分支，不代表新建演讲者窗口或改变产品通道模型。现有 `PresenterStrip` 有自己的异步代次保护。
 - Release 严格构建通过，0 警告、0 错误；使用受控异步请求验证先后返回颠倒时只保留新数据、旧图片释放和关闭后失效。完整操作界面专项通过，日志 `artifacts/test-diagnostics/operator-presenter-order.log`。未重跑本机 Office 或完整媒体套件。
 - 文档 PDF/Office 异步链目前依赖 `Program.Main` 安装的 WindowsFormsSynchronizationContext；异常入口或无上下文调用的线程保证仍需进一步检查。真实双屏原生放映、WGC、MKV/AVI、真实来投、高对比度和远端 CI 尚未验收。
+
+## 第四十五批：文档异步入口的界面线程（部分完成）
+
+- PDF、Word、PPT 加载入口明确使用输出窗口所属的同步上下文；文档命令、演讲者数据刷新及原生放映故障回退也通过同一上下文启动。调用者原有上下文在同步入口返回时恢复，调用入口本身仍要求在输出的 UI 线程执行。
+- Release 严格构建通过，0 警告、0 错误；操作界面专项在调用时移除同步上下文，验证 PDF 打开成功/失败、错误卡片和状态通知均回到 UI 线程。完整 Windows 内容自检通过，日志 `artifacts/test-diagnostics/windows-document-ui-thread.log`；其中在调用时移除同步上下文后，实测 WPS Word 与 PowerPoint 原生放映打开及状态通知，其他 Office 命令按现有用例回归。
+- 本机 WGC 捕获被拒绝，Office 测试使用 PrintWindow 回退；真实双屏、设备来投、MKV/AVI、高对比度、文档加载途中输出窗口销毁时的资源回收以及远端 CI 仍需验收。

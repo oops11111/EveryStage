@@ -53,6 +53,17 @@ public sealed record DocumentStatus(
 /// </summary>
 public sealed partial class PlaybackEngine
 {
+    private readonly PlaybackOutputSynchronizationContext _documentUiContext;
+
+    private T WithDocumentUiContext<T>(Func<T> start)
+    {
+        var previous = SynchronizationContext.Current;
+        try { SynchronizationContext.SetSynchronizationContext(_documentUiContext); return start(); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+    }
+
+    private void WithDocumentUiContext(Action start) => WithDocumentUiContext(() => { start(); return true; });
+
     private PdfDocumentView? _pdfView;
     private OfficeSession? _officeSession;
     private SharedFrame? _officeFrame;
@@ -480,8 +491,8 @@ public sealed partial class PlaybackEngine
                 {
                     // The presentation application died mid-show.
                     DocLog.LogEvent("show_application_exited", _currentFile.SourcePath, crashed.SuiteName, crashed.Version, "falling back to static slides");
-                    _ = FallBackToStaticSlidesAsync(_currentFile, _currentFile.Document ?? new DocumentPlaybackSettings(), crashed.Position.Slide,
-                        $"{error.Message}，已改为静态幻灯片（不含动画、转场和嵌入媒体）");
+                    _ = WithDocumentUiContext(() => FallBackToStaticSlidesAsync(_currentFile, _currentFile.Document ?? new DocumentPlaybackSettings(), crashed.Position.Slide,
+                        $"{error.Message}，已改为静态幻灯片（不含动画、转场和嵌入媒体）"));
                     return;
                 }
                 OnImageOrDocumentFailed(_currentFile, error);
@@ -498,7 +509,9 @@ public sealed partial class PlaybackEngine
     }
 
     /// <summary>Updates the presenter view's next slide, notes and position lines.</summary>
-    private async Task RefreshPresenterAsync()
+    private Task RefreshPresenterAsync() => WithDocumentUiContext(RefreshPresenterCoreAsync);
+
+    private async Task RefreshPresenterCoreAsync()
     {
         if (_presenter is not { } presenter || _officeSession is not SlideShowSession show) return;
         int browseSlide = _presenterBrowseSlide;
@@ -571,7 +584,10 @@ public sealed partial class PlaybackEngine
     // ── Operator commands ────────────────────────────────────────────────────────────────────────
 
     /// <summary>Runs a document command, turning failures into a status notice instead of an exception.</summary>
-    private async Task<bool> RunDocumentCommandAsync(Func<Task> command, string what)
+    private Task<bool> RunDocumentCommandAsync(Func<Task> command, string what) =>
+        WithDocumentUiContext(() => RunDocumentCommandCoreAsync(command, what));
+
+    private async Task<bool> RunDocumentCommandCoreAsync(Func<Task> command, string what)
     {
         try
         {
