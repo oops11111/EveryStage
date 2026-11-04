@@ -71,9 +71,9 @@ public sealed class PairingConfirmationDialog : Form
         var monitorDisclaimer = new Label
         {
             Text = "（监看功能本身尚未实现，此开关暂无实际效果）",
-            ForeColor = Color.DimGray,
             Bounds = new Rectangle(28, 216, 340, 16),
         };
+        ModernUi.SetForegroundRole(monitorDisclaimer, UiForegroundRole.Muted);
         _trustCheckbox = new CheckBox
         {
             // Honest label (audit B-14): nothing auto-accepts on this flag yet — and it must not until the

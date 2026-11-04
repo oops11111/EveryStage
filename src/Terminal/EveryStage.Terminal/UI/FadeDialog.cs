@@ -74,10 +74,10 @@ public sealed class FadeDialog : Form
         {
             Text = "⚠ 淡出依赖一个尚未在真机验证过的时长查询——对某些文件可能不生效（只有淡入\n" +
                    "生效），不会报错，只是播放结束前不会渐弱。淡入本身不受此影响，总是可靠的。",
-            ForeColor = Color.DarkRed,
             AutoSize = false,
             Bounds = new Rectangle(12, 72, 336, 44),
         };
+        ModernUi.SetForegroundRole(noteLabel, UiForegroundRole.Danger);
 
         var okButton = new Button { Text = "确定", DialogResult = DialogResult.OK, Bounds = new Rectangle(180, 146, 80, 28) };
         var cancelButton = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Bounds = new Rectangle(268, 146, 80, 28) };

@@ -119,10 +119,10 @@ public sealed class BatchPropertiesDialog : Form
         var introLabel = new Label
         {
             Text = "只有勾选了\"修改此项\"的属性才会应用到全部选中文件；未勾选的属性保持每个\n文件各自原有的设置不变。",
-            ForeColor = Color.DimGray,
             AutoSize = false,
             Bounds = new Rectangle(12, y, ContentWidth, 34),
         };
+        ModernUi.SetForegroundRole(introLabel, UiForegroundRole.Muted);
         controls.Add(introLabel);
         y += 42;
 

@@ -50,11 +50,11 @@ public sealed class AudioPropertiesDialog : Form
         _backgroundCaveatLabel = new Label
         {
             Text = "ⓘ 背景音轨会独立叠加播放，不受悬浮预览窗\"暂停\"影响，也没有单独的音量调节",
-            ForeColor = Color.DimGray,
             AutoSize = false,
             Bounds = new Rectangle(12, 34, 336, 34),
             Visible = initialIsBackgroundAudio,
         };
+        ModernUi.SetForegroundRole(_backgroundCaveatLabel, UiForegroundRole.Muted);
         _backgroundCheckbox.CheckedChanged += (_, _) => _backgroundCaveatLabel.Visible = _backgroundCheckbox.Checked;
 
         var visualLabel = new Label { Text = "投屏显示内容：", Bounds = new Rectangle(12, 76, 336, 20) };

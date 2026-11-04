@@ -56,10 +56,10 @@ public sealed class StayDurationDialog : Form
         var noteLabel = new Label
         {
             Text = "关闭时跟随 设置 面板里的全局默认停留时长（如果那边也没配置，则一直停留直到手动切换）。",
-            ForeColor = Color.DimGray,
             AutoSize = false,
             Bounds = new Rectangle(12, 72, 296, 34),
         };
+        ModernUi.SetForegroundRole(noteLabel, UiForegroundRole.Muted);
 
         var okButton = new Button { Text = "确定", DialogResult = DialogResult.OK, Bounds = new Rectangle(140, 112, 80, 28) };
         var cancelButton = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Bounds = new Rectangle(228, 112, 80, 28) };

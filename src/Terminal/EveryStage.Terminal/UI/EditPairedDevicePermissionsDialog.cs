@@ -59,9 +59,9 @@ public sealed class EditPairedDevicePermissionsDialog : Form
         var monitorDisclaimer = new Label
         {
             Text = "（监看功能本身尚未实现，此开关暂无实际效果）",
-            ForeColor = Color.DimGray,
             Bounds = new Rectangle(28, 102, 280, 16),
         };
+        ModernUi.SetForegroundRole(monitorDisclaimer, UiForegroundRole.Muted);
         _trustCheckbox = new CheckBox
         {
             Text = "标记为信任设备（自动接受尚未实现，每次仍需确认）", // honest label, audit B-14

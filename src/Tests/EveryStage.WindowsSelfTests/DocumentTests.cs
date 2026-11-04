@@ -294,6 +294,15 @@ internal static class DocumentTests
         using var form = new Form();
         using var pairingDialog = new PairingConfirmationDialog(new EveryStage.Terminal.Devices.PairingRequest("test", Guid.NewGuid(), "测试设备", "127.0.0.1", "123456"));
         using var fadeDialog = new FadeDialog("淡入淡出", false, null);
+        using var audioDialog = new AudioPropertiesDialog("音频", true, AudioVisual.Waveform);
+        using var durationDialog = new StayDurationDialog("停留", null);
+        using var documentDialog = new DocumentSettingsDialog(new MediaFile { SourcePath = "sample.pdf", Kind = MediaKind.Document });
+        using var batchDialog = new BatchPropertiesDialog(new[] { new MediaFile { SourcePath = "sample.pdf", Kind = MediaKind.Document } });
+        using var permissionsDialog = new EditPairedDevicePermissionsDialog(new EveryStage.Terminal.Devices.PairedDevice { DeviceId = Guid.NewGuid(), DeviceName = "测试设备" });
+        var hintDialogs = new Form[] { audioDialog, durationDialog, documentDialog, batchDialog, permissionsDialog };
+        string[] hintTexts = { "背景音轨会独立", "关闭时跟随", "连续滚动按", "只有勾选了", "监看功能本身" };
+        var dialogHints = hintDialogs.Select((dialog, index) => Descendants(dialog).OfType<Label>()
+            .Single(label => label.Text.Contains(hintTexts[index]))).ToArray();
         var pairingCode = pairingDialog.Controls.OfType<Label>().Single(label => label.Text == "123 456");
         var pairingHint = pairingDialog.Controls.OfType<Label>().Single(label => label.Text.Contains("监看功能本身"));
         var fadeWarning = fadeDialog.Controls.OfType<Label>().Single(label => label.Text.Contains("淡出依赖"));
@@ -405,7 +414,10 @@ internal static class DocumentTests
                 ThemeManager.Apply(secondForm, theme);
                 ThemeManager.Apply(pairingDialog, theme);
                 ThemeManager.Apply(fadeDialog, theme);
+                foreach (var hint in dialogHints) hint.ForeColor = Color.Magenta;
+                foreach (var dialog in hintDialogs) ThemeManager.Apply(dialog, theme);
                 var palette = UiPalette.For(theme);
+                Require(dialogHints.All(hint => hint.ForeColor == palette.Muted), $"Dialog help text lost its explicit role under {theme}.");
                 OpenMenuForTest(musicMenu);
                 OpenMenuForTest(dockMenu);
                 Require(musicMenu.Renderer is ThemedMenuRenderer && musicMenu.BackColor == palette.Surface
@@ -450,6 +462,8 @@ internal static class DocumentTests
                 ThemeManager.Apply(form, theme);
                 ThemeManager.Apply(pairingDialog, theme);
                 ThemeManager.Apply(fadeDialog, theme);
+                foreach (var dialog in hintDialogs) ThemeManager.Apply(dialog, theme);
+                Require(dialogHints.All(hint => hint.ForeColor == SystemColors.WindowText), "Dialog help text did not follow high contrast.");
                 OpenMenuForTest(musicMenu);
                 Require(musicMenu.BackColor == SystemColors.Window
                     && RenderMenuText(musicMenu, enabledMenuItem) == SystemColors.WindowText

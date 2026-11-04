@@ -120,8 +120,9 @@ public sealed class DocumentSettingsDialog : Form
                 DocumentFormat.Word => "编辑器窗口留在操作员屏幕，大屏显示其文档区域的画面。关闭实时同步后，修改只在点“更新大屏”时上屏。",
                 _ => "连续滚动按“每页用时”平滑滚动；单页模式按此间隔翻页。播放到结束页后执行此项的“完成后动作”。",
             },
-            ForeColor = Color.DimGray, AutoSize = false, Size = new Size(360, 48), Margin = new Padding(3, 6, 3, 3),
+            AutoSize = false, Size = new Size(360, 48), Margin = new Padding(3, 6, 3, 3),
         };
+        ModernUi.SetForegroundRole(note, UiForegroundRole.Muted);
         grid.Controls.Add(note);
         grid.SetColumnSpan(note, 2);
 
