@@ -412,6 +412,13 @@ internal static class DocumentTests
         var programStatus = (Label)typeof(SharedPreviewDock).GetField("_programState", monitorFlags)!.GetValue(dock)!;
         var localCard = typeof(SharedPreviewDock).GetField("_localCard", monitorFlags)!.GetValue(dock)!;
         var localStatus = (Label)localCard.GetType().GetField("_state", monitorFlags)!.GetValue(localCard)!;
+        var deviceCard = typeof(SharedPreviewDock).GetField("_deviceCard", monitorFlags)!.GetValue(dock)!;
+        var deviceFrame = (Control)deviceCard.GetType().GetField("_videoFrame", monitorFlags)!.GetValue(deviceCard)!;
+        var deviceCaption = (Label)deviceCard.GetType().GetField("_caption", monitorFlags)!.GetValue(deviceCard)!;
+        var errorCard = (Control)typeof(SharedPreviewDock).GetField("_errorCard", monitorFlags)!.GetValue(dock)!;
+        var errorTitle = (Label)errorCard.GetType().GetField("_title", monitorFlags)!.GetValue(errorCard)!;
+        var errorDetail = (Label)errorCard.GetType().GetField("_detail", monitorFlags)!.GetValue(errorCard)!;
+        var errorSuggestion = (Label)errorCard.GetType().GetField("_suggestion", monitorFlags)!.GetValue(errorCard)!;
         ModernUi.StyleButton(button, primary: true);
         form.Controls.Add(button);
         form.Controls.Add(warningLabel);
@@ -483,6 +490,21 @@ internal static class DocumentTests
                 Require(palette.Preview != palette.ProgramBorder && palette.ProgramBorder != palette.Accent, "Output roles share a colour.");
                 Require(presenter.BackColor == UiPalette.Normal(AppTheme.Dark).Background, "Presenter chrome changed with the app theme.");
                 var monitorPalette = UiPalette.Normal(AppTheme.Dark);
+                foreach (var mediaSurface in new Control[] { dock.PreviewSurface, dock.PreviewSurface.VideoHost, dock.PreviewSurface.ContentSurface, deviceFrame, dock.DeviceVideoHost })
+                {
+                    mediaSurface.BackColor = Color.Magenta;
+                    Require(ModernUi.ApplyBackgroundRole(mediaSurface, monitorPalette) && mediaSurface.BackColor == Color.Black,
+                        $"Monitor media background lost its black role under {theme}.");
+                }
+                errorCard.BackColor = deviceCaption.BackColor = Color.Magenta;
+                errorTitle.ForeColor = errorDetail.ForeColor = errorSuggestion.ForeColor = deviceCaption.ForeColor = Color.Magenta;
+                Require(ModernUi.ApplyBackgroundRole(errorCard, monitorPalette) && errorCard.BackColor == monitorPalette.Surface
+                    && ModernUi.ApplyBackgroundRole(deviceCaption, monitorPalette) && deviceCaption.BackColor == monitorPalette.SurfaceRaised
+                    && ModernUi.ApplyForegroundRole(errorTitle, monitorPalette) && errorTitle.ForeColor == monitorPalette.Danger
+                    && ModernUi.ApplyForegroundRole(errorDetail, monitorPalette) && errorDetail.ForeColor == monitorPalette.Text
+                    && ModernUi.ApplyForegroundRole(errorSuggestion, monitorPalette) && errorSuggestion.ForeColor == monitorPalette.Muted
+                    && ModernUi.ApplyForegroundRole(deviceCaption, monitorPalette) && deviceCaption.ForeColor == monitorPalette.Text,
+                    $"Monitor error or device caption lost explicit roles under {theme}.");
                 foreach (var monitorStatus in new[] { previewStatus, programStatus, localStatus })
                 {
                     monitorStatus.ForeColor = Color.Magenta;
@@ -522,6 +544,11 @@ internal static class DocumentTests
                     "Dialog text did not yield to system high contrast.");
                 Require(ModernUi.Palette.IsHighContrast && ModernUi.Background == SystemColors.Window,
                     "System high contrast did not override a configured theme.");
+                var contrastPalette = UiPalette.For(AppTheme.Dark);
+                Require(ModernUi.ApplyBackgroundRole(errorCard, contrastPalette) && errorCard.BackColor == SystemColors.Window
+                    && ModernUi.ApplyForegroundRole(errorTitle, contrastPalette) && errorTitle.ForeColor == SystemColors.WindowText
+                    && ModernUi.ApplyBackgroundRole(deviceFrame, contrastPalette) && deviceFrame.BackColor == Color.Black,
+                    "Monitor error or media background roles did not respect high contrast.");
                 foreach (var monitorStatus in new[] { previewStatus, programStatus, localStatus })
                 {
                     monitorStatus.ForeColor = Color.Magenta;
@@ -806,6 +833,7 @@ internal static class DocumentTests
             "Failed output generated a success notification.");
         var statusDock = (SharedPreviewDock)typeof(MainWindow).GetField("_previewDock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
         var programStatusLabel = (Label)typeof(SharedPreviewDock).GetField("_programState", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(statusDock)!;
+        typeof(SharedPreviewDock).GetMethod("RefreshNow", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(statusDock, null);
         programStatusLabel.ForeColor = Color.Magenta;
         Require(ModernUi.ApplyForegroundRole(programStatusLabel, UiPalette.For(AppTheme.Dark))
             && programStatusLabel.ForeColor == UiPalette.For(AppTheme.Dark).Danger, "Failed program did not retain its danger text role.");
@@ -828,9 +856,23 @@ internal static class DocumentTests
         WriteColoredPdf(progressPdf, 3);
         var progressFile = new MediaFile { SourcePath = progressPdf, Kind = MediaKind.Document };
         var previewEngine = (PlaybackEngine)typeof(MainWindow).GetField("_preview", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+        previewEngine.RequestPlay(new MediaFile { SourcePath = Path.Combine(dir, "missing-preview.png"), Kind = MediaKind.Image });
+        var errorCard = (Control)typeof(SharedPreviewDock).GetField("_errorCard", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(statusDock)!;
+        Require(WaitFor(() => previewEngine.State == PlaybackChannelState.Failed, 3000), "Preview did not fail for missing test file.");
+        typeof(SharedPreviewDock).GetMethod("RefreshNow", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(statusDock, null);
+        Require(errorCard.Parent == statusDock.PreviewSurface,
+            $"Failed preview did not show the error card (state={previewEngine.State}, error={previewEngine.LastError != null}, parent={errorCard.Parent?.GetType().Name ?? "null"}).");
+        statusDock.PreviewSurface.Controls.Remove(errorCard);
+        statusDock.PreviewSurface.SetOverlayCard(errorCard);
+        Require(errorCard.Parent == statusDock.PreviewSurface, "A detached error card could not be restored on the next update.");
+        var errorTitle = (Label)errorCard.GetType().GetField("_title", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(errorCard)!;
+        errorTitle.ForeColor = Color.Magenta;
+        Require(ModernUi.ApplyForegroundRole(errorTitle, UiPalette.For(AppTheme.Dark)) && errorTitle.ForeColor == UiPalette.For(AppTheme.Dark).Danger,
+            "Visible preview error did not retain its danger role.");
         previewEngine.RequestPlay(progressFile);
         Require(WaitFor(() => previewEngine.State == PlaybackChannelState.Playing && previewEngine.PdfView != null, 10000),
             "Progress PDF did not open in preview.");
+        Require(errorCard.Parent == null, "Preview error card remained visible after successful playback.");
         Require(FilesPanel.CardPlaybackProgress(progressFile, previewEngine)?.PageLabel == "1/3", "File card did not report the first PDF page.");
         var activityHost = (IActivityRowHost)typeof(MainWindow).GetField("_activitiesPanel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
         Require(activityHost.ProgressFor(progressFile) is { OnProgram: false, Progress.PageLabel: "1/3" },

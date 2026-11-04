@@ -68,12 +68,14 @@ public sealed class PreviewSurface : Control, IPlaybackOutput
     /// for an error card with its action buttons. The previous card is removed but not disposed.</summary>
     public void SetOverlayCard(Control? card)
     {
-        if (ReferenceEquals(card, _overlayCard)) return;
-        if (_overlayCard != null) Controls.Remove(_overlayCard);
+        // Layout/handle recreation can leave the remembered overlay detached. A repeated update
+        // must repair the parent rather than assuming that equal references imply it is visible.
+        if (ReferenceEquals(card, _overlayCard) && (card == null || ReferenceEquals(card.Parent, this))) return;
+        if (_overlayCard != null && !ReferenceEquals(_overlayCard, card)) Controls.Remove(_overlayCard);
         _overlayCard = card;
         if (card != null)
         {
-            Controls.Add(card);
+            if (!ReferenceEquals(card.Parent, this)) Controls.Add(card);
             card.Bounds = ClientRectangle;
             card.BringToFront();
         }

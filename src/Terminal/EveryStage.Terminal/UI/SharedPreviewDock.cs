@@ -143,7 +143,9 @@ internal sealed class SharedPreviewDock : Panel
         _previewBadge = new Badge("预览");
         _previewState = ModernUi.SetForegroundRole(new Label { Text = "待机", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
         _previewFrame = new Panel { BackColor = ModernUi.Border, Padding = new Padding(2) };
-        PreviewSurface = new PreviewSurface { Dock = DockStyle.Fill, Margin = Padding.Empty };
+        PreviewSurface = ModernUi.SetBackgroundRole(new PreviewSurface { Dock = DockStyle.Fill, Margin = Padding.Empty }, UiBackgroundRole.MediaBlack);
+        ModernUi.SetBackgroundRole(PreviewSurface.VideoHost, UiBackgroundRole.MediaBlack);
+        ModernUi.SetBackgroundRole(PreviewSurface.ContentSurface, UiBackgroundRole.MediaBlack);
         _previewFrame.Controls.Add(PreviewSurface);
 
         _previousButton = IconButton("", "上一项 / 上一页");
@@ -666,16 +668,15 @@ internal sealed class SharedPreviewDock : Panel
                 Padding = new Padding(6, 5, 8, 5), CornerRadius = 9, GlassTint = ModernUi.SurfaceRaised,
             };
 
-            _videoFrame = new Panel { Dock = DockStyle.Fill, BackColor = Color.Black, Visible = false };
-            VideoHost = new Control { Dock = DockStyle.Fill, BackColor = Color.Black };
+            _videoFrame = ModernUi.SetBackgroundRole(new Panel { Dock = DockStyle.Fill, Visible = false }, UiBackgroundRole.MediaBlack);
+            VideoHost = ModernUi.SetBackgroundRole(new Control { Dock = DockStyle.Fill }, UiBackgroundRole.MediaBlack);
             _ = VideoHost.Handle;
-            _caption = new Label
+            _caption = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(new Label
             {
-                Dock = DockStyle.Bottom, Height = 30, BackColor = Color.FromArgb(210, 12, 29, 49),
-                ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFont, 8.5F),
+                Dock = DockStyle.Bottom, Height = 30, Font = new Font(ModernUi.UiFont, 8.5F),
                 TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 76, 0),
                 AutoEllipsis = true,
-            };
+            }, UiForegroundRole.Text), UiBackgroundRole.SurfaceRaised);
             _actionButton = new RoundedActionButton
             {
                 Text = "投屏", Width = 62, Height = 28, Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
@@ -693,11 +694,11 @@ internal sealed class SharedPreviewDock : Panel
                 Math.Max(4, _videoFrame.ClientSize.Height - _actionButton.Height - 8));
 
             _labels = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(6, 0, 0, 0) };
-            _title = new Label
+            _title = ModernUi.SetForegroundRole(new Label
             {
-                Text = "设备来投", Dock = DockStyle.Top, Height = 19, ForeColor = ModernUi.Text,
+                Text = "设备来投", Dock = DockStyle.Top, Height = 19,
                 Font = new Font(ModernUi.UiFontSemibold, 9F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
-            };
+            }, UiForegroundRole.Text);
             _state = new Label { Dock = DockStyle.Fill, Font = new Font(ModernUi.UiFont, 8F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
             _labels.Controls.Add(_state);
             _labels.Controls.Add(_title);
@@ -748,12 +749,12 @@ internal sealed class SharedPreviewDock : Panel
 
         public ErrorCard()
         {
-            BackColor = Color.FromArgb(24, 14, 20);
+            ModernUi.SetBackgroundRole(this, UiBackgroundRole.Surface);
             Padding = new Padding(14, 8, 14, 8);
             var smallFont = new Font(ModernUi.UiFont, 8.5F);
-            _title = new Label { Dock = DockStyle.Top, Height = 22, ForeColor = Color.FromArgb(255, 120, 120), Font = new Font(ModernUi.UiFontSemibold, 10F), AutoEllipsis = true };
-            _detail = new Label { Dock = DockStyle.Top, Height = 34, ForeColor = Color.FromArgb(210, 214, 222), Font = smallFont, AutoEllipsis = true };
-            _suggestion = new Label { Dock = DockStyle.Fill, ForeColor = Color.FromArgb(160, 170, 186), Font = smallFont, AutoEllipsis = true };
+            _title = ModernUi.SetForegroundRole(new Label { Dock = DockStyle.Top, Height = 22, Font = new Font(ModernUi.UiFontSemibold, 10F), AutoEllipsis = true }, UiForegroundRole.Danger);
+            _detail = ModernUi.SetForegroundRole(new Label { Dock = DockStyle.Top, Height = 34, Font = smallFont, AutoEllipsis = true }, UiForegroundRole.Text);
+            _suggestion = ModernUi.SetForegroundRole(new Label { Dock = DockStyle.Fill, Font = smallFont, AutoEllipsis = true }, UiForegroundRole.Muted);
             var actions = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 64, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, BackColor = Color.Transparent, Margin = Padding.Empty };
             actions.Controls.Add(Action("重试", () => Retry?.Invoke(), primary: true));
             actions.Controls.Add(Action("跳过", () => Skip?.Invoke()));
@@ -787,10 +788,10 @@ internal sealed class SharedPreviewDock : Panel
 
         public void RefreshTheme(UiPalette palette)
         {
-            BackColor = palette.Surface;
-            _title.ForeColor = palette.Danger;
-            _detail.ForeColor = palette.Text;
-            _suggestion.ForeColor = palette.Muted;
+            ModernUi.ApplyBackgroundRole(this, palette);
+            ModernUi.ApplyForegroundRole(_title, palette);
+            ModernUi.ApplyForegroundRole(_detail, palette);
+            ModernUi.ApplyForegroundRole(_suggestion, palette);
             void ApplyButtons(Control parent)
             {
                 foreach (Control child in parent.Controls)
