@@ -67,6 +67,10 @@ public sealed class OverlayWindow : Form, IPlaybackOutput
         Controls.Add(VideoHost);
         Controls.Add(ContentSurface);
 
+        // Decoders post completion even while the output is hidden and before a video host is used.
+        // Create the owning UI handle here so Post can deliver those callbacks in that state.
+        _ = Handle;
+
         _topMostReasserter = new System.Windows.Forms.Timer { Interval = 2000 };
         _topMostReasserter.Tick += (_, _) => ReassertTopMost();
     }

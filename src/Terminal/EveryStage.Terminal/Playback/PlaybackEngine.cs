@@ -14,10 +14,8 @@ namespace EveryStage.Terminal.Playback;
 /// advance per its completion action.
 ///
 /// All public methods are expected to be called from the UI thread (the eventual Phase 4 UI, or
-/// today's ad-hoc test entry points) — <see cref="ImageContentRenderer"/>/<see cref="PdfContentRenderer"/>'s
-/// LoadAsync happens to complete synchronously today so this isn't currently a hard requirement,
-/// but WinForms' <see cref="System.Windows.Forms.Timer"/> and <see cref="ContentSurface"/> both
-/// need UI-thread access, so treat it as one anyway.
+/// today's ad-hoc test entry points). Image decoding runs asynchronously; its completion and error
+/// handling are posted to the output's owning UI thread before touching controls or raising state.
 ///
 /// When the cast switch is off, <see cref="MainWindow"/> routes a direct file click to the local
 /// Windows file handler; this engine therefore only owns the managed extended-display path.
@@ -799,19 +797,29 @@ public sealed partial class PlaybackEngine : IDisposable
     private async Task PlayImageAsync(MediaFile file)
     {
         int version = _contentLoadVersion;
+        Exception? failure = null;
         try
         {
             _output.ContentSurface.SetFrame(null);
-            await _imageRenderer.LoadAsync(file.SourcePath);
-            if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile)) return;
-            _output.ContentSurface.SetFrame(_imageRenderer.CurrentFrame);
-            SetState(IsPaused ? PlaybackChannelState.Paused : PlaybackChannelState.Playing);
-            ArmStayDurationTimer(file);
+            await _imageRenderer.LoadAsync(file.SourcePath).ConfigureAwait(false);
         }
-        catch (Exception ex)
+        catch (Exception ex) { failure = ex; }
+        try
         {
-            if (version == _contentLoadVersion) OnImageOrDocumentFailed(file, ex);
+            _output.Post(() =>
+            {
+                if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile)) return;
+                if (failure != null) { OnImageOrDocumentFailed(file, failure); return; }
+                try
+                {
+                    _output.ContentSurface.SetFrame(_imageRenderer.CurrentFrame);
+                    SetState(IsPaused ? PlaybackChannelState.Paused : PlaybackChannelState.Playing);
+                    ArmStayDurationTimer(file);
+                }
+                catch (Exception ex) { OnImageOrDocumentFailed(file, ex); }
+            });
         }
+        catch (InvalidOperationException) { } // output closed while the decoder was finishing
     }
 
     /// <summary>Shared by <see cref="PlayImageAsync"/>/<see cref="PlayDocumentAsync"/> — until this

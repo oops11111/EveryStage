@@ -856,10 +856,41 @@ internal static class DocumentTests
         WriteColoredPdf(progressPdf, 3);
         var progressFile = new MediaFile { SourcePath = progressPdf, Kind = MediaKind.Document };
         var previewEngine = (PlaybackEngine)typeof(MainWindow).GetField("_preview", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
-        previewEngine.RequestPlay(new MediaFile { SourcePath = Path.Combine(dir, "missing-preview.png"), Kind = MediaKind.Image });
         var errorCard = (Control)typeof(SharedPreviewDock).GetField("_errorCard", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(statusDock)!;
-        Require(WaitFor(() => previewEngine.State == PlaybackChannelState.Failed, 3000), "Preview did not fail for missing test file.");
-        typeof(SharedPreviewDock).GetMethod("RefreshNow", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(statusDock, null);
+        int ownerThread = Environment.CurrentManagedThreadId, failedThread = -1, playingThread = -1;
+        previewEngine.StateChanged += state =>
+        {
+            if (state == PlaybackChannelState.Failed) failedThread = Environment.CurrentManagedThreadId;
+            if (state == PlaybackChannelState.Playing) playingThread = Environment.CurrentManagedThreadId;
+        };
+        var previousContext = SynchronizationContext.Current;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(null);
+            previewEngine.RequestPlay(new MediaFile { SourcePath = readyImage, Kind = MediaKind.Image });
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
+        Require(WaitFor(() => previewEngine.State == PlaybackChannelState.Playing, 5000) && playingThread == ownerThread,
+            "Image completion did not return to the UI thread without a synchronization context.");
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(null);
+            previewEngine.RequestPlay(new MediaFile { SourcePath = readyImage, Kind = MediaKind.Image });
+            Thread.Sleep(150); // Allow decoding to finish while UI dispatch stays queued.
+            previewEngine.Stop();
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
+        Pump(250);
+        Require(previewEngine.State == PlaybackChannelState.Idle && previewEngine.CurrentFile == null,
+            "A queued image completion restarted playback after stop.");
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(null);
+            previewEngine.RequestPlay(new MediaFile { SourcePath = Path.Combine(dir, "missing-preview.png"), Kind = MediaKind.Image });
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
+        Require(WaitFor(() => previewEngine.State == PlaybackChannelState.Failed && errorCard.Parent == statusDock.PreviewSurface, 5000)
+            && failedThread == ownerThread, "Image failure or the error card did not return to the UI thread.");
         Require(errorCard.Parent == statusDock.PreviewSurface,
             $"Failed preview did not show the error card (state={previewEngine.State}, error={previewEngine.LastError != null}, parent={errorCard.Parent?.GetType().Name ?? "null"}).");
         statusDock.PreviewSurface.Controls.Remove(errorCard);
