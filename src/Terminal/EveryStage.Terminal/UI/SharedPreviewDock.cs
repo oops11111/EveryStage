@@ -135,13 +135,13 @@ internal sealed class SharedPreviewDock : Panel
         DoubleBuffered = true;
 
         var smallFont = new Font(ModernUi.UiFont, 9F);
-        _title = new Label { Text = "监看", AutoSize = false, ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 11F), TextAlign = ContentAlignment.MiddleLeft };
+        _title = ModernUi.SetForegroundRole(new Label { Text = "监看", AutoSize = false, Font = new Font(ModernUi.UiFontSemibold, 11F), TextAlign = ContentAlignment.MiddleLeft }, UiForegroundRole.Text);
         _collapseButton = TextButton("收起 ›", "收起监看栏，文件区占满整个宽度");
         _collapseButton.Font = new Font(ModernUi.UiFont, 8.5F);
         _collapseButton.Click += (_, _) => CollapseRequested?.Invoke();
 
         _previewBadge = new Badge("预览");
-        _previewState = new Label { Text = "待机", ForeColor = ModernUi.Muted, Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+        _previewState = ModernUi.SetForegroundRole(new Label { Text = "待机", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
         _previewFrame = new Panel { BackColor = ModernUi.Border, Padding = new Padding(2) };
         PreviewSurface = new PreviewSurface { Dock = DockStyle.Fill, Margin = Padding.Empty };
         _previewFrame.Controls.Add(PreviewSurface);
@@ -150,9 +150,9 @@ internal sealed class SharedPreviewDock : Panel
         _playPauseButton = IconButton("", "播放 / 暂停");
         _stopButton = IconButton("", "停止预览");
         _nextButton = IconButton("", "下一项 / 下一页");
-        _timecode = new Label { Text = "--:-- / --:--", ForeColor = ModernUi.Muted, Font = smallFont, TextAlign = ContentAlignment.MiddleLeft };
+        _timecode = ModernUi.SetForegroundRole(new Label { Text = "--:-- / --:--", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft }, UiForegroundRole.Muted);
         _progress = new MediaTrack();
-        _volumeIcon = new Label { Text = "", Font = new Font(IconFont, 10F), ForeColor = ModernUi.Muted, TextAlign = ContentAlignment.MiddleCenter };
+        _volumeIcon = ModernUi.SetForegroundRole(new Label { Text = "", Font = new Font(IconFont, 10F), TextAlign = ContentAlignment.MiddleCenter }, UiForegroundRole.Muted);
         _volume = new MediaTrack { Value = 1f };
         _loopButton = IconButton("", "循环播放当前文件（不保存到文件设置）");
         _scaleButton = TextButton("满宽", "视频显示：满宽（横向铺满，上下可能裁切）→ 适应（完整显示）→ 填充（铺满裁切）");
@@ -162,7 +162,7 @@ internal sealed class SharedPreviewDock : Panel
         _takeButton.Font = new Font(ModernUi.UiFontSemibold, 11F);
 
         _programBadge = new Badge("大屏") { Danger = true };
-        _programState = new Label { Text = "未连接扩展屏", ForeColor = ModernUi.Muted, Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
+        _programState = ModernUi.SetForegroundRole(new Label { Text = "未连接扩展屏", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
         _localCard = new SourceCardView("本地媒体");
         _deviceCard = new DeviceCastCard();
         _deviceCard.TakeRequested += () => DeviceTakeRequested?.Invoke();
@@ -476,18 +476,18 @@ internal sealed class SharedPreviewDock : Panel
 
         // 「预览」 line: file + state.
         string fileLabel = file == null ? "" : Path.GetFileName(file.SourcePath) + (file.IsBackgroundAudio ? "（背景音乐）" : "") + " · ";
-        (string text, Color color) = state switch
+        (string text, UiForegroundRole role) = state switch
         {
-            PlaybackChannelState.Loading => (fileLabel + "加载中", palette.Warning),
-            PlaybackChannelState.Playing => (fileLabel + "预览中", palette.Muted),
-            PlaybackChannelState.Paused when preview!.IsCompleted => (fileLabel + "播放完成", palette.Muted),
-            PlaybackChannelState.Paused => (fileLabel + "已暂停", palette.Warning),
-            PlaybackChannelState.Failed => (fileLabel + "播放失败", palette.Danger),
-            _ => ("待机 · 单击文件在此预览", palette.Muted),
+            PlaybackChannelState.Loading => (fileLabel + "加载中", UiForegroundRole.Warning),
+            PlaybackChannelState.Playing => (fileLabel + "预览中", UiForegroundRole.Muted),
+            PlaybackChannelState.Paused when preview!.IsCompleted => (fileLabel + "播放完成", UiForegroundRole.Muted),
+            PlaybackChannelState.Paused => (fileLabel + "已暂停", UiForegroundRole.Warning),
+            PlaybackChannelState.Failed => (fileLabel + "播放失败", UiForegroundRole.Danger),
+            _ => ("待机 · 单击文件在此预览", UiForegroundRole.Muted),
         };
         if (preview?.CurrentContentNote is { } note && state == PlaybackChannelState.Playing) text += "（" + note + "）";
         if (preview?.Muted == true && state is PlaybackChannelState.Playing or PlaybackChannelState.Paused) text += " · 预监静音";
-        SetText(_previewState, text, color);
+        SetTextRole(_previewState, text, role);
         bool previewHasContent = state is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed);
         var frameColor = previewHasContent ? palette.Preview : palette.Border;
         if (_previewFrame.BackColor != frameColor) _previewFrame.BackColor = frameColor;
@@ -495,16 +495,16 @@ internal sealed class SharedPreviewDock : Panel
 
         // Program status (independent of Preview).
         var programState = ProgramStatus.Compute(_program != null, programLive, _program?.State);
-        (string programText, Color programColor) = programState switch
+        (string programText, UiForegroundRole programRole) = programState switch
         {
-            ProgramOutputState.Disconnected => ("未连接扩展屏 · 仅本地预览", palette.Muted),
-            ProgramOutputState.Failed => ("播放失败", palette.Danger),
-            ProgramOutputState.Live when source == ProgramSource.DeviceCast => ("输出中 · 设备来投", palette.Text),
+            ProgramOutputState.Disconnected => ("未连接扩展屏 · 仅本地预览", UiForegroundRole.Muted),
+            ProgramOutputState.Failed => ("播放失败", UiForegroundRole.Danger),
+            ProgramOutputState.Live when source == ProgramSource.DeviceCast => ("输出中 · 设备来投", UiForegroundRole.Text),
             ProgramOutputState.Live => ((_program?.CurrentFile is { } pf ? Path.GetFileName(pf.SourcePath) : "本地媒体")
-                + (_program?.Position is { } pp && _program.CanSeek ? " · " + Format(pp) : "") + (_program?.IsPaused == true ? " · 已暂停" : ""), palette.Text),
-            _ => (_stateMachine.CastSwitchOn ? "待机 · 没有输出" : "待机（投屏开关已关闭）", palette.Muted),
+                + (_program?.Position is { } pp && _program.CanSeek ? " · " + Format(pp) : "") + (_program?.IsPaused == true ? " · 已暂停" : ""), UiForegroundRole.Text),
+            _ => (_stateMachine.CastSwitchOn ? "待机 · 没有输出" : "待机（投屏开关已关闭）", UiForegroundRole.Muted),
         };
-        SetText(_programState, programText, programColor);
+        SetTextRole(_programState, programText, programRole);
         _programBadge.Active = programState == ProgramOutputState.Live;
 
         // Transport.
@@ -544,7 +544,7 @@ internal sealed class SharedPreviewDock : Panel
             _ => "预览中 · 未投屏",
         };
         _localCard.Update(source == ProgramSource.LocalMedia, localStatus,
-            source == ProgramSource.LocalMedia ? palette.Danger : state == PlaybackChannelState.Failed ? palette.Danger : state == PlaybackChannelState.Idle ? palette.Muted : palette.Success);
+            source == ProgramSource.LocalMedia || state == PlaybackChannelState.Failed ? UiForegroundRole.Danger : state == PlaybackChannelState.Idle ? UiForegroundRole.Muted : UiForegroundRole.Success);
         _deviceCard.Update(_deviceConnected, _deviceName ?? "设备来投", _deviceOnProgram,
             _program == null ? "未连接扩展屏" : "等待设备来投", _program != null);
 
@@ -564,6 +564,12 @@ internal sealed class SharedPreviewDock : Panel
     {
         if (control.Text != text) control.Text = text;
         if (color is { } c && control.ForeColor != c) control.ForeColor = c;
+    }
+
+    private static void SetTextRole(Control control, string text, UiForegroundRole role)
+    {
+        if (control.Text != text) control.Text = text;
+        ModernUi.SetForegroundRole(control, role);
     }
 
     private static string Format(TimeSpan t) => t.TotalHours >= 1
@@ -610,11 +616,11 @@ internal sealed class SharedPreviewDock : Panel
                 VectorIcons.Draw(e.Graphics, NavIcon.Devices, r, _selected ? palette.ProgramBorder : palette.Muted);
             };
             var labels = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(10, 0, 0, 0) };
-            var name = new Label
+            var name = ModernUi.SetForegroundRole(new Label
             {
-                Text = title, Dock = DockStyle.Top, Height = 18, ForeColor = ModernUi.Text,
+                Text = title, Dock = DockStyle.Top, Height = 18,
                 Font = new Font(ModernUi.UiFontSemibold, 9F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
-            };
+            }, UiForegroundRole.Text);
             _state = new Label { Dock = DockStyle.Fill, Font = new Font(ModernUi.UiFont, 8F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
             labels.Controls.Add(_state);
             labels.Controls.Add(name);
@@ -622,9 +628,9 @@ internal sealed class SharedPreviewDock : Panel
             Card.Controls.Add(_thumb);
         }
 
-        public void Update(bool selected, string status, Color color)
+        public void Update(bool selected, string status, UiForegroundRole role)
         {
-            SetText(_state, "● " + status, color);
+            SetTextRole(_state, "● " + status, role);
             _selected = selected;
             var palette = MonitorPalette;
             Card.GlassTint = selected
@@ -712,7 +718,7 @@ internal sealed class SharedPreviewDock : Panel
             _state.Text = connected
                 ? (onProgram ? "● 大屏输出中" : "● 预览中（未上屏）")
                 : "● " + idleStatus;
-            _state.ForeColor = connected ? (onProgram ? palette.Danger : palette.Success) : palette.Muted;
+            ModernUi.SetForegroundRole(_state, connected ? (onProgram ? UiForegroundRole.Danger : UiForegroundRole.Success) : UiForegroundRole.Muted);
             _title.ForeColor = _caption.ForeColor = palette.Text;
             _caption.BackColor = palette.SurfaceRaised;
             _videoFrame.BackColor = VideoHost.BackColor = Color.Black;

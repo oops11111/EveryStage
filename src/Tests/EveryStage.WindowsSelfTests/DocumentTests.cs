@@ -407,6 +407,11 @@ internal static class DocumentTests
             "Ending a show did not invalidate pending presenter data and clear the previous slide.");
         setNotes.Invoke(presenter, new object[] { "" });
         var take = (Button)typeof(SharedPreviewDock).GetField("_takeButton", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock)!;
+        var monitorFlags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var previewStatus = (Label)typeof(SharedPreviewDock).GetField("_previewState", monitorFlags)!.GetValue(dock)!;
+        var programStatus = (Label)typeof(SharedPreviewDock).GetField("_programState", monitorFlags)!.GetValue(dock)!;
+        var localCard = typeof(SharedPreviewDock).GetField("_localCard", monitorFlags)!.GetValue(dock)!;
+        var localStatus = (Label)localCard.GetType().GetField("_state", monitorFlags)!.GetValue(localCard)!;
         ModernUi.StyleButton(button, primary: true);
         form.Controls.Add(button);
         form.Controls.Add(warningLabel);
@@ -478,6 +483,12 @@ internal static class DocumentTests
                 Require(palette.Preview != palette.ProgramBorder && palette.ProgramBorder != palette.Accent, "Output roles share a colour.");
                 Require(presenter.BackColor == UiPalette.Normal(AppTheme.Dark).Background, "Presenter chrome changed with the app theme.");
                 var monitorPalette = UiPalette.Normal(AppTheme.Dark);
+                foreach (var monitorStatus in new[] { previewStatus, programStatus, localStatus })
+                {
+                    monitorStatus.ForeColor = Color.Magenta;
+                    Require(ModernUi.ApplyForegroundRole(monitorStatus, monitorPalette) && monitorStatus.ForeColor == monitorPalette.Muted,
+                        $"Monitor idle status did not retain its explicit local-palette role under {theme}.");
+                }
                 Require(dockMenu.BackColor == monitorPalette.Surface && RenderMenuText(dockMenu, dockMenuItem) == monitorPalette.Text,
                     "A monitor menu followed the page theme instead of its local dark palette.");
                 Require(pageBox.BackColor == monitorPalette.Surface && pageBox.ForeColor == monitorPalette.Text
@@ -511,6 +522,12 @@ internal static class DocumentTests
                     "Dialog text did not yield to system high contrast.");
                 Require(ModernUi.Palette.IsHighContrast && ModernUi.Background == SystemColors.Window,
                     "System high contrast did not override a configured theme.");
+                foreach (var monitorStatus in new[] { previewStatus, programStatus, localStatus })
+                {
+                    monitorStatus.ForeColor = Color.Magenta;
+                    Require(ModernUi.ApplyForegroundRole(monitorStatus, UiPalette.For(AppTheme.Dark))
+                        && monitorStatus.ForeColor == SystemColors.WindowText, "Monitor status did not keep its high-contrast role.");
+                }
                 Require(warningLabel.ForeColor == SystemColors.WindowText && accentLabel.ForeColor == SystemColors.WindowText
                     && monitorMenuColors.ToolStripDropDownBackground == SystemColors.Window
                     && monitorMenuColors.MenuItemSelected == SystemColors.Highlight
@@ -787,11 +804,21 @@ internal static class DocumentTests
         feedbackProgram.RequestPlay(new MediaFile { SourcePath = Path.Combine(dir, "missing.png"), Kind = MediaKind.Image });
         Require(WaitFor(() => feedbackProgram.State == PlaybackChannelState.Failed, 3000) && lastFeedback.GetValue(window) == null,
             "Failed output generated a success notification.");
+        var statusDock = (SharedPreviewDock)typeof(MainWindow).GetField("_previewDock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+        var programStatusLabel = (Label)typeof(SharedPreviewDock).GetField("_programState", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(statusDock)!;
+        programStatusLabel.ForeColor = Color.Magenta;
+        Require(ModernUi.ApplyForegroundRole(programStatusLabel, UiPalette.For(AppTheme.Dark))
+            && programStatusLabel.ForeColor == UiPalette.For(AppTheme.Dark).Danger, "Failed program did not retain its danger text role.");
         string readyImage = Path.Combine(dir, "onair.png");
         using (var bitmap = new Bitmap(32, 24)) bitmap.Save(readyImage, ImageFormat.Png);
         var readyFile = new MediaFile { SourcePath = readyImage, Kind = MediaKind.Image };
         feedbackProgram.RequestPlay(readyFile);
         Require(WaitFor(() => ReferenceEquals(lastFeedback.GetValue(window), readyFile), 3000), "Ready Program output did not generate feedback.");
+        typeof(SharedPreviewDock).GetMethod("RefreshNow", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(statusDock, null);
+        programStatusLabel.ForeColor = Color.Magenta;
+        Require(ModernUi.ApplyForegroundRole(programStatusLabel, UiPalette.For(AppTheme.Dark))
+            && programStatusLabel.ForeColor == UiPalette.For(AppTheme.Dark).Text,
+            $"Live program did not return to its text role (output={outputState.State}, source={outputState.Source}, engine={feedbackProgram.State}, label={programStatusLabel.Text}).");
         TestFloatingPreviewTheme(window, feedbackProgram, outputState, dir);
         var dock = (SharedPreviewDock)typeof(MainWindow).GetField("_previewDock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
         Require(WaitFor(() => typeof(SharedPreviewDock).GetField("_flashingCard", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock) == null, 2000),
