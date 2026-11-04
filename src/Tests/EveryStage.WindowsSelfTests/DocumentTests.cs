@@ -234,6 +234,7 @@ internal static class DocumentTests
         missing.AudioOutputDeviceId = "missing-audio-device";
         settings.Save(missing);
         using var panel = new SettingsPanel(settings, new EveryStage.Discovery.DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = "测试" });
+        TestSettingsPanelThemeRoles(panel);
         var combo = (ComboBox)typeof(SettingsPanel).GetField("_audioOutputComboBox", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(panel)!;
         Require(combo.SelectedItem?.ToString()?.Contains("不可用") == true && settings.Current.AudioOutputDeviceId == missing.AudioOutputDeviceId,
             "An unavailable selected audio device was silently discarded in settings.");
@@ -245,6 +246,42 @@ internal static class DocumentTests
             Require(!string.IsNullOrEmpty(new SettingsStore(path).Current.AudioOutputDeviceId), "Selecting an audio device did not persist immediately.");
         }
         Console.WriteLine("PASS: audio settings preserve unavailable selections and save device choices immediately");
+    }
+
+    private static void TestSettingsPanelThemeRoles(SettingsPanel panel)
+    {
+        var labels = Descendants(panel).OfType<Label>().ToArray();
+        var about = labels.Single(label => label.Text.StartsWith("EveryStage 终端机 "));
+        var slide = labels.Single(label => label.Text == "静态幻灯片");
+        var heading = labels.Single(label => label.Text == "设置");
+        var name = (TextBox)typeof(SettingsPanel).GetField("_deviceNameTextBox", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(panel)!;
+        var probe = ThemeManager.HighContrastProbe;
+        var saved = ModernUi.CurrentTheme;
+        try
+        {
+            ThemeManager.HighContrastProbe = () => false;
+            foreach (var theme in new[] { AppTheme.Light, AppTheme.Dark, AppTheme.Tech, AppTheme.System })
+            {
+                about.ForeColor = slide.ForeColor = heading.ForeColor = name.ForeColor = Color.Magenta;
+                name.BackColor = Color.Magenta;
+                ThemeManager.Apply(panel, theme);
+                var palette = UiPalette.For(theme);
+                Require(about.ForeColor == palette.Muted && slide.ForeColor == palette.Text && heading.ForeColor == palette.Text
+                    && name.ForeColor == palette.Text && name.BackColor == palette.Surface,
+                    $"Settings labels or device name lost explicit colour roles in {theme}.");
+            }
+            ThemeManager.HighContrastProbe = () => true;
+            ThemeManager.Apply(panel, AppTheme.Tech);
+            Require(about.ForeColor == SystemColors.WindowText && slide.ForeColor == SystemColors.WindowText
+                && heading.ForeColor == SystemColors.WindowText && name.ForeColor == SystemColors.WindowText
+                && name.BackColor == SystemColors.Window, "Settings colours did not follow system high contrast.");
+            Console.WriteLine("PASS: settings heading, about text, static-slide label and device-name field use explicit theme roles");
+        }
+        finally
+        {
+            ThemeManager.HighContrastProbe = probe;
+            ThemeManager.Apply(panel, saved);
+        }
     }
 
     private sealed class QueuedContext : SynchronizationContext

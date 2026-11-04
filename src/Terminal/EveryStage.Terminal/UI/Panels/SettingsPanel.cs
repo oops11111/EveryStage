@@ -157,7 +157,7 @@ public sealed class SettingsPanel : UserControl
         output.AddRow("大屏过场", "大屏从一项切到下一项时的过渡；PPT 放映启动较慢时，过场会等到放映第一帧出现再显示。流程里每一项可以单独设置",
             "保存后生效", UiForegroundRole.Warning, _transitionComboBox, _transitionMilliseconds, ModernUi.SetForegroundRole(new Label { Text = "毫秒", AutoSize = true }, UiForegroundRole.Muted));
         output.AddRow("PPT 没有扩展屏时", "原生放映（含动画）只在扩展屏上进行，避免占用本机屏幕；没有扩展屏时以静态幻灯片预览", null, null,
-            new Label { Text = "静态幻灯片", AutoSize = true, ForeColor = ModernUi.Text });
+            ModernUi.SetForegroundRole(new Label { Text = "静态幻灯片", AutoSize = true }, UiForegroundRole.Text));
 
         // --- PPT 翻页过场 ---
         _slideTransitionSource = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 170 };
@@ -180,7 +180,8 @@ public sealed class SettingsPanel : UserControl
         slides.AddNote("页内动画（逐条出现的文字、图表）不受影响，仍按原 PPT 播放。");
 
         // --- 网络与设备 ---
-        _deviceNameTextBox = new TextBox { Text = _identity.DeviceName, Width = 220 };
+        _deviceNameTextBox = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(
+            new TextBox { Text = _identity.DeviceName, Width = 220 }, UiForegroundRole.Text), UiBackgroundRole.Surface);
         var saveDeviceNameButton = new RoundedActionButton { Text = "保存", Width = 72, Height = 30 };
         ModernUi.StyleButton(saveDeviceNameButton);
         saveDeviceNameButton.Click += OnSaveDeviceNameClick;
@@ -209,12 +210,12 @@ public sealed class SettingsPanel : UserControl
             catch (Exception ex) { MessageBox.Show(this, $"无法打开数据目录：{ex.Message}", "打开失败", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         };
         var about = Section("关于");
-        about.AddBlock(new Label
+        about.AddBlock(ModernUi.SetForegroundRole(new Label
         {
-            AutoSize = true, ForeColor = ModernUi.Muted, BackColor = Color.Transparent,
+            AutoSize = true, BackColor = Color.Transparent,
             Text = $"EveryStage 终端机 {Application.ProductVersion}\n设备 ID：{_identity.DeviceId}\n数据目录：{DataDirectory.Root}\n" +
                    "所有发现 / 配对 / 投屏数据只在局域网内传输，不上传任何遥测或使用数据。",
-        });
+        }, UiForegroundRole.Muted));
         about.AddButtons(openDataButton);
 
         // Right-aligned 保存设置 with the result beside it.
@@ -233,11 +234,11 @@ public sealed class SettingsPanel : UserControl
         bottomBar.Controls.Add(saveRow);
 
         var heading = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
-        heading.Controls.Add(new Label
+        heading.Controls.Add(ModernUi.SetForegroundRole(new Label
         {
-            Text = "设置", AutoSize = true, Location = new Point(0, 8), ForeColor = ModernUi.Text,
+            Text = "设置", AutoSize = true, Location = new Point(0, 8),
             Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent,
-        });
+        }, UiForegroundRole.Text));
 
         // Dock order: the last Top control added sits highest, so heading goes in last.
         Controls.Add(page);
