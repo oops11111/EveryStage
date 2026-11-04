@@ -58,6 +58,7 @@ public sealed partial class PlaybackEngine
     private SharedFrame? _officeFrame;
     private int _officeFramePosted;
     private PresenterView? _presenter;
+    private readonly PresenterContentLoader _presenterContent = new();
     private int _presenterBrowseSlide;
     private DocumentPlaybackMode _documentMode;
     private string? _documentNotice;
@@ -500,17 +501,20 @@ public sealed partial class PlaybackEngine
     private async Task RefreshPresenterAsync()
     {
         if (_presenter is not { } presenter || _officeSession is not SlideShowSession show) return;
-        int slide = _presenterBrowseSlide > 0 ? _presenterBrowseSlide : Math.Max(1, show.Position.Slide);
+        int browseSlide = _presenterBrowseSlide;
+        int slide = browseSlide > 0 ? browseSlide : Math.Max(1, show.Position.Slide);
         _lastPresenterSlide = show.Position.Slide;
-        var next = await show.GetSlideImageAsync(slide + 1, 640);
-        string notes = await show.NotesAsync(slide);
-        Bitmap? browse = _presenterBrowseSlide > 0 ? await show.GetSlideImageAsync(_presenterBrowseSlide, 960) : null;
-        if (!ReferenceEquals(presenter, _presenter)) { next?.Dispose(); browse?.Dispose(); return; }
-        presenter.SetNext(next);
-        presenter.SetBrowseImage(browse);
+        PresenterContentLoader.Result? loaded;
+        try { loaded = await _presenterContent.LoadAsync(slide, browseSlide, show.GetSlideImageAsync, show.NotesAsync); }
+        catch (Exception ex) { System.Diagnostics.Trace.TraceError("Presenter data failed: {0}", ex); return; }
+        if (loaded is not { } result) return;
+        if (!_presenterContent.IsCurrent(result) || !ReferenceEquals(presenter, _presenter) || !ReferenceEquals(show, _officeSession)
+            || (browseSlide == 0 && Math.Max(1, show.Position.Slide) != slide)) { result.DisposeImages(); return; }
+        presenter.SetNext(result.Next);
+        presenter.SetBrowseImage(result.Browse);
         var p = show.Position;
-        string header = _presenterBrowseSlide > 0
-            ? $"浏览第 {_presenterBrowseSlide} / {show.SlideCount} 张（大屏：第 {p.Slide} 张）"
+        string header = browseSlide > 0
+            ? $"浏览第 {browseSlide} / {show.SlideCount} 张（大屏：第 {p.Slide} 张）"
             : $"第 {p.Slide} / {show.SlideCount} 张" + (p.Clicks > 0 ? $" · 动画 {p.Click}/{p.Clicks}" : "");
         string state = show.Status switch
         {
@@ -525,7 +529,7 @@ public sealed partial class PlaybackEngine
                 _ => $"放映中（{show.SuiteName}）",
             },
         };
-        presenter.SetInfo(header, state, notes);
+        presenter.SetInfo(header, state, result.Notes);
     }
 
     // ── Program sync (called by the Preview→Program coordinator and the control bar) ─────────────
@@ -639,7 +643,9 @@ public sealed partial class PlaybackEngine
     public Task<bool> SlideCommandAsync(Func<SlideShowSession, Task> command, string what, SlideMove move = SlideMove.None)
     {
         if (_officeSession is not SlideShowSession show) return Task.FromResult(false);
+        bool wasBrowsing = _presenterBrowseSlide > 0;
         _presenterBrowseSlide = 0;
+        if (wasBrowsing) _ = RefreshPresenterAsync();
         bool transition = Channel == PlaybackChannel.Program && _documentMode == DocumentPlaybackMode.NativeShow
             && _currentFile != null && SlideTransitionFor(_currentFile) is not null && WillChangePicture(show, move);
         if (transition) BeginShowTransitionHold(show, move);
@@ -847,6 +853,7 @@ public sealed partial class PlaybackEngine
     /// on screen (<see cref="CompleteDocumentRetirement"/>), which avoids a black gap between documents.</summary>
     private void RetireDocument()
     {
+        _presenterContent.Invalidate();
         StopDocumentAutoTimer();
         var view = _pdfView;
         var frame = _officeFrame;

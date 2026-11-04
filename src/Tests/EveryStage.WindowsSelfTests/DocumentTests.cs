@@ -26,7 +26,7 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestActivityThumbnailAvailability(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestActivityThumbnailAvailability(directory); TestPresenterContentOrdering(); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -203,6 +203,33 @@ internal static class DocumentTests
         Require(WaitFor(() => host.IsUnavailable(file) == false && host.ThumbnailFor(file) != null, 5000),
             "Activity refresh published stale file availability.");
         Console.WriteLine("PASS: activity visible file changes, refresh recovery and stale-result rejection");
+    }
+
+    private static void TestPresenterContentOrdering()
+    {
+        var loader = new PresenterContentLoader();
+        var delayed = new TaskCompletionSource<Bitmap?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var oldBitmap = new Bitmap(3, 3);
+        Task<Bitmap?> Image(int slide, int width) => slide == 2 ? delayed.Task : Task.FromResult<Bitmap?>(new Bitmap(4, 4));
+        Task<string> Notes(int slide) => Task.FromResult($"notes-{slide}");
+        var old = loader.LoadAsync(1, 0, Image, Notes);
+        var latest = loader.LoadAsync(2, 0, Image, Notes);
+        Require(WaitFor(() => latest.IsCompleted, 3000) && latest.Result is { Notes: "notes-2" },
+            "Latest presenter request did not complete.");
+        delayed.SetResult(oldBitmap);
+        Require(WaitFor(() => old.IsCompleted, 3000) && old.Result == null, "An older presenter request was not discarded.");
+        bool released = false;
+        try { oldBitmap.GetPixel(0, 0); } catch (Exception ex) when (ex is ArgumentException or ObjectDisposedException) { released = true; }
+        Require(released, "Discarded presenter image was not disposed.");
+        latest.Result!.Value.DisposeImages();
+        var pending = new TaskCompletionSource<Bitmap?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var invalidatedBitmap = new Bitmap(2, 2);
+        var invalidated = loader.LoadAsync(1, 0, (_, _) => pending.Task, Notes);
+        loader.Invalidate();
+        pending.SetResult(invalidatedBitmap);
+        Require(WaitFor(() => invalidated.IsCompleted, 3000) && invalidated.Result == null,
+            "Retiring a presenter did not invalidate pending data.");
+        Console.WriteLine("PASS: presenter data rejects out-of-order and retired requests and releases discarded images");
     }
 
     private static void TestHotkeyRegistration()

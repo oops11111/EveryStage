@@ -341,3 +341,10 @@ OV 代码签名需要用户持有的有效证书/签名服务；目前不具备�
 - 图片解码成功、失败及状态通知改为通过输出控件派发回其 UI 线程；派发时再次核对加载代次与文件，防止停止或切换后的旧结果覆盖当前状态。隐藏的扩展屏输出窗口创建时建立消息句柄，以便尚未显示或使用视频时也能接收完成通知。
 - Release 严格构建及完整操作界面专项通过；在调用时刻移除同步上下文，检查图片成功/失败通知所属线程、错误卡片无需手动刷新即可显示、以及停止后已排队的旧完成结果不会重新播放。日志 `artifacts/test-diagnostics/operator-image-ui-thread-verified.log`。
 - 完整 Windows 内容自检通过，日志 `artifacts/test-diagnostics/windows-image-ui-thread-full.log`，覆盖常见图片/音视频、PDF、WPS 编辑、PowerPoint 原生与静态放映、UDP 配对和 AAC 编解码。WGC 捕获被系统拒绝，Office 测试采用 PrintWindow 回退；MKV/AVI 真素材、真实网络来投、真实双屏音频设备拔插和 Windows 高对比度仍待验收；远端 CI 尚未运行。
+
+## 第四十四批：演讲者旧预览路径异步顺序保护
+
+- 审查发现旧 `PresenterView` 路径读取下一页图片、备注和浏览页时只有视图对象检查，同一视图内连续请求可能由旧结果覆盖新结果，异常时也可能遗留已获取的图片。新增请求代次和结果发布前检查，关闭文档时使请求失效；旧结果和失败时已获取图片会释放。退出浏览模式会重新请求当前放映页。
+- 当前产品模型仍是 Program 原生放映、Preview 静态浏览、监看栏 `PresenterStrip`；本批防护针对保留的旧预览分支，不代表新建演讲者窗口或改变产品通道模型。现有 `PresenterStrip` 有自己的异步代次保护。
+- Release 严格构建通过，0 警告、0 错误；使用受控异步请求验证先后返回颠倒时只保留新数据、旧图片释放和关闭后失效。完整操作界面专项通过，日志 `artifacts/test-diagnostics/operator-presenter-order.log`。未重跑本机 Office 或完整媒体套件。
+- 文档 PDF/Office 异步链目前依赖 `Program.Main` 安装的 WindowsFormsSynchronizationContext；异常入口或无上下文调用的线程保证仍需进一步检查。真实双屏原生放映、WGC、MKV/AVI、真实来投、高对比度和远端 CI 尚未验收。
