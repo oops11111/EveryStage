@@ -54,6 +54,15 @@ public sealed record DocumentStatus(
 public sealed partial class PlaybackEngine
 {
     private readonly PlaybackOutputSynchronizationContext _documentUiContext;
+    private bool _documentOutputDisposed;
+    internal Func<string, bool, PdfViewportState, Task<PdfDocumentView>> OpenPdfView { get; set; } = PdfDocumentView.OpenAsync;
+
+    private void OnDocumentOutputDisposed(object? sender, EventArgs e)
+    {
+        _documentOutputDisposed = true;
+        ++_contentLoadVersion;
+        ReleaseDocumentNow();
+    }
 
     private T WithDocumentUiContext<T>(Func<T> start)
     {
@@ -218,7 +227,7 @@ public sealed partial class PlaybackEngine
         PdfDocumentView view;
         try
         {
-            view = await PdfDocumentView.OpenAsync(pdfPath, interactive: Channel == PlaybackChannel.Preview, initial);
+            view = await OpenPdfView(pdfPath, Channel == PlaybackChannel.Preview, initial);
         }
         catch (Exception ex)
         {
@@ -521,7 +530,7 @@ public sealed partial class PlaybackEngine
         try { loaded = await _presenterContent.LoadAsync(slide, browseSlide, show.GetSlideImageAsync, show.NotesAsync); }
         catch (Exception ex) { System.Diagnostics.Trace.TraceError("Presenter data failed: {0}", ex); return; }
         if (loaded is not { } result) return;
-        if (!_presenterContent.IsCurrent(result) || !ReferenceEquals(presenter, _presenter) || !ReferenceEquals(show, _officeSession)
+        if (_documentOutputDisposed || !_presenterContent.IsCurrent(result) || !ReferenceEquals(presenter, _presenter) || !ReferenceEquals(show, _officeSession)
             || (browseSlide == 0 && Math.Max(1, show.Position.Slide) != slide)) { result.DisposeImages(); return; }
         presenter.SetNext(result.Next);
         presenter.SetBrowseImage(result.Browse);
@@ -589,15 +598,18 @@ public sealed partial class PlaybackEngine
 
     private async Task<bool> RunDocumentCommandCoreAsync(Func<Task> command, string what)
     {
+        int version = _contentLoadVersion;
         try
         {
             await command();
+            if (_documentOutputDisposed || version != _contentLoadVersion) return false;
             _documentNotice = null;
             RaiseDocumentChanged();
             return true;
         }
         catch (Exception ex)
         {
+            if (_documentOutputDisposed || version != _contentLoadVersion) return false;
             if (_currentFile != null) DocLog.LogFailure(what, _currentFile.SourcePath, _officeSession?.SuiteName, _officeSession?.Version, ex);
             _documentNotice = ex is OfficeOperationException office ? $"{OfficeOperationException.StageName(office.Stage)}失败：{office.Message}" : $"{what}失败：{ex.Message}";
             RaiseDocumentChanged();
@@ -882,9 +894,12 @@ public sealed partial class PlaybackEngine
         _retiring.Add(() =>
         {
             var surface = _output.ContentSurface;
-            if (view != null && ReferenceEquals(surface.Painter, view)) surface.SetFrame(null);
-            if (presenter != null && ReferenceEquals(surface.Painter, presenter)) surface.SetFrame(null);
-            if (frame != null && ReferenceEquals(surface.CurrentFrame, frame.Bitmap)) surface.SetFrame(null);
+            if (!surface.IsDisposed)
+            {
+                if (view != null && ReferenceEquals(surface.Painter, view)) surface.SetFrame(null);
+                if (presenter != null && ReferenceEquals(surface.Painter, presenter)) surface.SetFrame(null);
+                if (frame != null && ReferenceEquals(surface.CurrentFrame, frame.Bitmap)) surface.SetFrame(null);
+            }
             view?.Dispose();
             presenter?.Dispose();
             frame?.Release();

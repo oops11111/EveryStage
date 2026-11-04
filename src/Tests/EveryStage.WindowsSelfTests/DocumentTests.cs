@@ -26,7 +26,7 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestActivityThumbnailAvailability(directory); TestPresenterContentOrdering(); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestActivityThumbnailAvailability(directory); TestPresenterContentOrdering(); TestDocumentOutputDisposal(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -230,6 +230,57 @@ internal static class DocumentTests
         Require(WaitFor(() => invalidated.IsCompleted, 3000) && invalidated.Result == null,
             "Retiring a presenter did not invalidate pending data.");
         Console.WriteLine("PASS: presenter data rejects out-of-order and retired requests and releases discarded images");
+    }
+
+    private static void TestDocumentOutputDisposal(string directory)
+    {
+        string pdf = Path.Combine(directory, "closing-output.pdf");
+        WriteColoredPdf(pdf, 2);
+        foreach (bool closeOutput in new[] { true, false })
+        {
+            using var form = new Form { ShowInTaskbar = false, Opacity = 0 };
+            using var surface = new PreviewSurface { Dock = DockStyle.Fill };
+            form.Controls.Add(surface);
+            form.Show();
+            using var engine = new PlaybackEngine(PlaybackChannel.Preview, surface, null,
+                new SettingsStore(Path.Combine(directory, $"closing-{closeOutput}.json")), new ScenarioStore(), null, directory);
+            var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var created = new TaskCompletionSource<PdfDocumentView>(TaskCreationOptions.RunContinuationsAsynchronously);
+            bool opened = false, latePlaying = false;
+            engine.StateChanged += state => { if (state == PlaybackChannelState.Playing) latePlaying = true; };
+            engine.OpenPdfView = async (path, interactive, initial) =>
+            {
+                opened = true;
+                await gate.Task;
+                var view = await PdfDocumentView.OpenAsync(path, interactive, initial);
+                created.SetResult(view);
+                return view;
+            };
+            engine.RequestPlay(new MediaFile { SourcePath = pdf, Kind = MediaKind.Document });
+            Require(opened && engine.State == PlaybackChannelState.Loading, "Delayed PDF did not begin loading.");
+            if (closeOutput) surface.Dispose(); else engine.Dispose();
+            gate.SetResult();
+            var disposedField = typeof(PdfDocumentView).GetField("_disposed", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            Require(WaitFor(() => created.Task.IsCompletedSuccessfully && (bool)disposedField.GetValue(created.Task.Result)!, 10000),
+                $"PDF view was not released after {(closeOutput ? "output" : "engine")} disposal.");
+            Require(!latePlaying && engine.PdfView == null, "A PDF published playback after its owner closed.");
+        }
+        using (var form = new Form { ShowInTaskbar = false, Opacity = 0 })
+        using (var surface = new PreviewSurface { Dock = DockStyle.Fill })
+        using (var engine = new PlaybackEngine(PlaybackChannel.Preview, surface, null,
+            new SettingsStore(Path.Combine(directory, "closing-active.json")), new ScenarioStore(), null, directory))
+        {
+            form.Controls.Add(surface);
+            form.Show();
+            engine.RequestPlay(new MediaFile { SourcePath = pdf, Kind = MediaKind.Document });
+            Require(WaitFor(() => engine.State == PlaybackChannelState.Playing && engine.PdfView != null, 10000),
+                "Active PDF did not open before output disposal.");
+            var view = engine.PdfView!;
+            surface.Dispose();
+            var disposedField = typeof(PdfDocumentView).GetField("_disposed", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            Require((bool)disposedField.GetValue(view)! && engine.PdfView == null, "An active PDF was not released when its output closed.");
+        }
+        Console.WriteLine("PASS: in-flight PDF view is released after output or engine disposal");
     }
 
     private static void TestHotkeyRegistration()

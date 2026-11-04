@@ -354,3 +354,9 @@ OV 代码签名需要用户持有的有效证书/签名服务；目前不具备�
 - PDF、Word、PPT 加载入口明确使用输出窗口所属的同步上下文；文档命令、演讲者数据刷新及原生放映故障回退也通过同一上下文启动。调用者原有上下文在同步入口返回时恢复，调用入口本身仍要求在输出的 UI 线程执行。
 - Release 严格构建通过，0 警告、0 错误；操作界面专项在调用时移除同步上下文，验证 PDF 打开成功/失败、错误卡片和状态通知均回到 UI 线程。完整 Windows 内容自检通过，日志 `artifacts/test-diagnostics/windows-document-ui-thread.log`；其中在调用时移除同步上下文后，实测 WPS Word 与 PowerPoint 原生放映打开及状态通知，其他 Office 命令按现有用例回归。
 - 本机 WGC 捕获被拒绝，Office 测试使用 PrintWindow 回退；真实双屏、设备来投、MKV/AVI、高对比度、文档加载途中输出窗口销毁时的资源回收以及远端 CI 仍需验收。
+
+## 第四十六批：文档输出关闭时的资源回收（部分完成）
+
+- 文档异步回调使用 WinForms 所属 UI 线程的共享调度控件，不再依赖可能先被销毁的输出控件；输出内容控件销毁时使加载代次失效并释放已附着的文档资源，过期 PDF 视图在完成后释放。文档命令和演讲者数据在输出销毁或文件切换后不再更新旧状态。
+- Release 严格构建、完整操作界面专项通过。使用受控延迟的真实 PDF 打开验证：输出先关闭或播放引擎先释放时，随后完成的视图被释放且不会上屏；另验证正在播放的 PDF 在输出关闭时释放。日志 `artifacts/test-diagnostics/operator-document-close-final.log`。
+- 完整 Windows 内容自检通过，日志 `artifacts/test-diagnostics/windows-document-close.log`；WPS 与 PowerPoint 正常播放路径通过，WGC 被拒绝并回退 PrintWindow。实际 Office 正在启动时关闭输出、整个 UI 消息循环先退出时的资源回收尚未专项验证；真实双屏、设备来投、MKV/AVI、高对比度和远端 CI 仍待验收。

@@ -410,7 +410,8 @@ public sealed partial class PlaybackEngine : IDisposable
         Channel = channel;
         _stateMachine = channel == PlaybackChannel.Program ? stateMachine : null;
         _output = output;
-        _documentUiContext = new PlaybackOutputSynchronizationContext(output);
+        _documentUiContext = new PlaybackOutputSynchronizationContext();
+        _output.ContentSurface.Disposed += OnDocumentOutputDisposed;
         _videoSurface = videoSurface;
         // Preview fills its width (vertical overflow cropped); the extended display shows the whole frame.
         _videoScaleMode = channel == PlaybackChannel.Preview ? EveryStage.Rendering.VideoScaleMode.FitWidth : EveryStage.Rendering.VideoScaleMode.Fit;
@@ -1679,6 +1680,7 @@ public sealed partial class PlaybackEngine : IDisposable
     public void Dispose()
     {
         ++_contentLoadVersion;
+        _output.ContentSurface.Disposed -= OnDocumentOutputDisposed;
         _settingsStore.DefaultAudioOutputChanged -= OnDefaultAudioOutputChanged;
         if (_stateMachine != null) _stateMachine.StateChanged -= OnOutputStateChanged;
         _stayDurationTimer?.Dispose();
