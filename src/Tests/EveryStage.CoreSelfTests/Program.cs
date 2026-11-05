@@ -37,6 +37,44 @@ await RunAsync("Device identity persistence", () =>
 await RunAsync("Output state machine", () => Task.FromResult(TestOutputStateMachine()));
 await RunAsync("Media queue navigation", () => Task.FromResult(TestMediaQueue()));
 await RunAsync("Settings migration", () => Task.FromResult(TestSettingsMigration()));
+await RunAsync("Pre-show check: missing, unsupported and spreadsheet files are found; good files pass", () =>
+{
+    string dir = Path.Combine(Path.GetTempPath(), "EveryStage-PreShow-" + Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(dir);
+    try
+    {
+        string good = Path.Combine(dir, "ok.png");
+        File.WriteAllBytes(good, new byte[] { 1 });
+        var section = new Activity { Name = "开场" };
+        section.Files.Add(new MediaFile { SourcePath = good, Kind = MediaKind.Image });
+        section.Files.Add(new MediaFile { SourcePath = Path.Combine(dir, "gone.mp4"), Kind = MediaKind.Video });
+        section.Files.Add(new MediaFile { SourcePath = Path.Combine(dir, "sheet.xlsx"), Kind = MediaKind.Document });
+        section.Files.Add(new MediaFile { SourcePath = Path.Combine(dir, "odd.xyz"), Kind = MediaKind.Image });
+        var scenario = new Scenario { Name = "测试" };
+        scenario.Activities.Add(section);
+        var findings = PreShowCheck.Run(scenario);
+        bool ok = findings.Count == 3
+            && findings.Any(f => f.Index == 1 && f.Problem == PreShowProblem.Missing)
+            && findings.Any(f => f.Index == 2 && f.Problem == PreShowProblem.Spreadsheet)
+            && findings.Any(f => f.Index == 3 && f.Problem == PreShowProblem.UnsupportedFormat);
+        return Task.FromResult<(bool, string?)>(ok ? (true, null) : (false, "Pre-show check findings: " + string.Join(", ", findings.Select(f => $"{f.Index}:{f.Problem}"))));
+    }
+    finally { Directory.Delete(dir, recursive: true); }
+});
+await RunAsync("Document formats: one list for import and playback; spreadsheets refused", () =>
+{
+    foreach (string ext in EveryStage.Terminal.Documents.DocumentFormats.ImportableExtensions)
+    {
+        string path = "sample" + ext;
+        if (FileLibraryStore.InferKind(path) != MediaKind.Document
+            || EveryStage.Terminal.Documents.DocumentFormats.Of(path) is EveryStage.Terminal.Documents.DocumentFormat.None or EveryStage.Terminal.Documents.DocumentFormat.Spreadsheet)
+            return Task.FromResult<(bool, string?)>((false, $"{ext} is importable but not playable (or not imported)."));
+    }
+    foreach (string ext in EveryStage.Terminal.Documents.DocumentFormats.SpreadsheetExtensions)
+        if (FileLibraryStore.InferKind("sample" + ext) != null)
+            return Task.FromResult<(bool, string?)>((false, $"{ext} (spreadsheet) is still importable."));
+    return Task.FromResult<(bool, string?)>((true, null));
+});
 await RunAsync("Pairing keys and identities move into the restricted secure folder", () =>
 {
     string root = Path.Combine(Path.GetTempPath(), "EveryStage-Secure-" + Guid.NewGuid().ToString("N"));

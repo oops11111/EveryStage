@@ -19,6 +19,8 @@
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\Scenario.cs" Link="Terminal\Scenario.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\AppSettings.cs" Link="Terminal\AppSettings.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\HotkeyAction.cs" Link="Terminal\HotkeyAction.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Documents\DocumentFormats.cs" Link="Terminal\DocumentFormats.cs" />
+    <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\PreShowCheck.cs" Link="Terminal\PreShowCheck.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Data\SettingsStore.cs" Link="Terminal\SettingsStore.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Devices\PairedDevice.cs" Link="Terminal\PairedDevice.cs" />
     <Compile Include="..\..\Terminal\EveryStage.Terminal\Devices\PairedDeviceStore.cs" Link="Terminal\PairedDeviceStore.cs" />

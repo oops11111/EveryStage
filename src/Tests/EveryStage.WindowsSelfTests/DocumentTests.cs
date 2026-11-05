@@ -772,6 +772,7 @@ internal static class DocumentTests
         public string? MusicCueText(StageActivity activity) => null;
         public Image? ThumbnailFor(MediaFile file) => null;
         public bool? IsUnavailable(MediaFile file) => null;
+        public PreShowProblem? PreShowProblemOf(MediaFile file) => null;
         public (FilesPanel.CardProgress Progress, bool OnProgram)? ProgressFor(MediaFile file) => null;
         public void RowNodeClicked(TreeNode node) { }
         public void RowNodeDoubleClicked(TreeNode node) { }

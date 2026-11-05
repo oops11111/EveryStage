@@ -68,6 +68,9 @@ internal sealed class MediaGrid : Control
     /// <summary>Whether dragging to reorder is allowed right now (e.g. not while a filter hides cards).</summary>
     public Func<bool>? CanReorder { get; set; }
 
+    /// <summary>A drag was started while <see cref="CanReorder"/> said no (the owner explains why).</summary>
+    public event Action<Point>? ReorderBlocked;
+
     public MediaGrid()
     {
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
@@ -321,7 +324,7 @@ internal sealed class MediaGrid : Control
         {
             var size = SystemInformation.DragSize;
             if (Math.Abs(e.X - _mouseDown.X) < size.Width && Math.Abs(e.Y - _mouseDown.Y) < size.Height) return;
-            if (CanReorder?.Invoke() == false) { _pressed = null; return; }
+            if (CanReorder?.Invoke() == false) { _pressed = null; ReorderBlocked?.Invoke(e.Location); return; }
             _dragging = true;
             Cursor = Cursors.SizeAll;
         }

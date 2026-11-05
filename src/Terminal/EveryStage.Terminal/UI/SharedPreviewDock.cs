@@ -140,7 +140,7 @@ internal sealed class SharedPreviewDock : Panel
         _collapseButton.Font = new Font(ModernUi.UiFont, 8.5F);
         _collapseButton.Click += (_, _) => CollapseRequested?.Invoke();
 
-        _previewBadge = new Badge("预览");
+        _previewBadge = new Badge("预览 · PVW") { AccessibleName = "预览（PVW）" };
         _previewState = ModernUi.SetForegroundRole(new Label { Text = "待机", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
         _previewFrame = new Panel { BackColor = ModernUi.Border, Padding = new Padding(2) };
         PreviewSurface = ModernUi.SetBackgroundRole(new PreviewSurface { Dock = DockStyle.Fill, Margin = Padding.Empty }, UiBackgroundRole.MediaBlack);
@@ -163,7 +163,7 @@ internal sealed class SharedPreviewDock : Panel
         ModernUi.StyleButton(_takeButton, primary: true);
         _takeButton.Font = new Font(ModernUi.UiFontSemibold, 11F);
 
-        _programBadge = new Badge("大屏") { Danger = true };
+        _programBadge = new Badge("大屏 · PGM") { Danger = true, AccessibleName = "大屏（PGM）" };
         _programState = ModernUi.SetForegroundRole(new Label { Text = "未连接扩展屏", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
         _localCard = new SourceCardView("本地媒体");
         _deviceCard = new DeviceCastCard();

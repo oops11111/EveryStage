@@ -4,8 +4,29 @@ namespace EveryStage.Terminal.Documents;
 /// one "文档" kind (PLANNING.md §6); the pipeline is chosen from the extension at play time.</summary>
 public enum DocumentFormat { None, Pdf, Word, Presentation, Spreadsheet }
 
+/// <summary>
+/// The one list of document extensions: import (<see cref="Data.FileLibraryStore.InferKind"/>), the import
+/// dialog filter and playback (<see cref="Of"/>) all read it. Spreadsheets are recognised (so an existing
+/// library entry still says what it is) but NOT importable: a sheet has no page layout to show on a big
+/// screen — the operator is asked to save it as PDF first.
+/// </summary>
 public static class DocumentFormats
 {
+    /// <summary>Document extensions that can be imported and played.</summary>
+    public static readonly IReadOnlyList<string> ImportableExtensions = new[]
+    {
+        ".pdf", ".doc", ".docx", ".rtf", ".wps", ".ppt", ".pptx", ".pps", ".ppsx", ".dps",
+    };
+
+    /// <summary>Spreadsheet extensions: refused at import with 「请另存为 PDF」.</summary>
+    public static readonly IReadOnlyList<string> SpreadsheetExtensions = new[] { ".xls", ".xlsx", ".et" };
+
+    public static bool IsImportable(string path) =>
+        ImportableExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
+
+    public static bool IsSpreadsheet(string path) =>
+        SpreadsheetExtensions.Contains(Path.GetExtension(path).ToLowerInvariant());
+
     public static DocumentFormat Of(string path) => Path.GetExtension(path).ToLowerInvariant() switch
     {
         ".pdf" => DocumentFormat.Pdf,

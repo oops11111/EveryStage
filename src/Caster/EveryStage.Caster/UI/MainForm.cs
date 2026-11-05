@@ -226,9 +226,10 @@ public sealed class MainForm : GradientForm
 
         var privacyLabel = new Label
         {
-            Text = "点击\"开始投屏\"后，将投放整个屏幕（全屏捕获），而不是仅本窗口或某个应用。",
+            Text = "点击\"开始投屏\"后，将投放整个屏幕（全屏捕获），而不是仅本窗口或某个应用。\n" +
+                   "画面经过设备认证，但未加密传输：请只在受信任的局域网中投屏。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(24, 536, 472, 34),
+            Bounds = new Rectangle(24, 536, 472, 52),
         };
 
         // PLANNING.md §12"选择捕获哪个显示器"——之前ScreenCaptureSource固定捕获outputIndex=0，
@@ -313,14 +314,21 @@ public sealed class MainForm : GradientForm
             Text = "🛡  当前正在共享所选显示器",
             ForeColor = ModernUi.Warning,
             Font = new Font(ModernUi.UiFontSemibold, 11F),
-            Bounds = new Rectangle(20, 18, 430, 28),
+            Bounds = new Rectangle(20, 10, 430, 26),
+        };
+        var encryptionNote = new Label
+        {
+            Text = "媒体经设备认证，未加密 · 请只在受信任的局域网中使用",
+            ForeColor = ModernUi.Muted,
+            Bounds = new Rectangle(20, 38, 430, 22),
         };
         var privacyCard = new GlassPanel
         {
-            Bounds = new Rectangle(24, 264, 472, 62), CornerRadius = 14,
+            Bounds = new Rectangle(24, 264, 472, 68), CornerRadius = 14,
             GlassTint = Color.FromArgb(220, 60, 46, 20),
         };
         privacyCard.Controls.Add(_privacyReminderLabel);
+        privacyCard.Controls.Add(encryptionNote);
 
         // Height grown from 90 to 108 (+18) to fit RefreshLiveCastStats' new always-visible
         // "（仅代表状态通道送达...）" caveat line without clipping the 5 lines already packed in

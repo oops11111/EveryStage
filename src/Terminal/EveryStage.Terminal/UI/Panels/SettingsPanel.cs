@@ -269,7 +269,9 @@ public sealed class SettingsPanel : UserControl
         {
             AutoSize = true, BackColor = Color.Transparent,
             Text = $"EveryStage 终端机 {Application.ProductVersion}\n设备 ID：{_identity.DeviceId}\n数据目录：{DataDirectory.Root}\n" +
-                   "所有发现 / 配对 / 投屏数据只在局域网内传输，不上传任何遥测或使用数据。",
+                   "所有发现 / 配对 / 投屏数据只在局域网内传输，不上传任何遥测或使用数据。\n\n" +
+                   "安全说明：配对后，投屏控制消息和媒体数据都用设备密钥认证（防伪造、防重放），但媒体内容本身没有加密，" +
+                   "同一局域网内能抓包的人可以看到画面、听到声音。请只在受信任的局域网中使用。",
         }, UiForegroundRole.Muted));
         about.AddButtons(openDataButton);
 

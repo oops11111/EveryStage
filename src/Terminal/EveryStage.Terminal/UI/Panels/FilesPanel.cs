@@ -284,6 +284,12 @@ public sealed class FilesPanel : UserControl
             _fileContextMenu.Show(_grid, point);
         };
         _grid.ReorderRequested += OnReorder;
+        // The saved order is the whole library's: with a filter or search hiding cards, a drop position
+        // would be ambiguous, so dragging is refused and the reason shown at the pointer.
+        _grid.CanReorder = () => _activeFilter == null && _searchBox.Text.Trim().Length == 0;
+        var reorderHint = new ToolTip();
+        _grid.ReorderBlocked += point =>
+            reorderHint.Show("筛选或搜索时不能拖动排序。请切回「全部」并清空搜索后再拖动。", _grid, point.X + 12, point.Y + 12, 3000);
 
         DragEnter += OnDragEnter;
         DragDrop += OnDragDrop;
@@ -891,9 +897,14 @@ public sealed class FilesPanel : UserControl
 
         if (rejected.Count > 0)
         {
-            MessageBox.Show(this,
-                $"以下文件的类型不受支持，未导入：\n{string.Join("\n", rejected)}",
-                "导入", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            var sheets = rejected.Where(Documents.DocumentFormats.IsSpreadsheet).ToList();
+            var other = rejected.Except(sheets).ToList();
+            string message = "";
+            if (sheets.Count > 0)
+                message += $"表格文件不能直接在大屏上播放（没有固定的页面版式）。请在表格软件中「另存为 PDF」后再导入：\n{string.Join("\n", sheets)}";
+            if (other.Count > 0)
+                message += (message.Length > 0 ? "\n\n" : "") + $"以下文件的类型不受支持，未导入：\n{string.Join("\n", other)}";
+            MessageBox.Show(this, message, "导入", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 

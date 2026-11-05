@@ -21,6 +21,8 @@ internal interface IActivityRowHost
     string? MusicCueText(Activity activity);
     Image? ThumbnailFor(MediaFile file);
     bool? IsUnavailable(MediaFile file);
+    /// <summary>What 开演前检查 found for this file (null: nothing, or not checked yet).</summary>
+    PreShowProblem? PreShowProblemOf(MediaFile file);
     (FilesPanel.CardProgress Progress, bool OnProgram)? ProgressFor(MediaFile file);
     void RowNodeClicked(TreeNode node);
     void RowNodeDoubleClicked(TreeNode node);
@@ -341,7 +343,8 @@ internal sealed class ActivityRowView : Control
 
         var thumb = new Rectangle(c.Thumb, cy - S(22), S(76), S(43));
         DrawThumbnail(g, thumb, file);
-        bool unavailable = _host.IsUnavailable(file) == true;
+        var preShowProblem = _host.PreShowProblemOf(file);
+        bool unavailable = preShowProblem != null || _host.IsUnavailable(file) == true;
         if (ReferenceEquals(preview, file) && state != RunRowState.Live)
         {
             var tag = new Rectangle(thumb.Left + S(3), thumb.Top + S(3), S(30), S(15));
@@ -356,7 +359,7 @@ internal sealed class ActivityRowView : Control
         TextRenderer.DrawText(g, Path.GetFileName(file.SourcePath), NameFont,
             Rectangle.FromLTRB(c.Name, bounds.Top + S(8), nameRight, cy + S(2)), text,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-        TextRenderer.DrawText(g, unavailable ? "文件不可用" : KindLine(file), SmallFont,
+        TextRenderer.DrawText(g, preShowProblem is { } problem ? PreShowCheck.Describe(problem) : unavailable ? "文件不可用" : KindLine(file), SmallFont,
             Rectangle.FromLTRB(c.Name, cy + S(2), nameRight, bounds.Bottom - S(8)),
             unavailable && !highContrast ? ModernUi.Danger : ModernUi.Muted,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);

@@ -54,7 +54,7 @@ public sealed class FileLibraryStore
         // GIF shows its first frame and TIFF its first page (labelled in Preview).
         ".jpg" or ".jpeg" or ".png" or ".bmp" or ".gif" or ".tif" or ".tiff" => MediaKind.Image,
         ".mp4" or ".mkv" or ".mov" or ".avi" or ".wmv" or ".m4v" => MediaKind.Video,
-        ".pdf" or ".doc" or ".docx" or ".xls" or ".xlsx" or ".ppt" or ".pptx" => MediaKind.Document,
+        _ when EveryStage.Terminal.Documents.DocumentFormats.IsImportable(path) => MediaKind.Document, // spreadsheets excluded
         ".mp3" or ".wav" or ".flac" or ".aac" or ".m4a" or ".wma" => MediaKind.Audio,
         _ => null,
     };

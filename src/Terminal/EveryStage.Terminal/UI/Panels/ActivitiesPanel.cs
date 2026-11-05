@@ -149,6 +149,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _saveFeedbackTimer.Tick += (_, _) => { _saveFeedbackTimer.Stop(); UpdateCountLabel(); };
         var addSectionButton = ActionButton("＋ 环节", OnNewActivity, width: 84);
         var addFileButton = ActionButton("＋ 添加文件", OnAddFile, width: 104);
+        var checkButton = ActionButton("开演前检查", () => RunPreShowCheck(requestedByOperator: true), width: 100);
         var scenarioMenu = _scenarioMenu = ModernUi.CreateThemedMenu(this);
         scenarioMenu.Items.Add("新建方案...", null, (_, _) => OnNewScenario());
         scenarioMenu.Items.Add("保存方案", null, (_, _) => OnSaveScenario());
@@ -167,14 +168,15 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         moreButton = ActionButton("⋯", () => scenarioMenu.Show(moreButton!, new Point(0, moreButton!.Height)), width: 40);
         _toolTip.SetToolTip(moreButton, "方案：新建 / 保存 / 另存为 / 删除；全部展开或收起");
         _toolTip.SetToolTip(addFileButton, "从文件库添加到所选环节");
-        header.Controls.AddRange(new Control[] { title, scenarioLabel, _scenarioCombo, _activityCount, addSectionButton, addFileButton, moreButton });
+        _toolTip.SetToolTip(checkButton, "检查方案里每个文件是否存在、能否读取、格式是否支持（打开方案时也会自动检查）");
+        header.Controls.AddRange(new Control[] { title, scenarioLabel, _scenarioCombo, _activityCount, checkButton, addSectionButton, addFileButton, moreButton });
         header.Resize += (_, _) =>
         {
             int cy = (header.ClientSize.Height - 6) / 2, gap = 10;
             title.Location = new Point(0, cy - title.Height / 2);
             scenarioLabel.Location = new Point(title.Right + 16, cy - scenarioLabel.Height / 2);
             int right = header.ClientSize.Width;
-            foreach (var button in new[] { moreButton, addFileButton, addSectionButton })
+            foreach (var button in new[] { moreButton, addFileButton, addSectionButton, checkButton })
             {
                 right -= button.Width;
                 button.Location = new Point(right, cy - button.Height / 2);
@@ -1134,6 +1136,84 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         return null;
     }
 
+    PreShowProblem? IActivityRowHost.PreShowProblemOf(MediaFile file) =>
+        _preShowProblems.TryGetValue(file, out var problem) ? problem : null;
+
+    // --- 开演前检查 ---
+
+    private readonly Dictionary<MediaFile, PreShowProblem> _preShowProblems = new(ReferenceEqualityComparer.Instance);
+    private Guid? _preShowCheckedScenario;
+    private int _preShowGeneration;
+    private Form? _preShowWindow;
+
+    /// <summary>Runs 开演前检查 for the current scenario in the background: rows get their marks, and the
+    /// non-modal list opens when something was found (always when the operator pressed the button).</summary>
+    private async void RunPreShowCheck(bool requestedByOperator)
+    {
+        if (CurrentScenario is not { } scenario) return;
+        int generation = ++_preShowGeneration;
+        _preShowCheckedScenario = scenario.Id;
+        IReadOnlyList<PreShowFinding> findings;
+        try { findings = await Task.Run(() => PreShowCheck.Run(scenario)); }
+        catch (Exception ex) { System.Diagnostics.Trace.TraceError("Pre-show check failed: {0}", ex); return; }
+        if (IsDisposed || generation != _preShowGeneration) return;
+        _preShowProblems.Clear();
+        foreach (var finding in findings) _preShowProblems[finding.File] = finding.Problem;
+        foreach (Control row in _activityRows.Controls) row.Invalidate();
+        int total = scenario.Activities.Sum(a => a.Files.Count);
+        if (findings.Count > 0 || requestedByOperator) ShowPreShowResult(scenario, findings, total);
+    }
+
+    private void ShowPreShowResult(Scenario scenario, IReadOnlyList<PreShowFinding> findings, int total)
+    {
+        _preShowWindow?.Close();
+        var window = new Form
+        {
+            Text = $"开演前检查 · {scenario.Name}", FormBorderStyle = FormBorderStyle.SizableToolWindow, ShowInTaskbar = false,
+            StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(560, findings.Count == 0 ? 150 : 340),
+            MinimumSize = new Size(420, 150),
+        };
+        var summary = new Label
+        {
+            Dock = DockStyle.Top, Height = 56, Padding = new Padding(12, 10, 12, 0),
+            Text = (findings.Count == 0 ? $"全部 {total} 个文件都存在、可读取且格式支持。" : $"{total} 个文件中有 {findings.Count} 个需要处理：") + "\n" + PreShowCheck.Scope,
+        };
+        var list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HeaderStyle = ColumnHeaderStyle.Nonclickable, BorderStyle = BorderStyle.None };
+        list.Columns.Add("位置", 70);
+        list.Columns.Add("文件", 220);
+        list.Columns.Add("问题", 240);
+        foreach (var finding in findings)
+        {
+            int section = scenario.Activities.IndexOf(finding.Activity) + 1;
+            var item = new ListViewItem(new[] { $"{section}.{finding.Index + 1}", Path.GetFileName(finding.File.SourcePath), PreShowCheck.Describe(finding.Problem) })
+            {
+                ToolTipText = finding.File.SourcePath,
+            };
+            list.Items.Add(item);
+        }
+        list.ShowItemToolTips = true;
+        var close = new Button { Text = "关闭", Dock = DockStyle.Bottom, Height = 34 };
+        close.Click += (_, _) => window.Close();
+        if (findings.Count > 0) window.Controls.Add(list);
+        window.Controls.Add(close);
+        window.Controls.Add(summary);
+        window.FormClosed += (_, _) => { if (ReferenceEquals(_preShowWindow, window)) _preShowWindow = null; window.Dispose(); };
+        ModernUi.StyleDialog(window);
+        _preShowWindow = window;
+        window.Show(FindForm()); // non-modal: the show is never blocked
+    }
+
+    private void BeginInvokeWhenReady(Action action)
+    {
+        if (IsHandleCreated) { BeginInvoke(action); return; }
+        void OnCreated(object? sender, EventArgs e)
+        {
+            HandleCreated -= OnCreated;
+            BeginInvoke(action);
+        }
+        HandleCreated += OnCreated;
+    }
+
     bool? IActivityRowHost.IsUnavailable(MediaFile file) =>
         _thumbnailUnavailable.TryGetValue($"{file.Kind}|{file.SourcePath}", out bool unavailable) ? unavailable : null;
 
@@ -1573,6 +1653,12 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     /// <summary>Call after the scenario store changes from outside this control.</summary>
     public void RefreshTree()
     {
+        // 开演前检查 runs by itself whenever a (different) scenario is opened.
+        if (CurrentScenario is { } opened && opened.Id != _preShowCheckedScenario)
+        {
+            _preShowProblems.Clear();
+            BeginInvokeWhenReady(() => RunPreShowCheck(requestedByOperator: false));
+        }
         _thumbnailGeneration++;
         foreach (var image in _thumbnails.Values) image.Dispose();
         _thumbnails.Clear();

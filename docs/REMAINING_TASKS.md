@@ -1,5 +1,7 @@
 # EveryStage 剩余任务执行顺序
 
+> V1 发布闸门与统一 P0（27 条）见 `docs/V1-RELEASE-GATE.md`；BACKLOG（2026-11-03）已冻结。
+
 ## 1. 自动化测试与 CI 门禁
 
 - [x] Windows Release 全项目严格构建
