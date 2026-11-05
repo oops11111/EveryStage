@@ -23,6 +23,16 @@ internal static class Program
         // the monitor they are actually on. Without an explicit process mode Windows can bitmap-
         // stretch the whole window on 125%/150% displays (or after moving it between monitors),
         // producing the blurred text and incorrect initial dimensions seen on Windows 10.
+        // One Terminal per Windows session: a second launch (double-click, autostart racing a manual
+        // start) brings the running window to the front and exits, rather than fighting the first one
+        // for the extended display, the UDP ports and the data files.
+        using var singleInstance = new Mutex(initiallyOwned: true, SingleInstance.MutexName, out bool firstInstance);
+        if (!firstInstance)
+        {
+            SingleInstance.SignalRunningInstance();
+            return;
+        }
+
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
@@ -83,7 +93,49 @@ internal static class Program
         var store = repository.Load();
 
         using var context = new TerminalApplicationContext(store, repository, crashLogger);
+        using var activation = SingleInstance.ListenForActivation(context.ActivateMainWindow);
         Application.Run(context);
+        GC.KeepAlive(singleInstance);
+    }
+}
+
+/// <summary>The single-instance guard: a named mutex held for the process lifetime, and a named event
+/// a second launch sets so the running Terminal shows and activates its main window.</summary>
+internal static class SingleInstance
+{
+    public const string MutexName = @"Local\EveryStage.Terminal.SingleInstance";
+    private const string ActivateEventName = @"Local\EveryStage.Terminal.Activate";
+
+    public static void SignalRunningInstance()
+    {
+        try
+        {
+            using var activate = EventWaitHandle.OpenExisting(ActivateEventName);
+            activate.Set();
+        }
+        catch (Exception ex) when (ex is WaitHandleCannotBeOpenedException or UnauthorizedAccessException or IOException) { }
+    }
+
+    /// <summary>Calls <paramref name="activate"/> on the UI thread each time another launch signals.
+    /// Dispose to stop listening.</summary>
+    public static IDisposable ListenForActivation(Action activate)
+    {
+        var ui = SynchronizationContext.Current;
+        var signal = new EventWaitHandle(false, EventResetMode.AutoReset, ActivateEventName);
+        var registration = ThreadPool.RegisterWaitForSingleObject(signal, (_, _) =>
+        {
+            if (ui != null) ui.Post(_ => activate(), null); else activate();
+        }, null, Timeout.Infinite, executeOnlyOnce: false);
+        return new Listener(signal, registration);
+    }
+
+    private sealed class Listener(EventWaitHandle signal, RegisteredWaitHandle registration) : IDisposable
+    {
+        public void Dispose()
+        {
+            registration.Unregister(null);
+            signal.Dispose();
+        }
     }
 }
 
@@ -239,7 +291,10 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         _tray = new TrayIconController(_stateMachine);
         _tray.ExitRequested += OnExitRequested;
-        _tray.MainWindowRequested += () => { _mainWindow.Show(); _mainWindow.Activate(); };
+        _tray.MainWindowRequested += ActivateMainWindow;
+
+        if (_settingsStore.ReadOnlyNewerSchema)
+            _mainWindow.ShowStartupProblem("设置文件来自更新版本的 EveryStage：本版本以默认设置只读运行，不会覆盖它（已另存 settings.json.newer）。请安装新版本后再修改设置。");
 
         // Files in %ProgramData%\EveryStage owned by another account (or by an elevated first run) make
         // every later save fail with "access denied". Say so now, not at the operator's first import.
@@ -250,6 +305,15 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _mainWindow.ShowStartupProblem("无法修改数据文件，导入、方案和设置都将无法保存。\n" + EveryStage.Terminal.Data.DataDirectory.PermissionHint);
             _tray.ShowNotification("EveryStage 数据目录无法写入", "导入和保存会失败。请重新运行 EveryStage 安装程序修复权限。");
         }
+    }
+
+    /// <summary>Shows, restores and activates the main window (tray 「打开」, a second launch).</summary>
+    public void ActivateMainWindow()
+    {
+        if (_mainWindow.IsDisposed) return;
+        _mainWindow.Show();
+        if (_mainWindow.WindowState == FormWindowState.Minimized) _mainWindow.WindowState = FormWindowState.Normal;
+        _mainWindow.Activate();
     }
 
     /// <summary>Builds the whole local-playback object graph — <see cref="_overlay"/>/

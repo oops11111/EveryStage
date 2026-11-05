@@ -3,7 +3,7 @@
 ; 发布目录由 scripts/Build-Installer.sh（或 dotnet publish --self-contained）生成：自带 .NET 运行时，目标机无需另装 .NET 8。
 ;
 ; 与 deployment/Install-EveryStage.ps1 保持一致：安装到 %ProgramFiles%\EveryStage\Terminal|Caster，开机启动写
-; HKLM Run 的 EveryStageTerminal / EveryStageCaster，卸载保留 %ProgramData%\EveryStage（配置、内容索引、日志）。
+; HKLM Run 的 EveryStageTerminal / EveryStageCaster，卸载默认保留 %ProgramData%\EveryStage（可勾选删除配置与配对，日志始终保留）。
 ; 因此可以直接覆盖升级用脚本部署的机器。
 
 Unicode true
@@ -15,7 +15,7 @@ SetCompressorDictSize 64
   !error "Pass -DPUBLISH_DIR=<folder containing Terminal\ and Caster\>"
 !endif
 !ifndef VERSION
-  !define VERSION "0.0.0"
+  !error "Pass -DVERSION=<x.y.z> (scripts/Build-Installer.* read it from Directory.Build.props)"
 !endif
 !ifndef BUILD
   !define BUILD "dev"
@@ -35,6 +35,8 @@ SetCompressorDictSize 64
 !include "x64.nsh"
 !include "Sections.nsh"
 !include "WinVer.nsh"
+!include "nsDialogs.nsh"
+!include "FileFunc.nsh"
 
 Name "${PRODUCT}"
 Caption "${PRODUCT} ${VERSION} 安装"
@@ -54,7 +56,14 @@ VIAddVersionKey /LANG=2052 "LegalCopyright" "${PRODUCT}"
 !define MUI_UNICON "${ICON}"
 !define MUI_ABORTWARNING
 !define MUI_COMPONENTSPAGE_SMALLDESC
-!define MUI_WELCOMEPAGE_TEXT "将在本机安装 ${PRODUCT} ${VERSION}。$\r$\n$\r$\n• 终端机：连接扩展屏（LED/投影）的展示电脑。$\r$\n• 投屏机：需要把屏幕投到终端机的电脑。$\r$\n$\r$\n安装包已包含 .NET 运行环境，无需另行安装。安装前会关闭正在运行的 ${PRODUCT}。"
+; An installer built without a code-signing certificate (-DUNSIGNED=1, every build today) says so up
+; front: Windows SmartScreen shows 「Windows 已保护你的电脑 / 未知发布者」 for it.
+!ifdef UNSIGNED
+  !define SIGNATURE_NOTE "$\r$\n$\r$\n注意：本安装包未经代码签名。Windows SmartScreen 可能提示“已保护你的电脑 / 未知发布者”；请只运行从可信渠道取得的安装包，确认来源后点“更多信息 → 仍要运行”。"
+!else
+  !define SIGNATURE_NOTE ""
+!endif
+!define MUI_WELCOMEPAGE_TEXT "将在本机安装 ${PRODUCT} ${VERSION}。$\r$\n$\r$\n• 终端机：连接扩展屏（LED/投影）的展示电脑。$\r$\n• 投屏机：需要把屏幕投到终端机的电脑。$\r$\n$\r$\n安装包已包含 .NET 运行环境，无需另行安装。安装前会关闭正在运行的 ${PRODUCT}。${SIGNATURE_NOTE}"
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_TEXT "立即启动"
 !define MUI_FINISHPAGE_RUN_FUNCTION LaunchInstalled
@@ -67,6 +76,7 @@ VIAddVersionKey /LANG=2052 "LegalCopyright" "${PRODUCT}"
 !insertmacro MUI_PAGE_FINISH
 
 !insertmacro MUI_UNPAGE_CONFIRM
+UninstPage custom un.DataPageCreate un.DataPageLeave
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "SimpChinese"
@@ -208,6 +218,13 @@ Section "-Common"
   ReadEnvStr $0 "ProgramData"
   CreateDirectory "$0\EveryStage"
   nsExec::Exec 'icacls "$0\EveryStage" /grant *S-1-5-32-545:(OI)(CI)M /T /C /Q'
+  ; Pairing keys and device identities live in EveryStage\secure, which local Users may NOT read: only
+  ; SYSTEM, Administrators and each file's owner (CREATOR OWNER: the account EveryStage runs as, which
+  ; creates them). Users can list the folder and create files in it, nothing more. The Users grant just
+  ; added with /T is taken back out of that subtree first.
+  CreateDirectory "$0\EveryStage\secure"
+  nsExec::Exec 'icacls "$0\EveryStage\secure" /remove:g *S-1-5-32-545 /T /C /Q'
+  nsExec::Exec 'icacls "$0\EveryStage\secure" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-3-0:(OI)(CI)(IO)F *S-1-5-32-545:(RX,WD,AD) /C /Q'
   WriteUninstaller "$INSTDIR\Uninstall.exe"
   CreateShortcut "$SMPROGRAMS\EveryStage\卸载 EveryStage.lnk" "$INSTDIR\Uninstall.exe"
   WriteRegStr HKLM "${UNINSTALL_KEY}" "DisplayName" "${PRODUCT}"
@@ -320,9 +337,65 @@ FunctionEnd
 
 ; ── Uninstall ────────────────────────────────────────────────────────────────────────────────
 
+Var DeleteData
+Var DeleteDataCheckbox
+
 Function un.onInit
   SetRegView 64
   SetShellVarContext all
+  ; Silent uninstall keeps the data unless asked: Uninstall.exe /S /DELETEDATA=1
+  StrCpy $DeleteData 0
+  ${GetParameters} $R0
+  ClearErrors
+  ${GetOptions} $R0 "/DELETEDATA=" $R1
+  ${IfNot} ${Errors}
+  ${AndIf} $R1 == "1"
+    StrCpy $DeleteData 1
+  ${EndIf}
+FunctionEnd
+
+Function un.DataPageCreate
+  !insertmacro MUI_HEADER_TEXT "配置与配对" "选择是否同时删除本机的 EveryStage 数据。"
+  nsDialogs::Create 1018
+  Pop $0
+  ${NSD_CreateLabel} 0 0 100% 48u "EveryStage 的设置、文件库与方案索引、背景音乐歌单、设备身份和配对信息保存在 %ProgramData%\EveryStage。默认保留，重新安装后可直接使用。$\r$\n媒体文件本身不在这里，不会被删除；日志（logs）始终保留，便于排查问题。"
+  Pop $0
+  ${NSD_CreateCheckbox} 0 56u 100% 12u "同时删除配置与配对（删除后需要重新配对所有设备）"
+  Pop $DeleteDataCheckbox
+  ${If} $DeleteData == 1
+    ${NSD_Check} $DeleteDataCheckbox
+  ${EndIf}
+  nsDialogs::Show
+FunctionEnd
+
+Function un.DataPageLeave
+  ${NSD_GetState} $DeleteDataCheckbox $0
+  ${If} $0 == ${BST_CHECKED}
+    StrCpy $DeleteData 1
+  ${Else}
+    StrCpy $DeleteData 0
+  ${EndIf}
+FunctionEnd
+
+; Deletes everything in %ProgramData%\EveryStage except logs\.
+Function un.DeleteDataExceptLogs
+  ReadEnvStr $0 "ProgramData"
+  StrCpy $0 "$0\EveryStage"
+  IfFileExists "$0\*.*" 0 done
+  Delete "$0\*.*"
+  FindFirst $1 $2 "$0\*.*"
+  loop:
+    StrCmp $2 "" close
+    StrCmp $2 "." next
+    StrCmp $2 ".." next
+    StrCmp $2 "logs" next
+    RMDir /r "$0\$2"
+  next:
+    FindNext $1 $2
+    Goto loop
+  close:
+  FindClose $1
+  done:
 FunctionEnd
 
 Section "Uninstall"
@@ -342,5 +415,9 @@ Section "Uninstall"
   DeleteRegKey HKLM "${UNINSTALL_KEY}"
   DeleteRegKey HKLM "${STATE_KEY}"
   DeleteRegKey /ifempty HKLM "Software\EveryStage"
-  ; %ProgramData%\EveryStage (settings, content index, logs) is kept, as with Uninstall-EveryStage.ps1.
+  ; %ProgramData%\EveryStage is kept unless 「同时删除配置与配对」 was ticked (or /S /DELETEDATA=1);
+  ; even then logs\ stays.
+  ${If} $DeleteData == 1
+    Call un.DeleteDataExceptLogs
+  ${EndIf}
 SectionEnd

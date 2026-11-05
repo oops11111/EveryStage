@@ -37,9 +37,7 @@ public sealed class DeviceIdentity
     /// shared ProgramData\EveryStage\ folder, e.g. "terminal" -> terminal-identity.json.</param>
     public static DeviceIdentity LoadOrCreate(string fileNameStem, string? pathOverride = null)
     {
-        string path = pathOverride ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "EveryStage", $"{fileNameStem}-identity.json");
+        string path = pathOverride ?? SecureDataPaths.Resolve($"{fileNameStem}-identity.json");
 
         if (File.Exists(path))
         {

@@ -37,6 +37,21 @@ await RunAsync("Device identity persistence", () =>
 await RunAsync("Output state machine", () => Task.FromResult(TestOutputStateMachine()));
 await RunAsync("Media queue navigation", () => Task.FromResult(TestMediaQueue()));
 await RunAsync("Settings migration", () => Task.FromResult(TestSettingsMigration()));
+await RunAsync("Pairing keys and identities move into the restricted secure folder", () =>
+{
+    string root = Path.Combine(Path.GetTempPath(), "EveryStage-Secure-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "paired-devices.json"), "[1]");
+        string resolved = EveryStage.Discovery.SecureDataPaths.Resolve("paired-devices.json", root);
+        bool ok = resolved == Path.Combine(root, "secure", "paired-devices.json") && File.ReadAllText(resolved) == "[1]"
+            && !File.Exists(Path.Combine(root, "paired-devices.json"))
+            && EveryStage.Discovery.SecureDataPaths.Root.EndsWith(Path.Combine("EveryStage", "secure"), StringComparison.OrdinalIgnoreCase);
+        return Task.FromResult<(bool, string?)>(ok ? (true, null) : (false, "Legacy pairing file was not moved into secure\\."));
+    }
+    finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
+});
 await RunAsync("Log export", () => Task.FromResult(TestLogExport()));
 await RunAsync("Cast audio frames carry their own capture time (A-3)", () => Task.FromResult(TestPcmTimeline()));
 await RunAsync("Log writer: daily retention, write failures counted, folder recreated, export while writing", () => Task.FromResult(TestDailyRollingLogWriter()));
@@ -650,10 +665,17 @@ async Task RunAsync(string name, Func<Task<(bool Success, string? FailureReason)
             return (false, "Legacy settings were not preserved during migration.");
 
         File.WriteAllText(path, "{\"SchemaVersion\":999,\"CastSwitchDefaultOn\":false}");
-        var future = new SettingsStore(path).Current;
+        var futureStore = new SettingsStore(path);
+        var future = futureStore.Current;
         if (future.SchemaVersion != AppSettings.CurrentSchemaVersion || future.Theme != AppTheme.Dark
             || !future.CastSwitchDefaultOn)
             return (false, "Future-version settings did not fail safe to defaults.");
+        // Downgrade guard: newer-schema settings are read-only — saving is refused, the file is untouched
+        // and a .newer copy is kept.
+        bool refused = false;
+        try { futureStore.Save(future.Clone()); } catch (IOException) { refused = true; }
+        if (!futureStore.ReadOnlyNewerSchema || !refused || !File.ReadAllText(path).Contains("999") || !File.Exists(path + ".newer"))
+            return (false, "Newer-schema settings were not protected from being overwritten.");
         return (true, null);
     }
     finally

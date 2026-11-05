@@ -284,7 +284,7 @@ public sealed class AudioContentController : IDisposable
             || _audioClock is not { IsFaulted: true, SelectedDeviceId: not null }) return false;
         _recoveryAttempted = true;
         // PlaybackFailed is posted from this worker just before it exits; wait before seeking its source.
-        _playbackThread?.Join();
+        if (!BoundedJoin.Join(_playbackThread, "audio playback thread")) return false;
         var position = CurrentPosition;
         _recoveringToDefault = true;
         try { return TrySeekTo(position, reportFailure: false); }
@@ -318,7 +318,7 @@ public sealed class AudioContentController : IDisposable
             var newFade = _fadeDuration.HasValue ? ComputeFadeMultiplier(position.Ticks) : 1.0;
             clock.Volume = _muted ? 0f : (float)(_volume * newFade);
             var oldSource = _source;
-            StopPlaybackThreadAndClock();
+            bool joined = StopPlaybackThreadAndClock();
             _source = replacement;
             replacement = null;
             _seekBaseTicks = _seekTargetTicks = position.Ticks;
@@ -326,7 +326,7 @@ public sealed class AudioContentController : IDisposable
             _audioClock = clock;
             StartPlaybackThread(_source, clock);
             clock = null;
-            oldSource.Dispose();
+            if (joined) oldSource.Dispose();
             return true;
         }
         catch (Exception) { return false; }
@@ -376,8 +376,8 @@ public sealed class AudioContentController : IDisposable
 
     public void Stop()
     {
-        StopPlaybackThreadAndClock();
-        _source?.Dispose();
+        // A hung worker keeps its source: disposing it under the thread would crash, not stop.
+        if (StopPlaybackThreadAndClock()) _source?.Dispose();
         _source = null;
         _sourcePath = null;
         _seekBaseTicks = 0;
@@ -389,17 +389,20 @@ public sealed class AudioContentController : IDisposable
     /// deliberately stops here, not at <see cref="Stop"/>, since it must NOT dispose
     /// <see cref="_source"/> (already seeked in place and still needed by the new playback thread it
     /// is about to start).</summary>
-    private void StopPlaybackThreadAndClock()
+    /// <returns>False when the playback thread did not end in time (<see cref="BoundedJoin"/>): it was
+    /// abandoned together with its clock, which is then not disposed.</returns>
+    private bool StopPlaybackThreadAndClock()
     {
         _playbackCts?.Cancel();
-        _playbackThread?.Join();
+        bool joined = BoundedJoin.Join(_playbackThread, "audio playback thread");
         _playbackThread = null;
-        _playbackCts?.Dispose();
+        if (joined) _playbackCts?.Dispose();
         _playbackCts = null;
 
-        _audioClock?.Dispose();
+        if (joined) _audioClock?.Dispose();
         _audioClock = null;
         _timeline = null;
+        return joined;
     }
 
     /// <summary>Shared startup between <see cref="Play"/> and <see cref="TrySeekTo"/> — assumes the

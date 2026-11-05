@@ -10,7 +10,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DOTNET_DbgEnableMiniDump: 1
       DOTNET_DbgMiniDumpType: 1
@@ -105,10 +105,10 @@ jobs:
           path: artifacts/installer/EveryStage-Setup-*.exe
           if-no-files-found: error
 
-      - name: Upload release packages
+      - name: Upload release packages (DEV-ONLY)
         uses: actions/upload-artifact@v6
         with:
-          name: EveryStage-win-x64-${{ github.sha }}
+          name: EveryStage-DEV-ONLY-win-x64-${{ github.sha }}
           path: |
             artifacts/release/*.zip
             artifacts/release/manifest.json

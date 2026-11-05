@@ -30,9 +30,7 @@ public sealed class PairedTerminalStore
 
     public PairedTerminalStore(string? storePathOverride = null)
     {
-        _storePath = storePathOverride ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "EveryStage", "caster-paired-terminals.json");
+        _storePath = storePathOverride ?? EveryStage.Discovery.SecureDataPaths.Resolve("caster-paired-terminals.json");
         _terminals = Load();
     }
 

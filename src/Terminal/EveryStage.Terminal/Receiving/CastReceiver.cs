@@ -852,8 +852,11 @@ public sealed class CastReceiver : IDisposable
         // and an MFStartup reference) goes away. Frames the decoder still delivers meanwhile are released
         // by the already-disposed queue.
         _presentCts?.Cancel();
-        _presentThread?.Join();
-        _presentCts?.Dispose();
+        // Bounded: ending a cast (停止输出 / 急停 / the device going away) must not hang on a stuck
+        // present call. A present thread that does not stop keeps the decoder: it may still be drawing
+        // the decoder's textures, so the decoder is unhooked but leaked rather than disposed under it.
+        bool presentStopped = EveryStage.Terminal.ContentEngine.BoundedJoin.Join(_presentThread, "cast present thread");
+        if (presentStopped) _presentCts?.Dispose();
 
         lock (_decoderLock)
         {
@@ -861,7 +864,7 @@ public sealed class CastReceiver : IDisposable
             {
                 _decoder.FrameDecoded -= OnFrameDecoded;
                 _decoder.DecodingFailed -= OnVideoDecodingFailed;
-                _decoder.Dispose();
+                if (presentStopped) _decoder.Dispose();
                 _decoder = null;
             }
         }

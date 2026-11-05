@@ -45,7 +45,7 @@ EveryStage B-15 已进入“本机实现与自动化验证完成，等待双机�
 最新本机验证：
 - 完整门禁输出：`C:\Users\admin\everystage\verify-b15-operator-full\`
 - 日志：`C:\Users\admin\everystage\verify-b15-operator-full\verification.log`
-- 覆盖 CoreSelfTests、WindowsSelfTests、9 项 Release `-warnaserror` 严格构建、waiting / preview / program 三态 ui_snapshot SMOKE，全部通过。
+- 覆盖 CoreSelfTests、WindowsSelfTests、9 项 Release `-warnaserror` 严格构建、waiting / preview / program 三态 ui_snapshot SMOKE。该记录只在本机运行，没有 CI run 链接与提交号锚点，不作为发布验收依据。
 
 双机验收包：
 - 目录：`C:\Users\admin\everystage\b15-acceptance-package\`

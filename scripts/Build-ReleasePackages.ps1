@@ -1,3 +1,5 @@
+# DEV-ONLY: framework-dependent ZIPs and the PowerShell deployment scripts are for development and
+# internal batch deployment. The only package for users is the NSIS setup (scripts/Build-Installer.ps1).
 param(
     [string]$OutputDirectory = "artifacts/release"
 )
@@ -32,6 +34,9 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "deployment") -Destination $deployme
 Copy-Item -LiteralPath (Join-Path $repoRoot "docs/DEPLOYMENT.md") -Destination (Join-Path $outputRoot "DEPLOYMENT.md")
 
 $manifest = [ordered]@{
+    channel = "DEV-ONLY"
+    note = "Not for distribution to users: publish only EveryStage-Setup-<version>-win-x64.exe (NSIS, self-contained)."
+    version = ([xml](Get-Content -LiteralPath (Join-Path $repoRoot "Directory.Build.props") -Raw)).Project.PropertyGroup.EveryStageVersion
     builtAtUtc = [DateTimeOffset]::UtcNow.ToString("O")
     runtime = "win-x64"
     frameworkDependent = $true

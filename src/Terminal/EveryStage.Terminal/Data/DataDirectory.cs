@@ -16,8 +16,8 @@ public static class DataDirectory
     public const string PermissionHint =
         "EveryStage 的数据目录（%ProgramData%\\EveryStage）中有文件属于其他账户或管理员，当前账户无法修改。" +
         "常见原因：安装完成后直接从安装程序启动了 EveryStage，或曾以管理员身份运行。\n" +
-        "修复：重新运行 EveryStage 安装程序（会自动修复权限）；或在管理员命令提示符中执行：\n" +
-        "icacls \"%ProgramData%\\EveryStage\" /grant *S-1-5-32-545:(OI)(CI)M /T";
+        "修复：重新运行 EveryStage 安装程序（会自动修复权限，并保持配对密钥目录 secure 只对本机管理员和创建它的账户可读）。" +
+        "请不要手动给 Users 组整目录授予修改权限：那会让其他账户读取配对密钥。";
 
     /// <summary><paramref name="ex"/>'s message, plus <see cref="PermissionHint"/> when it is an access
     /// denial inside the data directory.</summary>

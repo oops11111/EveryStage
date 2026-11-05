@@ -15,6 +15,12 @@ public sealed partial class SettingsStore
     private readonly string _storePath;
     private bool _loadFailed;
 
+    /// <summary>The settings file was written by a newer EveryStage (a higher
+    /// <see cref="AppSettings.SchemaVersion"/>; the app version is not compared). This run uses defaults,
+    /// keeps a copy of that file as <c>settings.json.newer</c> and refuses every <see cref="Save"/>, so a
+    /// downgrade can never overwrite settings it does not understand.</summary>
+    public bool ReadOnlyNewerSchema { get; private set; }
+
     /// <summary>The live settings object. Callers that only read a value (e.g.
     /// <c>PlaybackEngine</c>'s stay-duration fallback) can hold onto this <see cref="SettingsStore"/>
     /// and read <see cref="Current"/> fresh each time, so a change made through the 设置 panel is
@@ -54,6 +60,7 @@ public sealed partial class SettingsStore
     {
         ArgumentNullException.ThrowIfNull(settings);
         if (_loadFailed) throw new IOException("设置文件读取失败，已阻止覆盖原文件；请先修复文件或重启后重试。");
+        if (ReadOnlyNewerSchema) throw new IOException("设置文件由更新版本的 EveryStage 写入，本版本以只读方式运行，不会覆盖它；请升级后再修改设置。");
 
         string directory = Path.GetDirectoryName(_storePath)!;
         Directory.CreateDirectory(directory);
@@ -96,6 +103,11 @@ public sealed partial class SettingsStore
             var settings = document.RootElement.Deserialize<AppSettings>(JsonOptions) ?? new AppSettings();
             if (!document.RootElement.TryGetProperty(nameof(AppSettings.SchemaVersion), out _))
                 settings.SchemaVersion = 0;
+            if (settings.SchemaVersion > AppSettings.CurrentSchemaVersion)
+            {
+                ReadOnlyNewerSchema = true;
+                try { File.Copy(_storePath, _storePath + ".newer", overwrite: true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
             return Migrate(settings);
         }
         catch (JsonException)

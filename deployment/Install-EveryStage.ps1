@@ -1,3 +1,4 @@
+# DEV-ONLY: development / internal batch deployment. Users install with the NSIS setup EveryStage-Setup-<version>-win-x64.exe.
 param(
     [ValidateSet("Terminal", "Caster")][string]$Component,
     [string]$PackageRoot = (Split-Path -Parent $PSScriptRoot),
@@ -43,6 +44,12 @@ Copy-Item -Path (Join-Path $source "*") -Destination $destination -Recurse -Forc
 $dataRoot = Join-Path $env:ProgramData "EveryStage"
 New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
 & icacls.exe $dataRoot /grant "*S-1-5-32-545:(OI)(CI)M" /T /C /Q | Out-Null
+# Pairing keys and identities: secure\ readable only by SYSTEM, Administrators and each file's owner
+# (same ACL as the NSIS installer sets).
+$secureRoot = Join-Path $dataRoot "secure"
+New-Item -ItemType Directory -Force -Path $secureRoot | Out-Null
+& icacls.exe $secureRoot /remove:g "*S-1-5-32-545" /T /C /Q | Out-Null
+& icacls.exe $secureRoot /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" "*S-1-3-0:(OI)(CI)(IO)F" "*S-1-5-32-545:(RX,WD,AD)" /C /Q | Out-Null
 
 $exe = Join-Path $destination "EveryStage.$Component.exe"
 if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw "Installed executable not found: $exe" }

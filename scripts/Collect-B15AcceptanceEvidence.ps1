@@ -104,8 +104,13 @@ else {
 
 $programData = Join-Path $env:ProgramData "EveryStage"
 Copy-IfExists (Join-Path $programData "logs") (Join-Path $evidenceRoot "programdata") | Out-Null
-Copy-IfExists (Join-Path $programData "paired-devices.json") (Join-Path $evidenceRoot "programdata") | Out-Null
-Copy-IfExists (Join-Path $programData "caster-paired-terminals.json") (Join-Path $evidenceRoot "programdata") | Out-Null
+# Pairing stores hold device keys: record only which exist (and their ACL), never copy them into evidence.
+$pairingReport = foreach ($name in @("secure\paired-devices.json", "secure\caster-paired-terminals.json", "paired-devices.json", "caster-paired-terminals.json")) {
+    $path = Join-Path $programData $name
+    if (Test-Path -LiteralPath $path) { "$name exists`n$(& icacls.exe $path 2>&1 | Out-String)" } else { "$name missing" }
+}
+New-Item -ItemType Directory -Force -Path (Join-Path $evidenceRoot "programdata") | Out-Null
+$pairingReport | Set-Content -LiteralPath (Join-Path $evidenceRoot "programdata\pairing-files.txt") -Encoding utf8
 
 $manualEvidence = Join-Path $packageRootFull "manual-evidence"
 $extraOut = Join-Path $evidenceRoot "extra"

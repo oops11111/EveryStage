@@ -215,7 +215,7 @@ public sealed class VideoContentController : IDisposable
         if (position < TimeSpan.Zero) position = TimeSpan.Zero;
         if (_totalDuration is { } total && position > total) position = total;
 
-        StopPlaybackThreadAndClock();
+        if (!StopPlaybackThreadAndClock()) return false; // hung worker: never seek a source it still reads
         if (!source.TrySeek(position))
         {
             // Couldn't move: resume where we were rather than leave playback dead.
@@ -230,8 +230,8 @@ public sealed class VideoContentController : IDisposable
 
     public void Stop()
     {
-        StopPlaybackThreadAndClock();
-        _source?.Dispose();
+        // A hung worker keeps its source: disposing it under the thread would crash, not stop.
+        if (StopPlaybackThreadAndClock()) _source?.Dispose();
         _source = null;
         _sourcePath = null;
         _waitingDefaultAudio = false;
@@ -242,15 +242,17 @@ public sealed class VideoContentController : IDisposable
         _performanceNote = null;
     }
 
-    private void StopPlaybackThreadAndClock()
+    /// <summary>False when the playback thread did not end in time (<see cref="BoundedJoin"/>): it was
+    /// abandoned together with its audio clock, which is then not disposed.</summary>
+    private bool StopPlaybackThreadAndClock()
     {
         _playbackCts?.Cancel();
-        _playbackThread?.Join();
+        bool joined = BoundedJoin.Join(_playbackThread, "video playback thread");
         _playbackThread = null;
-        _playbackCts?.Dispose();
+        if (joined) _playbackCts?.Dispose();
         _playbackCts = null;
 
-        _audioClock?.Dispose();
+        if (joined) _audioClock?.Dispose();
         _audioClock = null;
         lock (_clockGate)
         {
@@ -258,6 +260,7 @@ public sealed class VideoContentController : IDisposable
             _wallBaseTicks = 0;
             _audioLost = false;
         }
+        return joined;
     }
 
     private void StartPlaybackThread(VideoDecodeSource source, bool firstStart, AudioPlaybackClock? preparedClock = null)
@@ -325,7 +328,7 @@ public sealed class VideoContentController : IDisposable
             clock = new AudioPlaybackClock(replacement.AudioSampleRate, replacement.AudioChannels);
             var position = Position;
             if (!replacement.TrySeek(position)) return false;
-            StopPlaybackThreadAndClock();
+            bool joined = StopPlaybackThreadAndClock();
             _source = replacement;
             replacement = null;
             _clockBaseTicks = _seekTargetTicks = position.Ticks;
@@ -333,7 +336,7 @@ public sealed class VideoContentController : IDisposable
             StartPlaybackThread(_source, firstStart: false, preparedClock: clock);
             clock = null;
             _waitingDefaultAudio = false;
-            oldSource.Dispose();
+            if (joined) oldSource.Dispose();
             return true;
         }
         catch (Exception) { return false; }

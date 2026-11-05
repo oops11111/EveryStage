@@ -29,6 +29,7 @@ static async Task RunTests()
     TestBoundedQueue();
     TestAspectRatioSizing();
     TestAudioOutputSelection();
+    TestBoundedJoin();
     string directory = Path.Combine(Path.GetTempPath(), "EveryStage-WindowsTests", Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(directory);
     var previousThumbnailCache = ThumbnailDiskCache.Shared;
@@ -116,6 +117,23 @@ static async Task RunTests()
         CastAudioTests.Run();
     }
     finally { ThumbnailDiskCache.Shared = previousThumbnailCache; Directory.Delete(directory, true); }
+}
+
+// Stop / 急停 / cast teardown join worker threads with a bound: a hung worker is abandoned, not waited on.
+static void TestBoundedJoin()
+{
+    using var release = new ManualResetEventSlim(false);
+    var stuck = new Thread(() => release.Wait()) { IsBackground = true };
+    stuck.Start();
+    var watch = System.Diagnostics.Stopwatch.StartNew();
+    bool joined = EveryStage.Terminal.ContentEngine.BoundedJoin.Join(stuck, "self-test thread", TimeSpan.FromMilliseconds(300));
+    watch.Stop();
+    release.Set();
+    if (joined || watch.ElapsedMilliseconds > 2000 || EveryStage.Terminal.ContentEngine.BoundedJoin.Abandoned < 1)
+        throw new InvalidOperationException($"BoundedJoin did not return in time for a stuck thread ({watch.ElapsedMilliseconds} ms, joined {joined}).");
+    if (!EveryStage.Terminal.ContentEngine.BoundedJoin.Join(stuck, "self-test thread", TimeSpan.FromSeconds(5)))
+        throw new InvalidOperationException("BoundedJoin did not join a thread that ended.");
+    Console.WriteLine("PASS: bounded join abandons a stuck worker thread and joins a finished one");
 }
 
 static void TestAudioOutputSelection()

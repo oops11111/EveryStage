@@ -23,9 +23,7 @@ public sealed class PairedDeviceStore
 
     public PairedDeviceStore(string? storePathOverride = null)
     {
-        _storePath = storePathOverride ?? Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-            "EveryStage", "paired-devices.json");
+        _storePath = storePathOverride ?? EveryStage.Discovery.SecureDataPaths.Resolve("paired-devices.json");
         _devices = Load();
     }
 

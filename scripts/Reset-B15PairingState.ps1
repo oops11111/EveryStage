@@ -21,7 +21,10 @@ else {
     $BackupRoot = [System.IO.Path]::GetFullPath($BackupRoot)
 }
 
+# Since 0.9.1 the pairing stores live in the restricted secure\ subfolder; older builds kept them at the top.
 $targets = @(
+    (Join-Path $DataRoot "secure\paired-devices.json"),
+    (Join-Path $DataRoot "secure\caster-paired-terminals.json"),
     (Join-Path $DataRoot "paired-devices.json"),
     (Join-Path $DataRoot "caster-paired-terminals.json")
 )

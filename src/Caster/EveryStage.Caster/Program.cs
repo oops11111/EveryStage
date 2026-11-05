@@ -11,6 +11,10 @@ internal static class Program
     {
         // Keep the compact fixed-layout caster form crisp and correctly sized on Windows 10 at
         // 125%/150% scaling and when it is moved between monitors with different DPI values.
+        // One Caster per Windows session (a second copy would fight the first for the ports).
+        using var singleInstance = new Mutex(initiallyOwned: true, @"Local\EveryStage.Caster.SingleInstance", out bool firstInstance);
+        if (!firstInstance) return;
+
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);

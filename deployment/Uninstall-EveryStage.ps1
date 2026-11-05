@@ -1,3 +1,4 @@
+# DEV-ONLY: development / internal batch deployment. Users install with the NSIS setup EveryStage-Setup-<version>-win-x64.exe.
 param(
     [ValidateSet("Terminal", "Caster")][string]$Component,
     [string]$InstallRoot = "$env:ProgramFiles\EveryStage"
