@@ -1291,8 +1291,10 @@ internal static class DocumentTests
                     {
                         var tags = Descendants(window).OfType<Label>().Where(label => Equals(label.Tag, "effect")).ToArray();
                         var palette = UiPalette.For(theme);
-                        Require(tags.Any(label => label.Text.Contains("保存后生效"))
-                            && tags.Where(label => label.Text.Contains("保存后生效")).All(label => label.ForeColor == palette.Warning)
+                        // Settings save at once (no 保存设置): no 保存后生效 tag is left; 新播放生效 stays a warning.
+                        Require(!tags.Any(label => label.Text.Contains("保存后生效"))
+                            && tags.Any(label => label.Text.Contains("新播放生效"))
+                            && tags.Where(label => label.Text.Contains("新播放生效")).All(label => label.ForeColor == palette.Warning)
                             && tags.Where(label => label.Text.Contains("即时生效")).All(label => label.ForeColor == palette.Accent),
                             $"Settings effect labels did not use their semantic roles in {theme}.");
                     }
