@@ -18,6 +18,8 @@
 
 ## 27 条状态
 
+自测证据：CI run 113（提交 670662b）CoreSelfTests、WindowsSelfTests 与安装包构建全部成功：https://github.com/oops11111/EveryStage/actions/runs/41986164146 。WindowsSelfTests 在 CI 机器上没有 WPS/Office 与音频设备，相关用例显示为 SKIP。
+
 | 号 | 简述 | 代码 | 自测 | 真机待验 |
 |---|---|---|---|---|
 | 01 | 只发 NSIS；版本单源 `Directory.Build.props`；nsi 缺 VERSION 报错；未签名 SmartScreen 提示；ZIP/PS1 标 DEV-ONLY | 已落地（批 0） | CI：安装包脚本断言 exe 版本 = 版本+提交号 | 关于页版本 = 程序和功能 |
