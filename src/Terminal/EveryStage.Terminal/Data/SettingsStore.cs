@@ -8,7 +8,7 @@ namespace EveryStage.Terminal.Data;
 /// temp file then <see cref="File.Replace(string, string, string?)"/>, so a crash mid-write can't
 /// corrupt the settings an unattended Terminal reads at every startup.
 /// </summary>
-public sealed class SettingsStore
+public sealed partial class SettingsStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
@@ -31,19 +31,6 @@ public sealed class SettingsStore
         if (DefaultAudioOutputChanged is not { } handlers) return;
         foreach (Action<string> handler in handlers.GetInvocationList())
             try { handler(deviceId); } catch (Exception) { }
-    }
-
-    internal EveryStage.Rendering.Audio.AudioPlaybackClock OpenAudioOutput(int sampleRate, int channels)
-    {
-        string? id = Current.AudioOutputDeviceId;
-        if (string.IsNullOrWhiteSpace(id)) return new(sampleRate, channels);
-        try { return new(sampleRate, channels, id); }
-        catch (Exception ex) when (ex is System.Runtime.InteropServices.COMException or ArgumentException or InvalidOperationException or NotSupportedException)
-        {
-            var fallback = new EveryStage.Rendering.Audio.AudioPlaybackClock(sampleRate, channels);
-            NotifyAudioOutputFallback("所选音频设备不可用，已切换到系统默认设备；可在设置中重新选择。");
-            return fallback;
-        }
     }
 
     internal void NotifyAudioOutputFallback(string message)
