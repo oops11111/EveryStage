@@ -267,6 +267,10 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _discovery.RevokeActiveCast(deviceId);
             _deviceCastController?.StopForDevice(deviceId);
         };
+        _httpControl = new EveryStage.Terminal.Remote.HttpControlServer(HttpStatus, _mainWindow.EmergencyStop,
+            EveryStage.Terminal.Remote.HttpControlToken.Current, _uiContext);
+        ApplyHttpControl(_settingsStore.Current);
+        _settingsStore.SettingsChanged += settings => _uiContext.Post(_ => ApplyHttpControl(settings), null);
         _deviceCastController = new DeviceCastController(
             _mainWindow, _identity.DeviceId, _discovery, _connectionLog, _stateMachine,
             () => _overlay, () => _videoSurface, () => _playback, audioOutputFactory: _settingsStore.OpenAudioOutput,
@@ -583,8 +587,34 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         }, null);
     }
 
+    private EveryStage.Terminal.Remote.HttpControlServer? _httpControl;
+
+    /// <summary>HTTP 外控 follows 设置 · 网络 at once (127.0.0.1 only).</summary>
+    private void ApplyHttpControl(AppSettings settings)
+    {
+        if (_httpControl == null) return;
+        if (!settings.HttpControlEnabled) { _httpControl.Stop(); return; }
+        if (!_httpControl.Running && !_httpControl.Start() && _httpControl.LastError is { } error)
+            _mainWindow.ShowStartupProblem("HTTP 外控未能启动：" + error);
+    }
+
+    /// <summary>GET /status for HTTP 外控 (runs on the UI thread).</summary>
+    private object HttpStatus() => new
+    {
+        app = "EveryStage.Terminal",
+        version = Application.ProductVersion,
+        output = _stateMachine.State == OutputState.Active ? "on_air" : "off_air",
+        source = _stateMachine.State != OutputState.Active ? null : _stateMachine.Source == ProgramSource.DeviceCast ? "device_cast" : "local_media",
+        castSwitch = _stateMachine.CastSwitchOn,
+        extendedDisplay = _overlay != null,
+        program = _playback?.CurrentFile is { } file
+            ? new { file = Path.GetFileName(file.SourcePath), state = _playback.State.ToString(), paused = _playback.IsPaused }
+            : null,
+    };
+
     private void OnExitRequested()
     {
+        _httpControl?.Dispose();
         VideoSurface.DeviceRemoved -= OnGpuDeviceRemoved;
         _repository.Save(_store);
         _stateMachine.Disconnect(); // ensure audio is restored / overlay hidden before teardown.

@@ -30,6 +30,7 @@ static async Task RunTests()
     TestAspectRatioSizing();
     TestAudioOutputSelection();
     TestBoundedJoin();
+    await TestHttpControl();
     string directory = Path.Combine(Path.GetTempPath(), "EveryStage-WindowsTests", Guid.NewGuid().ToString("N"));
     Directory.CreateDirectory(directory);
     var previousThumbnailCache = ThumbnailDiskCache.Shared;
@@ -134,6 +135,41 @@ static void TestBoundedJoin()
     if (!EveryStage.Terminal.ContentEngine.BoundedJoin.Join(stuck, "self-test thread", TimeSpan.FromSeconds(5)))
         throw new InvalidOperationException("BoundedJoin did not join a thread that ended.");
     Console.WriteLine("PASS: bounded join abandons a stuck worker thread and joins a finished one");
+}
+
+// HTTP 外控 MVP: Bearer required (401 without / with a wrong token), /status and /emergency-stop routed,
+// wrong method 405, unknown path 404, and a real request over the loopback socket.
+static async Task TestHttpControl()
+{
+    int stops = 0;
+    string logRoot = Path.Combine(Path.GetTempPath(), "EveryStage-HttpTest-" + Guid.NewGuid().ToString("N"));
+    var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+    probe.Start();
+    int port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+    probe.Stop();
+    using var server = new EveryStage.Terminal.Remote.HttpControlServer(() => new { output = "off_air" }, () => stops++, () => "test-token-0123456789-0123456789-abcdef", null, port, logRoot);
+    async Task<int> Status(string head) => (await server.HandleAsync(head)).Status;
+    const string Auth = "\r\nAuthorization: Bearer test-token-0123456789-0123456789-abcdef";
+    if (await Status("GET /status HTTP/1.1\r\nHost: x") != 401
+        || await Status("GET /status HTTP/1.1\r\nAuthorization: Bearer wrong") != 401
+        || await Status("GET /status HTTP/1.1" + Auth) != 200
+        || await Status("GET /emergency-stop HTTP/1.1" + Auth) != 405
+        || await Status("GET /nothing HTTP/1.1" + Auth) != 404
+        || stops != 0
+        || await Status("POST /emergency-stop HTTP/1.1" + Auth) != 200 || stops != 1)
+        throw new InvalidOperationException("HTTP control routing / Bearer check is wrong.");
+    if (!server.Start()) throw new InvalidOperationException("HTTP control did not start: " + server.LastError);
+    using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+    var unauthorized = await client.GetAsync($"http://127.0.0.1:{port}/status");
+    var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{port}/status");
+    request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-token-0123456789-0123456789-abcdef");
+    var authorized = await client.SendAsync(request);
+    string body = await authorized.Content.ReadAsStringAsync();
+    server.Stop();
+    if ((int)unauthorized.StatusCode != 401 || (int)authorized.StatusCode != 200 || !body.Contains("off_air"))
+        throw new InvalidOperationException($"HTTP control over the socket: {(int)unauthorized.StatusCode} / {(int)authorized.StatusCode} {body}");
+    try { Directory.Delete(logRoot, recursive: true); } catch (IOException) { }
+    Console.WriteLine("PASS: HTTP control (127.0.0.1, Bearer): 401 without token, /status, /emergency-stop, 405 / 404");
 }
 
 static void TestAudioOutputSelection()

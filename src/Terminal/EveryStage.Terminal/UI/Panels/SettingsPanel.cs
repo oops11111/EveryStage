@@ -13,11 +13,12 @@ namespace EveryStage.Terminal.UI.Panels;
 /// own choices (see <see cref="AppSettings"/>'s doc comment for where they came from), not a
 /// PLANNING.md spec. Replaces the honest <c>NotImplementedPanel</c> placeholder this used to be.
 ///
-/// One "保存设置" button at the bottom applies 通用/显示/播放行为 together (all three live in one
-/// <see cref="AppSettings"/> object persisted via <see cref="SettingsStore"/>) — 设备名称 has its
-/// own separate "保存设备名称" button because it persists through <see cref="DeviceIdentity.Save"/>
-/// instead, a different store entirely; conflating the two under one button would misrepresent what
-/// actually gets written where.
+/// Every change is written at once (no 「保存设置」): a control's change saves <see cref="AppSettings"/>
+/// through <see cref="SettingsStore"/>; a failed save is reported and the page shows the stored value
+/// again. Risky items (扩展屏, 音频输出设备, the global 急停 key) ask first and then offer 撤销 for 10 s.
+/// 设备名称 is saved on leaving the box or Enter through <see cref="DeviceIdentity.Save"/> — a different
+/// store. 「恢复默认」 resets AppSettings and the hotkeys (not the device name or pairings); settings can be
+/// exported to / imported from a file (设置 + 热键; no media, pairings or scenarios).
 /// </summary>
 public sealed class SettingsPanel : UserControl
 {
@@ -41,6 +42,21 @@ public sealed class SettingsPanel : UserControl
     private readonly CheckBox _keepMorph;
     private readonly CheckBox _keepAutoAdvance;
     private readonly CheckBox _transitionOnBlack;
+    private readonly ComboBox _completionComboBox;
+    private readonly CheckBox _httpControlCheckbox;
+    private static readonly (CompletionAction Action, string Label)[] CompletionChoices =
+    {
+        (CompletionAction.HoldOnLastFrame, "停在最后画面（定格）"),
+        (CompletionAction.Loop, "循环播放"),
+        (CompletionAction.NextItem, "自动下一项"),
+        (CompletionAction.BlackScreen, "切黑场"),
+    };
+    private readonly Dictionary<HotkeyAction, HotkeyCaptureButton> _hotkeyButtons = new();
+    private CheckBox? _globalEmergency;
+    private bool _loading;
+
+    /// <summary>Shows a toast in the main window (the 10 s 撤销 offer after a risky change).</summary>
+    public Func<string, ToastSeverity, ToastAction[], ToastNotification>? ShowToast { get; set; }
 
     // Sentinel for the ComboBox's "自动选择" item — no real MonitorInfo.DeviceName is ever an empty
     // string, so this can't collide with an actual monitor.
@@ -53,6 +69,8 @@ public sealed class SettingsPanel : UserControl
         Dock = DockStyle.Fill;
 
         var settings = _settingsStore.Current;
+        // The last save result, beside the page title (there is no 「保存设置」: every change saves at once).
+        _savedLabel = ModernUi.SetForegroundRole(new Label { AutoSize = true, Location = new Point(84, 18), BackColor = Color.Transparent }, UiForegroundRole.Success);
 
         // One scrolling page of sections (design): 外观 · 通用 · 输出与播放 · 网络与设备 · 诊断 · 关于.
         // Each row: title + description on the left, its control(s) on the right, an effect tag
@@ -123,22 +141,29 @@ public sealed class SettingsPanel : UserControl
         _defaultStayDurationEnabledCheckbox.CheckedChanged += (_, _) =>
             _defaultStayDurationSeconds.Enabled = _defaultStayDurationEnabledCheckbox.Checked;
         var output = Section("输出与播放");
-        output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举", "重启后生效", UiForegroundRole.Muted, _monitorComboBox);
+        output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举。更改前会确认，10 秒内可撤销", "重启后生效", UiForegroundRole.Muted, _monitorComboBox);
         _audioOutputComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, AccessibleName = "音频输出设备" };
         ModernUi.StyleComboBox(_audioOutputComboBox);
         PopulateAudioOutputs(settings.AudioOutputDeviceId);
         _audioOutputComboBox.SelectedIndexChanged += OnAudioOutputChanged;
-        output.AddRow("音频输出设备", "视频声音和背景音乐共用设备；新播放生效，当前播放不会切换。设备不可用时，新播放回退系统默认设备。",
+        output.AddRow("音频输出设备", "视频声音和背景音乐共用设备；新播放生效，当前播放不会切换。设备不可用时，新播放回退系统默认设备。更改前会确认，10 秒内可撤销。",
             "新播放生效", UiForegroundRole.Warning, _audioOutputComboBox);
         output.AddRow("图片 / 文档默认停留时长", "没有单独设置停留时长的项目停留多久后进入下一项；关闭则一直停留到手动切换",
-            "保存后生效", UiForegroundRole.Warning, _defaultStayDurationEnabledCheckbox, _defaultStayDurationSeconds, secondsLabel);
+            "下一项生效", UiForegroundRole.Accent, _defaultStayDurationEnabledCheckbox, _defaultStayDurationSeconds, secondsLabel);
+        _completionComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150, AccessibleName = "播完后（默认）" };
+        _completionComboBox.Items.AddRange(CompletionChoices.Select(c => (object)c.Label).ToArray());
+        _completionComboBox.SelectedIndex = Math.Max(0, Array.FindIndex(CompletionChoices, c => c.Action == settings.DefaultCompletionAction));
+        ModernUi.StyleComboBox(_completionComboBox);
+        output.AddRow("播完后（默认）", "新导入的文件播完后怎么办：停在最后画面、循环、自动下一项或切黑场（黑场时大屏仍在输出）。" +
+            "已有文件和流程保持原来的设置；每个文件仍可在属性里单独设置",
+            "新导入生效", UiForegroundRole.Accent, _completionComboBox);
         _transitionComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 110 };
         _transitionComboBox.Items.AddRange(new object[] { "直切", "叠化", "经黑场" });
         _transitionComboBox.SelectedIndex = (int)settings.Transition;
         ModernUi.StyleComboBox(_transitionComboBox);
         _transitionMilliseconds = new NumericUpDown { Minimum = 100, Maximum = 3000, Increment = 100, Width = 70, Value = Math.Clamp(settings.TransitionMilliseconds, 100, 3000) };
         output.AddRow("大屏过场", "大屏从一项切到下一项时的过渡；PPT 放映启动较慢时，过场会等到放映第一帧出现再显示。流程里每一项可以单独设置",
-            "保存后生效", UiForegroundRole.Warning, _transitionComboBox, _transitionMilliseconds, ModernUi.SetForegroundRole(new Label { Text = "毫秒", AutoSize = true }, UiForegroundRole.Muted));
+            "下次切换生效", UiForegroundRole.Accent, _transitionComboBox, _transitionMilliseconds, ModernUi.SetForegroundRole(new Label { Text = "毫秒", AutoSize = true }, UiForegroundRole.Muted));
         output.AddRow("PPT 没有扩展屏时", "原生放映（含动画）只在扩展屏上进行，避免占用本机屏幕；没有扩展屏时以静态幻灯片预览", null, null,
             ModernUi.SetForegroundRole(new Label { Text = "静态幻灯片", AutoSize = true }, UiForegroundRole.Text));
 
@@ -153,7 +178,7 @@ public sealed class SettingsPanel : UserControl
         _keepMorph = new CheckBox { Text = "保留", AutoSize = true, Checked = settings.KeepMorphTransitions };
         _keepAutoAdvance = new CheckBox { Text = "保留", AutoSize = true, Checked = settings.KeepAutoAdvanceTransitions };
         _transitionOnBlack = new CheckBox { Text = "使用", AutoSize = true, Checked = settings.TransitionOnBlackScreen };
-        var slides = Section("PPT 翻页过场", "保存后生效", UiForegroundRole.Warning);
+        var slides = Section("PPT 翻页过场", "下次翻页生效", UiForegroundRole.Accent);
         slides.AddRow("转场来源", "统一后，所有演示文稿的翻页动画一致（静态幻灯片和大屏原生放映都适用）；单个文件仍可在「文档播放设置」里改回原转场",
             null, null, _slideTransitionSource);
         slides.AddBlock(_slideTransitionPicker);
@@ -165,11 +190,43 @@ public sealed class SettingsPanel : UserControl
         // --- 网络与设备 ---
         _deviceNameTextBox = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(
             new TextBox { Text = _identity.DeviceName, Width = 220 }, UiForegroundRole.Text), UiBackgroundRole.Surface);
-        var saveDeviceNameButton = new RoundedActionButton { Text = "保存", Width = 72, Height = 30 };
-        ModernUi.StyleButton(saveDeviceNameButton);
-        saveDeviceNameButton.Click += OnSaveDeviceNameClick;
-        Section("网络与设备").AddRow("设备名称", "投屏机列表中显示的名字；下一次广播就会带上新名字", "即时生效", UiForegroundRole.Accent,
-            _deviceNameTextBox, saveDeviceNameButton);
+        _deviceNameTextBox.Leave += (_, _) => SaveDeviceName();
+        _deviceNameTextBox.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            e.SuppressKeyPress = true;
+            SaveDeviceName();
+        };
+        // 设置 · 网络 = configuration; the 设备 page shows what is happening now (paired devices, casts).
+        var network = Section("网络");
+        network.AddRow("设备名称", "投屏机列表中显示的名字；离开输入框或按 Enter 即保存，下一次广播就会带上新名字", "即时生效", UiForegroundRole.Accent,
+            _deviceNameTextBox);
+        network.AddRow("投屏端口", $"UDP {EveryStage.Discovery.DiscoveryProtocol.Port}（发现与控制）、{EveryStage.Discovery.DiscoveryProtocol.VideoRtpPort}（视频）、" +
+            $"{EveryStage.Discovery.DiscoveryProtocol.AudioRtpPort}（音频）。固定不可修改；安装程序已添加防火墙规则", null, null,
+            ModernUi.SetForegroundRole(new Label { Text = "只读", AutoSize = true }, UiForegroundRole.Muted));
+        _httpControlCheckbox = new CheckBox { Text = "启用", AutoSize = true, Checked = settings.HttpControlEnabled, AccessibleName = "HTTP 外控" };
+        _httpControlCheckbox.CheckedChanged += (_, _) => Commit(s => s.HttpControlEnabled = _httpControlCheckbox.Checked, "HTTP 外控");
+        network.AddRow("HTTP 外控（仅本机）", $"供本机的中控软件使用：http://127.0.0.1:{EveryStage.Terminal.Remote.HttpControlServer.DefaultPort}，" +
+            "GET /status 查询状态，POST /emergency-stop 急停（等同「停止输出」，没有撤销）。每个请求都要带令牌（Authorization: Bearer）；只监听本机，局域网无法访问",
+            "即时生效", UiForegroundRole.Accent, _httpControlCheckbox);
+        var copyToken = new RoundedActionButton { Text = "复制令牌", Width = 92, Height = 30 };
+        ModernUi.StyleButton(copyToken);
+        copyToken.Click += (_, _) =>
+        {
+            try { Clipboard.SetText(EveryStage.Terminal.Remote.HttpControlToken.Current()); _savedLabel.Text = "令牌已复制"; }
+            catch (System.Runtime.InteropServices.ExternalException) { _savedLabel.Text = "剪贴板被占用，请重试"; }
+        };
+        var resetToken = new RoundedActionButton { Text = "重置令牌", Width = 92, Height = 30 };
+        ModernUi.StyleButton(resetToken);
+        resetToken.Click += (_, _) =>
+        {
+            if (MessageBox.Show(this, "重置后旧令牌立即失效，正在使用它的中控需要换成新令牌。继续？", "重置令牌",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            EveryStage.Terminal.Remote.HttpControlToken.Reset();
+            _savedLabel.Text = "令牌已重置";
+        };
+        network.AddRow("访问令牌", "令牌保存在受限的数据目录中，只显示不保存在设置文件里；泄露时请重置", null, null, copyToken, resetToken);
+        network.AddNote("投屏的媒体内容经过设备认证，但没有加密：局域网内的其他人可能截获画面和声音。请只在受信任的局域网中使用。");
 
         // --- 诊断 ---
         _diagnosticsLabel = ModernUi.SetForegroundRole(new Label { AutoSize = true, BackColor = Color.Transparent }, UiForegroundRole.Muted);
@@ -183,6 +240,21 @@ public sealed class SettingsPanel : UserControl
         diagnostics.AddBlock(_diagnosticsLabel);
         diagnostics.AddButtons(refreshDiagnosticsButton, exportLogsButton);
         RefreshDiagnostics();
+
+        // --- 备份与恢复 ---
+        var restoreDefaults = new RoundedActionButton { Text = "恢复默认", Width = 96, Height = 30 };
+        ModernUi.StyleButton(restoreDefaults);
+        restoreDefaults.Click += (_, _) => RestoreDefaults();
+        var exportSettings = new RoundedActionButton { Text = "导出设置...", Width = 104, Height = 30 };
+        ModernUi.StyleButton(exportSettings);
+        exportSettings.Click += (_, _) => ExportSettings();
+        var importSettings = new RoundedActionButton { Text = "导入设置...", Width = 104, Height = 30 };
+        ModernUi.StyleButton(importSettings);
+        importSettings.Click += (_, _) => ImportSettings();
+        var backup = Section("备份与恢复");
+        backup.AddNote("所有设置改动都会立即保存。「恢复默认」把设置和热键恢复为出厂值（设备名称、配对设备不变）。" +
+            "「导出设置」只包含设置和热键，不含媒体文件、配对和方案；导入时保留本机的扩展屏和音频设备选择。");
+        backup.AddButtons(restoreDefaults, exportSettings, importSettings);
 
         // --- 关于 ---
         var openDataButton = new RoundedActionButton { Text = "打开数据目录", Width = 116, Height = 30 };
@@ -201,32 +273,232 @@ public sealed class SettingsPanel : UserControl
         }, UiForegroundRole.Muted));
         about.AddButtons(openDataButton);
 
-        // Right-aligned 保存设置 with the result beside it.
-        var saveSettingsButton = new RoundedActionButton { Text = "保存设置", Width = 120, Height = 34, Margin = new Padding(0, 7, 0, 0) };
-        ModernUi.StyleButton(saveSettingsButton, primary: true);
-        saveSettingsButton.Click += OnSaveSettingsClick;
-        _savedLabel = ModernUi.SetForegroundRole(new Label { AutoSize = true, Margin = new Padding(12, 16, 6, 0) }, UiForegroundRole.Success);
-        var bottomBar = new Panel { Dock = DockStyle.Bottom, Height = 50, BackColor = Color.Transparent };
-        var saveRow = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false,
-            Margin = Padding.Empty, BackColor = Color.Transparent,
-        };
-        saveRow.Controls.Add(saveSettingsButton);   // RightToLeft: first added is right-most.
-        saveRow.Controls.Add(_savedLabel);
-        bottomBar.Controls.Add(saveRow);
-
         var heading = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
         heading.Controls.Add(ModernUi.SetForegroundRole(new Label
         {
             Text = "设置", AutoSize = true, Location = new Point(0, 8),
             Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent,
         }, UiForegroundRole.Text));
+        heading.Controls.Add(_savedLabel);
 
         // Dock order: the last Top control added sits highest, so heading goes in last.
         Controls.Add(page);
-        Controls.Add(bottomBar);
         Controls.Add(heading);
+        WireInstantSave();
+    }
+
+    /// <summary>Every control saves its own field at once.</summary>
+    private void WireInstantSave()
+    {
+        _castSwitchDefaultCheckbox.CheckedChanged += (_, _) =>
+            Commit(s => s.CastSwitchDefaultOn = _castSwitchDefaultCheckbox.Checked, "启动时投屏开关默认值");
+        _monitorComboBox.SelectedIndexChanged += (_, _) =>
+        {
+            var selected = _monitorComboBox.SelectedItem as MonitorComboItem;
+            string? name = selected is { DeviceName: AutoSelectMonitor } or null ? null : selected.DeviceName;
+            string? previous = _settingsStore.Current.PreferredMonitorDeviceName;
+            if (name == previous) return;
+            CommitDangerous(s => s.PreferredMonitorDeviceName = name, s => s.PreferredMonitorDeviceName = previous, "扩展屏",
+                $"把扩展屏改为「{selected?.ToString() ?? "自动选择"}」？\n大屏会在显示设置变化或重启后绑定到新的显示器。");
+        };
+        _defaultStayDurationEnabledCheckbox.CheckedChanged += (_, _) => CommitStayDuration();
+        _defaultStayDurationSeconds.ValueChanged += (_, _) => CommitStayDuration();
+        _completionComboBox.SelectedIndexChanged += (_, _) =>
+            Commit(s => s.DefaultCompletionAction = CompletionChoices[Math.Max(0, _completionComboBox.SelectedIndex)].Action, "默认「播完后」");
+        _transitionComboBox.SelectedIndexChanged += (_, _) =>
+            Commit(s => s.Transition = (TransitionStyle)Math.Max(0, _transitionComboBox.SelectedIndex), "大屏过场");
+        _transitionMilliseconds.ValueChanged += (_, _) =>
+            Commit(s => s.TransitionMilliseconds = (int)_transitionMilliseconds.Value, "大屏过场时长");
+        _slideTransitionSource.SelectedIndexChanged += (_, _) =>
+            Commit(s => s.UnifySlideTransitions = _slideTransitionSource.SelectedIndex == 0, "PPT 转场来源");
+        _slideTransitionPicker.SelectionChanged += () => Commit(s =>
+        {
+            s.SlideTransition = _slideTransitionPicker.Effect;
+            s.SlideTransitionDirection = _slideTransitionPicker.Direction;
+            s.SlideTransitionMilliseconds = _slideTransitionPicker.Milliseconds;
+        }, "PPT 翻页过场");
+        _keepMorph.CheckedChanged += (_, _) => Commit(s => s.KeepMorphTransitions = _keepMorph.Checked, "平滑转场设置");
+        _keepAutoAdvance.CheckedChanged += (_, _) => Commit(s => s.KeepAutoAdvanceTransitions = _keepAutoAdvance.Checked, "自动换片设置");
+        _transitionOnBlack.CheckedChanged += (_, _) => Commit(s => s.TransitionOnBlackScreen = _transitionOnBlack.Checked, "黑屏 / 白屏过场");
+    }
+
+    private void CommitStayDuration()
+    {
+        _defaultStayDurationSeconds.Enabled = _defaultStayDurationEnabledCheckbox.Checked;
+        Commit(s => s.DefaultStayDurationSeconds = _defaultStayDurationEnabledCheckbox.Checked ? (int)_defaultStayDurationSeconds.Value : null, "默认停留时长");
+    }
+
+    /// <summary>Saves one change at once. On failure the operator is told and the page shows the stored
+    /// values again. No-op while the page itself is loading values.</summary>
+    private bool Commit(Action<AppSettings> change, string what)
+    {
+        if (_loading) return true;
+        var updated = _settingsStore.Current.Clone();
+        change(updated);
+        try { _settingsStore.Save(updated); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"{what}未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            ReloadFromSettings();
+            return false;
+        }
+        _savedLabel.Text = $"{what}已保存";
+        return true;
+    }
+
+    /// <summary>A risky change (扩展屏, 音频输出设备, the global 急停 key): ask first, save, then offer 撤销
+    /// for 10 seconds (<paramref name="undo"/> puts back only this field).</summary>
+    private bool CommitDangerous(Action<AppSettings> change, Action<AppSettings> undo, string what, string question)
+    {
+        if (_loading) return true;
+        if (MessageBox.Show(this, question, what, MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes
+            || !Commit(change, what))
+        {
+            ReloadFromSettings();
+            return false;
+        }
+        if (ShowToast is { } show)
+        {
+            var toast = show($"{what}已更改。10 秒内可撤销。", ToastSeverity.Info, new[]
+            {
+                new ToastAction("撤销", () =>
+                {
+                    if (Commit(undo, what)) _savedLabel.Text = $"{what}已撤销";
+                    ReloadFromSettings();
+                }),
+            });
+            var expiry = new System.Windows.Forms.Timer { Interval = 10_000 };
+            expiry.Tick += (_, _) => { expiry.Dispose(); toast.Dismiss(); };
+            expiry.Start();
+        }
+        return true;
+    }
+
+    /// <summary>Puts the stored settings back into every control (after a failed save, 撤销, 恢复默认 or 导入)
+    /// without saving anything.</summary>
+    public void ReloadFromSettings()
+    {
+        var settings = _settingsStore.Current;
+        _loading = true;
+        try
+        {
+            _themeComboBox.SelectedIndex = Math.Clamp((int)settings.Theme, 0, _themeComboBox.Items.Count - 1);
+            _castSwitchDefaultCheckbox.Checked = settings.CastSwitchDefaultOn;
+            PopulateMonitorComboBox(settings.PreferredMonitorDeviceName);
+            PopulateAudioOutputs(settings.AudioOutputDeviceId);
+            _defaultStayDurationEnabledCheckbox.Checked = settings.DefaultStayDurationSeconds.HasValue;
+            _defaultStayDurationSeconds.Value = Math.Clamp(settings.DefaultStayDurationSeconds ?? 10, 1, 3600);
+            _defaultStayDurationSeconds.Enabled = settings.DefaultStayDurationSeconds.HasValue;
+            _completionComboBox.SelectedIndex = Math.Max(0, Array.FindIndex(CompletionChoices, c => c.Action == settings.DefaultCompletionAction));
+            _transitionComboBox.SelectedIndex = (int)settings.Transition;
+            _transitionMilliseconds.Value = Math.Clamp(settings.TransitionMilliseconds, 100, 3000);
+            _slideTransitionSource.SelectedIndex = settings.UnifySlideTransitions ? 0 : 1;
+            _slideTransitionPicker.SetValues(settings.SlideTransition, settings.SlideTransitionDirection, settings.SlideTransitionMilliseconds);
+            _slideTransitionPicker.Enabled = settings.UnifySlideTransitions;
+            _keepMorph.Checked = settings.KeepMorphTransitions;
+            _keepAutoAdvance.Checked = settings.KeepAutoAdvanceTransitions;
+            _transitionOnBlack.Checked = settings.TransitionOnBlackScreen;
+            _httpControlCheckbox.Checked = settings.HttpControlEnabled;
+            foreach (var (action, button) in _hotkeyButtons) button.Keys = settings.HotkeyFor(action);
+            if (_globalEmergency != null) _globalEmergency.Checked = settings.GlobalEmergencyStopEnabled;
+        }
+        finally { _loading = false; }
+        Invalidate(true);
+    }
+
+    /// <summary>「恢复默认」: product defaults for every setting and hotkey; the device name, pairings and
+    /// this machine's 扩展屏 / 音频设备 choice are kept.</summary>
+    private void RestoreDefaults()
+    {
+        if (MessageBox.Show(this, "把所有设置和热键恢复为默认值？\n设备名称、配对设备、扩展屏和音频设备的选择不变。", "恢复默认",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+        var current = _settingsStore.Current;
+        var defaults = new AppSettings
+        {
+            PreferredMonitorDeviceName = current.PreferredMonitorDeviceName,
+            AudioOutputDeviceId = current.AudioOutputDeviceId,
+        };
+        try { _settingsStore.Save(defaults); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"未能恢复默认：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        ReloadFromSettings();
+        _savedLabel.Text = "已恢复默认设置";
+    }
+
+    private const string SettingsFileFormat = "EveryStage.Settings";
+
+    private sealed class SettingsFile
+    {
+        public string Format { get; set; } = SettingsFileFormat;
+        public string AppVersion { get; set; } = Application.ProductVersion;
+        public DateTimeOffset ExportedAt { get; set; } = DateTimeOffset.Now;
+        public AppSettings? Settings { get; set; }
+    }
+
+    private static readonly System.Text.Json.JsonSerializerOptions SettingsFileJson = new() { WriteIndented = true };
+
+    private void ExportSettings()
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Filter = "EveryStage 设置 (*.json)|*.json",
+            FileName = $"EveryStage-设置-{DateTime.Now:yyyyMMdd-HHmm}.json",
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        try
+        {
+            File.WriteAllText(dialog.FileName, System.Text.Json.JsonSerializer.Serialize(new SettingsFile { Settings = _settingsStore.Current }, SettingsFileJson));
+            _savedLabel.Text = "设置已导出";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"导出失败：{ex.Message}", "导出设置", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void ImportSettings()
+    {
+        using var dialog = new OpenFileDialog { Filter = "EveryStage 设置 (*.json)|*.json|所有文件|*.*" };
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        AppSettings? imported;
+        try
+        {
+            var file = System.Text.Json.JsonSerializer.Deserialize<SettingsFile>(File.ReadAllText(dialog.FileName));
+            imported = file is { Format: SettingsFileFormat } ? file.Settings : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        {
+            MessageBox.Show(this, $"无法读取设置文件：{ex.Message}", "导入设置", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (imported == null)
+        {
+            MessageBox.Show(this, "这不是 EveryStage 导出的设置文件。", "导入设置", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (imported.SchemaVersion > AppSettings.CurrentSchemaVersion)
+        {
+            MessageBox.Show(this, "这个设置文件来自更新版本的 EveryStage，本版本无法正确读取。请先升级。", "导入设置", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (MessageBox.Show(this, "用这个文件替换当前的设置和热键？\n本机的扩展屏和音频设备选择保持不变。", "导入设置",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        var current = _settingsStore.Current;
+        imported.SchemaVersion = AppSettings.CurrentSchemaVersion;
+        imported.PreferredMonitorDeviceName = current.PreferredMonitorDeviceName;
+        imported.AudioOutputDeviceId = current.AudioOutputDeviceId;
+        imported.Hotkeys ??= new(HotkeyDefaults.Codes);
+        try { _settingsStore.Save(imported); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"导入未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        ReloadFromSettings();
+        _savedLabel.Text = "设置已导入";
     }
 
     /// <summary>One settings section: a rounded surface card with a title (and optional effect tag),
@@ -237,7 +509,8 @@ public sealed class SettingsPanel : UserControl
     {
         var hotkeys = section("热键", "即时生效", UiForegroundRole.Accent);
         var globalEmergency = new CheckBox { Text = "全局注册", AutoSize = true, Checked = settings.GlobalEmergencyStopEnabled, AccessibleName = "全局急停热键" };
-        var buttons = new Dictionary<HotkeyAction, HotkeyCaptureButton>();
+        _globalEmergency = globalEmergency;
+        var buttons = _hotkeyButtons;
         bool reverting = false;
 
         bool SaveWith(Action<AppSettings> change, string what)
@@ -267,6 +540,14 @@ public sealed class SettingsPanel : UserControl
                 MessageBox.Show(this, $"{Hotkeys.Format(keys)} 已被「{Hotkeys.Label(other)}」使用，未修改。请先给那一项换一个键。", "热键冲突", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+            if (action == HotkeyAction.EmergencyStopGlobal)
+            {
+                int previous = current.HotkeyCode(action);
+                if (CommitDangerous(s => s.Hotkeys[action] = (int)keys, s => s.Hotkeys[action] = previous, "全局急停键",
+                        $"把全局急停键改为 {Hotkeys.Format(keys)}？\n演出中请确认新键不会被误按，也没有被其他程序占用。"))
+                    button.Keys = keys;
+                return;
+            }
             if (SaveWith(s => s.Hotkeys[action] = (int)keys, "热键")) button.Keys = keys;
         }
 
@@ -294,8 +575,13 @@ public sealed class SettingsPanel : UserControl
         }
         globalEmergency.CheckedChanged += (_, _) =>
         {
-            if (reverting) return;
-            if (SaveWith(s => s.GlobalEmergencyStopEnabled = globalEmergency.Checked, "急停设置")) return;
+            if (reverting || _loading) return;
+            bool on = globalEmergency.Checked;
+            bool saved = on
+                ? SaveWith(s => s.GlobalEmergencyStopEnabled = true, "急停设置")
+                : CommitDangerous(s => s.GlobalEmergencyStopEnabled = false, s => s.GlobalEmergencyStopEnabled = true, "全局急停",
+                    "关闭全局急停？\n关闭后，只有 EveryStage 窗口在前台时急停键才有效。");
+            if (saved) return;
             reverting = true;
             try { globalEmergency.Checked = _settingsStore.Current.GlobalEmergencyStopEnabled; }
             finally { reverting = false; }
@@ -485,9 +771,14 @@ public sealed class SettingsPanel : UserControl
     /// unplug/replug on an actual Windows machine.</summary>
     public void Refresh_()
     {
-        string? currentSelection = (_monitorComboBox.SelectedItem as MonitorComboItem)?.DeviceName;
-        PopulateMonitorComboBox(currentSelection ?? _settingsStore.Current.PreferredMonitorDeviceName);
-        PopulateAudioOutputs(_settingsStore.Current.AudioOutputDeviceId);
+        // Every change is already saved, so the stored value is what the lists show again.
+        _loading = true;
+        try
+        {
+            PopulateMonitorComboBox(_settingsStore.Current.PreferredMonitorDeviceName);
+            PopulateAudioOutputs(_settingsStore.Current.AudioOutputDeviceId);
+        }
+        finally { _loading = false; }
         RefreshDiagnostics();
     }
 
@@ -524,15 +815,11 @@ public sealed class SettingsPanel : UserControl
 
     private void OnAudioOutputChanged(object? sender, EventArgs e)
     {
-        if (_refreshingAudioOutputs || _audioOutputComboBox.SelectedItem is not AudioOutputItem item) return;
-        var updated = _settingsStore.Current.Clone();
-        updated.AudioOutputDeviceId = item.Id;
-        try { _settingsStore.Save(updated); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            PopulateAudioOutputs(_settingsStore.Current.AudioOutputDeviceId);
-            MessageBox.Show(this, $"音频设备设置未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-        }
+        if (_loading || _refreshingAudioOutputs || _audioOutputComboBox.SelectedItem is not AudioOutputItem item) return;
+        string? previous = _settingsStore.Current.AudioOutputDeviceId;
+        if (item.Id == previous) return;
+        CommitDangerous(s => s.AudioOutputDeviceId = item.Id, s => s.AudioOutputDeviceId = previous, "音频输出设备",
+            $"把音频输出改为「{item}」？\n之后开始的播放（视频声音和背景音乐）从新设备发声，当前播放不切换。");
     }
 
     private void PopulateMonitorComboBox(string? preferredDeviceName)
@@ -571,36 +858,6 @@ public sealed class SettingsPanel : UserControl
         }
         _themeComboBox.SelectedIndex = index;
         _savedLabel.Text = "主题已保存，即时生效。";
-    }
-
-    private void OnSaveSettingsClick(object? sender, EventArgs e)
-    {
-        var selectedMonitor = (MonitorComboItem?)_monitorComboBox.SelectedItem;
-        var updated = _settingsStore.Current.Clone();
-        updated.Theme = (AppTheme)Math.Max(0, _themeComboBox.SelectedIndex);
-        updated.CastSwitchDefaultOn = _castSwitchDefaultCheckbox.Checked;
-        updated.PreferredMonitorDeviceName = selectedMonitor is { DeviceName: AutoSelectMonitor } or null ? null : selectedMonitor.DeviceName;
-        updated.DefaultStayDurationSeconds = _defaultStayDurationEnabledCheckbox.Checked ? (int)_defaultStayDurationSeconds.Value : null;
-        updated.Transition = (TransitionStyle)Math.Max(0, _transitionComboBox.SelectedIndex);
-        updated.TransitionMilliseconds = (int)_transitionMilliseconds.Value;
-        updated.UnifySlideTransitions = _slideTransitionSource.SelectedIndex == 0;
-        updated.SlideTransition = _slideTransitionPicker.Effect;
-        updated.SlideTransitionDirection = _slideTransitionPicker.Direction;
-        updated.SlideTransitionMilliseconds = _slideTransitionPicker.Milliseconds;
-        updated.KeepMorphTransitions = _keepMorph.Checked;
-        updated.KeepAutoAdvanceTransitions = _keepAutoAdvance.Checked;
-        updated.TransitionOnBlackScreen = _transitionOnBlack.Checked;
-
-        // Same guard+message convention as FilesPanel's own saves: on the Terminal an unguarded save
-        // throw only reaches the ThreadException handler, which logs to CrashLogger without any dialog —
-        // so the operator would see neither "已保存" nor an error. Surface it here instead (audit C-25).
-        try { _settingsStore.Save(updated); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            MessageBox.Show(this, $"设置未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-        _savedLabel.Text = "已保存。";
     }
 
     private void RefreshDiagnostics()
@@ -655,14 +912,18 @@ public sealed class SettingsPanel : UserControl
         }
     }
 
-    private void OnSaveDeviceNameClick(object? sender, EventArgs e)
+    /// <summary>设备名称: saved on leaving the box or Enter (an unchanged or empty name is not saved; an
+    /// empty box gets the stored name back).</summary>
+    private void SaveDeviceName()
     {
         string name = _deviceNameTextBox.Text.Trim();
         if (name.Length == 0)
         {
-            MessageBox.Show(this, "设备名称不能为空。", "无法保存", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _deviceNameTextBox.Text = _identity.DeviceName;
+            _savedLabel.Text = "设备名称不能为空，已恢复原名称";
             return;
         }
+        if (name == _identity.DeviceName) return;
 
         // Mutate then persist, but roll the in-memory name back if the save fails, rather than leaving
         // the new name live (and broadcast in the next beacon) while disk still holds the old one and no

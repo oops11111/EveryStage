@@ -35,9 +35,28 @@ internal sealed class SlideTransitionPicker : Control
     private float _previewT = 0.5f;
     private Point _hover = new(-1, -1);
 
+    /// <summary>The operator changed the effect, direction or duration (设置 saves it at once).</summary>
+    public event Action? SelectionChanged;
+
     public SlideTransitionEffect Effect { get; private set; }
     public SlideTransitionDirection Direction { get; private set; }
     public int Milliseconds => _duration.Value * 100;
+
+    private bool _setting;
+
+    /// <summary>Shows saved values (设置 reloaded) without raising <see cref="SelectionChanged"/>.</summary>
+    public void SetValues(SlideTransitionEffect effect, SlideTransitionDirection direction, int milliseconds)
+    {
+        _setting = true;
+        try
+        {
+            Effect = effect;
+            Direction = direction;
+            _duration.Value = Math.Clamp(milliseconds / 100, _duration.Minimum, _duration.Maximum);
+        }
+        finally { _setting = false; }
+        Invalidate();
+    }
 
     public SlideTransitionPicker(SlideTransitionEffect effect, SlideTransitionDirection direction, int milliseconds)
     {
@@ -50,7 +69,7 @@ internal sealed class SlideTransitionPicker : Control
         _pageB = SamplePage("产品展示", "第 8 页", Color.FromArgb(29, 78, 107), Color.FromArgb(11, 34, 51), Color.White);
         _duration = new TrackBar { Minimum = 3, Maximum = 20, TickStyle = TickStyle.None, Value = Math.Clamp(milliseconds / 100, 3, 20), AutoSize = false, Height = 30 };
         _durationLabel = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = ModernUi.Text };
-        _duration.ValueChanged += (_, _) => { UpdateDurationLabel(); Invalidate(); };
+        _duration.ValueChanged += (_, _) => { UpdateDurationLabel(); Invalidate(); if (!_setting) SelectionChanged?.Invoke(); };
         _play = new RoundedActionButton { Text = "▶ 播放预览", Height = 32, Width = 110 };
         ModernUi.StyleButton(_play, primary: true);
         _play.Click += (_, _) => PlayPreview();
@@ -137,9 +156,9 @@ internal sealed class SlideTransitionPicker : Control
         base.OnMouseClick(e);
         if (e.Button != MouseButtons.Left) return;
         for (int i = 0; i < _cards.Length; i++)
-            if (_cards[i].Contains(e.Location)) { Effect = (SlideTransitionEffect)i; PlayPreview(); Invalidate(); return; }
+            if (_cards[i].Contains(e.Location)) { Effect = (SlideTransitionEffect)i; PlayPreview(); Invalidate(); SelectionChanged?.Invoke(); return; }
         for (int i = 0; i < _directions.Length; i++)
-            if (_directions[i].Contains(e.Location)) { Direction = (SlideTransitionDirection)i; PlayPreview(); Invalidate(); return; }
+            if (_directions[i].Contains(e.Location)) { Direction = (SlideTransitionDirection)i; PlayPreview(); Invalidate(); SelectionChanged?.Invoke(); return; }
     }
 
     protected override bool IsInputKey(Keys keyData) => (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down || base.IsInputKey(keyData);
@@ -154,6 +173,7 @@ internal sealed class SlideTransitionPicker : Control
         e.Handled = true;
         PlayPreview();
         Invalidate();
+        SelectionChanged?.Invoke();
     }
 
     protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }

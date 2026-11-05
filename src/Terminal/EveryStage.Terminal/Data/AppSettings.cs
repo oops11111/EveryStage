@@ -37,6 +37,11 @@ public sealed class AppSettings
     public int HotkeyCode(HotkeyAction action) =>
         Hotkeys != null && Hotkeys.TryGetValue(action, out var code) ? code : HotkeyDefaults.Codes[action];
 
+    // --- 网络 ---
+
+    /// <summary>HTTP 外控 on 127.0.0.1:18790 with a Bearer token (设置 · 网络). Off until turned on explicitly.</summary>
+    public bool HttpControlEnabled { get; set; }
+
     // --- 显示 ---
 
     /// <summary><see cref="Display.MonitorInfo.DeviceName"/> of the monitor to bind as the
@@ -64,6 +69,10 @@ public sealed class AppSettings
     /// behavior of holding indefinitely. A per-file value, when configured, always wins over this.
     /// Applied immediately: the next file played picks it up, no restart needed.</summary>
     public int? DefaultStayDurationSeconds { get; set; }
+
+    /// <summary>「播完后」 for newly imported files (定格 by default). Existing files and scenarios keep their
+    /// own value (migration C); each file can still be changed in its properties.</summary>
+    public CompletionAction DefaultCompletionAction { get; set; } = CompletionAction.HoldOnLastFrame;
 
     // --- 过场 ---
 

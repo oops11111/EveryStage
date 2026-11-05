@@ -34,6 +34,12 @@ public sealed class ToastNotification : Panel
     /// practice, removing this control from the stack when it fires.</summary>
     public event Action? Dismissed;
 
+    /// <summary>Closes the toast from code (e.g. a 10 s 撤销 offer running out).</summary>
+    public void Dismiss()
+    {
+        if (!IsDisposed) Dismissed?.Invoke();
+    }
+
     public ToastNotification(string message, ToastSeverity severity, IReadOnlyList<ToastAction>? actions = null)
     {
         int width = ToastStack.ToastWidth;

@@ -61,13 +61,16 @@ public sealed class FileLibraryStore
 
     /// <summary>Returns null (and imports nothing) if <paramref name="sourcePath"/>'s extension
     /// isn't recognized.</summary>
+    /// <summary>「播完后」 given to newly imported files (设置 · 播放行为; 定格 unless changed).</summary>
+    public CompletionAction DefaultCompletion { get; set; } = CompletionAction.HoldOnLastFrame;
+
     public MediaFile? Import(string sourcePath)
     {
         EnsureWritable();
         var kind = InferKind(sourcePath);
         if (kind == null) return null;
 
-        var file = new MediaFile { SourcePath = sourcePath, Kind = kind.Value };
+        var file = new MediaFile { SourcePath = sourcePath, Kind = kind.Value, OnCompletion = DefaultCompletion };
         _files.Add(file);
         try { Save(); }
         catch { _files.Remove(file); throw; }

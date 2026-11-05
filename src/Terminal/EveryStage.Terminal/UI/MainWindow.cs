@@ -241,6 +241,7 @@ public sealed class MainWindow : GradientForm
             Playlists = () => _music.Library.Playlists,
         };
         _activitiesPanel.RunRequested += RunActivityItem;
+        _library.DefaultCompletion = settingsStore.Current.DefaultCompletionAction;
         _settingsPanel = new SettingsPanel(settingsStore, identity);
         foreach (Control page in new Control[] { _filesPanel, _devicesPanel, _activitiesPanel, _settingsPanel })
             _panelPalettes[page] = ModernUi.Palette;
@@ -284,6 +285,7 @@ public sealed class MainWindow : GradientForm
         // its own OnParentChanged/SizeChanged handling, see ToastStack's doc comment) so it renders
         // on top of _contentHost regardless of which panel is currently showing.
         _toastStack = new ToastStack { RightInset = _monitorColumn.Width };
+        _settingsPanel.ShowToast = (message, severity, actions) => _toastStack.Show(message, severity, actions);
         Controls.Add(_toastStack);
         _emergencyHotkey = new EmergencyStopHotkey(StopProgramOutput, message => _toastStack.Show(message, ToastSeverity.Critical));
         _emergencyHotkey.Configure(settingsStore.Current.GlobalEmergencyStopEnabled, settingsStore.Current.HotkeyFor(HotkeyAction.EmergencyStopGlobal));
@@ -589,6 +591,9 @@ public sealed class MainWindow : GradientForm
     }
 
     /// <summary>"停止输出": take the extended display off air. Preview keeps its content and position.</summary>
+    /// <summary>急停 from outside the window (HTTP 外控): the same as 「■ 停止输出」.</summary>
+    internal void EmergencyStop() => StopProgramOutput();
+
     private void StopProgramOutput()
     {
         _stateMachine.Disconnect();
@@ -651,6 +656,7 @@ public sealed class MainWindow : GradientForm
 
     private void OnSettingsChanged(AppSettings settings)
     {
+        _library.DefaultCompletion = settings.DefaultCompletionAction;
         ApplyTheme(settings.Theme);
         _emergencyHotkey.Configure(settings.GlobalEmergencyStopEnabled, settings.HotkeyFor(HotkeyAction.EmergencyStopGlobal));
     }
