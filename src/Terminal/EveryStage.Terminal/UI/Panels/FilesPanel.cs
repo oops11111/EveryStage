@@ -788,10 +788,31 @@ public sealed class FilesPanel : UserControl
         string prompt = files.Count == 1
             ? $"确定要从文件库中移除 \"{Path.GetFileName(files[0].SourcePath)}\" 吗？"
             : $"确定要从文件库中移除选中的 {files.Count} 个文件吗？";
-        var confirm = MessageBox.Show(this,
-            prompt + "\n已经添加到某个活动里的副本不受影响——活动保存的是独立拷贝，不是对这个文件库条目的引用。",
-            "移除文件", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-        if (confirm != DialogResult.Yes) return;
+        const string copiesNote = "已经添加到流程里的副本不受影响——流程保存的是独立拷贝，不是对这个文件库条目的引用。";
+        bool stopOutput = false;
+        var onAir = IsProgramLive?.Invoke() == true && ProgramFile?.Invoke() is { } live
+            ? files.FirstOrDefault(f => SameFile(f, live)) : null;
+        if (onAir != null)
+        {
+            // The file on the big screen: say so by name. Removing it never stops the output by itself;
+            // the operator may tick 「同时停止输出」 (off by default).
+            var stop = new TaskDialogVerificationCheckBox("同时停止输出（大屏断开，没有撤销）", isChecked: false);
+            var remove = new TaskDialogButton("移除");
+            var page = new TaskDialogPage
+            {
+                Caption = "移除文件",
+                Heading = $"「{Path.GetFileName(onAir.SourcePath)}」正在大屏上播放",
+                Text = prompt + "\n移除后大屏仍继续显示当前画面，直到切换到下一项或停止输出。\n" + copiesNote,
+                Icon = TaskDialogIcon.Warning,
+                Verification = stop,
+                Buttons = { remove, TaskDialogButton.Cancel },
+                DefaultButton = TaskDialogButton.Cancel,
+            };
+            if (TaskDialog.ShowDialog(this, page) != remove) return;
+            stopOutput = stop.Checked;
+        }
+        else if (MessageBox.Show(this, prompt + "\n" + copiesNote, "移除文件", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+            return;
 
         foreach (var file in files)
         {
@@ -804,6 +825,7 @@ public sealed class FilesPanel : UserControl
             _fileOpLog.LogFileRemoved(file.Id, file.SourcePath);
         }
         Refresh_();
+        if (stopOutput) StopProgramRequested?.Invoke();
     }
 
     /// <summary>PLANNING.md §11 "批量选择"'s "加入活动" half — see class doc comment for why this

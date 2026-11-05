@@ -142,6 +142,12 @@ public sealed partial class SettingsStore
         if (settings.SchemaVersion < 3)
             settings.Theme = AppTheme.Dark;
 
+        // Schema 4: the global 急停 key became F12 and on by default (it was Shift+Esc, off by default,
+        // so an older "off" was the untouched default rather than a choice).
+        if (settings.SchemaVersion < 4)
+            settings.GlobalEmergencyStopEnabled = true;
+        settings.Hotkeys ??= new(HotkeyDefaults.Codes);
+
         if (settings.SchemaVersion < AppSettings.CurrentSchemaVersion)
             settings.SchemaVersion = AppSettings.CurrentSchemaVersion;
 

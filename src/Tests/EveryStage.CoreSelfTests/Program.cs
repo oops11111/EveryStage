@@ -664,6 +664,14 @@ async Task RunAsync(string name, Func<Task<(bool Success, string? FailureReason)
             || migrated.PreferredMonitorDeviceName != "DISPLAY-LEGACY" || migrated.DefaultStayDurationSeconds != 15)
             return (false, "Legacy settings were not preserved during migration.");
 
+        // Schema 4: the global 急停 key is F12 and on, also for settings saved before it existed.
+        File.WriteAllText(path, "{\"SchemaVersion\":3,\"GlobalEmergencyStopEnabled\":false}");
+        var hotkeys = new SettingsStore(path).Current;
+        if (!hotkeys.GlobalEmergencyStopEnabled || hotkeys.HotkeyCode(HotkeyAction.EmergencyStopGlobal) != 123
+            || hotkeys.HotkeyCode(HotkeyAction.EmergencyStopLocal) != 27
+            || hotkeys.Clone().Hotkeys == hotkeys.Hotkeys)
+            return (false, "Hotkey defaults / migration / deep clone are wrong.");
+
         File.WriteAllText(path, "{\"SchemaVersion\":999,\"CastSwitchDefaultOn\":false}");
         var futureStore = new SettingsStore(path);
         var future = futureStore.Current;

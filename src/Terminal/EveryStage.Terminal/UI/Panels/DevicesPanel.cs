@@ -167,6 +167,9 @@ public sealed class DevicesPanel : UserControl
     // and editing its permissions are different operations with different consequences (the former
     // forgets the device, the latter doesn't), and conflating them would make one harder to find.
 
+    /// <summary>A device was unpaired or lost 「允许投放」: if it is casting now, the cast must stop at once.</summary>
+    public event Action<Guid>? DeviceAccessRevoked;
+
     private void RemoveDevice(PairedDevice device)
     {
         var confirm = MessageBox.Show(this, $"确定要移除与 \"{device.DeviceName}\" 的配对吗？",
@@ -183,6 +186,7 @@ public sealed class DevicesPanel : UserControl
         // 配对" — LogPaired/LogConnected/LogDisconnected were already wired from DiscoveryService,
         // but nothing ever called this one) — see this project's README "已知风险".
         _connectionLog.LogUnpaired(device.DeviceId.ToString());
+        DeviceAccessRevoked?.Invoke(device.DeviceId);
         Refresh_();
     }
 
@@ -211,6 +215,7 @@ public sealed class DevicesPanel : UserControl
             MessageBox.Show(this, $"权限未保存：{DataDirectory.Describe(ex)}", "配对记录保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
+        if (oldCast && !device.AllowCast) DeviceAccessRevoked?.Invoke(device.DeviceId);
         Refresh_();
     }
 
@@ -408,18 +413,19 @@ public sealed class DevicesPanel : UserControl
                 Rectangle.FromLTRB(textLeft, cy - S(24), textRight, cy - S(2)), ModernUi.Text,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
-            bool trusted = _device.TrustMode == TrustMode.Trusted;
+            // Only 「允许投放」 is shown (信任 / 监看 are not offered).
+            bool trusted = _device.AllowCast;
             int x = textLeft, lineTop = cy + S(2), lineHeight = S(22);
             var dot = new Rectangle(x, lineTop + (lineHeight - S(8)) / 2, S(8), S(8));
             using (var dotBrush = new SolidBrush(trusted ? ModernUi.Success : ModernUi.Warning)) g.FillEllipse(dotBrush, dot);
             x = dot.Right + S(6);
-            string trust = trusted ? "信任" : "需手动确认";
+            string trust = trusted ? "允许投放" : "未允许投放";
             int trustWidth = TextRenderer.MeasureText(trust, BodyFont).Width;
             TextRenderer.DrawText(g, trust, BodyFont, new Rectangle(x, lineTop, trustWidth, lineHeight),
                 trusted ? ModernUi.Success : ModernUi.Warning, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
             x += trustWidth + S(8);
 
-            foreach (var (text, on) in new[] { ("可投放", _device.AllowCast), ("可监看", _device.AllowMonitor) })
+            foreach (var (text, on) in Array.Empty<(string, bool)>())
             {
                 string label = on ? text : "不" + text;
                 int tagWidth = TextRenderer.MeasureText(label, TagFont).Width + S(14);

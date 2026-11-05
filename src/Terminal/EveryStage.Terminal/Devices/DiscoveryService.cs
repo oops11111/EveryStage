@@ -543,6 +543,22 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
     private readonly object _rejectionLogGate = new();
     private readonly Dictionary<string, DateTimeOffset> _lastRejectionLog = new();
 
+    /// <summary>The operator unpaired <paramref name="deviceId"/> or took away 「允许投放」: if it is the
+    /// active caster, retire its session now (its key and status reports), as a cast_stop would.
+    /// True when it was casting.</summary>
+    public bool RevokeActiveCast(Guid deviceId)
+    {
+        if (_lastStartDeviceId == deviceId)
+        {
+            _lastStartMessageId = Guid.Empty;
+            _lastStartResult = null;
+        }
+        if (_activeCasterDeviceId != deviceId) return false;
+        _activeCasterDeviceId = null;
+        _activeCasterKey = null;
+        return true;
+    }
+
     private void HandleCastStop(DiscoveryProtocol.CastStopMessage msg)
     {
         var device = _pairedDevices.Find(msg.SenderDeviceId);

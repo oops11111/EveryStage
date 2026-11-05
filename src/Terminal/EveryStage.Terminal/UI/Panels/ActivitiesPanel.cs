@@ -975,12 +975,26 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         return order.FindIndex(o => ReferenceEquals(o.Activity.Files[o.Index], live));
     }
 
-    /// <summary>「下一项」: the item after the live one; with nothing live, the selected item (or the
-    /// first of the selected section), else the very first item.</summary>
+    /// <summary>「下一项」: the item after the live one — only within the live section (环节): manual
+    /// 下一项 never crosses into the next section by itself. At the end of a section it is -1 (button
+    /// greyed) until the operator explicitly selects an item or section elsewhere, which is then next.
+    /// With nothing live: the selected item (or the first of the selected section), else the first item.
+    /// (Automatic continuation across sections is the engine's own, separate behaviour.)</summary>
     private int NextPosition(List<(Activity Activity, int Index)> order)
     {
         int live = LivePosition(order);
-        if (live >= 0) return live + 1 < order.Count ? live + 1 : -1;
+        if (live >= 0)
+        {
+            if (live + 1 < order.Count && ReferenceEquals(order[live + 1].Activity, order[live].Activity)) return live + 1;
+            int chosen = SelectedPosition(order);
+            return chosen >= 0 && !ReferenceEquals(order[chosen].Activity, order[live].Activity) ? chosen : -1;
+        }
+        return SelectedPosition(order) is var selectedPosition and >= 0 ? selectedPosition : order.Count > 0 ? 0 : -1;
+    }
+
+    /// <summary>The selected file's position, or the first item of the selected section; -1 if none.</summary>
+    private int SelectedPosition(List<(Activity Activity, int Index)> order)
+    {
         if (_tree.SelectedNode?.Tag is MediaFile file)
         {
             int selected = order.FindIndex(o => ReferenceEquals(o.Activity.Files[o.Index], file));
@@ -991,7 +1005,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
             int first = order.FindIndex(o => ReferenceEquals(o.Activity, activity));
             if (first >= 0) return first;
         }
-        return order.Count > 0 ? 0 : -1;
+        return -1;
     }
 
     RunRowState IActivityRowHost.StateOf(MediaFile file)
@@ -1019,6 +1033,10 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         return null;
     }
 
+    /// <summary>设置 · 热键 下一项 / 上一项 (MainWindow), same as the run-sheet buttons.</summary>
+    internal void RunNext() => GoNext();
+    internal void RunPrevious() => GoPrevious();
+
     /// <summary>「下一项 ▶」 / space: put the next item on the big screen.</summary>
     private void GoNext()
     {
@@ -1028,12 +1046,12 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         RunRequested?.Invoke(order[next].Activity, order[next].Index);
     }
 
-    /// <summary>「◀ 上一项」: back to the item before the live one.</summary>
+    /// <summary>「◀ 上一项」: back to the item before the live one, within the live section.</summary>
     private void GoPrevious()
     {
         var order = RunOrder();
         int live = LivePosition(order);
-        if (live <= 0) return;
+        if (live <= 0 || !ReferenceEquals(order[live - 1].Activity, order[live].Activity)) return; // stays in the section
         RunRequested?.Invoke(order[live - 1].Activity, order[live - 1].Index);
     }
 
@@ -1053,13 +1071,16 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         var scenario = CurrentScenario;
         string NumberOf((Activity Activity, int Index) item) =>
             $"{(scenario?.Activities.IndexOf(item.Activity) ?? 0) + 1}.{item.Index + 1}";
+        bool sectionEnd = next < 0 && live >= 0;
         _nextName.Text = next < 0
-            ? (live >= 0 ? "已是最后一项" : "流程里还没有可播放的文件")
+            ? (sectionEnd
+                ? (live + 1 < order.Count ? "本环节已结束 · 选中下一个环节后按「下一项」进入" : "已是最后一项")
+                : "流程里还没有可播放的文件")
             : $"{NumberOf(order[next])}  {Path.GetFileName(order[next].Activity.Files[order[next].Index].SourcePath)}";
         ModernUi.SetForegroundRole(_nextName, next < 0 ? UiForegroundRole.Muted : UiForegroundRole.Text);
         _runNextButton.Enabled = next >= 0;
         _runPreviewButton.Enabled = next >= 0 && _playback != null;
-        _runPreviousButton.Enabled = live > 0;
+        _runPreviousButton.Enabled = live > 0 && ReferenceEquals(order[live - 1].Activity, order[live].Activity);
     }
 
     /// <summary>Space runs 「下一项」 while this page has focus (not while typing in a text box or the

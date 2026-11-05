@@ -112,8 +112,37 @@ public sealed class VideoSurface : IDisposable
         lock (_lock)
         {
             if (_disposed) return false; // a late frame during teardown is not an error
-            return Presenter.PresentFrame(decodedTexture, arraySlice, frameWidth, frameHeight, vsync, cancellationToken, waitMilliseconds);
+            try
+            {
+                return Presenter.PresentFrame(decodedTexture, arraySlice, frameWidth, frameHeight, vsync, cancellationToken, waitMilliseconds);
+            }
+            catch (SharpGen.Runtime.SharpGenException ex) when (IsDeviceLost(ex.HResult))
+            {
+                ReportDeviceRemoved(ex.HResult);
+                throw;
+            }
         }
+    }
+
+    /// <summary>DXGI_ERROR_DEVICE_REMOVED / DXGI_ERROR_DEVICE_RESET / DXGI_ERROR_DEVICE_HUNG: the GPU
+    /// (driver reset, TDR, unplugged eGPU) is gone. Raised once per surface, on the presenting thread,
+    /// with <c>GetDeviceRemovedReason</c>; the application switches the big screen to safe black and
+    /// tells the operator. Recreating the device automatically is not done yet.</summary>
+    public static event Action<string>? DeviceRemoved;
+
+    private bool _deviceRemovedReported;
+
+    private static bool IsDeviceLost(int hresult) => unchecked((uint)hresult) is 0x887A0005 or 0x887A0007 or 0x887A0006;
+
+    private void ReportDeviceRemoved(int presentResult)
+    {
+        if (_deviceRemovedReported) return;
+        _deviceRemovedReported = true;
+        string reason;
+        try { reason = $"0x{unchecked((uint)Gpu.Device.DeviceRemovedReason.Code):X8}"; }
+        catch (Exception) { reason = "未知"; }
+        string message = $"Present 0x{unchecked((uint)presentResult):X8}，GetDeviceRemovedReason {reason}";
+        try { DeviceRemoved?.Invoke(message); } catch (Exception) { /* reporting must not mask the failure */ }
     }
 
     /// <summary>Takes the same lock as every other access (audit C-22): the most destructive operation

@@ -293,7 +293,7 @@ internal static class DocumentTests
         if (!first.Registered)
         {
             Require(failures == 1, "Registration failure was not reported.");
-            Console.WriteLine("SKIP: native hotkey ownership test (Shift+Esc already owned externally; failure feedback verified)");
+            Console.WriteLine("SKIP: native hotkey ownership test (F12 already owned externally; failure feedback verified)");
             return;
         }
         second.Configure(true);
@@ -874,15 +874,15 @@ internal static class DocumentTests
             text.Focus();
             outputState.AcceptDeviceCastRequest();
             var command = typeof(MainWindow).GetMethod("ProcessCmdKey", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
-            object[] arguments = { new Message(), Keys.Shift | Keys.Escape };
+            object[] arguments = { new Message(), Keys.Escape };
             Require((bool)command.Invoke(window, arguments)! && outputState.State == OutputState.Idle,
-                "Shift+Esc did not stop output with a text box focused.");
+                "Esc (急停 本程序内) did not stop output with a text box focused.");
             Pump(1200);
             Require(outputState.State == OutputState.Idle && preview.State == PlaybackChannelState.Idle && preview.CurrentFile == null,
                 "An automatic timer restarted playback after emergency stop.");
             window.Controls.Remove(text);
         }
-        Console.WriteLine("PASS: Shift+Esc stops output with text-box focus and leaves it idle");
+        Console.WriteLine("PASS: Esc (急停 本程序内) stops output with text-box focus and leaves it idle");
         var hotkey = (EmergencyStopHotkey)typeof(MainWindow).GetField("_emergencyHotkey", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
         hotkey.Configure(true);
         if (hotkey.Registered)

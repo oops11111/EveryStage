@@ -9,7 +9,7 @@ namespace EveryStage.Terminal.Data;
 /// </summary>
 public sealed class AppSettings
 {
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 4;
 
     /// <summary>Persisted configuration schema. A missing value denotes the original unversioned
     /// format and is migrated by <see cref="SettingsStore"/> when loaded.</summary>
@@ -25,8 +25,17 @@ public sealed class AppSettings
     /// while running does not retroactively flip the switch that's already on screen, since
     /// "default" and "current" are different things.</summary>
     public bool CastSwitchDefaultOn { get; set; } = true;
-    /// <summary>Register Shift+Esc across applications. Off by default; local emergency stop remains available.</summary>
-    public bool GlobalEmergencyStopEnabled { get; set; }
+    /// <summary>Register the global 急停 key (<see cref="HotkeyAction.EmergencyStopGlobal"/>, F12 by default)
+    /// across applications. On by default (schema 4 turns it on for older settings); when Windows refuses
+    /// the key it still works inside EveryStage.</summary>
+    public bool GlobalEmergencyStopEnabled { get; set; } = true;
+
+    /// <summary>Operator shortcuts (设置 · 热键) as System.Windows.Forms.Keys values. Missing entries fall
+    /// back to <see cref="HotkeyDefaults.Codes"/>; the UI reads them through <c>Hotkeys.HotkeyFor</c>.</summary>
+    public Dictionary<HotkeyAction, int> Hotkeys { get; set; } = new(HotkeyDefaults.Codes);
+
+    public int HotkeyCode(HotkeyAction action) =>
+        Hotkeys != null && Hotkeys.TryGetValue(action, out var code) ? code : HotkeyDefaults.Codes[action];
 
     // --- 显示 ---
 
@@ -83,7 +92,12 @@ public sealed class AppSettings
     public bool TransitionOnBlackScreen { get; set; }
 
     /// <summary>A copy to change and save (every field, so a new setting can never be dropped on save).</summary>
-    public AppSettings Clone() => (AppSettings)MemberwiseClone();
+    public AppSettings Clone()
+    {
+        var copy = (AppSettings)MemberwiseClone();
+        copy.Hotkeys = new Dictionary<HotkeyAction, int>(Hotkeys ?? new Dictionary<HotkeyAction, int>());
+        return copy;
+    }
 }
 
 /// <summary>PPT 翻页过场: 渐隐渐显 / 翻页效果 / 雨点浸润.</summary>

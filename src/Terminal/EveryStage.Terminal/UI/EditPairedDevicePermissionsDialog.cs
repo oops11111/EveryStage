@@ -16,21 +16,22 @@ namespace EveryStage.Terminal.UI;
 public sealed class EditPairedDevicePermissionsDialog : Form
 {
     private readonly CheckBox _allowCastCheckbox;
-    private readonly CheckBox _allowMonitorCheckbox;
-    private readonly CheckBox _trustCheckbox;
 
     public bool AllowCast => _allowCastCheckbox.Checked;
-    public bool AllowMonitor => _allowMonitorCheckbox.Checked;
-    public TrustMode TrustMode => _trustCheckbox.Checked ? TrustMode.Trusted : TrustMode.RequireManualConfirmation;
+    // Only 「允许投放」 is offered (product decision); 监看 and 信任 keep whatever was stored.
+    public bool AllowMonitor { get; }
+    public TrustMode TrustMode { get; }
 
     public EditPairedDevicePermissionsDialog(PairedDevice device)
     {
         Text = $"编辑权限 — {device.DeviceName}";
+        AllowMonitor = device.AllowMonitor;
+        TrustMode = device.TrustMode;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.CenterParent;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(320, 196);
+        ClientSize = new Size(320, 124);
 
         var infoLabel = new Label
         {
@@ -44,40 +45,15 @@ public sealed class EditPairedDevicePermissionsDialog : Form
             Checked = device.AllowCast,
             Bounds = new Rectangle(12, 52, 296, 24),
         };
-        _allowMonitorCheckbox = new CheckBox
-        {
-            Text = "允许被监看（该设备可以查看本终端机状态）",
-            Checked = device.AllowMonitor,
-            Bounds = new Rectangle(12, 78, 296, 24),
-        };
-        // Honest, same spirit as AudioPropertiesDialog's "（当前是占位：...）" labels — 监看
-        // (remote-viewing this Terminal's state) has no actual implementation anywhere in this
-        // repo yet, only this permission flag being collected/stored/displayed (PLANNING.md §7's
-        // "权限分离"). Toggling this checkbox changes nothing observable today; it exists so the
-        // stored flag is ready for whenever that feature gets built, without silently misleading
-        // whoever's editing this dialog into thinking it already does something.
-        var monitorDisclaimer = new Label
-        {
-            Text = "（监看功能本身尚未实现，此开关暂无实际效果）",
-            Bounds = new Rectangle(28, 102, 280, 16),
-        };
-        ModernUi.SetForegroundRole(monitorDisclaimer, UiForegroundRole.Muted);
-        _trustCheckbox = new CheckBox
-        {
-            Text = "标记为信任设备（自动接受尚未实现，每次仍需确认）", // honest label, audit B-14
-            Checked = device.TrustMode == TrustMode.Trusted,
-            Bounds = new Rectangle(12, 120, 296, 24),
-        };
-
-        var saveButton = new Button { Text = "保存", Bounds = new Rectangle(120, 154, 88, 28), DialogResult = DialogResult.OK };
-        var cancelButton = new Button { Text = "取消", Bounds = new Rectangle(216, 154, 88, 28), DialogResult = DialogResult.Cancel };
+        var saveButton = new Button { Text = "保存", Bounds = new Rectangle(120, 86, 88, 28), DialogResult = DialogResult.OK };
+        var cancelButton = new Button { Text = "取消", Bounds = new Rectangle(216, 86, 88, 28), DialogResult = DialogResult.Cancel };
 
         AcceptButton = saveButton;
         CancelButton = cancelButton;
 
         Controls.AddRange(new Control[]
         {
-            infoLabel, _allowCastCheckbox, _allowMonitorCheckbox, monitorDisclaimer, _trustCheckbox, saveButton, cancelButton,
+            infoLabel, _allowCastCheckbox, saveButton, cancelButton,
         });
         ModernUi.StyleDialog(this);
     }

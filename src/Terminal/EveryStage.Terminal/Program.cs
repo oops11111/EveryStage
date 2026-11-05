@@ -192,6 +192,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _repository = repository;
         _crashLogger = crashLogger;
         _stateMachine.SubscriberFailed = (source, ex) => _crashLogger.LogUnhandledException(source, ex);
+        VideoSurface.DeviceRemoved += OnGpuDeviceRemoved;
         _uiContext = SynchronizationContext.Current
             ?? throw new InvalidOperationException("Expected Program.Main to have installed a WindowsFormsSynchronizationContext first.");
 
@@ -259,6 +260,13 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
         var library = new FileLibraryStore();
         _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity, _connectionLog);
+        // Unpairing a device (or taking away 「允许投放」) while it casts stops that cast immediately and
+        // falls back to what was on screen before (P0-D3); it never needs the Caster's cooperation.
+        _mainWindow.DeviceAccessRevoked += deviceId =>
+        {
+            _discovery.RevokeActiveCast(deviceId);
+            _deviceCastController?.StopForDevice(deviceId);
+        };
         _deviceCastController = new DeviceCastController(
             _mainWindow, _identity.DeviceId, _discovery, _connectionLog, _stateMachine,
             () => _overlay, () => _videoSurface, () => _playback, audioOutputFactory: _settingsStore.OpenAudioOutput,
@@ -561,8 +569,23 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _videoSurface.Resize(updated.Bounds.Width, updated.Bounds.Height);
     }
 
+    /// <summary>DXGI device removed / reset while presenting (driver reset, TDR, GPU unplugged): switch
+    /// the big screen to safe black — local media stops (the image layer shows black), a device cast is
+    /// taken off air — log GetDeviceRemovedReason and tell the operator. No automatic rebuild yet.</summary>
+    private void OnGpuDeviceRemoved(string reason)
+    {
+        _uiContext.Post(_ =>
+        {
+            _crashLogger.LogUnhandledException("VideoSurface.DeviceRemoved", new InvalidOperationException($"GPU device removed: {reason}"));
+            if (_stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.DeviceCast) _stateMachine.Disconnect();
+            _playback?.Stop();
+            _mainWindow.ShowStartupProblem($"显卡设备已丢失（{reason}），大屏已切为黑场。请检查显卡驱动或连接后重新启动 EveryStage。");
+        }, null);
+    }
+
     private void OnExitRequested()
     {
+        VideoSurface.DeviceRemoved -= OnGpuDeviceRemoved;
         _repository.Save(_store);
         _stateMachine.Disconnect(); // ensure audio is restored / overlay hidden before teardown.
 

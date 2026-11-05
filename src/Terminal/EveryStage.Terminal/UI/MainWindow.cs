@@ -85,6 +85,8 @@ public sealed class MainWindow : GradientForm
 
     public void ClearPairingRequest(string requestId) => _devicesPanel.ClearPairingRequest(requestId);
     public Control DeviceCastVideoHost => _previewDock.DeviceVideoHost;
+    /// <summary>设备页: a device was unpaired or lost 「允许投放」 (stop its cast now if it is casting).</summary>
+    public event Action<Guid>? DeviceAccessRevoked;
     public event Action? DeviceTakeRequested;
     public event Action? DeviceRevertRequested;
     public event Action<int, int>? DeviceVideoHostResized;
@@ -231,6 +233,7 @@ public sealed class MainWindow : GradientForm
         _musicBar.DragDrop += (_, e) => _musicDrawer.OpenAndAdd(MusicDrawer.AudioPaths(e.Data));
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog, identity.DeviceName, stateMachine);
+        _devicesPanel.DeviceAccessRevoked += id => DeviceAccessRevoked?.Invoke(id);
         _activitiesPanel = new ActivitiesPanel(
             scenarioStore, scenarioRepository, library, _preview, _fileOpLog, stateMachine)
         {
@@ -283,7 +286,7 @@ public sealed class MainWindow : GradientForm
         _toastStack = new ToastStack { RightInset = _monitorColumn.Width };
         Controls.Add(_toastStack);
         _emergencyHotkey = new EmergencyStopHotkey(StopProgramOutput, message => _toastStack.Show(message, ToastSeverity.Critical));
-        _emergencyHotkey.Configure(settingsStore.Current.GlobalEmergencyStopEnabled);
+        _emergencyHotkey.Configure(settingsStore.Current.GlobalEmergencyStopEnabled, settingsStore.Current.HotkeyFor(HotkeyAction.EmergencyStopGlobal));
         if (_playback != null) _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
 
         // See PlaybackEngine.PlaybackDeclinedByCastSwitch's own doc comment (README risk #9): a
@@ -468,11 +471,33 @@ public sealed class MainWindow : GradientForm
         }
     }
 
-    /// <summary>"投到屏幕" on a file: show it in Preview and put it on the extended display.</summary>
+    /// <summary>Double-click / Enter on a file (B1: straight to the big screen): Program plays it from
+    /// the start; Preview shows the same file and is paused in the same step, so the operator never
+    /// hears or watches it twice. Only the dock's 「投到大屏」 continues from the Preview position.</summary>
     private void TakeFileToProgram(MediaFile file)
     {
         if (!ReferenceEquals(_preview.CurrentFile, file)) _preview.RequestPlay(file, PlaybackTrigger.ManualSkip);
-        TakeSnapshot(new PlaybackEngine.Snapshot(file, null, -1, TimeSpan.Zero, false));
+        if (TakeSnapshot(new PlaybackEngine.Snapshot(file, null, -1, TimeSpan.Zero, false))) PausePreview();
+    }
+
+    /// <summary>Pause Preview right after something went on air (see <see cref="TakeFileToProgram"/>).</summary>
+    private void PausePreview()
+    {
+        if (_preview.State is not PlaybackChannelState.Loading)
+        {
+            if (_preview.CanPause && !_preview.IsPaused) _preview.Pause();
+            return;
+        }
+        // Still loading: pause as soon as it starts — unless Preview has moved on to something else.
+        var file = _preview.CurrentFile;
+        void OnState(PlaybackChannelState state)
+        {
+            if (InvokeRequired) { BeginInvoke(() => OnState(state)); return; }
+            if (state == PlaybackChannelState.Loading) return;
+            _preview.StateChanged -= OnState;
+            if (state == PlaybackChannelState.Playing && ReferenceEquals(_preview.CurrentFile, file) && _preview.CanPause) _preview.Pause();
+        }
+        _preview.StateChanged += OnState;
     }
 
     /// <summary>流程 「下一项 ▶」 / double-click / space: put this item on the big screen, continuing the
@@ -486,7 +511,7 @@ public sealed class MainWindow : GradientForm
             EnterSection(activity);
             return;
         }
-        TakeSnapshot(new PlaybackEngine.Snapshot(activity.Files[index], activity, index, TimeSpan.Zero, false));
+        if (TakeSnapshot(new PlaybackEngine.Snapshot(activity.Files[index], activity, index, TimeSpan.Zero, false))) PausePreview();
     }
 
     private Activity? _liveSection;
@@ -536,7 +561,7 @@ public sealed class MainWindow : GradientForm
     {
         if (_preview.State is PlaybackChannelState.Loading or PlaybackChannelState.Failed || _preview.CaptureSnapshot() is not { } snapshot)
         {
-            _toastStack.Show("预览中没有可以投到屏幕的内容。先在文件或活动里双击一个文件预览。", ToastSeverity.Warning);
+            _toastStack.Show("预览中没有可以投到屏幕的内容。单击文件在预览中打开；双击文件则直接上屏。", ToastSeverity.Warning);
             return;
         }
         if (TakeSnapshot(snapshot) && _preview.CanPause) _preview.Pause();
@@ -573,14 +598,44 @@ public sealed class MainWindow : GradientForm
         _liveSection = null;
     }
 
+    /// <summary>设置 · 热键 inside the main window. The global 急停 key is handled by
+    /// <see cref="_emergencyHotkey"/> (also inside dialogs). 急停 (本程序内, Esc) first closes an open
+    /// 歌单 drawer; plain-letter and Ctrl+arrow keys are left to a text box that has focus.</summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        if (keyData == (Keys.Shift | Keys.Escape))
+        var settings = _settingsStore.Current;
+        if (keyData == settings.HotkeyFor(HotkeyAction.EmergencyStopLocal))
         {
-            StopProgramOutput();
+            if (keyData == Keys.Escape && _musicDrawer.IsOpen) _musicDrawer.Close();
+            else StopProgramOutput();
             return true;
         }
+        bool typing = FocusedControl() is TextBoxBase or ComboBox { DropDownStyle: not ComboBoxStyle.DropDownList } or NumericUpDown;
+        bool plainOrArrow = (keyData & Keys.Modifiers) is Keys.None or Keys.Shift
+            || (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End;
+        if (!(typing && plainOrArrow))
+        {
+            if (keyData == settings.HotkeyFor(HotkeyAction.Take)) { TakePreviewToProgram(); return true; }
+            if (keyData == settings.HotkeyFor(HotkeyAction.PauseProgram)) { ToggleProgramPause(); return true; }
+            if (keyData == settings.HotkeyFor(HotkeyAction.NextItem)) { _activitiesPanel.RunNext(); return true; }
+            if (keyData == settings.HotkeyFor(HotkeyAction.PreviousItem)) { _activitiesPanel.RunPrevious(); return true; }
+        }
         return base.ProcessCmdKey(ref msg, keyData);
+
+        Control? FocusedControl()
+        {
+            Control? active = ActiveControl;
+            while (active is ContainerControl { ActiveControl: { } inner }) active = inner;
+            return active;
+        }
+    }
+
+    /// <summary>暂停 / 继续大屏 (hotkey; same as the dock's 「暂停大屏」).</summary>
+    private void ToggleProgramPause()
+    {
+        if (_playback == null || _stateMachine.State != OutputState.Active || _stateMachine.Source != ProgramSource.LocalMedia) return;
+        if (_playback.IsPaused || _playback.IsCompleted) _playback.Resume();
+        else if (_playback.CanPause) _playback.Pause();
     }
 
     private void RemoveFailedPreviewFileFromLibrary(MediaFile file)
@@ -597,7 +652,7 @@ public sealed class MainWindow : GradientForm
     private void OnSettingsChanged(AppSettings settings)
     {
         ApplyTheme(settings.Theme);
-        _emergencyHotkey.Configure(settings.GlobalEmergencyStopEnabled);
+        _emergencyHotkey.Configure(settings.GlobalEmergencyStopEnabled, settings.HotkeyFor(HotkeyAction.EmergencyStopGlobal));
     }
 
     private void OnAudioOutputFallback(string message)

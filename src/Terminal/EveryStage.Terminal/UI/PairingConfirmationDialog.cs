@@ -11,13 +11,13 @@ namespace EveryStage.Terminal.UI;
 public sealed class PairingConfirmationDialog : Form
 {
     private readonly CheckBox _allowCastCheckbox;
-    private readonly CheckBox _allowMonitorCheckbox;
-    private readonly CheckBox _trustCheckbox;
 
     public bool Accepted { get; private set; }
     public bool AllowCast => _allowCastCheckbox.Checked;
-    public bool AllowMonitor => _allowMonitorCheckbox.Checked;
-    public TrustMode TrustMode => _trustCheckbox.Checked ? TrustMode.Trusted : TrustMode.RequireManualConfirmation;
+    // 监看 and 信任设备 are not offered (product decision: 只留「允许投放」; nothing implements them, and
+    // trust never puts a device straight on the big screen). New pairings store the safe values.
+    public bool AllowMonitor => false;
+    public TrustMode TrustMode => TrustMode.RequireManualConfirmation;
 
     public PairingConfirmationDialog(PairingRequest request)
     {
@@ -26,7 +26,7 @@ public sealed class PairingConfirmationDialog : Form
         StartPosition = FormStartPosition.Manual;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(380, 292);
+        ClientSize = new Size(380, 232);
         TopMost = true;
 
         string code = request.VerificationCode.Length == 6
@@ -60,37 +60,15 @@ public sealed class PairingConfirmationDialog : Form
             Text = "允许被投放（该设备可以向本终端机投屏）",
             Bounds = new Rectangle(12, 166, 356, 24),
         };
-        _allowMonitorCheckbox = new CheckBox
-        {
-            Text = "允许被监看（该设备可以查看本终端机状态）",
-            Bounds = new Rectangle(12, 192, 356, 24),
-        };
-        // Same honest disclaimer as EditPairedDevicePermissionsDialog (which lets this same flag be
-        // revised later) — 监看 has no actual implementation anywhere in this repo yet, only this
-        // permission flag being collected/stored/displayed.
-        var monitorDisclaimer = new Label
-        {
-            Text = "（监看功能本身尚未实现，此开关暂无实际效果）",
-            Bounds = new Rectangle(28, 216, 340, 16),
-        };
-        ModernUi.SetForegroundRole(monitorDisclaimer, UiForegroundRole.Muted);
-        _trustCheckbox = new CheckBox
-        {
-            // Honest label (audit B-14): nothing auto-accepts on this flag yet — and it must not until the
-            // requester's identity can be verified (a first-contact DeviceId is whatever the sender claims).
-            Text = "标记为信任设备（自动接受尚未实现，每次仍需确认）",
-            Bounds = new Rectangle(12, 234, 356, 24),
-        };
-
-        var acceptButton = new Button { Text = "接受", Bounds = new Rectangle(180, 258, 88, 28), DialogResult = DialogResult.OK };
-        var declineButton = new Button { Text = "拒绝", Bounds = new Rectangle(280, 258, 88, 28), DialogResult = DialogResult.Cancel };
+        var acceptButton = new Button { Text = "接受", Bounds = new Rectangle(180, 198, 88, 28), DialogResult = DialogResult.OK };
+        var declineButton = new Button { Text = "拒绝", Bounds = new Rectangle(280, 198, 88, 28), DialogResult = DialogResult.Cancel };
 
         AcceptButton = acceptButton;
         CancelButton = declineButton;
 
         Controls.AddRange(new Control[]
         {
-            codeLabel, codeHint, infoLabel, _allowCastCheckbox, _allowMonitorCheckbox, monitorDisclaimer, _trustCheckbox, acceptButton, declineButton,
+            codeLabel, codeHint, infoLabel, _allowCastCheckbox, acceptButton, declineButton,
         });
         ModernUi.StyleDialog(this);
 

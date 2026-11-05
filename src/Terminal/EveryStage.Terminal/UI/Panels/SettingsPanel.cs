@@ -106,24 +106,7 @@ public sealed class SettingsPanel : UserControl
         _castSwitchDefaultCheckbox = new CheckBox { Text = "开启", AutoSize = true, Checked = settings.CastSwitchDefaultOn };
         Section("通用").AddRow("启动时投屏开关默认开启", "只设置终端机启动时的默认值，不改变当前开关（当前开关在「设备」页和托盘菜单）",
             "重启后生效", UiForegroundRole.Muted, _castSwitchDefaultCheckbox);
-        var globalEmergency = new CheckBox { Text = "启用", AutoSize = true, Checked = settings.GlobalEmergencyStopEnabled, AccessibleName = "全局急停快捷键 Shift+Esc" };
-        Section("急停快捷键").AddRow("Shift+Esc 全局急停", "默认关闭。开启后即使其他应用获得焦点也能停止输出；应用内及本应用对话框中始终可用。",
-            "即时生效", UiForegroundRole.Accent, globalEmergency);
-        bool revertingEmergency = false;
-        globalEmergency.CheckedChanged += (_, _) =>
-        {
-            if (revertingEmergency) return;
-            var updated = _settingsStore.Current.Clone();
-            updated.GlobalEmergencyStopEnabled = globalEmergency.Checked;
-            try { _settingsStore.Save(updated); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                revertingEmergency = true;
-                try { globalEmergency.Checked = _settingsStore.Current.GlobalEmergencyStopEnabled; }
-                finally { revertingEmergency = false; }
-                MessageBox.Show(this, $"急停设置未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-        };
+        BuildHotkeySection(Section, settings);
 
         // --- 输出与播放 ---
         _monitorComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 300 };
@@ -248,6 +231,87 @@ public sealed class SettingsPanel : UserControl
 
     /// <summary>One settings section: a rounded surface card with a title (and optional effect tag),
     /// then rows / blocks stacked top to bottom. Laid out by hand in <see cref="FitToWidth"/>.</summary>
+    /// <summary>设置 · 热键: the minimum show set, each recorded by pressing it; conflicts are refused,
+    /// every change is saved at once.</summary>
+    private void BuildHotkeySection(Func<string, string?, UiForegroundRole, SettingsSection> section, AppSettings settings)
+    {
+        var hotkeys = section("热键", "即时生效", UiForegroundRole.Accent);
+        var globalEmergency = new CheckBox { Text = "全局注册", AutoSize = true, Checked = settings.GlobalEmergencyStopEnabled, AccessibleName = "全局急停热键" };
+        var buttons = new Dictionary<HotkeyAction, HotkeyCaptureButton>();
+        bool reverting = false;
+
+        bool SaveWith(Action<AppSettings> change, string what)
+        {
+            var updated = _settingsStore.Current.Clone();
+            change(updated);
+            try { _settingsStore.Save(updated); return true; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                MessageBox.Show(this, $"{what}未保存：{DataDirectory.Describe(ex)}", "保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return false;
+            }
+        }
+
+        void Assign(HotkeyAction action, Keys keys)
+        {
+            var button = buttons[action];
+            if (!Hotkeys.IsAssignable(keys))
+            {
+                MessageBox.Show(this, $"{Hotkeys.Format(keys)} 不能用作热键（Tab、Space、Delete、退格和单独的修饰键保留给系统与编辑）。", "热键", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            var current = _settingsStore.Current;
+            var map = Enum.GetValues<HotkeyAction>().ToDictionary(a => a, current.HotkeyFor);
+            if (Hotkeys.ConflictWith(map, action, keys) is { } other)
+            {
+                MessageBox.Show(this, $"{Hotkeys.Format(keys)} 已被「{Hotkeys.Label(other)}」使用，未修改。请先给那一项换一个键。", "热键冲突", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (SaveWith(s => s.Hotkeys[action] = (int)keys, "热键")) button.Keys = keys;
+        }
+
+        foreach (var action in Enum.GetValues<HotkeyAction>())
+        {
+            var button = new HotkeyCaptureButton(settings.HotkeyFor(action)) { AccessibleName = Hotkeys.Label(action) };
+            buttons[action] = button;
+            button.KeyCaptured += keys => Assign(action, keys);
+            var reset = new RoundedActionButton { Text = "恢复默认", Width = 84, Height = 30 };
+            ModernUi.StyleButton(reset);
+            reset.Click += (_, _) => Assign(action, Hotkeys.Defaults[action]);
+            string description = action switch
+            {
+                HotkeyAction.EmergencyStopGlobal => "停止输出：大屏断开、预览与背景音乐停止，没有撤销。勾选「全局注册」后，其他程序在前台时也有效；被其他程序占用时只在本程序内有效。",
+                HotkeyAction.EmergencyStopLocal => "EveryStage 窗口在前台时停止输出；歌单面板展开时先收起面板。",
+                HotkeyAction.Take => "把预览中的内容（含播放位置）投到大屏。",
+                HotkeyAction.PauseProgram => "暂停或继续大屏上的本地媒体。在输入框里打字时不生效。",
+                HotkeyAction.PreviousItem => "流程：回到当前环节的上一项。",
+                _ => "流程：当前环节的下一项；环节结束后需要先选中下一个环节。",
+            };
+            if (action == HotkeyAction.EmergencyStopGlobal)
+                hotkeys.AddRow(Hotkeys.Label(action), description, null, null, button, globalEmergency, reset);
+            else
+                hotkeys.AddRow(Hotkeys.Label(action), description, null, null, button, reset);
+        }
+        globalEmergency.CheckedChanged += (_, _) =>
+        {
+            if (reverting) return;
+            if (SaveWith(s => s.GlobalEmergencyStopEnabled = globalEmergency.Checked, "急停设置")) return;
+            reverting = true;
+            try { globalEmergency.Checked = _settingsStore.Current.GlobalEmergencyStopEnabled; }
+            finally { reverting = false; }
+        };
+        var resetAll = new RoundedActionButton { Text = "全部恢复默认", Width = 120, Height = 30 };
+        ModernUi.StyleButton(resetAll);
+        resetAll.Click += (_, _) =>
+        {
+            if (!SaveWith(s => { s.Hotkeys = new(HotkeyDefaults.Codes); s.GlobalEmergencyStopEnabled = true; }, "热键")) return;
+            foreach (var (action, button) in buttons) button.Keys = Hotkeys.Defaults[action];
+            globalEmergency.Checked = true;
+        };
+        hotkeys.AddNote("Space（空格）按页面区分：在「流程」页是下一项，其他页面不处理；不能改。PDF 翻页和音频播放条自己的按键也固定，不在此列。");
+        hotkeys.AddButtons(resetAll);
+    }
+
     private sealed class SettingsSection : Panel
     {
         private readonly string _title;
