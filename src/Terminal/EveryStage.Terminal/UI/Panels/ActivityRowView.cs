@@ -507,6 +507,7 @@ internal sealed class ActivityRowView : Control
             CompletionAction.Loop => "循环",
             CompletionAction.HoldOnLastFrame => "停留",
             CompletionAction.BlackScreen => "切黑",
+            CompletionAction.MainKeyVisual => "回主 KV",
             _ => "下一项",
         };
     }

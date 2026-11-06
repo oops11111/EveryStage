@@ -434,9 +434,9 @@ internal static class DocumentTests
         requestCard.Size = new Size(400, 96);
         requestType.GetMethod("Show", new[] { typeof(string), typeof(string) })!.Invoke(requestCard, new object[] { "测试设备", "123 456" });
         using var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList };
-        using var infoToast = new ToastNotification("已上屏", ToastSeverity.Info);
-        using var warningToast = new ToastNotification("提示", ToastSeverity.Warning);
-        using var criticalToast = new ToastNotification("错误", ToastSeverity.Critical);
+        using var infoToast = new ToastNotification("已上屏", ToastSeverity.Info, null, 300, 50);
+        using var warningToast = new ToastNotification("提示", ToastSeverity.Warning, null, 300, 50);
+        using var criticalToast = new ToastNotification("错误", ToastSeverity.Critical, null, 300, 50);
         static Panel ToastStripe(ToastNotification toast) => toast.Controls.OfType<Panel>().Single();
         combo.Items.Add("测试");
         combo.SelectedIndex = 0;
@@ -930,7 +930,6 @@ internal static class DocumentTests
         Require(ModernUi.ApplyForegroundRole(programStatusLabel, UiPalette.For(AppTheme.Dark))
             && programStatusLabel.ForeColor == UiPalette.For(AppTheme.Dark).Text,
             $"Live program did not return to its text role (output={outputState.State}, source={outputState.Source}, engine={feedbackProgram.State}, label={programStatusLabel.Text}).");
-        TestFloatingPreviewTheme(window, feedbackProgram, outputState, dir);
         var dock = (SharedPreviewDock)typeof(MainWindow).GetField("_previewDock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
         Require(WaitFor(() => typeof(SharedPreviewDock).GetField("_flashingCard", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock) == null, 2000),
             "On-air flash did not finish.");
@@ -1101,72 +1100,6 @@ internal static class DocumentTests
         TestSlideTransitions();
     }
 
-    private static void TestFloatingPreviewTheme(MainWindow owner, PlaybackEngine playback, OutputStateMachine machine, string directory)
-    {
-        var probe = ThemeManager.HighContrastProbe;
-        using var floating = new FloatingPreviewWindow(playback, machine, new SettingsStore(Path.Combine(directory, "floating-settings.json")));
-        floating.Opacity = 0;
-        floating.Location = new Point(-32000, -32000);
-        floating.ShowForActiveOutput();
-        Pump(150);
-        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var pin = (Button)typeof(FloatingPreviewWindow).GetField("_pinButton", flags)!.GetValue(floating)!;
-        var thumbnail = (PictureBox)typeof(FloatingPreviewWindow).GetField("_thumbnail", flags)!.GetValue(floating)!;
-        var save = (Button)typeof(FloatingPreviewWindow).GetField("_saveButton", flags)!.GetValue(floating)!;
-        var volume = (Label)typeof(FloatingPreviewWindow).GetField("_volumeLabel", flags)!.GetValue(floating)!;
-        var position = (Label)typeof(FloatingPreviewWindow).GetField("_positionLabel", flags)!.GetValue(floating)!;
-        var status = (Label)typeof(MainWindow).GetField("_statusLabel", flags)!.GetValue(owner)!;
-        var click = typeof(Button).GetMethod("OnClick", flags)!;
-        try
-        {
-            Require(save is RoundedActionButton && !save.Enabled, "Floating preview did not use a visible disabled state for image save.");
-            ThemeManager.HighContrastProbe = () => false;
-            foreach (var theme in new[] { AppTheme.Light, AppTheme.Tech, AppTheme.Dark })
-            {
-                ThemeManager.Apply(owner, theme);
-                floating.BackColor = floating.ForeColor = volume.ForeColor = position.ForeColor = Color.Magenta;
-                ThemeManager.Apply(floating, theme);
-                var palette = UiPalette.For(theme);
-                Require(floating.BackColor == palette.Background && floating.ForeColor == palette.Text
-                    && volume.ForeColor == palette.Text && position.ForeColor == palette.Text,
-                    $"Floating preview labels or background lost their theme roles in {theme}.");
-                Require(floating.TopMost && pin.BackColor == palette.AccentFill && pin.ForeColor == palette.AccentFillForeground
-                    && pin.Font.FontFamily.Name == "Segoe MDL2 Assets" && pin.Text == "\uE840",
-                    $"Pinned floating preview lost its selected role in {theme}.");
-                Require(status.ForeColor == palette.Danger, $"On-air status lost its danger role in {theme}.");
-                Require(thumbnail.BackColor == Color.Black, "Floating preview thumbnail did not keep its black media background.");
-                if (theme == AppTheme.Light)
-                {
-                    string output = Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots");
-                    Directory.CreateDirectory(output);
-                    using var screenshot = Capture(floating);
-                    screenshot.Save(Path.Combine(output, "floating-preview-light.png"), ImageFormat.Png);
-                }
-            }
-            click.Invoke(pin, new object[] { EventArgs.Empty });
-            ThemeManager.Apply(owner, AppTheme.Light);
-            ThemeManager.Apply(floating, AppTheme.Light);
-            Require(!floating.TopMost && pin.BackColor == UiPalette.For(AppTheme.Light).Surface && pin.Text == "\uE718",
-                "Unpinned floating preview did not retain its neutral role.");
-            click.Invoke(pin, new object[] { EventArgs.Empty });
-            ThemeManager.HighContrastProbe = () => true;
-            ThemeManager.Apply(owner, AppTheme.Tech);
-            ThemeManager.Apply(floating, AppTheme.Tech);
-            Require(floating.TopMost && pin.BackColor == SystemColors.Highlight && pin.ForeColor == SystemColors.HighlightText
-                && thumbnail.BackColor == Color.Black && status.ForeColor == SystemColors.WindowText
-                && floating.BackColor == SystemColors.Window && floating.ForeColor == SystemColors.WindowText
-                && volume.ForeColor == SystemColors.WindowText && position.ForeColor == SystemColors.WindowText,
-                "Floating preview or on-air status ignored system high contrast or changed the media background.");
-            using var contrast = Capture(floating);
-            contrast.Save(Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots", "floating-preview-simulated-highcontrast.png"), ImageFormat.Png);
-        }
-        finally
-        {
-            ThemeManager.HighContrastProbe = probe;
-            typeof(MainWindow).GetMethod("ApplyTheme", flags)!.Invoke(owner, new object[] { AppTheme.Dark });
-        }
-    }
-
     private static Control? FindByTypeName(Control root, string name)
     {
         foreach (Control child in root.Controls)
@@ -1296,6 +1229,19 @@ internal static class DocumentTests
                 "A window dragged entirely off screen was not brought back within reach.");
             window.Location = new Point(area.Left + 20, area.Top + 20);
             Console.WriteLine("PASS: window may stay partly off screen; an unreachable title bar is brought back");
+        }
+        // 第二十一轮 notices: a fixed three-slot area in the 监看 column; a fourth drops the oldest; no ON AIR bar.
+        {
+            var stack = (ToastStack)type.GetField("_toastStack", flags)!.GetValue(window)!;
+            int areaHeight = stack.Height;
+            for (int i = 1; i <= 4; i++) stack.Show($"通知 {i}", ToastSeverity.Info);
+            Pump(50);
+            Require(stack.Notices.Count == ToastStack.MaxVisible && stack.Notices[0].Message == "通知 2" && stack.Height == areaHeight
+                && stack.Parent == type.GetField("_monitorColumn", flags)!.GetValue(window),
+                $"Notices: {stack.Notices.Count} shown, height {stack.Height} (area {areaHeight}), parent {stack.Parent?.GetType().Name}.");
+            Require(WaitFor(() => stack.Notices.Count == 0, 5000), "Notices did not close by themselves after 3 s.");
+            Require(type.GetField("_onAir", flags) == null, "The ON AIR bar is still there.");
+            Console.WriteLine("PASS: notices sit in the right column (max 3, fixed height, close after 3 s); no ON AIR bar");
         }
         string[] pages = { "_filesPanel", "_activitiesPanel", "_devicesPanel", "_settingsPanel" };
         foreach (var size in new[] { new Size(1440, 900), new Size(1024, 640) })

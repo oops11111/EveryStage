@@ -9,7 +9,7 @@ namespace EveryStage.Terminal.Data;
 /// </summary>
 public sealed class AppSettings
 {
-    public const int CurrentSchemaVersion = 4;
+    public const int CurrentSchemaVersion = 5;
 
     /// <summary>Persisted configuration schema. A missing value denotes the original unversioned
     /// format and is migrated by <see cref="SettingsStore"/> when loaded.</summary>
@@ -73,6 +73,17 @@ public sealed class AppSettings
     /// <summary>「播完后」 for newly imported files (定格 by default). Existing files and scenarios keep their
     /// own value (migration C); each file can still be changed in its properties.</summary>
     public CompletionAction DefaultCompletionAction { get; set; } = CompletionAction.HoldOnLastFrame;
+
+    /// <summary>主 KV (key visual): the image 「播完回主 KV」 shows on the big screen. Null: black.</summary>
+    public string? MainKeyVisualPath { get; set; }
+
+    /// <summary>上屏淡入: when the big screen goes on air, fade it in from black over this long
+    /// (0 = cut, the default; at most 2000 ms). Item transitions are separate (过场).</summary>
+    public int GoLiveFadeMilliseconds { get; set; }
+
+    /// <summary>单击即上屏: a single click on a file (文件库) or item (流程) puts it on the big screen
+    /// instead of in 预览 (PVW). Off by default; turning it on asks first.</summary>
+    public bool ClickTakesToAir { get; set; }
 
     // --- 过场 ---
 

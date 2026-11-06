@@ -13,7 +13,7 @@ public static class Hotkeys
         HotkeyAction.EmergencyStopGlobal => "急停（全局，其他程序在前台也有效）",
         HotkeyAction.EmergencyStopLocal => "急停（本程序内）",
         HotkeyAction.Take => "投到大屏（Take）",
-        HotkeyAction.PauseProgram => "暂停 / 继续大屏",
+        HotkeyAction.PauseProgram => "播放 / 暂停",
         HotkeyAction.PreviousItem => "上一项（当前环节内）",
         HotkeyAction.NextItem => "下一项（当前环节内）",
         _ => action.ToString(),
@@ -50,7 +50,7 @@ public static class Hotkeys
     {
         var key = keys & Keys.KeyCode;
         return key is not (Keys.None or Keys.ControlKey or Keys.ShiftKey or Keys.Menu or Keys.LWin or Keys.RWin
-            or Keys.Tab or Keys.Back or Keys.Delete or Keys.Space or Keys.Apps);
+            or Keys.Tab or Keys.Back or Keys.Delete or Keys.Apps);
     }
 
     /// <summary>The action already using <paramref name="keys"/> (all hotkeys share one scope), if any.</summary>

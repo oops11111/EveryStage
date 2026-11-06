@@ -33,7 +33,7 @@ internal sealed class SharedPreviewDock : Panel
     public void FlashProgram(bool device)
     {
         _flashingCard?.Invalidate();
-        _flashingCard = device ? _deviceCard.Card : _localCard.Card;
+        _flashingCard = device ? _deviceCard.Card : _programMirror;
         _flashingCard.Paint -= PaintOnAirFeedback;
         _flashingCard.Paint += PaintOnAirFeedback;
         _feedbackTimer.Tick -= EndOnAirFeedback;
@@ -88,6 +88,9 @@ internal sealed class SharedPreviewDock : Panel
     private readonly RoundedActionButton _loopButton;
     private readonly RoundedActionButton _scaleButton;
     private readonly RoundedActionButton _takeButton;
+    private readonly RoundedActionButton _fadeButton;
+    private readonly RoundedActionButton _swapButton;
+    private readonly ProgramMirror _programMirror = new();
     private readonly RoundedActionButton _programPauseButton;
     private readonly RoundedActionButton _stopOutputButton;
     private readonly SourceCardView _localCard;
@@ -111,8 +114,20 @@ internal sealed class SharedPreviewDock : Panel
     /// <summary>The Preview channel's output surface (MainWindow builds the Preview engine on it).</summary>
     public PreviewSurface PreviewSurface { get; }
 
-    /// <summary>"投到大屏": put the Preview content on the extended display.</summary>
-    public event Action? TakeRequested;
+    /// <summary>PVW → PGM: 「切换」 (cut) passes <see cref="TransitionStyle.Cut"/>, 「淡入淡出」
+    /// <see cref="TransitionStyle.Dissolve"/>.</summary>
+    public event Action<TransitionStyle>? TakeRequested;
+
+    /// <summary>「⇄ 对调」: PVW and PGM swap contents (PVW goes on air with a fade, the old PGM comes back
+    /// into PVW, paused).</summary>
+    public event Action? SwapRequested;
+
+    /// <summary>The extended display's screen rectangle while something is on air (the PGM monitor copies it).</summary>
+    public Func<Rectangle?>? ProgramScreenBounds
+    {
+        get => _programMirror.SourceBounds;
+        set => _programMirror.SourceBounds = value;
+    }
 
     /// <summary>"停止输出": take whatever is on the extended display off air (Preview is unaffected).</summary>
     public event Action? StopProgramRequested;
@@ -159,9 +174,16 @@ internal sealed class SharedPreviewDock : Panel
         _loopButton = IconButton("", "循环播放当前文件（不保存到文件设置）");
         _scaleButton = TextButton("满宽", "视频显示：满宽（横向铺满，上下可能裁切）→ 适应（完整显示）→ 填充（铺满裁切）");
 
-        _takeButton = TextButton("投到大屏  ↓", "把预览中的内容投到扩展屏正式输出");
+        // PVW → PGM, mixer style: 切换 (cut), 淡入淡出 (fade), ⇄ 对调 (swap PVW and PGM).
+        _takeButton = TextButton("切换 ↓", "把预览（PVW）直接切到大屏（PGM）");
         ModernUi.StyleButton(_takeButton, primary: true);
-        _takeButton.Font = new Font(ModernUi.UiFontSemibold, 11F);
+        _takeButton.Font = new Font(ModernUi.UiFontSemibold, 10.5F);
+        _takeButton.AccessibleName = "切换到大屏";
+        _fadeButton = TextButton("淡入淡出 ↓", "预览（PVW）以淡入淡出切到大屏（PGM），时长同「设置 · 大屏过场」");
+        ModernUi.StyleButton(_fadeButton, primary: true);
+        _fadeButton.Font = new Font(ModernUi.UiFontSemibold, 10.5F);
+        _fadeButton.AccessibleName = "淡入淡出到大屏";
+        _swapButton = TextButton("⇄ 对调", "预览与大屏对调：预览内容淡入淡出上屏，原大屏内容回到预览（暂停）");
 
         _programBadge = new Badge("大屏 · PGM") { Danger = true, AccessibleName = "大屏（PGM）" };
         _programState = ModernUi.SetForegroundRole(new Label { Text = "未连接扩展屏", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
@@ -179,7 +201,7 @@ internal sealed class SharedPreviewDock : Panel
         {
             _title, _collapseButton, _previewBadge, _previewState, _previewFrame,
             _previousButton, _playPauseButton, _stopButton, _nextButton, _volumeIcon, _volume, _loopButton, _scaleButton,
-            _timecode, _progress, _presenter, _takeButton, _programBadge, _programState, _localCard.Card, _deviceCard.Card,
+            _timecode, _progress, _presenter, _takeButton, _fadeButton, _swapButton, _programBadge, _programState, _programMirror, _deviceCard.Card,
             _programPauseButton, _stopOutputButton,
         });
 
@@ -217,7 +239,10 @@ internal sealed class SharedPreviewDock : Panel
             };
             RefreshNow();
         };
-        _takeButton.Click += (_, _) => TakeRequested?.Invoke();
+        _takeButton.Click += (_, _) => TakeRequested?.Invoke(TransitionStyle.Cut);
+        _fadeButton.Click += (_, _) => TakeRequested?.Invoke(TransitionStyle.Dissolve);
+        _swapButton.Click += (_, _) => SwapRequested?.Invoke();
+        _programMirror.Click += (_, _) => { if (_program == null) ExtendDisplayWizard.Show(FindForm()); };
         _programPauseButton.Click += (_, _) =>
         {
             if (_program == null) return;
@@ -296,9 +321,13 @@ internal sealed class SharedPreviewDock : Panel
         int presenterHeight = _presenter.Visible ? S(PresenterStrip.LogicalHeight) + S(6) : 0;
         documentHeight += presenterHeight;
         int fixedHeight = S(28) + gap / 2 + label + S(4) + (button + S(6)) * 2 + documentHeight + gap
-            + S(44) + gap + label + S(4) + S(SourceCardHeight) + S(6) + deviceHeight + gap + button
+            + S(40) + gap + label + S(4) + S(6) + deviceHeight + gap + button
             + (_runControls != null ? _runControls.Height + gap : 0);
-        int monitor = Math.Clamp(area.Height - fixedHeight, S(90), (w - S(4)) * 9 / 16 + S(4));
+        // Two monitors (PVW above, PGM below) share what is left, each at most 16:9 of the width.
+        int fullMonitor = (w - S(4)) * 9 / 16 + S(4);
+        int monitorsTotal = Math.Clamp(area.Height - fixedHeight, S(140), fullMonitor * 2);
+        int monitor = Math.Min(fullMonitor, monitorsTotal / 2);
+        int programMonitor = Math.Min(fullMonitor, monitorsTotal - monitor);
 
         int y = area.Top;
         _collapseButton.Bounds = new Rectangle(area.Right - S(64), y + (S(28) - S(26)) / 2, S(64), S(26));
@@ -348,15 +377,18 @@ internal sealed class SharedPreviewDock : Panel
             y += presenterHeight;
         }
         y += gap;
-        _takeButton.Bounds = new Rectangle(x, y, w, S(44));
-        y += S(44) + gap;
+        int swapWidth = S(72), takeWidth = (w - swapWidth - S(12)) / 2;
+        _takeButton.Bounds = new Rectangle(x, y, takeWidth, S(40));
+        _fadeButton.Bounds = new Rectangle(x + takeWidth + S(6), y, takeWidth, S(40));
+        _swapButton.Bounds = new Rectangle(area.Right - swapWidth, y, swapWidth, S(40));
+        y += S(40) + gap;
 
         badgeWidth = _programBadge.PreferredWidth;
         _programBadge.Bounds = new Rectangle(x, y + (label - S(18)) / 2, badgeWidth, S(18));
         _programState.Bounds = new Rectangle(x + badgeWidth + S(6), y, w - badgeWidth - S(6), label);
         y += label + S(4);
-        _localCard.Card.Bounds = new Rectangle(x, y, w, S(SourceCardHeight));
-        y += S(SourceCardHeight) + S(6);
+        _programMirror.Bounds = new Rectangle(x, y, w, programMonitor);
+        y += programMonitor + S(6);
         _deviceCard.Card.Bounds = new Rectangle(x, y, w, deviceHeight);
         y += deviceHeight + gap;
         int half = (w - S(8)) / 2;
@@ -532,6 +564,11 @@ internal sealed class SharedPreviewDock : Panel
 
         // Disabled (not just a warning on click) while no extended display is bound.
         _takeButton.Enabled = _program != null && hasFile && state != PlaybackChannelState.Failed && state != PlaybackChannelState.Loading;
+        _fadeButton.Enabled = _takeButton.Enabled;
+        _swapButton.Enabled = _takeButton.Enabled;
+        _programMirror.OnAir = programLive;
+        _programMirror.IdleText = _program == null ? "未连接扩展屏\n点此打开扩展屏向导（Win+P）" : "大屏未输出";
+        _programMirror.Cursor = _program == null ? Cursors.Hand : Cursors.Default;
         _stopOutputButton.Enabled = programLive;
         bool programLocal = programLive && source == ProgramSource.LocalMedia && _program != null;
         _programPauseButton.Enabled = programLocal && (_program!.CanPause || _program.IsPaused || _program.IsCompleted);

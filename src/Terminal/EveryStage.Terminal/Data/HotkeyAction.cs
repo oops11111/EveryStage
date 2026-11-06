@@ -11,7 +11,8 @@ public enum HotkeyAction
     EmergencyStopLocal,
     /// <summary>投到大屏 (Take): Preview → big screen; default Ctrl+Enter.</summary>
     Take,
-    /// <summary>暂停 / 继续大屏; default P.</summary>
+    /// <summary>播放 / 暂停 (Space by default, 第二十一轮): the big screen while local media is on air,
+    /// otherwise 预览.</summary>
     PauseProgram,
     /// <summary>流程 上一项 (within the current section); default Ctrl+←.</summary>
     PreviousItem,
@@ -20,7 +21,7 @@ public enum HotkeyAction
 }
 
 /// <summary>Default key codes (System.Windows.Forms.Keys values, kept as numbers so the settings model
-/// has no WinForms dependency): F12, Esc, Ctrl+Enter, P, Ctrl+←, Ctrl+→.</summary>
+/// has no WinForms dependency): F12, Esc, Ctrl+Enter, Space, Ctrl+←, Ctrl+→.</summary>
 public static class HotkeyDefaults
 {
     private const int Control = 0x20000;
@@ -30,7 +31,7 @@ public static class HotkeyDefaults
         [HotkeyAction.EmergencyStopGlobal] = 123,     // F12
         [HotkeyAction.EmergencyStopLocal] = 27,       // Esc
         [HotkeyAction.Take] = Control | 13,           // Ctrl+Enter
-        [HotkeyAction.PauseProgram] = 80,             // P
+        [HotkeyAction.PauseProgram] = 32,             // Space
         [HotkeyAction.PreviousItem] = Control | 37,   // Ctrl+←
         [HotkeyAction.NextItem] = Control | 39,       // Ctrl+→
     };

@@ -703,10 +703,11 @@ async Task RunAsync(string name, Func<Task<(bool Success, string? FailureReason)
             return (false, "Legacy settings were not preserved during migration.");
 
         // Schema 4: the global 急停 key is F12 and on, also for settings saved before it existed.
-        File.WriteAllText(path, "{\"SchemaVersion\":3,\"GlobalEmergencyStopEnabled\":false}");
+        File.WriteAllText(path, "{\"SchemaVersion\":3,\"GlobalEmergencyStopEnabled\":false,\"Hotkeys\":{\"PauseProgram\":80}}");
         var hotkeys = new SettingsStore(path).Current;
         if (!hotkeys.GlobalEmergencyStopEnabled || hotkeys.HotkeyCode(HotkeyAction.EmergencyStopGlobal) != 123
             || hotkeys.HotkeyCode(HotkeyAction.EmergencyStopLocal) != 27
+            || hotkeys.HotkeyCode(HotkeyAction.PauseProgram) != 32 // schema 5: the old P became Space (播放 / 暂停)
             || hotkeys.Clone().Hotkeys == hotkeys.Hotkeys)
             return (false, "Hotkey defaults / migration / deep clone are wrong.");
 

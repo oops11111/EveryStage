@@ -114,7 +114,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
     /// completely unaffected by this set): WinForms' <see cref="TreeView"/> has no built-in
     /// multi-select, and full owner-draw was rejected as more new/unverified surface than this
     /// project needs — same "reuse an established, simple control pattern over an unverified one"
-    /// reasoning <see cref="FloatingPreviewWindow"/>'s own doc comment on its step buttons (instead of
+    /// reasoning the former floating preview window's own doc comment on its step buttons (instead of
     /// a <see cref="TrackBar"/>) already used. Highlighted manually via each node's own
     /// <see cref="TreeNode.BackColor"/>/<see cref="TreeNode.ForeColor"/> rather than owner-draw.
     /// Only ever holds file nodes (<c>Tag is MediaFile</c>) — activity nodes can't be batch-edited.
@@ -886,6 +886,9 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         RefreshCardStyles();
     }
 
+    /// <summary>设置 「单击即上屏」: a plain click on an item runs it (as a double-click does otherwise).</summary>
+    public Func<bool>? ClickTakesToAir { get; set; }
+
     private void OnCardNodeClick(TreeNode node)
     {
         _tree.SelectedNode = node;
@@ -898,12 +901,15 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         {
             ClearMultiSelection();
             UpdateButtonStates();
+            if (node.Tag is MediaFile && Control.ModifierKeys == Keys.None && ClickTakesToAir?.Invoke() == true)
+                OnNodeDoubleClick(this, new TreeNodeMouseClickEventArgs(node, MouseButtons.Left, 1, 0, 0));
         }
         RefreshCardStyles();
     }
 
     private void OnCardNodeDoubleClick(TreeNode node)
     {
+        if (ClickTakesToAir?.Invoke() == true) return; // the first click already put it on air
         OnNodeDoubleClick(this, new TreeNodeMouseClickEventArgs(node, MouseButtons.Left, 2, 0, 0));
     }
 
@@ -1085,24 +1091,7 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
         _runPreviousButton.Enabled = live > 0 && ReferenceEquals(order[live - 1].Activity, order[live].Activity);
     }
 
-    /// <summary>Space runs 「下一项」 while this page has focus (not while typing in a text box or the
-    /// scenario list).</summary>
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
-    {
-        if (keyData == Keys.Space && ActiveControlIsNotTextInput())
-        {
-            GoNext();
-            return true;
-        }
-        return base.ProcessCmdKey(ref msg, keyData);
-
-        bool ActiveControlIsNotTextInput()
-        {
-            Control? active = ActiveControl;
-            while (active is ContainerControl { ActiveControl: { } inner }) active = inner;
-            return active is not (TextBoxBase or ComboBox);
-        }
-    }
+    // Space is the global 播放 / 暂停 (MainWindow, 第二十一轮); 下一项 is the button or Ctrl+→ only.
 
     bool IActivityRowHost.IsSelected(TreeNode node) => ReferenceEquals(_tree.SelectedNode, node);
     bool IActivityRowHost.IsMultiSelected(TreeNode node) => _multiSelectedFileNodes.Contains(node);

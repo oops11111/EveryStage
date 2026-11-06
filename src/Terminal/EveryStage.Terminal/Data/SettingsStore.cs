@@ -147,6 +147,9 @@ public sealed partial class SettingsStore
         if (settings.SchemaVersion < 4)
             settings.GlobalEmergencyStopEnabled = true;
         settings.Hotkeys ??= new(HotkeyDefaults.Codes);
+        // Schema 5 (第二十一轮): Space is the global 播放 / 暂停; the old default P moves to Space.
+        if (settings.SchemaVersion < 5 && settings.Hotkeys.TryGetValue(HotkeyAction.PauseProgram, out int pause) && pause == 80)
+            settings.Hotkeys[HotkeyAction.PauseProgram] = 32;
 
         if (settings.SchemaVersion < AppSettings.CurrentSchemaVersion)
             settings.SchemaVersion = AppSettings.CurrentSchemaVersion;

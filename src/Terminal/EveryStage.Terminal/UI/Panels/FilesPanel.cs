@@ -146,6 +146,12 @@ public sealed class FilesPanel : UserControl
     /// <summary>Whether Program is currently on air — enables the context menu's "停止输出".</summary>
     public Func<bool>? IsProgramLive { get; set; }
 
+    /// <summary>A plain click on a card: 预览, or the big screen with 「单击即上屏」 (MainWindow decides).</summary>
+    public event Action<MediaFile>? FileClicked;
+
+    /// <summary>设置 「单击即上屏」 (MainWindow routes the click to the big screen instead of 预览).</summary>
+    public Func<bool>? ClickTakesToAir { get; set; }
+
     public FilesPanel(
         FileLibraryStore library, FileOperationLogger fileOpLog, ScenarioStore scenarioStore,
         ScenarioRepository scenarioRepository, PlaybackEngine? playback)
@@ -274,9 +280,10 @@ public sealed class FilesPanel : UserControl
                 _fileContextMenu.Show(_grid, e.Location);
                 return;
             }
-            FilePlayRequested?.Invoke(item.File);
+            FileClicked?.Invoke(item.File);
         };
-        _grid.ItemDoubleClicked += (item, _) => TakeRequested?.Invoke(item.File);
+        // 单击即上屏 (设置): the click already took it to the big screen; a double-click adds nothing.
+        _grid.ItemDoubleClicked += (item, _) => { if (ClickTakesToAir?.Invoke() != true) TakeRequested?.Invoke(item.File); };
         _grid.ContextMenuRequested += (item, point) =>
         {
             if (item == null) { _toolbarMenu.Show(_grid, point); return; }
@@ -452,6 +459,7 @@ public sealed class FilesPanel : UserControl
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("循环播放", null, (_, _) => SetCompletionAndPlay(CompletionAction.Loop));
         menu.Items.Add("播完切黑", null, (_, _) => SetCompletionAndPlay(CompletionAction.BlackScreen));
+        menu.Items.Add("播完回主 KV", null, (_, _) => SetCompletionAndPlay(CompletionAction.MainKeyVisual));
         menu.Items.Add("顺序播放", null, (_, _) => StartSequentialPlayback());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("停止预览", null, (_, _) => PlaybackStopRequested?.Invoke());

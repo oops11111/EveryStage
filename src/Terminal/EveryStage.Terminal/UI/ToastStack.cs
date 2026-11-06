@@ -1,92 +1,121 @@
 namespace EveryStage.Terminal.UI;
 
 /// <summary>
-/// PLANNING.md §11 "异常提示"："右下角Toast通知栈" — a vertical stack of <see cref="ToastNotification"/>
-/// rows, pinned to its parent's bottom-right corner, growing upward as toasts are added (newest at
-/// the bottom, closest to where a real notification stack "arrives from"). Deliberately does NOT use
-/// WinForms <c>Anchor</c> for repositioning: this project has no dotnet in this sandbox to verify
-/// <c>Anchor</c>'s exact interaction with a control whose own <see cref="Control.Height"/> changes
-/// programmatically (as opposed to only the parent resizing), so <see cref="RepositionToBottomRight"/>
-/// recomputes this control's <see cref="Control.Location"/> from scratch — against the parent's
-/// current <see cref="Control.ClientSize"/>, not a cached value — every time either the parent resizes
-/// or a toast is added/removed, which is simple enough to reason about without needing to compile it.
+/// Event notices (第二十一轮): a fixed area at the bottom of the right column — exactly
+/// <see cref="MaxVisible"/> slots tall, so it never grows, pushes or covers anything else. Newest at the
+/// bottom; a fourth notice drops the oldest. A notice closes by itself after 3 s (one with action
+/// buttons — 重试 / 撤销 — after 10 s, so there is time to press it).
+///
+/// While the 监看 column is collapsed to its thin strip the same stack floats at the bottom-right of the
+/// window instead (<see cref="Floating"/>), the same size.
 /// </summary>
 public sealed class ToastStack : Panel
 {
-    public const int ToastWidth = 320;
-    private const int Gap = 8;
-    private const int EdgeMargin = 16;
+    public const int MaxVisible = 3;
+    private const int SlotHeight = 50;
+    private const int Gap = 4;
+    private const int Margin_ = 6;
+    private const int FloatingWidth = 320;
+    public static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(3);
+    public static readonly TimeSpan ActionLifetime = TimeSpan.FromSeconds(10);
+
+    private readonly List<ToastNotification> _toasts = new();
+    private bool _floating;
 
     public ToastStack()
     {
-        Width = ToastWidth;
-        Height = 0;
         BackColor = Color.Transparent;
+        Height = AreaHeight;
     }
 
-    /// <summary>Adds one toast to the bottom of the stack and returns it (a caller rarely needs the
-    /// instance back, but nothing stops one from dismissing it early, e.g. <c>toast.Dismissed?.Invoke()</c>
-    /// isn't public — there's no supported "dismiss programmatically" today beyond the toast's own "×"
-    /// button and its action buttons, both of which raise <see cref="ToastNotification.Dismissed"/>
-    /// internally).</summary>
+    private int S(int v) => LogicalToDeviceUnits(v);
+
+    /// <summary>The fixed height of the area (three slots).</summary>
+    public int AreaHeight => S(SlotHeight) * MaxVisible + S(Gap) * (MaxVisible - 1) + S(Margin_) * 2;
+
+    /// <summary>The notices on screen, oldest first.</summary>
+    public IReadOnlyList<ToastNotification> Notices => _toasts;
+
+    /// <summary>Floating over the window's bottom-right corner (column collapsed) instead of docked.</summary>
+    public bool Floating
+    {
+        get => _floating;
+        set
+        {
+            _floating = value;
+            Dock = value ? DockStyle.None : DockStyle.Bottom;
+            Height = AreaHeight;
+            if (value) { Width = S(FloatingWidth); Reposition(); BringToFront(); }
+            LayoutToasts();
+        }
+    }
+
+    /// <summary>Space kept free at the parent's right edge while floating (the collapsed strip).</summary>
+    public int RightInset
+    {
+        get => _rightInset;
+        set { _rightInset = value; Reposition(); }
+    }
+    private int _rightInset;
+
     public ToastNotification Show(string message, ToastSeverity severity, params ToastAction[] actions)
     {
-        var toast = new ToastNotification(message, severity, actions)
+        while (_toasts.Count >= MaxVisible) _toasts[0].Dismiss();
+        var toast = new ToastNotification(message, severity, actions, Math.Max(S(120), ClientSize.Width - S(Margin_) * 2), S(SlotHeight));
+        var expiry = new System.Windows.Forms.Timer { Interval = (int)(toast.HasActions ? ActionLifetime : Lifetime).TotalMilliseconds };
+        expiry.Tick += (_, _) => toast.Dismiss();
+        toast.Dismissed += () =>
         {
-            Left = 0,
-            Top = Height == 0 ? 0 : Height + Gap,
+            expiry.Dispose();
+            Remove(toast);
         };
-        toast.Dismissed += () => Remove(toast);
-
+        _toasts.Add(toast);
         Controls.Add(toast);
-        Height = toast.Bottom;
-        RepositionToBottomRight();
-        BringToFront();
+        expiry.Start();
+        LayoutToasts();
+        if (_floating) BringToFront();
         return toast;
     }
 
     private void Remove(ToastNotification toast)
     {
-        int removedTop = toast.Top;
-        int shiftAmount = toast.Height + Gap;
-
+        if (!_toasts.Remove(toast)) return;
         Controls.Remove(toast);
         toast.Dispose();
+        LayoutToasts();
+    }
 
-        // Close the gap: every remaining toast that was below the removed one (stacked top-to-bottom,
-        // so "below" means a larger Top) shifts up to take its place.
-        foreach (Control remaining in Controls)
+    private void LayoutToasts()
+    {
+        int width = Math.Max(S(120), ClientSize.Width - S(Margin_) * 2);
+        int y = ClientSize.Height - S(Margin_);
+        for (int i = _toasts.Count - 1; i >= 0; i--)
         {
-            if (remaining.Top > removedTop) remaining.Top -= shiftAmount;
+            var toast = _toasts[i];
+            y -= toast.Height;
+            toast.Bounds = new Rectangle(S(Margin_), y, width, toast.Height);
+            y -= S(Gap);
         }
+    }
 
-        Height = Controls.Count == 0 ? 0 : Math.Max(0, Height - shiftAmount);
-        RepositionToBottomRight();
+    protected override void OnResize(EventArgs eventargs)
+    {
+        base.OnResize(eventargs);
+        // Width changes rebuild nothing: toasts are short-lived; the next ones take the new width.
+        foreach (var toast in _toasts) toast.Width = Math.Max(S(120), ClientSize.Width - S(Margin_) * 2);
+        LayoutToasts();
     }
 
     protected override void OnParentChanged(EventArgs e)
     {
         base.OnParentChanged(e);
-        if (Parent != null)
-        {
-            Parent.SizeChanged += (_, _) => RepositionToBottomRight();
-            RepositionToBottomRight();
-        }
+        if (Parent != null) Parent.SizeChanged += (_, _) => Reposition();
+        Reposition();
     }
 
-    /// <summary>Space kept free at the parent's right edge (MainWindow's 监看 column), so toasts sit at
-    /// the bottom-right of the page area instead of over the monitor controls.</summary>
-    public int RightInset
+    private void Reposition()
     {
-        get => _rightInset;
-        set { _rightInset = value; RepositionToBottomRight(); }
-    }
-    private int _rightInset;
-
-    private void RepositionToBottomRight()
-    {
-        if (Parent == null) return;
-        Left = Parent.ClientSize.Width - _rightInset - EdgeMargin - Width;
-        Top = Parent.ClientSize.Height - EdgeMargin - Height;
+        if (!_floating || Parent == null) return;
+        Location = new Point(Parent.ClientSize.Width - _rightInset - S(12) - Width, Parent.ClientSize.Height - S(12) - Height);
     }
 }

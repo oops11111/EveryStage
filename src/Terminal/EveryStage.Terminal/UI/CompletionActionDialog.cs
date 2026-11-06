@@ -35,12 +35,14 @@ public sealed class CompletionActionDialog : Form
         _comboBox.Items.Add(new ComboItem(CompletionAction.Loop, "循环播放本文件"));
         _comboBox.Items.Add(new ComboItem(CompletionAction.HoldOnLastFrame, "停留等待（保持在最后一帧/最后画面）"));
         _comboBox.Items.Add(new ComboItem(CompletionAction.BlackScreen, "播完切黑"));
+        _comboBox.Items.Add(new ComboItem(CompletionAction.MainKeyVisual, "播完回主 KV"));
         _comboBox.SelectedIndex = initialValue switch
         {
             CompletionAction.NextItem => 0,
             CompletionAction.Loop => 1,
             CompletionAction.HoldOnLastFrame => 2,
             CompletionAction.BlackScreen => 3,
+            CompletionAction.MainKeyVisual => 4,
             _ => 2,
         };
 

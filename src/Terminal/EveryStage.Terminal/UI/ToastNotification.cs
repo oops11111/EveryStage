@@ -11,92 +11,87 @@ public enum ToastSeverity { Warning, Critical, Info }
 public sealed record ToastAction(string Label, Action Callback);
 
 /// <summary>
-/// One row in <see cref="ToastStack"/> — a message, a severity-colored accent bar, an always-present
-/// "×" dismiss button, and zero or more action buttons (PLANNING.md §11: "非关键提示不强加按钮" —
-/// passing no actions is the normal case for a <see cref="ToastSeverity.Warning"/> notice; actions
-/// exist for the specific "涉及播放的异常" case the spec calls out by name).
-///
-/// Fixed width and height (matches <see cref="ToastStack"/>'s own width; height is the same whether
-/// or not action buttons are present, just with an empty row at the bottom when they aren't) —
-/// deliberately not auto-sized to message length: this project has no dotnet in this sandbox to
-/// verify WinForms `AutoSize`/`PreferredSize` measurement behaves the way it's documented to, so a
-/// fixed layout with <see cref="Label.AutoEllipsis"/> truncating an overlong message is the safer
-/// choice here over code whose correctness depends on measurement APIs this repo can't exercise.
+/// One row in <see cref="ToastStack"/> (第二十一轮: the right column, 3 s, at most 3): a severity-coloured
+/// accent bar, the message (two lines, ellipsis), an "×" and any action buttons in one compact row.
+/// The size is given by the stack (column width × one fixed slot), never by the message length.
 /// </summary>
 public sealed class ToastNotification : Panel
 {
     private const int AccentBarWidth = 4;
-    private const int ActionButtonWidth = 64;
-    private const int ActionButtonHeight = 26;
 
-    /// <summary>Raised once, whichever way this toast goes away — the "×" button, or after any
-    /// action button's callback runs. <see cref="ToastStack"/> is this event's only subscriber in
-    /// practice, removing this control from the stack when it fires.</summary>
+    /// <summary>Raised once, whichever way this toast goes away — "×", an action button, the stack's
+    /// timer or <see cref="Dismiss"/>.</summary>
     public event Action? Dismissed;
 
-    /// <summary>Closes the toast from code (e.g. a 10 s 撤销 offer running out).</summary>
+    public string Message { get; }
+    public bool HasActions { get; }
+
+    /// <summary>Closes the toast from code (its time is up, or a 10 s 撤销 offer ran out).</summary>
     public void Dismiss()
     {
-        if (!IsDisposed) Dismissed?.Invoke();
+        if (!IsDisposed && !Disposing) Dismissed?.Invoke();
     }
 
-    public ToastNotification(string message, ToastSeverity severity, IReadOnlyList<ToastAction>? actions = null)
+    public ToastNotification(string message, ToastSeverity severity, IReadOnlyList<ToastAction>? actions, int width, int height)
     {
-        int width = ToastStack.ToastWidth;
-        const int height = 96; // fixed regardless of action count — see class doc comment on why.
+        Message = message;
+        HasActions = actions is { Count: > 0 };
         ModernUi.SetBackgroundRole(this, UiBackgroundRole.ContentRaised);
-        Width = width;
-        Height = height;
+        Size = new Size(width, height);
+        int S(int v) => LogicalToDeviceUnits(v);
 
         var accentBar = ModernUi.SetBackgroundRole(new Panel
         {
-            Bounds = new Rectangle(0, 0, AccentBarWidth, height),
+            Bounds = new Rectangle(0, 0, S(AccentBarWidth), height),
         }, severity switch { ToastSeverity.Critical => UiBackgroundRole.Danger, ToastSeverity.Info => UiBackgroundRole.Accent, _ => UiBackgroundRole.Warning });
 
         var closeButton = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(new Button
         {
             Text = "×",
             FlatStyle = FlatStyle.Flat,
-            Bounds = new Rectangle(width - 28, 6, 20, 20),
+            Bounds = new Rectangle(width - S(24), S(4), S(20), S(20)),
+            AccessibleName = "关闭通知",
         }, UiForegroundRole.Muted), UiBackgroundRole.ContentRaised);
         closeButton.FlatAppearance.BorderSize = 0;
-        closeButton.Click += (_, _) => Dismissed?.Invoke();
+        closeButton.Click += (_, _) => Dismiss();
 
+        // Action buttons sit on the right, under the "×"; the message takes the rest.
+        int right = width - S(6);
+        if (actions != null)
+        {
+            for (int i = actions.Count - 1; i >= 0; i--)
+            {
+                var action = actions[i];
+                int buttonWidth = Math.Max(S(44), TextRenderer.MeasureText(action.Label, Font).Width + S(14));
+                right -= buttonWidth;
+                var button = new Button
+                {
+                    Text = action.Label,
+                    Bounds = new Rectangle(right, height - S(26), buttonWidth, S(22)),
+                };
+                ModernUi.StyleButton(button, danger: severity == ToastSeverity.Critical && action.Label == "移除");
+                button.Font = new Font(ModernUi.UiFont, 8.5F);
+                button.Padding = Padding.Empty;
+                button.Click += (_, _) =>
+                {
+                    action.Callback();
+                    Dismiss();
+                };
+                Controls.Add(button);
+                right -= S(4);
+            }
+        }
+        int messageRight = HasActions ? right : width - S(26);
         var messageLabel = ModernUi.SetForegroundRole(new Label
         {
             Text = message,
             AutoEllipsis = true,
-            Bounds = new Rectangle(AccentBarWidth + 8, 8, width - AccentBarWidth - 8 - 28, height - 8 - ActionButtonHeight - 12),
+            Font = new Font(ModernUi.UiFont, 8.5F),
+            Bounds = Rectangle.FromLTRB(S(AccentBarWidth) + S(8), S(5), Math.Max(S(AccentBarWidth) + S(40), messageRight), height - S(5)),
         }, UiForegroundRole.Text);
 
         Controls.Add(accentBar);
         Controls.Add(messageLabel);
         Controls.Add(closeButton);
-
-        if (actions is { Count: > 0 })
-        {
-            // Right-to-left so the first action in the list ends up leftmost — reads naturally as
-            // "重试" before "移除" when a caller passes them in that order.
-            int cursorX = width - 12;
-            int y = height - ActionButtonHeight - 8;
-            foreach (var action in actions)
-            {
-                cursorX -= ActionButtonWidth;
-                var button = new Button
-                {
-                    Text = action.Label,
-                    Bounds = new Rectangle(cursorX, y, ActionButtonWidth, ActionButtonHeight),
-                };
-                ModernUi.StyleButton(button, danger: severity == ToastSeverity.Critical && action.Label == "移除");
-                button.Padding = Padding.Empty;
-                button.Click += (_, _) =>
-                {
-                    action.Callback();
-                    Dismissed?.Invoke();
-                };
-                Controls.Add(button);
-                cursorX -= 8; // gap between buttons.
-            }
-        }
     }
 }

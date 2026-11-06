@@ -136,7 +136,15 @@ internal sealed class TransitionController : IDisposable
     private void OnSwitching(MediaFile next)
     {
         var settings = _settings.Current;
-        var style = next.TransitionOverride ?? settings.Transition;
+        var style = _program.PendingTransition ?? next.TransitionOverride ?? settings.Transition;
+        _program.PendingTransition = null;
+        int goLive = Math.Clamp(settings.GoLiveFadeMilliseconds, 0, 2000);
+        if (!_overlay.Visible && goLive > 0 && _phase == Phase.Idle)
+        {
+            // 上屏淡入: the big screen is about to go on air — start from black and fade the first picture in.
+            BeginGoLive(next, goLive);
+            return;
+        }
         if (style == TransitionStyle.Cut || !_overlay.Visible || _overlay.WindowState == FormWindowState.Minimized)
         {
             Finish();
@@ -175,6 +183,26 @@ internal sealed class TransitionController : IDisposable
         _timer.Start();
     }
 
+    private DateTime? _goLiveStarted;
+
+    /// <summary>上屏淡入 (设置, 0–2 s): a black curtain over the output's screen area before the output window
+    /// appears; once the first picture is ready it fades away over <paramref name="milliseconds"/>.</summary>
+    private void BeginGoLive(MediaFile next, int milliseconds)
+    {
+        var bounds = _overlay.Bounds;
+        _curtain ??= new TransitionCurtain(bounds);
+        _curtain.Cover(new Bitmap(Math.Max(1, bounds.Width), Math.Max(1, bounds.Height)), bounds);
+        _curtain.Black = 1;
+        _target = next;
+        _style = TransitionStyle.Dissolve;
+        _duration = milliseconds;
+        _readyAt = null;
+        _phaseStart = DateTime.UtcNow;
+        _goLiveStarted = DateTime.UtcNow;
+        _phase = Phase.Waiting;
+        _timer.Start();
+    }
+
     /// <summary>The new item shows its first picture (or failed, so there is nothing to wait for).</summary>
     private bool TargetReady()
     {
@@ -188,8 +216,9 @@ internal sealed class TransitionController : IDisposable
     {
         var curtain = _curtain;
         if (curtain == null || _phase == Phase.Idle) { _timer.Stop(); return; }
-        // Output stopped (停止输出 / cast switch off): never leave a still on the monitor.
-        if (!_overlay.Visible) { Finish(); return; }
+        // Output stopped (停止输出 / cast switch off): never leave a still on the monitor. While going on air
+        // the output window may take a moment to appear; give it 2 s.
+        if (!_overlay.Visible && !(_goLiveStarted is { } started && DateTime.UtcNow - started < TimeSpan.FromSeconds(2))) { Finish(); return; }
         curtain.BringToTop();
         double half = _style == TransitionStyle.DipToBlack ? _duration / 2.0 : _duration;
         double t = (DateTime.UtcNow - _phaseStart).TotalMilliseconds / half;
@@ -219,6 +248,7 @@ internal sealed class TransitionController : IDisposable
 
     private void Finish()
     {
+        _goLiveStarted = null;
         _timer.Stop();
         _phase = Phase.Idle;
         _target = null;

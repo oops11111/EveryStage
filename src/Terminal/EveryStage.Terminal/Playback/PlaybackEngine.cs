@@ -115,6 +115,10 @@ public sealed partial class PlaybackEngine : IDisposable
     /// (after the cast switch allowed it): the transition layer captures the current picture here.</summary>
     public event Action<MediaFile>? ProgramContentSwitching;
 
+    /// <summary>One-shot transition for the next Program switch (监看 「切换」 / 「淡入淡出」 / 「对调」);
+    /// the transition controller takes it and clears it. Null: the item's own or 设置's transition.</summary>
+    public TransitionStyle? PendingTransition { get; set; }
+
     /// <summary>Raised instead of <see cref="FileStarted"/> when a "点文件" request reached
     /// <see cref="PlayFile"/> but the cast switch was off (<see cref="OutputStateMachine.RequestLocalFilePlayback"/>
     /// returned false) — exists purely so the UI can acknowledge the click happened (README risk #9:
@@ -1554,6 +1558,11 @@ public sealed partial class PlaybackEngine : IDisposable
                 _output.ShowImageSurface();
                 _output.ContentSurface.SetFrame(null);
                 break;
+            case CompletionAction.MainKeyVisual:
+                // 回主 KV: the 主 KV image from 设置, still on air; black when none is set or it cannot load.
+                _output.ShowImageSurface();
+                _output.ContentSurface.SetFrame(LoadMainKeyVisual());
+                break;
             default:
                 // A value outside the enum (hand-edited or damaged store: the JSON converter accepts any
                 // number) used to match nothing and stop the activity with no record (audit C-5).
@@ -1569,6 +1578,33 @@ public sealed partial class PlaybackEngine : IDisposable
             IsCompleted = true;
             IsPaused = true;
             SetState(PlaybackChannelState.Paused);
+        }
+    }
+
+    private Bitmap? _mainKeyVisual;
+    private string? _mainKeyVisualPath;
+
+    /// <summary>The 主 KV bitmap (cached per path; the file is read into memory, not kept locked).</summary>
+    private Bitmap? LoadMainKeyVisual()
+    {
+        string? path = _settingsStore.Current.MainKeyVisualPath;
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        if (_mainKeyVisual != null && string.Equals(path, _mainKeyVisualPath, StringComparison.OrdinalIgnoreCase)) return _mainKeyVisual;
+        try
+        {
+            using var stream = new MemoryStream(File.ReadAllBytes(path));
+            using var image = Image.FromStream(stream);
+            var bitmap = new Bitmap(image);
+            _output.ContentSurface.SetFrame(null);
+            _mainKeyVisual?.Dispose();
+            _mainKeyVisual = bitmap;
+            _mainKeyVisualPath = path;
+            return bitmap;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or OutOfMemoryException)
+        {
+            _playbackLogger.LogAbnormalInterruption(Guid.Empty, $"主 KV 无法加载：{ex.Message}");
+            return null;
         }
     }
 
@@ -1691,5 +1727,11 @@ public sealed partial class PlaybackEngine : IDisposable
         _audioController?.Dispose();
         _backgroundAudioController?.Dispose();
         ReleaseDocumentNow();
+        if (_mainKeyVisual != null)
+        {
+            if (!_output.ContentSurface.IsDisposed) _output.ContentSurface.SetFrame(null);
+            _mainKeyVisual.Dispose();
+            _mainKeyVisual = null;
+        }
     }
 }

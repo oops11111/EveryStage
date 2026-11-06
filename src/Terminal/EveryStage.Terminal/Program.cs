@@ -161,7 +161,6 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     private OverlayWindow? _overlay;
     private VideoSurface? _videoSurface;
     private PlaybackEngine? _playback;
-    private FloatingPreviewWindow? _previewWindow;
     private readonly MainWindow _mainWindow;
     private DeviceCastController? _deviceCastController;
     private DefaultAudioDeviceMonitor? _defaultAudioDeviceMonitor;
@@ -287,6 +286,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         {
             _deviceCastController?.ResizeDeviceSurface(w, h);
         };
+        // 大屏 · PGM monitor: a copy of the extended display while it is on air (local window = second screen).
+        _mainWindow.ProgramScreenBounds = () => _overlay is { Visible: true, IsDisposed: false } overlay
+            && overlay.WindowState != FormWindowState.Minimized ? overlay.Bounds : null;
         _mainWindow.DevicePresence = id =>
         {
             var seen = _discovery.LastSighting(id);
@@ -329,7 +331,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
     }
 
     /// <summary>Builds the whole local-playback object graph — <see cref="_overlay"/>/
-    /// <see cref="_videoSurface"/>/<see cref="_playback"/>/<see cref="_previewWindow"/> — for
+    /// <see cref="_videoSurface"/>/<see cref="_playback"/> — for
     /// <paramref name="monitor"/>. Extracted from this constructor's own original inline try/catch
     /// (this project's README used to record that whole block as never having a second call site) so
     /// <see cref="HandleDisplaySettingsChanged"/> can run the exact same path at runtime when a
@@ -365,14 +367,11 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _playback = new PlaybackEngine(PlaybackChannel.Program, _overlay, _videoSurface, _settingsStore, _store, _stateMachine);
             _playback.LocalPlaybackStarting += OnLocalPlaybackStarting;
             _transitions = new TransitionController(_playback, _overlay, _settingsStore);
-            _previewWindow = new FloatingPreviewWindow(_playback, _stateMachine, _settingsStore);
             return true;
         }
         catch (Exception ex)
         {
             _crashLogger.LogUnhandledException("TerminalApplicationContext.ExtendedDisplayInit", ex);
-            _previewWindow?.Dispose();
-            _previewWindow = null;
             _transitions?.Dispose();
             _transitions = null;
             if (_playback != null) _playback.LocalPlaybackStarting -= OnLocalPlaybackStarting;
@@ -391,13 +390,11 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         if (state == OutputState.Active)
         {
             _overlay?.ShowOverlay();
-            _previewWindow?.ShowForActiveOutput();
             _ = _audioTakeover.TakeoverAsync(); // fire-and-forget: UI thread must not block on this.
         }
         else
         {
             _overlay?.HideOverlay();
-            _previewWindow?.HideForIdleOutput();
             _audioTakeover.Restore();
             _deviceCastController?.DropFromProgram(discardRestorePoint: true);
         }
@@ -630,7 +627,6 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _discovery.Dispose();
         _castStatusTimer.Dispose();
         _deviceCastController?.Dispose();
-        _previewWindow?.Dispose();
         _transitions?.Dispose();
         _playback?.Dispose();
         // Close every WPS/Office document and slide show (asking about unsaved edits) and wait for the

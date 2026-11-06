@@ -44,12 +44,22 @@ public sealed class SettingsPanel : UserControl
     private readonly CheckBox _transitionOnBlack;
     private readonly ComboBox _completionComboBox;
     private readonly CheckBox _httpControlCheckbox;
+    private readonly CheckBox _clickTakesToAir;
+    private readonly NumericUpDown _goLiveFade;
+    private readonly Label _keyVisualLabel;
+
+    private void UpdateKeyVisualLabel(string? path)
+    {
+        _keyVisualLabel.Text = string.IsNullOrWhiteSpace(path) ? "未设置（黑场）" : Path.GetFileName(path);
+        new ToolTip().SetToolTip(_keyVisualLabel, path ?? "");
+    }
     private static readonly (CompletionAction Action, string Label)[] CompletionChoices =
     {
         (CompletionAction.HoldOnLastFrame, "停在最后画面（定格）"),
         (CompletionAction.Loop, "循环播放"),
         (CompletionAction.NextItem, "自动下一项"),
         (CompletionAction.BlackScreen, "切黑场"),
+        (CompletionAction.MainKeyVisual, "回主 KV"),
     };
     private readonly Dictionary<HotkeyAction, HotkeyCaptureButton> _hotkeyButtons = new();
     private CheckBox? _globalEmergency;
@@ -141,7 +151,41 @@ public sealed class SettingsPanel : UserControl
         _defaultStayDurationEnabledCheckbox.CheckedChanged += (_, _) =>
             _defaultStayDurationSeconds.Enabled = _defaultStayDurationEnabledCheckbox.Checked;
         var output = Section("输出与播放");
-        output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举。更改前会确认，10 秒内可撤销", "重启后生效", UiForegroundRole.Muted, _monitorComboBox);
+        var extendWizard = new RoundedActionButton { Text = "扩展屏向导...", Width = 112, Height = 30 };
+        ModernUi.StyleButton(extendWizard);
+        extendWizard.Click += (_, _) => ExtendDisplayWizard.Show(this);
+        output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举。更改前会确认，10 秒内可撤销。" +
+            "电脑只复制了屏幕或没认出第二块屏时，用「扩展屏向导」（等同 Win+P → 扩展）", "重启后生效", UiForegroundRole.Muted, _monitorComboBox, extendWizard);
+        _clickTakesToAir = new CheckBox { Text = "开启", AutoSize = true, Checked = settings.ClickTakesToAir, AccessibleName = "单击即上屏" };
+        _clickTakesToAir.CheckedChanged += (_, _) =>
+        {
+            if (_loading) return;
+            if (_clickTakesToAir.Checked)
+                CommitDangerous(s => s.ClickTakesToAir = true, s => s.ClickTakesToAir = false, "单击即上屏",
+                    "开启「单击即上屏」？\n开启后，在文件库或流程里单击一个文件就会直接投到大屏（不经过预览）。演出中请小心误点。");
+            else Commit(s => s.ClickTakesToAir = false, "单击即上屏");
+        };
+        output.AddRow("单击即上屏", "关闭（默认）：单击在预览（PVW）中播放，双击或「切换 / 淡入淡出」上屏。开启：单击直接上屏。开启前会确认",
+            "即时生效", UiForegroundRole.Accent, _clickTakesToAir);
+        _goLiveFade = new NumericUpDown { Minimum = 0, Maximum = 2000, Increment = 100, Width = 70, Value = Math.Clamp(settings.GoLiveFadeMilliseconds, 0, 2000) };
+        _goLiveFade.ValueChanged += (_, _) => Commit(s => s.GoLiveFadeMilliseconds = (int)_goLiveFade.Value, "上屏淡入");
+        output.AddRow("上屏淡入", "大屏从未输出变为输出时，从黑场淡入的时长；0 为直接出画面（默认），最长 2 秒。项目之间的切换用下面的「大屏过场」",
+            "下次上屏生效", UiForegroundRole.Accent, _goLiveFade, ModernUi.SetForegroundRole(new Label { Text = "毫秒", AutoSize = true }, UiForegroundRole.Muted));
+        _keyVisualLabel = ModernUi.SetForegroundRole(new Label { AutoSize = false, Width = 180, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Height = 30 }, UiForegroundRole.Muted);
+        UpdateKeyVisualLabel(settings.MainKeyVisualPath);
+        var chooseKeyVisual = new RoundedActionButton { Text = "选择...", Width = 72, Height = 30 };
+        ModernUi.StyleButton(chooseKeyVisual);
+        chooseKeyVisual.Click += (_, _) =>
+        {
+            using var dialog = new OpenFileDialog { Filter = "图片|*.jpg;*.jpeg;*.png;*.bmp;*.gif|所有文件|*.*", Title = "选择主 KV 图片" };
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            if (Commit(s => s.MainKeyVisualPath = dialog.FileName, "主 KV")) UpdateKeyVisualLabel(dialog.FileName);
+        };
+        var clearKeyVisual = new RoundedActionButton { Text = "清除", Width = 60, Height = 30 };
+        ModernUi.StyleButton(clearKeyVisual);
+        clearKeyVisual.Click += (_, _) => { if (Commit(s => s.MainKeyVisualPath = null, "主 KV")) UpdateKeyVisualLabel(null); };
+        output.AddRow("主 KV", "「播完回主 KV」时大屏显示的图片（活动主视觉）；未设置时为黑场。文件库和流程都可以把文件的「播完后」设为回主 KV",
+            "即时生效", UiForegroundRole.Accent, _keyVisualLabel, chooseKeyVisual, clearKeyVisual);
         _audioOutputComboBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260, AccessibleName = "音频输出设备" };
         ModernUi.StyleComboBox(_audioOutputComboBox);
         PopulateAudioOutputs(settings.AudioOutputDeviceId);
@@ -401,6 +445,9 @@ public sealed class SettingsPanel : UserControl
             _keepAutoAdvance.Checked = settings.KeepAutoAdvanceTransitions;
             _transitionOnBlack.Checked = settings.TransitionOnBlackScreen;
             _httpControlCheckbox.Checked = settings.HttpControlEnabled;
+            _clickTakesToAir.Checked = settings.ClickTakesToAir;
+            _goLiveFade.Value = Math.Clamp(settings.GoLiveFadeMilliseconds, 0, 2000);
+            UpdateKeyVisualLabel(settings.MainKeyVisualPath);
             foreach (var (action, button) in _hotkeyButtons) button.Keys = settings.HotkeyFor(action);
             if (_globalEmergency != null) _globalEmergency.Checked = settings.GlobalEmergencyStopEnabled;
         }
@@ -566,7 +613,7 @@ public sealed class SettingsPanel : UserControl
                 HotkeyAction.EmergencyStopGlobal => "停止输出：大屏断开、预览与背景音乐停止，没有撤销。勾选「全局注册」后，其他程序在前台时也有效：Windows 不允许注册时（F12 常被系统保留给调试器）自动改用只识别这一个键的键盘监听，不记录任何按键。以管理员身份运行的程序在前台时可能收不到。",
                 HotkeyAction.EmergencyStopLocal => "EveryStage 窗口在前台时停止输出；歌单面板展开时先收起面板。",
                 HotkeyAction.Take => "把预览中的内容（含播放位置）投到大屏。",
-                HotkeyAction.PauseProgram => "暂停或继续大屏上的本地媒体。在输入框里打字时不生效。",
+                HotkeyAction.PauseProgram => "大屏有本地媒体在播时暂停 / 继续大屏，否则暂停 / 继续预览。在输入框里打字时不生效。",
                 HotkeyAction.PreviousItem => "流程：回到当前环节的上一项。",
                 _ => "流程：当前环节的下一项；环节结束后需要先选中下一个环节。",
             };
@@ -596,7 +643,7 @@ public sealed class SettingsPanel : UserControl
             foreach (var (action, button) in buttons) button.Keys = Hotkeys.Defaults[action];
             globalEmergency.Checked = true;
         };
-        hotkeys.AddNote("Space（空格）按页面区分：在「流程」页是下一项，其他页面不处理；不能改。PDF 翻页和音频播放条自己的按键也固定，不在此列。");
+        hotkeys.AddNote("Space（空格）默认是全局播放 / 暂停（大屏有本地媒体在播时控制大屏，否则控制预览）；下一项只用按钮或 Ctrl+→。在输入框里打字时这些键不生效。PDF 翻页和音频播放条自己的按键固定，不在此列。");
         hotkeys.AddButtons(resetAll);
     }
 

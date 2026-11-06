@@ -13,7 +13,9 @@ public enum MediaKind { Image, Video, Audio, Document }
 public enum PlayMode { SequentialAuto, ManualSelect }
 
 /// <summary>播放完成后动作: 自动下一项/循环/停留末帧/切黑.</summary>
-public enum CompletionAction { NextItem, Loop, HoldOnLastFrame, BlackScreen }
+/// <summary>播完后. <see cref="MainKeyVisual"/>: show the 主 KV image from 设置 (black when none is set),
+/// still on air.</summary>
+public enum CompletionAction { NextItem, Loop, HoldOnLastFrame, BlackScreen, MainKeyVisual }
 
 /// <summary>背景音频叠加时，扩展屏应显示的内容 (PLANNING.md §6 音频特殊性).</summary>
 public enum AudioVisual { Waveform, DefaultBackgroundImage, Black }
