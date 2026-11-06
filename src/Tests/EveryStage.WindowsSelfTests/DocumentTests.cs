@@ -288,20 +288,24 @@ internal static class DocumentTests
         int failures = 0;
         using var first = new EmergencyStopHotkey(() => { }, _ => failures++);
         using var second = new EmergencyStopHotkey(() => { }, _ => failures++);
-        Require(!first.Registered && !second.Registered, "Global shortcut should be off by default.");
+        Require(!first.Global && !second.Global, "Nothing should be global before Configure.");
         first.Configure(true);
         if (!first.Registered)
         {
-            Require(failures == 1, "Registration failure was not reported.");
-            Console.WriteLine("SKIP: native hotkey ownership test (F12 already owned externally; failure feedback verified)");
+            // F12 is reserved for debuggers and refused on many machines: the keyboard-hook fallback takes over.
+            Require(first.HookActive || failures == 1, "Refused registration neither fell back to the hook nor was reported.");
+            Console.WriteLine(first.HookActive
+                ? "PASS: refused F12 registration falls back to the keyboard hook (still global, no failure shown)"
+                : "SKIP: native hotkey ownership test (F12 refused and no hook; failure feedback verified)");
             return;
         }
         second.Configure(true);
-        Require(!second.Registered && failures == 1, "A hotkey conflict was not reported.");
+        Require(!second.Registered && (second.HookActive || failures == 1), "A hotkey conflict neither fell back to the hook nor was reported.");
         first.Configure(false);
+        second.Configure(false);
         second.Configure(true);
-        Require(second.Registered, "Disabling the first registration did not release the hotkey.");
-        Console.WriteLine("PASS: global emergency hotkey defaults off, reports conflicts, releases and retries");
+        Require(second.Registered && !second.HookActive, "Disabling the first registration did not release the hotkey.");
+        Console.WriteLine("PASS: global emergency hotkey registers, falls back to the hook on conflict, releases and retries");
     }
 
     private static void TestAudioOutputSettings(string directory)
