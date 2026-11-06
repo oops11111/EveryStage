@@ -867,7 +867,7 @@ internal static class DocumentTests
             EveryStage.Discovery.DeviceIdentity.LoadOrCreate("selftest", Path.Combine(dir, "identity.json")),
             new EveryStage.Terminal.Logging.DeviceConnectionLogger(dir), new MusicLibraryStore(Path.Combine(dir, "music.json")),
             new EveryStage.Terminal.Logging.FileOperationLogger(dir))
-        { Opacity = 0, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
+        { Opacity = 0, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), FirstRunGuideEnabled = false };
         window.Show();
         Pump(400);
         window.Size = new Size(1000, 760);

@@ -9,26 +9,11 @@ internal static class ModernUi
     /// AND Windows links it to Microsoft YaHei UI for Chinese (HKLM FontLink\SystemLink); otherwise Segoe
     /// UI. The link check matters: the UI is mostly Chinese, Segoe UI Variable has no CJK glyphs, and a
     /// machine without that link (seen in the wild) renders the Chinese with a worse fallback or as boxes.</summary>
-    internal static readonly string UiFont = PickTextFont("Segoe UI Variable Text", "Segoe UI");
+    internal static readonly string UiFont = EveryStage.SharedUi.UiFonts.Text;
 
     /// <summary>Semibold counterpart of <see cref="UiFont"/> (headings, labels).</summary>
-    internal static readonly string UiFontSemibold = PickTextFont("Segoe UI Variable Text Semibold", "Segoe UI Semibold");
+    internal static readonly string UiFontSemibold = EveryStage.SharedUi.UiFonts.TextSemibold;
 
-    private static string PickTextFont(string windows11Family, string fallback)
-    {
-        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return fallback;
-        try
-        {
-            using var link = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion\FontLink\SystemLink");
-            if (link?.GetValue(windows11Family) is not string[] fonts
-                || !fonts.Any(f => f.Contains("YaHei", StringComparison.OrdinalIgnoreCase)))
-                return fallback;
-            using var installed = new System.Drawing.Text.InstalledFontCollection();
-            return installed.Families.Any(f => string.Equals(f.Name, windows11Family, StringComparison.OrdinalIgnoreCase))
-                ? windows11Family : fallback;
-        }
-        catch (Exception) { return fallback; }
-    }
     public static readonly Color Background = Color.FromArgb(10, 20, 34);
     public static readonly Color Surface = Color.FromArgb(18, 37, 59);
     public static readonly Color SurfaceRaised = Color.FromArgb(25, 48, 76);

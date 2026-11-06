@@ -94,6 +94,11 @@ await RunAsync("Log export", () => Task.FromResult(TestLogExport()));
 await RunAsync("Cast audio frames carry their own capture time (A-3)", () => Task.FromResult(TestPcmTimeline()));
 await RunAsync("Log writer: daily retention, write failures counted, folder recreated, export while writing", () => Task.FromResult(TestDailyRollingLogWriter()));
 await RunAsync("Unreadable stores preserve original data", () => Task.FromResult(TestUnreadableStores()));
+await RunAsync("Corrupt stores recover the previous version from .bak", () => Task.FromResult(TestBackupRecovery()));
+await RunAsync("File library: legacy bare array loads, saves become the versioned envelope", () => Task.FromResult(TestFileLibraryEnvelope()));
+await RunAsync("Scenario store: a newer schema file is left untouched and refuses saves", () => Task.FromResult(TestScenarioNewerSchema()));
+await RunAsync("Transcode risk: non-MP4 video containers are flagged at import", () => Task.FromResult(TestTranscodeRisk()));
+await RunAsync("Pre-show check: a file flagged as needing transcode is reported", () => Task.FromResult(TestPreShowNeedsTranscode()));
 await RunAsync("PDF viewport layout (resize keeps content position)", () => Task.FromResult(TestPdfViewport()));
 await RunAsync("Document playback settings persist and clone", () => Task.FromResult(TestDocumentSettings()));
 await RunAsync("Multichannel PCM folds to stereo without clipping (5.1 / 7.1 / quad)", () => Task.FromResult(TestPcmDownmix()));
@@ -574,6 +579,183 @@ async Task<(bool, string?)> TestIdleGapTimeout()
         catch (IOException) { }
         if (File.ReadAllText(pairedPath) != originalPaired)
             return (false, "Original paired-device data overwritten after failed load.");
+        return (true, null);
+    }
+    finally { Directory.Delete(directory, recursive: true); }
+}
+
+(bool, string?) TestBackupRecovery()
+{
+    string directory = Path.Combine(Path.GetTempPath(), "EveryStage-BakTests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        // Each store: save twice (the second save leaves the first version as .bak), corrupt the
+        // main file, and expect a fresh load to recover the FIRST version from .bak — not the
+        // defaults an unrecoverable corruption would give.
+        string scenarioPath = Path.Combine(directory, "scenarios.json");
+        var repository = new ScenarioRepository(scenarioPath);
+        var store = new ScenarioStore();
+        store.Scenarios.Add(new Scenario { Name = "第一版" });
+        repository.Save(store);
+        store.Scenarios[0].Name = "第二版";
+        repository.Save(store);
+        if (!File.Exists(scenarioPath + ".bak")) return (false, "Scenario save did not leave a .bak.");
+        File.WriteAllText(scenarioPath, "{ 这不是 JSON");
+        var recoveredScenarios = new ScenarioRepository(scenarioPath).Load();
+        if (recoveredScenarios.Scenarios.Count != 1 || recoveredScenarios.Scenarios[0].Name != "第一版")
+            return (false, "Corrupt scenarios.json was not recovered from .bak.");
+        if (Directory.GetFiles(directory, "scenarios.json.corrupt-*").Length == 0)
+            return (false, "Corrupt scenarios.json was not kept as a .corrupt-* copy.");
+
+        string libraryPath = Path.Combine(directory, "library.json");
+        var library = new FileLibraryStore(libraryPath);
+        library.Import("first.mp4");
+        library.Import("second.png");
+        if (!File.Exists(libraryPath + ".bak")) return (false, "Library save did not leave a .bak.");
+        File.WriteAllText(libraryPath, "{ 这不是 JSON");
+        var recoveredLibrary = new FileLibraryStore(libraryPath);
+        if (recoveredLibrary.Files.Count != 1 || recoveredLibrary.Files[0].SourcePath != "first.mp4")
+            return (false, "Corrupt library file was not recovered from .bak.");
+
+        string settingsPath = Path.Combine(directory, "settings.json");
+        var settings = new SettingsStore(settingsPath);
+        settings.Save(new AppSettings { DefaultStayDurationSeconds = 11 });
+        settings.Save(new AppSettings { DefaultStayDurationSeconds = 22 });
+        if (!File.Exists(settingsPath + ".bak")) return (false, "Settings save did not leave a .bak.");
+        File.WriteAllText(settingsPath, "{ 这不是 JSON");
+        var recoveredSettings = new SettingsStore(settingsPath);
+        if (recoveredSettings.Current.DefaultStayDurationSeconds != 11)
+            return (false, "Corrupt settings file was not recovered from .bak.");
+        return (true, null);
+    }
+    finally { Directory.Delete(directory, recursive: true); }
+}
+
+(bool, string?) TestFileLibraryEnvelope()
+{
+    string directory = Path.Combine(Path.GetTempPath(), "EveryStage-EnvelopeTests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        // Legacy shape (schema v0): a bare JSON array, as every build before the envelope wrote.
+        string path = Path.Combine(directory, "library.json");
+        File.WriteAllText(path, "[{\"SourcePath\":\"legacy.mp4\",\"Kind\":\"Video\"}]");
+        var library = new FileLibraryStore(path);
+        if (library.Files.Count != 1 || library.Files[0].SourcePath != "legacy.mp4")
+            return (false, "Legacy bare-array library did not load.");
+
+        // Saving upgrades it in place to the envelope; a reload still sees the same file.
+        library.Save();
+        string saved = File.ReadAllText(path);
+        if (!saved.Contains("\"SchemaVersion\": 1") || !saved.Contains("\"Files\""))
+            return (false, "Saved library is not the versioned envelope: " + saved);
+        if (new FileLibraryStore(path).Files.Count != 1)
+            return (false, "Envelope library did not reload.");
+
+        // A newer envelope is protected the same way settings are: empty run, file untouched,
+        // saves refused.
+        string futurePath = Path.Combine(directory, "future.json");
+        File.WriteAllText(futurePath, "{\"SchemaVersion\":999,\"Files\":[{\"SourcePath\":\"x.mp4\",\"Kind\":\"Video\"}]}");
+        string originalFuture = File.ReadAllText(futurePath);
+        var future = new FileLibraryStore(futurePath);
+        if (future.Files.Count != 0) return (false, "Newer-schema library was partially interpreted.");
+        try { future.Save(); return (false, "Save allowed over a newer-schema library."); }
+        catch (IOException) { }
+        if (File.ReadAllText(futurePath) != originalFuture)
+            return (false, "Newer-schema library file was modified.");
+        return (true, null);
+    }
+    finally { Directory.Delete(directory, recursive: true); }
+}
+
+(bool, string?) TestScenarioNewerSchema()
+{
+    string directory = Path.Combine(Path.GetTempPath(), "EveryStage-ScenarioSchemaTests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        string path = Path.Combine(directory, "scenarios.json");
+        File.WriteAllText(path, "{\"SchemaVersion\":999,\"Scenarios\":[{\"Name\":\"future\",\"Activities\":[]}],\"CurrentScenarioId\":null}");
+        string original = File.ReadAllText(path);
+        var repository = new ScenarioRepository(path);
+        var loaded = repository.Load();
+        if (loaded.Scenarios.Count != 0)
+            return (false, "Newer-schema scenarios were partially interpreted.");
+        try { repository.Save(new ScenarioStore()); return (false, "Save allowed over a newer-schema scenario file."); }
+        catch (IOException) { }
+        if (File.ReadAllText(path) != original)
+            return (false, "Newer-schema scenario file was modified.");
+        return (true, null);
+    }
+    finally { Directory.Delete(directory, recursive: true); }
+}
+
+(bool, string?) TestTranscodeRisk()
+{
+    if (FileLibraryStore.TranscodeRiskFor("movie.mkv", MediaKind.Video) is not { } mkvReason || !mkvReason.Contains("MKV"))
+        return (false, "An .mkv video was not flagged with an MKV reason.");
+    if (FileLibraryStore.TranscodeRiskFor("movie.mp4", MediaKind.Video) != null)
+        return (false, "An .mp4 video was flagged.");
+    if (FileLibraryStore.TranscodeRiskFor("clip.mov", MediaKind.Video) == null)
+        return (false, "A .mov video was not flagged.");
+    if (FileLibraryStore.TranscodeRiskFor("movie.mkv", MediaKind.Image) != null)
+        return (false, "A non-video kind was judged by the video heuristic.");
+
+    string directory = Path.Combine(Path.GetTempPath(), "EveryStage-TranscodeTests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        string path = Path.Combine(directory, "library.json");
+        var library = new FileLibraryStore(path);
+        var mkv = library.Import("clip.mkv");
+        if (mkv is not { NeedsTranscode: true } || string.IsNullOrEmpty(mkv.TranscodeReason))
+            return (false, "Import did not stamp the transcode flag/reason on the .mkv entry.");
+        var mp4 = library.Import("clip.mp4");
+        if (mp4 is not { NeedsTranscode: false })
+            return (false, "Import flagged an .mp4 entry.");
+        // The flag is persisted, not just in memory: a fresh store over the same file sees it.
+        var reloaded = new FileLibraryStore(path).Files.Single(f => f.SourcePath == "clip.mkv");
+        if (!reloaded.NeedsTranscode || string.IsNullOrEmpty(reloaded.TranscodeReason))
+            return (false, "Transcode flag did not survive save/load.");
+        var clone = mkv.Clone();
+        if (!clone.NeedsTranscode || clone.TranscodeReason != mkv.TranscodeReason)
+            return (false, "Clone dropped the transcode flag/reason.");
+        return (true, null);
+    }
+    finally { Directory.Delete(directory, recursive: true); }
+}
+
+(bool, string?) TestPreShowNeedsTranscode()
+{
+    string directory = Path.Combine(Path.GetTempPath(), "EveryStage-PreShowTranscodeTests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        string clip = Path.Combine(directory, "clip.mkv");
+        File.WriteAllBytes(clip, new byte[] { 1 });
+        var flagged = new MediaFile
+        {
+            SourcePath = clip, Kind = MediaKind.Video,
+            NeedsTranscode = true, TranscodeReason = FileLibraryStore.TranscodeRiskFor(clip, MediaKind.Video),
+        };
+        if (PreShowCheck.Inspect(flagged) != PreShowProblem.NeedsTranscode)
+            return (false, "Inspect did not report NeedsTranscode for a flagged, readable file.");
+        if (PreShowCheck.ShortLabel(PreShowProblem.NeedsTranscode) != "需转码")
+            return (false, "NeedsTranscode short label is wrong.");
+        if (!PreShowCheck.Describe(PreShowProblem.NeedsTranscode).Contains("转码"))
+            return (false, "NeedsTranscode description does not mention transcoding.");
+        // The same file without the flag passes cleanly — the finding comes from the flag.
+        var clean = new MediaFile { SourcePath = clip, Kind = MediaKind.Video };
+        if (PreShowCheck.Inspect(clean) != null)
+            return (false, "An unflagged readable file was reported.");
+        var section = new Activity { Name = "开场" };
+        section.Files.Add(flagged);
+        var scenario = new Scenario { Name = "测试" };
+        scenario.Activities.Add(section);
+        var findings = PreShowCheck.Run(scenario);
+        if (findings.Count != 1 || findings[0].Problem != PreShowProblem.NeedsTranscode)
+            return (false, "Run did not surface the NeedsTranscode finding.");
         return (true, null);
     }
     finally { Directory.Delete(directory, recursive: true); }

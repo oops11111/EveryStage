@@ -44,6 +44,16 @@ public sealed class MediaFile
     /// <summary>The big-screen transition into this item; null uses the 设置 default.</summary>
     public TransitionStyle? TransitionOverride { get; set; }
 
+    /// <summary>Import-time hint that this file may need transcoding before it can play
+    /// (see <c>FileLibraryStore.TranscodeRiskFor</c>). Only a container-level guess made when the
+    /// file is imported — a decode probe at playback time always outranks it, so a file flagged
+    /// here may still play fine, and clearing/ignoring the flag never blocks playback.</summary>
+    public bool NeedsTranscode { get; set; }
+
+    /// <summary>Why <see cref="NeedsTranscode"/> was set, in words the operator can act on
+    /// (e.g. which container was seen and what to convert to). Null when the flag is off.</summary>
+    public string? TranscodeReason { get; set; }
+
     /// <summary>Deep-copies every setting and, by default, assigns a fresh <see cref="Id"/> so an
     /// activity's copy stays independent from the library entry it came from. Set
     /// <paramref name="preserveId"/> only for an ephemeral playback queue that must keep log identity
@@ -68,5 +78,7 @@ public sealed class MediaFile
         BackgroundAudioVisual = BackgroundAudioVisual,
         Document = Document?.Clone(),
         TransitionOverride = TransitionOverride,
+        NeedsTranscode = NeedsTranscode,
+        TranscodeReason = TranscodeReason,
     };
 }

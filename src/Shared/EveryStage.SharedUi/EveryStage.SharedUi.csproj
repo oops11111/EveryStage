@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- UI helpers genuinely shared by Terminal and Caster (today: text-font selection). Plain
+         WinForms surface only; each app keeps its own palette/theme system in its own ModernUi —
+         those differ too much to share honestly. The 19041 target is the lower of the two apps'
+         targets, so both can reference this. -->
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Platforms>x64</Platforms>
+    <RootNamespace>EveryStage.SharedUi</RootNamespace>
+  </PropertyGroup>
+
+</Project>

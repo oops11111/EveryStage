@@ -116,6 +116,7 @@ if (-not $SkipStrictBuild) {
         "src/Shared/EveryStage.Discovery/EveryStage.Discovery.csproj",
         "src/Shared/EveryStage.Transport/EveryStage.Transport.csproj",
         "src/Shared/EveryStage.Rendering/EveryStage.Rendering.csproj",
+        "src/Shared/EveryStage.SharedUi/EveryStage.SharedUi.csproj",
         "src/Terminal/EveryStage.Terminal/EveryStage.Terminal.csproj",
         "src/Caster/EveryStage.Caster/EveryStage.Caster.csproj",
         "src/Tests/EveryStage.CoreSelfTests/EveryStage.CoreSelfTests.csproj",

@@ -17,6 +17,8 @@
   <ItemGroup>
     <!-- The LAN discovery/pairing wire format, shared with EveryStage.Terminal so both sides
          always agree on it by construction. -->
+    <!-- Shared UI helpers (font selection) shared with Caster — see EveryStage.SharedUi.UiFonts. -->
+    <ProjectReference Include="..\..\Shared\EveryStage.SharedUi\EveryStage.SharedUi.csproj" />
     <ProjectReference Include="..\..\Shared\EveryStage.Discovery\EveryStage.Discovery.csproj" />
     <!-- Shares D3D11Device with the Terminal/Phase-0-demo side for device-creation boilerplate.
          Capture/ScreenCaptureSource.cs uses it for IDXGIOutput1.DuplicateOutput; Encode/ uses its

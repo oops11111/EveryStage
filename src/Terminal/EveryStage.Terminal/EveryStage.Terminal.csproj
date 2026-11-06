@@ -59,6 +59,8 @@
     <ProjectReference Include="..\..\Shared\EveryStage.Rendering\EveryStage.Rendering.csproj" />
     <!-- The LAN discovery/pairing wire format, shared with EveryStage.Caster so both sides always
          agree on it by construction. -->
+    <!-- Shared UI helpers (font selection) shared with Caster — see EveryStage.SharedUi.UiFonts. -->
+    <ProjectReference Include="..\..\Shared\EveryStage.SharedUi\EveryStage.SharedUi.csproj" />
     <ProjectReference Include="..\..\Shared\EveryStage.Discovery\EveryStage.Discovery.csproj" />
     <!-- RTP packet framing / H.264 payload depacketization — Receiving/CastReceiver.cs is this
          project's first consumer of RtpReceiver (previously only exercised by Caster's transport

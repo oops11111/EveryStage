@@ -80,7 +80,9 @@ public sealed partial class SettingsStore
                 stream.Flush(flushToDisk: true);
             }
 
-            if (File.Exists(_storePath)) File.Replace(tempPath, _storePath, destinationBackupFileName: null);
+            // The replaced file is kept as .bak (rather than discarded) so Load can fall back
+            // to the previous version if this one is later found corrupt.
+            if (File.Exists(_storePath)) File.Replace(tempPath, _storePath, destinationBackupFileName: _storePath + ".bak");
             else File.Move(tempPath, _storePath);
             Current = settings;
             SettingsChanged?.Invoke(Current);
@@ -92,23 +94,36 @@ public sealed partial class SettingsStore
         }
     }
 
+    /// <summary>Parses one settings file — schema-version detection and <see cref="Migrate"/>
+    /// included — so <see cref="Load"/> can run the exact same logic over the main file and, when
+    /// that file is corrupt, over the .bak <see cref="Save"/> kept from the previous version. A
+    /// backup never triggers the .newer copy: that copy exists to preserve the MAIN file a newer
+    /// build wrote, and it is made from the main file's own path.</summary>
+    private AppSettings ParseSettings(string path, bool keepNewerCopy)
+    {
+        using var stream = File.OpenRead(path);
+        using var document = JsonDocument.Parse(stream);
+        var settings = document.RootElement.Deserialize<AppSettings>(JsonOptions) ?? new AppSettings();
+        if (!document.RootElement.TryGetProperty(nameof(AppSettings.SchemaVersion), out _))
+            settings.SchemaVersion = 0;
+        if (settings.SchemaVersion > AppSettings.CurrentSchemaVersion)
+        {
+            ReadOnlyNewerSchema = true;
+            if (keepNewerCopy)
+            {
+                try { File.Copy(path, path + ".newer", overwrite: true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        return Migrate(settings);
+    }
+
     private AppSettings Load()
     {
         if (!File.Exists(_storePath)) return new AppSettings();
 
         try
         {
-            using var stream = File.OpenRead(_storePath);
-            using var document = JsonDocument.Parse(stream);
-            var settings = document.RootElement.Deserialize<AppSettings>(JsonOptions) ?? new AppSettings();
-            if (!document.RootElement.TryGetProperty(nameof(AppSettings.SchemaVersion), out _))
-                settings.SchemaVersion = 0;
-            if (settings.SchemaVersion > AppSettings.CurrentSchemaVersion)
-            {
-                ReadOnlyNewerSchema = true;
-                try { File.Copy(_storePath, _storePath + ".newer", overwrite: true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-            }
-            return Migrate(settings);
+            return ParseSettings(_storePath, keepNewerCopy: true);
         }
         catch (JsonException)
         {
@@ -116,7 +131,15 @@ public sealed partial class SettingsStore
             // crash-loop on a corrupt settings file. Keep the bad file around (renamed) rather than
             // silently discard it, and fall back to defaults instead.
             File.Copy(_storePath, _storePath + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: true);
-            return new AppSettings();
+            // Before giving up to defaults, try the previous version Save kept as .bak — one
+            // corrupted write then costs nothing but the last settings change. The backup goes
+            // through the same schema check and migration as the main file, so a newer-schema
+            // backup still lands in the read-only guard instead of being partially interpreted.
+            try { return ParseSettings(_storePath + ".bak", keepNewerCopy: false); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                return new AppSettings();
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {

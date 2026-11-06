@@ -5,6 +5,13 @@ namespace EveryStage.Terminal.Data;
 
 public sealed class ScenarioStore
 {
+    /// <summary>The schema this build writes and understands, mirroring
+    /// <c>AppSettings.CurrentSchemaVersion</c>'s role for the settings file. Files written before
+    /// versioning existed have no SchemaVersion field at all; the property default makes them
+    /// deserialize as the current version, which is exactly how they were always interpreted.</summary>
+    public const int CurrentSchemaVersion = 1;
+
+    public int SchemaVersion { get; set; } = CurrentSchemaVersion;
     public List<Scenario> Scenarios { get; init; } = new();
     public Guid? CurrentScenarioId { get; set; }
 }
@@ -38,18 +45,37 @@ public sealed class ScenarioRepository
         _loadFailed = false;
         try
         {
-            using var stream = File.OpenRead(_storePath);
-            return JsonSerializer.Deserialize<ScenarioStore>(stream, JsonOptions) ?? CreateDefaultStore();
+            var loaded = DeserializeStore(_storePath);
+            if (loaded == null) return CreateDefaultStore();
+            // Written by a newer EveryStage: same treatment as the settings file's newer-schema
+            // guard. The contents may use fields/meanings this build cannot interpret, so run on
+            // an empty default for this session, leave the file exactly as it is, and let Save's
+            // _loadFailed check refuse to overwrite data a newer build owns.
+            if (loaded.SchemaVersion > ScenarioStore.CurrentSchemaVersion)
+            {
+                _loadFailed = true;
+                return CreateDefaultStore();
+            }
+            // Older or unversioned file: interpret it as the current schema (any future migration
+            // steps belong here, before the version is normalised).
+            loaded.SchemaVersion = ScenarioStore.CurrentSchemaVersion;
+            return loaded;
         }
         catch (FileNotFoundException) { return CreateDefaultStore(); }
         catch (DirectoryNotFoundException) { return CreateDefaultStore(); }
         catch (JsonException)
         {
-            // Corrupt store on an unattended device: fail safe to an empty default rather than
-            // crash-looping the Terminal on every boot. The bad file is kept alongside (renamed)
-            // for later diagnosis instead of silently overwritten.
+            // Corrupt store on an unattended device: fail safe rather than crash-looping the
+            // Terminal on every boot. The bad file is kept alongside (copied) for later diagnosis
+            // instead of silently overwritten.
             var corruptBackupPath = _storePath + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}";
             File.Copy(_storePath, corruptBackupPath, overwrite: true);
+            // Before giving up to an empty default, try the previous version Save kept as .bak:
+            // a single torn/corrupted write then costs nothing — the operator gets the store as
+            // of the save before it, not an empty library. The .bak gets the same schema guard
+            // as the main file; a .bak that is itself corrupt or newer-schema is no better than
+            // no .bak at all.
+            if (TryDeserializeBackup(out var backup)) return backup;
             return CreateDefaultStore();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -89,11 +115,45 @@ public sealed class ScenarioRepository
         }
 
         // File.Replace is atomic on the same volume; falls back to Move for the first-ever save
-        // when the destination doesn't exist yet.
+        // when the destination doesn't exist yet. The replaced file is kept as .bak (rather than
+        // discarded) so Load can fall back to the previous version if this one is later found
+        // corrupt — see the JsonException branch in Load.
         if (File.Exists(_storePath))
-            File.Replace(tempPath, _storePath, destinationBackupFileName: null);
+            File.Replace(tempPath, _storePath, destinationBackupFileName: _storePath + ".bak");
         else
             File.Move(tempPath, _storePath);
+    }
+
+    private static ScenarioStore? DeserializeStore(string path)
+    {
+        using var stream = File.OpenRead(path);
+        return JsonSerializer.Deserialize<ScenarioStore>(stream, JsonOptions);
+    }
+
+    /// <summary>Reads the .bak left by the previous <see cref="Save"/>, applying the same
+    /// newer-schema guard as <see cref="Load"/> itself. False when there is no usable backup —
+    /// missing, unreadable, corrupt, or written by a newer build (in which case _loadFailed is
+    /// set, so a recovered-in-name-only session still cannot overwrite the newer data).</summary>
+    private bool TryDeserializeBackup(out ScenarioStore backup)
+    {
+        backup = null!;
+        try
+        {
+            var loaded = DeserializeStore(_storePath + ".bak");
+            if (loaded == null) return false;
+            if (loaded.SchemaVersion > ScenarioStore.CurrentSchemaVersion)
+            {
+                _loadFailed = true;
+                return false;
+            }
+            loaded.SchemaVersion = ScenarioStore.CurrentSchemaVersion;
+            backup = loaded;
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return false;
+        }
     }
 
     private static ScenarioStore CreateDefaultStore() => new();
@@ -109,9 +169,11 @@ public sealed class ScenarioRepository
             using (var stream = File.OpenRead(_storePath))
                 loaded = JsonSerializer.Deserialize<ScenarioStore>(stream, JsonOptions);
             if (loaded == null) return false;
+            if (loaded.SchemaVersion > ScenarioStore.CurrentSchemaVersion) return false;
             store.Scenarios.Clear();
             store.Scenarios.AddRange(loaded.Scenarios);
             store.CurrentScenarioId = loaded.CurrentScenarioId;
+            store.SchemaVersion = ScenarioStore.CurrentSchemaVersion;
             _loadFailed = false; // memory now matches the real file again
             return true;
         }

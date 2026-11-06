@@ -169,7 +169,29 @@ static async Task TestHttpControl()
     if ((int)unauthorized.StatusCode != 401 || (int)authorized.StatusCode != 200 || !body.Contains("off_air"))
         throw new InvalidOperationException($"HTTP control over the socket: {(int)unauthorized.StatusCode} / {(int)authorized.StatusCode} {body}");
     try { Directory.Delete(logRoot, recursive: true); } catch (IOException) { }
-    Console.WriteLine("PASS: HTTP control (127.0.0.1, Bearer): 401 without token, /status, /emergency-stop, 405 / 404");
+
+    // F-22: resetting the token must invalidate the old one for the very next request (the server asks
+    // the supplier per request, so this only passes if Reset really swaps what Current returns).
+    string tokenPath = Path.Combine(Path.GetTempPath(), "EveryStage-HttpToken-" + Guid.NewGuid().ToString("N"), "http-control-token.txt");
+    string originalTokenPath = EveryStage.Terminal.Remote.HttpControlToken.Path;
+    try
+    {
+        EveryStage.Terminal.Remote.HttpControlToken.Path = tokenPath;
+        string oldToken = EveryStage.Terminal.Remote.HttpControlToken.Current();
+        using var resetServer = new EveryStage.Terminal.Remote.HttpControlServer(() => new { output = "off_air" }, () => { }, EveryStage.Terminal.Remote.HttpControlToken.Current, null, port, logRoot);
+        async Task<int> ResetStatus(string token) => (await resetServer.HandleAsync($"GET /status HTTP/1.1\r\nAuthorization: Bearer {token}")).Status;
+        if (await ResetStatus(oldToken) != 200)
+            throw new InvalidOperationException("HTTP control: the stored token was rejected before any reset.");
+        string newToken = EveryStage.Terminal.Remote.HttpControlToken.Reset();
+        if (newToken == oldToken || await ResetStatus(oldToken) != 401 || await ResetStatus(newToken) != 200)
+            throw new InvalidOperationException("HTTP control: the old token still works after a reset, or the new one does not.");
+    }
+    finally
+    {
+        EveryStage.Terminal.Remote.HttpControlToken.Path = originalTokenPath;
+        try { Directory.Delete(Path.GetDirectoryName(tokenPath)!, recursive: true); } catch (IOException) { }
+    }
+    Console.WriteLine("PASS: HTTP control (127.0.0.1, Bearer): 401 without token, /status, /emergency-stop, 405 / 404, reset invalidates the old token");
 }
 
 static void TestAudioOutputSelection()

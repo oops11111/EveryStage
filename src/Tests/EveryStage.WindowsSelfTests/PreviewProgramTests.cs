@@ -812,7 +812,7 @@ internal static class PreviewProgramTests
             new PairedDeviceStore(Path.Combine(dir, "paired.json")), scenarios, new ScenarioRepository(Path.Combine(dir, "scenarios.json")),
             settings, identity, new DeviceConnectionLogger(dir), new MusicLibraryStore(Path.Combine(dir, "music.json")),
             new FileOperationLogger(dir))
-        { Opacity = 0, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
+        { Opacity = 0, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), FirstRunGuideEnabled = false };
         window.Show();
         Pump(300);
 

@@ -1,6 +1,6 @@
 # EveryStage
 
-> 当前开发与验收状态以实际提交对应的 CI 日志为准。本文以下开发历史中保留了早期规划与环境记录，不代表当前版本已经完成现场验收。最新实施计划见 `docs/EVERYSTAGE-IMPLEMENTATION-CHECKLIST-2026-11-03.md`，执行进度见 `docs/IMPLEMENTATION-PROGRESS-2026-11-03.md`。
+> 当前开发与验收状态以实际提交对应的 CI 日志为准。本文以下开发历史中保留了早期规划与环境记录，不代表当前版本已经完成现场验收。最新实施计划见 `docs/EVERYSTAGE-IMPLEMENTATION-CHECKLIST-2026-11-03.md`，执行进度见 `docs/IMPLEMENTATION-PROGRESS-2026-11-03.md`。发布状态与未完成项以 `docs/V1-RELEASE-GATE.md` 为唯一事实源；其余文档（含本文以下开发历史）只作规划与历史记录，口径冲突时以闸门文档为准。
 
 **传输安全边界：媒体认证不等于加密。** 配对和媒体报文认证用于校验来源、完整性与重放；媒体内容不具备保密加密保证。请勿将本产品描述为“加密投屏”，局域网监听者可能获取媒体内容。
 
@@ -26,7 +26,9 @@ EveryStage/
 │   └── Poc/         阶段前置技术验证Demo（不属于正式产品代码）
 │       ├── ZeroCopyRenderDemo/    阶段0：D3D11零拷贝渲染管线验证（详见其 README.md）
 │       └── WpsComInteropSpike/    阶段1：WPS COM互操作静默/翻页验证脚本（详见其 README.md）
-└── .github/         CI/CD 与 issue 模板（待补充）
+├── .github/         CI 工作流（Windows 严格构建、自检、安装包）
+
+└── .claude/         AI 协作工具的技能文件，不是产品代码
 ```
 
 ## 核心技术方案（详见 docs/PLANNING.md）
@@ -39,8 +41,7 @@ EveryStage/
 
 ## 开发状态
 
-详见 `docs/PLANNING.md` 中的开发排期建议（第15章）。当前代码均在 Linux 沙箱中编写，**尚未在真实
-Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完成构建。
+详见 `docs/PLANNING.md` 中的开发排期建议（第15章）。当前代码由 CI 在 Windows 环境严格构建（-warnaserror）并运行自检，构建与自检状态以 CI 日志为准；但真机验收（真实 GPU、双机投屏、长时间稳定）尚未完成，未完成项见 `docs/REMAINING_TASKS.md` 与 `docs/V1-RELEASE-GATE.md`，不要把 CI 通过当作现场验收通过。
 
 - **阶段0**（D3D11零拷贝渲染管线技术验证Demo）：初版代码已在 `src/Poc/ZeroCopyRenderDemo/` 完成，
   待 Windows/GPU 环境编译并跑通第4.4节验收标准。
@@ -63,8 +64,7 @@ Windows 环境编译验证**，下一步都需要先在 Windows 开发机上完�
 - **阶段3的设备发现/配对**部分（§7）也已提前实现，且两端都有了：终端机侧
   `Terminal/.../Devices/DiscoveryService` 广播、响应配对、分离"允许被投放/被监看"权限，配一个配对
   确认弹窗；投屏机侧 `src/Caster/EveryStage.Caster/` 监听终端机列表、发起配对请求。两边共用的协议
-  定义搬到了 `src/Shared/EveryStage.Discovery/`——**协议格式仍是本仓库自定义的草案**，现在有了
-  两个独立实现，但从未在真实网络上互相验证过。**Caster这一侧也补上了"已配对直显"**
+  定义搬到了 `src/Shared/EveryStage.Discovery/`——**协议格式仍是本仓库自定义的**，两端共用同一份协议代码并有协议自检在 CI 中运行，但从未在真实网络的双机环境上互相验证过（见 B-15 验收）。**Caster这一侧也补上了"已配对直显"**
   （PLANNING.md §12）：新增 `Discovery/PairedTerminalStore.cs` 持久化每次成功配对过的终端机，
   待机列表现在是"当前收到beacon的"和"配对过但暂时没广播的（标为离线）"两个来源合并显示的结果，
   离线条目故意不缓存旧IP地址、也不可选，必须等对方重新广播才能真正发起投屏。

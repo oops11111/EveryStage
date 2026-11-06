@@ -1,6 +1,6 @@
 namespace EveryStage.Terminal.Data;
 
-public enum PreShowProblem { Missing, Unreadable, UnsupportedFormat, Spreadsheet }
+public enum PreShowProblem { Missing, Unreadable, UnsupportedFormat, Spreadsheet, NeedsTranscode }
 
 /// <summary>One file of the scenario that will not play as it stands.</summary>
 public sealed record PreShowFinding(Activity Activity, int Index, MediaFile File, PreShowProblem Problem);
@@ -39,6 +39,13 @@ public static class PreShowCheck
         {
             if (!File.Exists(path)) return PreShowProblem.Missing;
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            // The file exists and can be read, so anything more basic is already ruled out; only
+            // now does the import-time transcode hint (MediaFile.NeedsTranscode) get reported. It
+            // is the weakest finding here — a container-level guess, not a decode failure — which
+            // is why it is checked last and, like everything in this check, never blocks the show.
+            // The specific reason rides on the file itself (MediaFile.TranscodeReason); Describe
+            // below only has the enum, so it stays generic.
+            if (file.NeedsTranscode) return PreShowProblem.NeedsTranscode;
             return null;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
@@ -52,6 +59,7 @@ public static class PreShowCheck
         PreShowProblem.Missing => "文件不存在（已移动、删除或 U 盘已拔出）",
         PreShowProblem.Unreadable => "无法读取（被占用或没有权限）",
         PreShowProblem.Spreadsheet => "表格不能直接播放，请另存为 PDF",
+        PreShowProblem.NeedsTranscode => "视频容器可能不受支持，可能需要转码为 MP4（H.264 + AAC）才能播放",
         _ => "格式不支持",
     };
 
@@ -59,6 +67,7 @@ public static class PreShowCheck
     {
         PreShowProblem.Missing => "缺失",
         PreShowProblem.Unreadable => "无法读取",
+        PreShowProblem.NeedsTranscode => "需转码",
         _ => "格式不支持",
     };
 }

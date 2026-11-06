@@ -63,6 +63,11 @@ public sealed class MainWindow : GradientForm
     private readonly EmergencyStopHotkey _emergencyHotkey;
     private MediaFile? _lastOnAirFile;
     private bool _deviceFeedbackLive;
+    /// <summary>首启引导只弹一次（见 <see cref="ShowFirstRunGuideIfEmpty"/>）；窗口靠托盘反复隐藏/显示，
+    /// 不能每次显示都弹。</summary>
+    private bool _firstRunGuideShown;
+    /// <summary>自检里打开的主窗口不能弹模态引导框（没人点，测试会卡住）。</summary>
+    internal bool FirstRunGuideEnabled { get; init; } = true;
     private readonly System.Windows.Forms.Timer _declinedMessageTimer;
     private readonly FilesPanel _filesPanel;
     private readonly DevicesPanel _devicesPanel;
@@ -346,6 +351,28 @@ public sealed class MainWindow : GradientForm
                 Hide();
             }
         };
+
+        // 首启空态引导：窗口第一次真正显示出来后再判断和弹框（构造时窗口还没就位）。
+        Shown += (_, _) => ShowFirstRunGuideIfEmpty();
+    }
+
+    /// <summary>当且仅当文件库为空、且没有任何方案建过活动时，给新用户一个三步引导。判断只读本窗口
+    /// 已经持有的数据（<see cref="_library"/> 与 <see cref="_scenarioStore"/>），不需要新依赖，也不需要
+    /// 持久化「已看过」标记：用户一旦导入文件或建了活动，条件自然不再成立，之后启动不会再出现。
+    /// 注意默认方案是 ActivitiesPanel 的 <c>EnsureAtLeastOneScenario</c> 补建的空方案（零个活动），
+    /// 所以判断看的是「活动总数」，不是「方案是否存在」。</summary>
+    private void ShowFirstRunGuideIfEmpty()
+    {
+        if (_firstRunGuideShown || !FirstRunGuideEnabled) return;
+        _firstRunGuideShown = true;
+        if (_library.Files.Count > 0) return;
+        if (_scenarioStore.Scenarios.Any(scenario => scenario.Activities.Count > 0)) return;
+        MessageBox.Show(this,
+            "欢迎使用 EveryStage。文件库还是空的、也还没有活动，可以按三步开始：\n\n"
+            + "1. 在「文件」页点「导入」，把图片、视频、文档等素材加入文件库；\n"
+            + "2. 在「流程」页新建活动，把文件加入活动并排好播放顺序；\n"
+            + "3. 选好扩展屏后即可播放，也可以等待投屏机连接投屏。",
+            "开始使用", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     /// <summary>PLANNING.md §5's runtime monitor-hot-plug binding — called (at most once, from

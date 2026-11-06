@@ -14,11 +14,26 @@ namespace EveryStage.Terminal.Data;
 /// </summary>
 public sealed class FileLibraryStore
 {
+    /// <summary>The schema this build writes. Version 0 is the original on-disk shape — the file
+    /// was a bare JSON array of <see cref="MediaFile"/> with no version anywhere — and version 1
+    /// wraps that same list in an envelope (<see cref="LibraryEnvelope"/>) so a future format
+    /// change can be detected instead of silently misread, the same reason
+    /// <c>AppSettings.SchemaVersion</c> and <c>ScenarioStore.SchemaVersion</c> exist.</summary>
+    public const int CurrentSchemaVersion = 1;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
         Converters = { new JsonStringEnumConverter() },
     };
+
+    /// <summary>On-disk envelope for schema version 1+. The bare-array shape it replaces is still
+    /// accepted on load (see <see cref="DeserializeLibrary"/>); saves always write this.</summary>
+    private sealed class LibraryEnvelope
+    {
+        public int SchemaVersion { get; set; } = CurrentSchemaVersion;
+        public List<MediaFile> Files { get; set; } = new();
+    }
 
     private readonly string _storePath;
     private List<MediaFile> _files;
@@ -64,6 +79,25 @@ public sealed class FileLibraryStore
     /// <summary>「播完后」 given to newly imported files (设置 · 播放行为; 定格 unless changed).</summary>
     public CompletionAction DefaultCompletion { get; set; } = CompletionAction.HoldOnLastFrame;
 
+    /// <summary>Container-level transcode heuristic for a video file, judged from its extension
+    /// alone at import time. MP4 is the one container this product commits to playing
+    /// (H.264 + AAC); the other accepted video containers may hold codecs the decode pipeline
+    /// cannot handle, and there is no way to know from the name — so they are flagged as
+    /// possibly needing a transcode rather than failing silently at show time. This is only a
+    /// hint: a decode probe at playback time always outranks it, and the flag never blocks
+    /// anything. Non-video kinds and unknown extensions are not judged here (null).</summary>
+    public static string? TranscodeRiskFor(string path, MediaKind kind)
+    {
+        if (kind != MediaKind.Video) return null;
+        string extension = Path.GetExtension(path).ToLowerInvariant();
+        return extension switch
+        {
+            ".mkv" or ".mov" or ".avi" or ".wmv" or ".m4v" =>
+                $"容器为 {extension.TrimStart('.').ToUpperInvariant()}，导入时无法确认内部编码，可能需要转码为 MP4（H.264 + AAC）才能播放",
+            _ => null,
+        };
+    }
+
     public MediaFile? Import(string sourcePath)
     {
         EnsureWritable();
@@ -71,6 +105,11 @@ public sealed class FileLibraryStore
         if (kind == null) return null;
 
         var file = new MediaFile { SourcePath = sourcePath, Kind = kind.Value, OnCompletion = DefaultCompletion };
+        if (TranscodeRiskFor(sourcePath, kind.Value) is { } transcodeReason)
+        {
+            file.NeedsTranscode = true;
+            file.TranscodeReason = transcodeReason;
+        }
         _files.Add(file);
         try { Save(); }
         catch { _files.Remove(file); throw; }
@@ -101,12 +140,38 @@ public sealed class FileLibraryStore
         catch { _files = previous; throw; }
     }
 
+    /// <summary>Parses a library file in either on-disk shape: a bare JSON array (schema v0,
+    /// everything written before the envelope existed) or the v1+ envelope object.
+    /// <paramref name="newerSchema"/> is set instead of throwing when an envelope's version is
+    /// higher than this build understands, so the caller can protect the file from saves while
+    /// still running on an empty library.</summary>
+    private static List<MediaFile> DeserializeLibrary(string path, out bool newerSchema)
+    {
+        newerSchema = false;
+        using var stream = File.OpenRead(path);
+        using var document = JsonDocument.Parse(stream);
+        if (document.RootElement.ValueKind == JsonValueKind.Array)
+            return document.RootElement.Deserialize<List<MediaFile>>(JsonOptions) ?? new List<MediaFile>();
+        var envelope = document.RootElement.Deserialize<LibraryEnvelope>(JsonOptions);
+        if (envelope == null) return new List<MediaFile>();
+        if (envelope.SchemaVersion > CurrentSchemaVersion)
+        {
+            newerSchema = true;
+            return new List<MediaFile>();
+        }
+        return envelope.Files ?? new List<MediaFile>();
+    }
+
     private List<MediaFile> Load()
     {
         try
         {
-            using var stream = File.OpenRead(_storePath);
-            return JsonSerializer.Deserialize<List<MediaFile>>(stream, JsonOptions) ?? new List<MediaFile>();
+            var files = DeserializeLibrary(_storePath, out bool newerSchema);
+            // Envelope written by a newer EveryStage: leave the file untouched and refuse every
+            // save (EnsureWritable checks _loadFailed), exactly like the settings/scenario
+            // stores' newer-schema guards, so a downgrade can't flatten data it doesn't know.
+            if (newerSchema) _loadFailed = true;
+            return files;
         }
         catch (FileNotFoundException) { return new List<MediaFile>(); }
         catch (DirectoryNotFoundException) { return new List<MediaFile>(); }
@@ -115,7 +180,20 @@ public sealed class FileLibraryStore
             // Same fail-safe as ScenarioRepository/PairedDeviceStore: an unattended device must not
             // crash-loop on a corrupt library file.
             File.Copy(_storePath, _storePath + $".corrupt-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: true);
-            return new List<MediaFile>();
+            // Before giving up to an empty library, try the previous version Save kept as .bak —
+            // one corrupted write then recovers the library as of the save before it. The .bak is
+            // read by the same format-detecting parser (it may predate the envelope), and a .bak
+            // that is itself corrupt or newer-schema is no better than no .bak at all.
+            try
+            {
+                var backup = DeserializeLibrary(_storePath + ".bak", out bool backupNewer);
+                if (backupNewer) _loadFailed = true;
+                return backup;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                return new List<MediaFile>();
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -151,7 +229,9 @@ public sealed class FileLibraryStore
         string tempPath = _storePath + ".tmp";
         using (var stream = File.Create(tempPath))
         {
-            JsonSerializer.Serialize(stream, _files, JsonOptions);
+            // Always the envelope shape, even when the file on disk was a legacy bare array —
+            // loading an old library and saving it once upgrades it in place.
+            JsonSerializer.Serialize(stream, new LibraryEnvelope { SchemaVersion = CurrentSchemaVersion, Files = _files }, JsonOptions);
             // Flushed all the way to the device, not just out of the .NET buffer. File.Replace's rename is a
             // journalled NTFS metadata operation, but the temp file's DATA blocks are not journalled with it -
             // closing the stream only hands them to the OS cache. Lose power in the window where the rename is
@@ -161,8 +241,10 @@ public sealed class FileLibraryStore
             stream.Flush(flushToDisk: true);
         }
 
+        // The replaced file is kept as .bak (rather than discarded) so Load can fall back to
+        // the previous version if this one is later found corrupt.
         if (File.Exists(_storePath))
-            File.Replace(tempPath, _storePath, destinationBackupFileName: null);
+            File.Replace(tempPath, _storePath, destinationBackupFileName: _storePath + ".bak");
         else
             File.Move(tempPath, _storePath);
     }
