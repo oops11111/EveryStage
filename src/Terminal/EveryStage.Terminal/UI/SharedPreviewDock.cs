@@ -323,9 +323,17 @@ internal sealed class SharedPreviewDock : Panel
         int fixedHeight = S(28) + gap / 2 + label + S(4) + (button + S(6)) * 2 + documentHeight + gap
             + S(40) + gap + label + S(4) + S(6) + deviceHeight + gap + button
             + (_runControls != null ? _runControls.Height + gap : 0);
-        // Two monitors (PVW above, PGM below) share what is left, each at most 16:9 of the width.
+        // Two monitors (PVW above, PGM below) share what is left, each at most 16:9 of the width. A short
+        // window first gives up the PVW progress row, then the idle 设备来投 card, then monitor height.
         int fullMonitor = (w - S(4)) * 9 / 16 + S(4);
-        int monitorsTotal = Math.Clamp(area.Height - fixedHeight, S(140), fullMonitor * 2);
+        int minMonitors = S(96);
+        bool showProgressRow = area.Height - fixedHeight >= minMonitors;
+        if (!showProgressRow) fixedHeight -= button + S(6);
+        bool showDeviceCard = _deviceConnected || area.Height - fixedHeight >= minMonitors;
+        if (!showDeviceCard) fixedHeight -= deviceHeight + gap;
+        // At the very smallest window (流程 run controls docked in) the monitors take what is left rather
+        // than push the controls below the column.
+        int monitorsTotal = Math.Clamp(area.Height - fixedHeight, S(48), fullMonitor * 2);
         int monitor = Math.Min(fullMonitor, monitorsTotal / 2);
         int programMonitor = Math.Min(fullMonitor, monitorsTotal - monitor);
 
@@ -356,14 +364,15 @@ internal sealed class SharedPreviewDock : Panel
         _volume.Bounds = new Rectangle(volumeLeft + S(22), y + (button - S(24)) / 2, Math.Max(1, volumeRight - volumeLeft - S(22)), S(24));
         y += button + S(6);
 
-        // Transport row 2: timecode · progress.
+        // Transport row 2: timecode · progress (dropped on a short window).
         int timeWidth = TextRenderer.MeasureText("00:00:00 / 00:00:00", _timecode.Font).Width;
-        bool timeFits = w - timeWidth >= S(MinProgressWidth);
+        bool timeFits = showProgressRow && w - timeWidth >= S(MinProgressWidth);
+        _progress.Visible = showProgressRow;
         _timecode.Visible = timeFits;
         _timecode.Bounds = new Rectangle(x, y, timeWidth, button);
         int progressLeft = timeFits ? x + timeWidth + S(4) : x;
         _progress.Bounds = new Rectangle(progressLeft, y + (button - S(24)) / 2, Math.Max(1, area.Right - progressLeft), S(24));
-        y += button + S(6);
+        if (showProgressRow) y += button + S(6);
 
         if (_documentBar != null)
         {
@@ -389,8 +398,9 @@ internal sealed class SharedPreviewDock : Panel
         y += label + S(4);
         _programMirror.Bounds = new Rectangle(x, y, w, programMonitor);
         y += programMonitor + S(6);
+        _deviceCard.Card.Visible = showDeviceCard;
         _deviceCard.Card.Bounds = new Rectangle(x, y, w, deviceHeight);
-        y += deviceHeight + gap;
+        if (showDeviceCard) y += deviceHeight + gap;
         int half = (w - S(8)) / 2;
         _programPauseButton.Bounds = new Rectangle(x, y, half, button);
         _stopOutputButton.Bounds = new Rectangle(x + half + S(8), y, w - half - S(8), button);

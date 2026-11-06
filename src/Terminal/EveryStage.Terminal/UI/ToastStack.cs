@@ -12,7 +12,7 @@ namespace EveryStage.Terminal.UI;
 public sealed class ToastStack : Panel
 {
     public const int MaxVisible = 3;
-    private const int SlotHeight = 50;
+    private const int SlotHeight = 44;
     private const int Gap = 4;
     private const int Margin_ = 6;
     private const int FloatingWidth = 320;
