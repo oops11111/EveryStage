@@ -430,14 +430,24 @@ public class GradientForm : Form
     protected override void OnShown(EventArgs e)
     {
         CaptureLogicalMinimumSize();
-        FitToCurrentWorkingArea();
+        FitToCurrentWorkingArea(clampPosition: true);
         base.OnShown(e);
     }
 
+    // Dragged onto a monitor with another scale: fit the size there, but leave the position to the
+    // operator (clamping it mid-drag made the window jump back).
     protected override void OnDpiChanged(DpiChangedEventArgs e)
     {
         base.OnDpiChanged(e);
-        FitToCurrentWorkingArea();
+        FitToCurrentWorkingArea(clampPosition: false);
+    }
+
+    private Size _sizeAtResizeBegin;
+
+    protected override void OnResizeBegin(EventArgs e)
+    {
+        _sizeAtResizeBegin = Size;
+        base.OnResizeBegin(e);
     }
 
     private void CaptureLogicalMinimumSize()
@@ -448,7 +458,10 @@ public class GradientForm : Form
             Math.Max(1, MinimumSize.Height * 96 / DeviceDpi));
     }
 
-    private void FitToCurrentWorkingArea()
+    /// <summary>Keeps the window no larger than the screen it is on. With <paramref name="clampPosition"/>
+    /// (first show) it is also placed fully inside the working area; otherwise the operator may leave it
+    /// partly off screen — it is only brought back if its title bar can no longer be grabbed.</summary>
+    private void FitToCurrentWorkingArea(bool clampPosition)
     {
         if (WindowState != FormWindowState.Normal) return;
 
@@ -473,9 +486,29 @@ public class GradientForm : Form
             Size = AspectRatioSizing.Resize(available, MinimumSize, maximum, NormalWindowAspectRatio, false);
         }
         else Size = available;
+        if (clampPosition)
+            Location = new Point(
+                Math.Clamp(Left, workingArea.Left + margin, Math.Max(workingArea.Left + margin, workingArea.Right - margin - Width)),
+                Math.Clamp(Top, workingArea.Top + margin, Math.Max(workingArea.Top + margin, workingArea.Bottom - margin - Height)));
+        else KeepTitleBarReachable();
+    }
+
+    /// <summary>Partly off screen is fine; lost is not: if no screen shows at least a 120×24 px piece of the
+    /// title bar (the strip the window is dragged by), move the window just far enough to show one.</summary>
+    private void KeepTitleBarReachable()
+    {
+        int grab = LogicalToDeviceUnits(24);
+        var titleBar = new Rectangle(Left, Top, Width, grab);
+        foreach (var screen in Screen.AllScreens)
+        {
+            var visible = Rectangle.Intersect(titleBar, screen.WorkingArea);
+            if (visible.Width >= LogicalToDeviceUnits(120) && visible.Height >= grab) return;
+        }
+        var area = Screen.FromRectangle(Bounds).WorkingArea;
+        int keep = LogicalToDeviceUnits(120);
         Location = new Point(
-            Math.Clamp(Left, workingArea.Left + margin, Math.Max(workingArea.Left + margin, workingArea.Right - margin - Width)),
-            Math.Clamp(Top, workingArea.Top + margin, Math.Max(workingArea.Top + margin, workingArea.Bottom - margin - Height)));
+            Math.Clamp(Left, area.Left - Width + keep, area.Right - keep),
+            Math.Clamp(Top, area.Top, area.Bottom - grab));
     }
 
     protected override void OnPaintBackground(PaintEventArgs e)
@@ -620,10 +653,13 @@ public class GradientForm : Form
         return false;
     }
 
+    // WinForms raises ResizeEnd after a move too. A move is left where the operator dropped it (only a
+    // title bar dragged out of reach is brought back); a real resize is still limited to the screen.
     protected override void OnResizeEnd(EventArgs e)
     {
         base.OnResizeEnd(e);
-        FitToCurrentWorkingArea();
+        if (Size != _sizeAtResizeBegin) FitToCurrentWorkingArea(clampPosition: false);
+        else if (WindowState == FormWindowState.Normal) KeepTitleBarReachable();
     }
 }
 

@@ -1273,6 +1273,26 @@ internal static class DocumentTests
         var applyTheme = type.GetMethod("ApplyTheme", flags)!;
         var dock = type.GetField("_previewDock", flags)!.GetValue(window)!;
         var stopOutput = (Control)dock.GetType().GetField("_stopOutputButton", flags)!.GetValue(dock)!;
+        // Moving the window partly off screen is kept (no bounce back); only a title bar dragged out of
+        // reach is brought back. WinForms raises ResizeBegin/ResizeEnd around a move as well.
+        {
+            var formType = typeof(GradientForm);
+            var begin = formType.GetMethod("OnResizeBegin", flags)!;
+            var end = formType.GetMethod("OnResizeEnd", flags)!;
+            var area = Screen.FromControl(window).WorkingArea;
+            var partly = new Point(area.Right - 300, area.Top + 40);
+            begin.Invoke(window, new object[] { EventArgs.Empty });
+            window.Location = partly;
+            end.Invoke(window, new object[] { EventArgs.Empty });
+            Require(window.Location == partly, $"A window moved partly off screen bounced back to {window.Location}.");
+            begin.Invoke(window, new object[] { EventArgs.Empty });
+            window.Location = new Point(area.Right + 4000, area.Bottom + 4000);
+            end.Invoke(window, new object[] { EventArgs.Empty });
+            Require(Screen.AllScreens.Any(sc => Rectangle.Intersect(new Rectangle(window.Left, window.Top, window.Width, 24), sc.WorkingArea).Width >= 100),
+                "A window dragged entirely off screen was not brought back within reach.");
+            window.Location = new Point(area.Left + 20, area.Top + 20);
+            Console.WriteLine("PASS: window may stay partly off screen; an unreachable title bar is brought back");
+        }
         string[] pages = { "_filesPanel", "_activitiesPanel", "_devicesPanel", "_settingsPanel" };
         foreach (var size in new[] { new Size(1440, 900), new Size(1024, 640) })
         {
