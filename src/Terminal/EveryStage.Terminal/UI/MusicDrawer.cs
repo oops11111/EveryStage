@@ -276,12 +276,44 @@ internal sealed class MusicDrawer : Panel
         for (int i = 0; i < moved.Count; i++) _tracks.SetSelected(target + i, true);
     }
 
+    // The panel slides as ONE picture: moving the live panel made its background and every child control
+    // (labels, lists, buttons) repaint separately, so the text visibly lagged behind the panel. The real
+    // controls come back when the slide ends.
+    private Bitmap? _slideImage;
+
     private void BringToSlide()
     {
         _slideFrom = Height;
         _slideStart = DateTime.UtcNow;
+        CaptureSlideImage();
         _slide.Start();
         StepSlide();
+    }
+
+    private void CaptureSlideImage()
+    {
+        _slideImage?.Dispose();
+        _slideImage = null;
+        int width = Math.Max(1, ClientSize.Width), full = TargetHeight;
+        try
+        {
+            _sheet.Bounds = new Rectangle(0, Height - full, width, full);
+            _sheet.PerformLayout();
+            var image = new Bitmap(width, full);
+            _sheet.DrawToBitmap(image, new Rectangle(0, 0, width, full));
+            _slideImage = image;
+            _sheet.Visible = false;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            _sheet.Visible = true; // fall back to sliding the live panel
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        if (_slideImage != null) e.Graphics.DrawImageUnscaled(_slideImage, 0, Height - _slideImage.Height);
     }
 
     private void StepSlide()
@@ -291,10 +323,15 @@ internal sealed class MusicDrawer : Panel
         double t = Math.Min(1, (DateTime.UtcNow - _slideStart).TotalMilliseconds / SlideMilliseconds);
         double eased = 1 - Math.Pow(1 - t, 3); // ease-out: fast start, gentle stop
         Height = (int)Math.Round(_slideFrom + (target - _slideFrom) * eased);
+        Invalidate();
         if (t >= 1)
         {
             _slide.Stop();
             Height = target;
+            _slideImage?.Dispose();
+            _slideImage = null;
+            _sheet.Visible = _open;
+            Invalidate();
             if (!_open) Visible = false;
             else if (_tracks.Items.Count > 0) _tracks.Focus();
             else _playlists.Focus();
@@ -604,6 +641,7 @@ internal sealed class MusicDrawer : Panel
         {
             _music.Changed -= OnMusicChanged;
             _slide.Dispose();
+            _slideImage?.Dispose();
             _toolTip.Dispose();
         }
         base.Dispose(disposing);

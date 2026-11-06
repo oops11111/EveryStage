@@ -89,9 +89,11 @@ internal sealed class SharedPreviewDock : Panel
     private bool _deviceOnProgram;
     private DocumentControlBar? _documentBar;
     private DocumentProgramSync? _documentSync;
-    private readonly PresenterStrip _presenter = new() { Visible = false };
-    private readonly RoundedActionButton _presenterViewButton;
+    // 演讲者视图 is never part of this column: it is its own window that opens when a presentation goes on
+    // air on the big screen (once per show; closing it keeps it closed until the next show, or reopen it
+    // from the status row's right-click menu) and closes when the show ends.
     private PresenterWindow? _presenterWindow;
+    private object? _presenterShow;
     private bool _documentBarShown;
     private Control? _footer;
     private Control? _runControls;
@@ -173,11 +175,12 @@ internal sealed class SharedPreviewDock : Panel
         _deviceCard.VideoHost.SizeChanged += (_, _) => DeviceVideoHostResized?.Invoke(
             Math.Max(1, _deviceCard.VideoHost.ClientSize.Width), Math.Max(1, _deviceCard.VideoHost.ClientSize.Height));
 
-        _presenterViewButton = TextButton("⤢ 演讲者视图", "打开可缩放、可最大化的演讲者视图（当前页、下一页、备注、计时）");
-        _presenterViewButton.Visible = false;
-        _presenterViewButton.Click += (_, _) => OpenPresenterView();
+        var statusMenu = new ContextMenuStrip();
+        var presenterItem = statusMenu.Items.Add("打开演讲者视图", null, (_, _) => OpenPresenterView());
+        statusMenu.Opening += (_, _) => presenterItem.Enabled = CurrentShow != null;
+        _status.ContextMenuStrip = statusMenu;
 
-        Controls.AddRange(new Control[] { _status, _stopOutputButton, _collapseButton, _presenter, _presenterViewButton, _takeButton, _fadeButton, _swapButton, _deviceCard.Card });
+        Controls.AddRange(new Control[] { _status, _stopOutputButton, _collapseButton, _takeButton, _fadeButton, _swapButton, _deviceCard.Card });
         foreach (var window in _windows) window.AddTo(this);
 
         _takeButton.Click += (_, _) => TakeRequested?.Invoke(TransitionStyle.Cut);
@@ -303,11 +306,10 @@ internal sealed class SharedPreviewDock : Panel
 
         int deviceHeight = _deviceConnected ? Math.Max(S(SourceCardHeight), w * 9 / 16) : 0;
         int documentHeight = _documentBarShown ? button + S(6) : 0;
-        int presenterHeight = _presenter.Visible ? S(PresenterStrip.LogicalHeight) + S(6) + button + S(6) : 0;
         int windowChrome = MonitorWindow.ChromeHeight(S);
         int fixedHeight = button + gap                                   // status row
             + windowChrome * 2 + gap                                     // captions + transports
-            + documentHeight + presenterHeight
+            + documentHeight
             + S(36) + gap                                                // take row
             + (deviceHeight > 0 ? deviceHeight + gap : 0)
             + (_runControls != null ? _runControls.Height + gap : 0);
@@ -328,14 +330,6 @@ internal sealed class SharedPreviewDock : Panel
             _documentBar.Bounds = new Rectangle(x, y, w, button);
             y += button + S(6);
         }
-        if (_presenter.Visible)
-        {
-            _presenter.Bounds = new Rectangle(x, y, w, S(PresenterStrip.LogicalHeight));
-            y += S(PresenterStrip.LogicalHeight) + S(6);
-            _presenterViewButton.Bounds = new Rectangle(x, y, w, button);
-            y += button + S(6);
-        }
-        _presenterViewButton.Visible = _presenter.Visible;
 
         int swapWidth = S(72), takeWidth = (w - swapWidth - S(12)) / 2;
         _takeButton.Bounds = new Rectangle(x, y, takeWidth, S(36));
@@ -445,8 +439,15 @@ internal sealed class SharedPreviewDock : Panel
             _presenterWindow.Activate();
             return;
         }
+        var owner = FindForm();
+        if (owner == null || !owner.Visible) return;
         _presenterWindow = new PresenterWindow(() => CurrentShow, () => ProgramScreenBounds?.Invoke(), () => _program);
-        _presenterWindow.Show(FindForm());
+        // Open on the operator's screen, never on top of the big screen.
+        var work = Screen.FromControl(owner).WorkingArea;
+        _presenterWindow.StartPosition = FormStartPosition.Manual;
+        _presenterWindow.Size = new Size(Math.Min(_presenterWindow.Width, work.Width), Math.Min(_presenterWindow.Height, work.Height));
+        _presenterWindow.Location = new Point(work.Left + (work.Width - _presenterWindow.Width) / 2, work.Top + (work.Height - _presenterWindow.Height) / 2);
+        _presenterWindow.Show(owner);
     }
 
     private void RefreshNow()
@@ -456,12 +457,12 @@ internal sealed class SharedPreviewDock : Panel
         _documentSync?.FollowProgramShow();
         RefreshDocumentBar();
         var show = CurrentShow;
-        if (_presenter.Visible != (show != null))
+        if (!ReferenceEquals(show, _presenterShow))
         {
-            _presenter.Visible = show != null;
-            PerformLayout();
+            _presenterShow = show;
+            if (show != null) OpenPresenterView();
+            else if (_presenterWindow is { IsDisposed: false }) _presenterWindow.Close();
         }
-        _presenter.Update(show);
 
         bool programLive = _stateMachine.State == OutputState.Active;
         var source = programLive ? _stateMachine.Source : ProgramSource.None;

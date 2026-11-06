@@ -73,6 +73,9 @@ internal sealed class PresenterWindow : Form
         RefreshShow();
     }
 
+    // Opens by itself when a show goes on air: do not take the keyboard away from the operator's window.
+    protected override bool ShowWithoutActivation => true;
+
     private Button Button(string text, string tip, Action onClick)
     {
         var button = new RoundedActionButton { Text = text, Height = 36, Width = 104 };
