@@ -183,7 +183,18 @@ public sealed class ActivitiesPanel : UserControl, IActivityRowHost
                 right -= gap;
             }
             int comboLeft = scenarioLabel.Right + 8;
-            _scenarioCombo.Width = Math.Clamp(right - comboLeft - _activityCount.PreferredWidth - 2 * gap, 120, 240);
+            // Narrow page: 开演前检查 shortens to 检查 so it never covers the scenario list.
+            bool narrow = right - comboLeft < 120 + gap;
+            checkButton.Text = narrow ? "检查" : "开演前检查";
+            if (narrow)
+            {
+                right += checkButton.Width + gap;
+                checkButton.Width = 56;
+                right -= checkButton.Width + gap;
+                checkButton.Location = new Point(right + gap, cy - checkButton.Height / 2);
+            }
+            else checkButton.Width = 100;
+            _scenarioCombo.Width = Math.Clamp(right - comboLeft - _activityCount.PreferredWidth - 2 * gap, Math.Min(120, Math.Max(60, right - comboLeft - gap)), 240);
             _scenarioCombo.Location = new Point(comboLeft, cy - _scenarioCombo.Height / 2);
             _activityCount.Location = new Point(_scenarioCombo.Right + gap, cy - _activityCount.Height / 2);
             _activityCount.Visible = _activityCount.Right <= right;
