@@ -44,7 +44,7 @@ public sealed class SettingsPanel : UserControl
     private readonly CheckBox _transitionOnBlack;
     private readonly ComboBox _completionComboBox;
     private readonly CheckBox _httpControlCheckbox;
-    private readonly CheckBox _clickTakesToAir;
+    private readonly ComboBox _castClick;
     private readonly NumericUpDown _goLiveFade;
     private readonly Label _keyVisualLabel;
 
@@ -156,17 +156,21 @@ public sealed class SettingsPanel : UserControl
         extendWizard.Click += (_, _) => ExtendDisplayWizard.Show(this);
         output.AddRow("扩展屏", "终端机输出到哪个显示器；列表每次打开本页时重新枚举。更改前会确认，10 秒内可撤销。" +
             "电脑只复制了屏幕或没认出第二块屏时，用「扩展屏向导」（等同 Win+P → 扩展）", "重启后生效", UiForegroundRole.Muted, _monitorComboBox, extendWizard);
-        _clickTakesToAir = new CheckBox { Text = "开启", AutoSize = true, Checked = settings.ClickTakesToAir, AccessibleName = "单击即上屏" };
-        _clickTakesToAir.CheckedChanged += (_, _) =>
+        _castClick = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150, AccessibleName = "投屏键" };
+        _castClick.Items.AddRange(new object[] { "双击（默认）", "单击" });
+        _castClick.SelectedIndex = settings.ClickTakesToAir ? 1 : 0;
+        ModernUi.StyleComboBox(_castClick);
+        _castClick.SelectedIndexChanged += (_, _) =>
         {
             if (_loading) return;
-            if (_clickTakesToAir.Checked)
-                CommitDangerous(s => s.ClickTakesToAir = true, s => s.ClickTakesToAir = false, "单击即上屏",
-                    "开启「单击即上屏」？\n开启后，在文件库或流程里单击一个文件就会直接投到大屏（不经过预览）。演出中请小心误点。");
-            else Commit(s => s.ClickTakesToAir = false, "单击即上屏");
+            if (_castClick.SelectedIndex == 1)
+                CommitDangerous(s => s.ClickTakesToAir = true, s => s.ClickTakesToAir = false, "投屏键",
+                    "把投屏键改为「单击」？\n之后在文件库或流程里单击一个文件就会直接投到大屏。演出中请小心误点。");
+            else Commit(s => s.ClickTakesToAir = false, "投屏键");
         };
-        output.AddRow("单击即上屏", "关闭（默认）：单击在预览（PVW）中播放，双击或「切换 / 淡入淡出」上屏。开启：单击直接上屏。开启前会确认",
-            "即时生效", UiForegroundRole.Accent, _clickTakesToAir);
+        output.AddRow("投屏键", "用哪种点击把文件直接投到大屏：大屏待机时直接上屏，并在空闲的监看窗口里同步显示、控制；两个窗口都在用时用上面的窗口；" +
+            "只有一块屏时直接在窗口里播放。另一种点击（以及把文件拖到窗口上）只在监看窗口里播放。改为单击前会确认",
+            "即时生效", UiForegroundRole.Accent, _castClick);
         _goLiveFade = new NumericUpDown { Minimum = 0, Maximum = 2000, Increment = 100, Width = 70, Value = Math.Clamp(settings.GoLiveFadeMilliseconds, 0, 2000) };
         _goLiveFade.ValueChanged += (_, _) => Commit(s => s.GoLiveFadeMilliseconds = (int)_goLiveFade.Value, "上屏淡入");
         output.AddRow("上屏淡入", "大屏从未输出变为输出时，从黑场淡入的时长；0 为直接出画面（默认），最长 2 秒。项目之间的切换用下面的「大屏过场」",
@@ -445,7 +449,7 @@ public sealed class SettingsPanel : UserControl
             _keepAutoAdvance.Checked = settings.KeepAutoAdvanceTransitions;
             _transitionOnBlack.Checked = settings.TransitionOnBlackScreen;
             _httpControlCheckbox.Checked = settings.HttpControlEnabled;
-            _clickTakesToAir.Checked = settings.ClickTakesToAir;
+            _castClick.SelectedIndex = settings.ClickTakesToAir ? 1 : 0;
             _goLiveFade.Value = Math.Clamp(settings.GoLiveFadeMilliseconds, 0, 2000);
             UpdateKeyVisualLabel(settings.MainKeyVisualPath);
             foreach (var (action, button) in _hotkeyButtons) button.Keys = settings.HotkeyFor(action);

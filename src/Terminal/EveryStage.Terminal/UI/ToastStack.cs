@@ -12,9 +12,9 @@ namespace EveryStage.Terminal.UI;
 public sealed class ToastStack : Panel
 {
     public const int MaxVisible = 3;
-    private const int SlotHeight = 44;
-    private const int Gap = 4;
-    private const int Margin_ = 6;
+    private const int SlotHeight = 16; // one line (a third of the earlier notice height)
+    private const int Gap = 2;
+    private const int Margin_ = 4;
     private const int FloatingWidth = 320;
     public static readonly TimeSpan Lifetime = TimeSpan.FromSeconds(3);
     public static readonly TimeSpan ActionLifetime = TimeSpan.FromSeconds(10);
@@ -49,6 +49,14 @@ public sealed class ToastStack : Panel
             LayoutToasts();
         }
     }
+
+    /// <summary>Space kept free at the parent's bottom edge while floating (the music bar).</summary>
+    public int BottomInset
+    {
+        get => _bottomInset;
+        set { _bottomInset = value; Reposition(); }
+    }
+    private int _bottomInset;
 
     /// <summary>Space kept free at the parent's right edge while floating (the collapsed strip).</summary>
     public int RightInset
@@ -116,6 +124,6 @@ public sealed class ToastStack : Panel
     private void Reposition()
     {
         if (!_floating || Parent == null) return;
-        Location = new Point(Parent.ClientSize.Width - _rightInset - S(12) - Width, Parent.ClientSize.Height - S(12) - Height);
+        Location = new Point(Parent.ClientSize.Width - _rightInset - S(12) - Width, Parent.ClientSize.Height - _bottomInset - S(8) - Height);
     }
 }

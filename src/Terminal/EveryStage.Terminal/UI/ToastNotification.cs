@@ -39,59 +39,65 @@ public sealed class ToastNotification : Panel
         ModernUi.SetBackgroundRole(this, UiBackgroundRole.ContentRaised);
         Size = new Size(width, height);
         int S(int v) => LogicalToDeviceUnits(v);
+        var font = new Font(ModernUi.UiFont, 8F);
 
+        // One compact line: accent bar · message · actions as links · ×.
         var accentBar = ModernUi.SetBackgroundRole(new Panel
         {
-            Bounds = new Rectangle(0, 0, S(AccentBarWidth), height),
+            Bounds = new Rectangle(0, 0, S(3), height),
         }, severity switch { ToastSeverity.Critical => UiBackgroundRole.Danger, ToastSeverity.Info => UiBackgroundRole.Accent, _ => UiBackgroundRole.Warning });
 
-        var closeButton = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(new Button
+        var closeButton = ModernUi.SetForegroundRole(new Label
         {
             Text = "×",
-            FlatStyle = FlatStyle.Flat,
-            Bounds = new Rectangle(width - S(24), S(4), S(20), S(20)),
+            Font = font,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Bounds = new Rectangle(width - S(16), 0, S(16), height),
+            Cursor = Cursors.Hand,
             AccessibleName = "关闭通知",
-        }, UiForegroundRole.Muted), UiBackgroundRole.ContentRaised);
-        closeButton.FlatAppearance.BorderSize = 0;
+        }, UiForegroundRole.Muted);
         closeButton.Click += (_, _) => Dismiss();
+        Controls.Add(closeButton);
 
-        // Action buttons sit on the right, under the "×"; the message takes the rest.
-        int right = width - S(6);
+        int right = closeButton.Left - S(2);
         if (actions != null)
         {
             for (int i = actions.Count - 1; i >= 0; i--)
             {
                 var action = actions[i];
-                int buttonWidth = Math.Max(S(44), TextRenderer.MeasureText(action.Label, Font).Width + S(14));
-                right -= buttonWidth;
-                var button = new Button
+                int linkWidth = TextRenderer.MeasureText(action.Label, font).Width + S(6);
+                right -= linkWidth;
+                var link = new LinkLabel
                 {
                     Text = action.Label,
-                    Bounds = new Rectangle(right, height - S(26), buttonWidth, S(22)),
+                    Font = font,
+                    AutoSize = false,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Bounds = new Rectangle(right, 0, linkWidth, height),
+                    LinkColor = severity == ToastSeverity.Critical ? ModernUi.Danger : ModernUi.AccentText,
+                    ActiveLinkColor = ModernUi.Text,
+                    BackColor = Color.Transparent,
                 };
-                ModernUi.StyleButton(button, danger: severity == ToastSeverity.Critical && action.Label == "移除");
-                button.Font = new Font(ModernUi.UiFont, 8.5F);
-                button.Padding = Padding.Empty;
-                button.Click += (_, _) =>
+                link.LinkClicked += (_, _) =>
                 {
                     action.Callback();
                     Dismiss();
                 };
-                Controls.Add(button);
-                right -= S(4);
+                Controls.Add(link);
+                right -= S(2);
             }
         }
-        int messageRight = HasActions ? right : width - S(26);
         var messageLabel = ModernUi.SetForegroundRole(new Label
         {
-            Text = message,
+            Text = message.Replace("\r", " ").Replace("\n", " · "),
             AutoEllipsis = true,
-            Font = new Font(ModernUi.UiFont, 8.5F),
-            Bounds = Rectangle.FromLTRB(S(AccentBarWidth) + S(8), S(5), Math.Max(S(AccentBarWidth) + S(40), messageRight), height - S(5)),
+            Font = font,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Bounds = Rectangle.FromLTRB(S(3) + S(5), 0, Math.Max(S(40), right), height),
         }, UiForegroundRole.Text);
+        new ToolTip().SetToolTip(messageLabel, message);
 
         Controls.Add(accentBar);
         Controls.Add(messageLabel);
-        Controls.Add(closeButton);
     }
 }

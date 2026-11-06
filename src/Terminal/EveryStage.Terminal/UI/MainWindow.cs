@@ -54,6 +54,9 @@ public sealed class MainWindow : GradientForm
     private readonly PlaybackEngine _preview;
     private readonly DocumentProgramSync _documentSync;
     private readonly VideoSurface? _previewVideoSurface;
+    // The bottom 监看 window's own engine (the top one is _preview); the two windows work the same way.
+    private readonly PlaybackEngine _preview2;
+    private readonly VideoSurface? _preview2VideoSurface;
     private readonly ToastStack _toastStack;
     private readonly Label _statusLabel;
     private readonly RoundedActionButton _emergencyStop;
@@ -176,6 +179,19 @@ public sealed class MainWindow : GradientForm
         _preview = new PlaybackEngine(PlaybackChannel.Preview, _previewDock.PreviewSurface, _previewVideoSurface,
             settingsStore, scenarioStore, stateMachine: null);
         _previewDock.BindPreview(_preview);
+        _preview2VideoSurface = TryCreateVideoSurface(_previewDock.SecondSurface);
+        _previewDock.SecondSurface.VideoHostResized += (w, h) =>
+        {
+            try { _preview2VideoSurface?.Resize(w, h); } catch (Exception) { }
+        };
+        _preview2 = new PlaybackEngine(PlaybackChannel.Preview, _previewDock.SecondSurface, _preview2VideoSurface,
+            settingsStore, scenarioStore, stateMachine: null);
+        _previewDock.BindSecondPreview(_preview2);
+        _previewDock.FileDropped += (window, file, path) =>
+        {
+            var dropped = file ?? (path != null && FileLibraryStore.InferKind(path) is { } kind ? new MediaFile { SourcePath = path, Kind = kind } : null);
+            if (dropped != null) PlayInWindow(dropped, window);
+        };
         _previewDock.AttachProgram(playback);
         _previewDock.TakeRequested += style => TakePreviewToProgram(style);
         _previewDock.SwapRequested += SwapPreviewAndProgram;
@@ -202,7 +218,7 @@ public sealed class MainWindow : GradientForm
         _fileOpLog = fileOperationLogger ?? new FileOperationLogger();
 
         _filesPanel = new FilesPanel(library, _fileOpLog, scenarioStore, scenarioRepository, _preview);
-        _filesPanel.FilePlayRequested += file => _preview.RequestPlay(file, PlaybackTrigger.ManualSkip);
+        _filesPanel.FilePlayRequested += file => PlayInWindow(file);
         _filesPanel.FileClicked += OnFileClicked;
         _filesPanel.TakeRequested += TakeFileToProgram;
         _filesPanel.PlaybackStopRequested += () => _preview.Stop();
@@ -264,7 +280,7 @@ public sealed class MainWindow : GradientForm
         settingsButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, settingsButton); ShowPanel(_settingsPanel); };
 
         var titleBar = new AppTitleBar(this, "终端机");
-        titleBar.AddStatus(_statusLabel);
+        // 大屏 status and 「停止输出」 live at the top of the 监看 column (not in the title bar).
         _emergencyStop = new RoundedActionButton
         {
             Text = "■ 停止输出", AccessibleName = "停止输出（急停 F12）", Width = 140,
@@ -272,7 +288,7 @@ public sealed class MainWindow : GradientForm
         };
         ModernUi.StyleButton(_emergencyStop, primary: true, danger: true);
         _emergencyStop.Click += (_, _) => StopProgramOutput();
-        titleBar.AddAction(_emergencyStop);
+
         // WinForms docks the back-most control first: the title bar takes the full top edge, then the
         // rail and the monitor column their sides, and the page area (front-most) fills the rest.
         Controls.Add(_contentHost);
@@ -420,6 +436,7 @@ public sealed class MainWindow : GradientForm
         }
         _toastStack.Floating = _monitorCollapsed;
         _toastStack.RightInset = _monitorColumn.Width;
+        _toastStack.BottomInset = _musicBar?.Height ?? 0; // never over the 背景音乐 bar
     }
 
     private void SetMonitorCollapsed(bool collapsed)
@@ -469,7 +486,7 @@ public sealed class MainWindow : GradientForm
     {
         // Program on air (local media or a device cast) → Preview goes silent so monitor audio can
         // never leak into the venue; it comes back when Program stops.
-        _preview.Muted = state == OutputState.Active;
+        _preview.Muted = _preview2.Muted = state == OutputState.Active;
         UpdateStatusLabel();
     }
 
@@ -479,8 +496,40 @@ public sealed class MainWindow : GradientForm
     /// <summary>A click on a file: 预览 (PVW), or straight to the big screen with 设置 「单击即上屏」.</summary>
     private void OnFileClicked(MediaFile file)
     {
-        if (_settingsStore.Current.ClickTakesToAir && _playback != null) TakeFileToProgram(file);
-        else _preview.RequestPlay(file, PlaybackTrigger.ManualSkip);
+        if (_settingsStore.Current.ClickTakesToAir) CastFile(file);
+        else PlayInWindow(file);
+    }
+
+    private PlaybackEngine WindowEngine(int window) => window == 0 ? _preview : _preview2;
+
+    /// <summary>Plays <paramref name="file"/> locally in a 监看 window: <paramref name="window"/>, or the
+    /// first free one (both in use: the one not following the big screen, else the top one).</summary>
+    private void PlayInWindow(MediaFile file, int? window = null)
+    {
+        int target = window ?? _previewDock.FreeWindow(forLocalPlayback: true);
+        _previewDock.UseForLocalPlayback(target);
+        WindowEngine(target).RequestPlay(file, PlaybackTrigger.ManualSkip);
+    }
+
+    /// <summary>The 投屏 click (单击 or 双击, 设置 · 投屏键): straight onto the big screen; the window that
+    /// follows the big screen keeps following it, else the first free window starts to, else the top one.
+    /// With only the main display it plays in a window instead.</summary>
+    private void CastFile(MediaFile file) =>
+        CastSnapshot(new PlaybackEngine.Snapshot(file, null, -1, TimeSpan.Zero, false), engine => engine.RequestPlay(file, PlaybackTrigger.ManualSkip));
+
+    private bool CastSnapshot(PlaybackEngine.Snapshot snapshot, Action<PlaybackEngine> playLocally)
+    {
+        if (_playback == null)
+        {
+            int local = _previewDock.FreeWindow(forLocalPlayback: true);
+            _previewDock.UseForLocalPlayback(local);
+            playLocally(WindowEngine(local));
+            return false;
+        }
+        int target = _previewDock.ProgramWindow ?? _previewDock.FreeWindow(forLocalPlayback: false);
+        if (!TakeSnapshot(snapshot)) return false;
+        _previewDock.SyncWindowToProgram(target);
+        return true;
     }
 
     private static VideoSurface? TryCreateVideoSurface(PreviewSurface surface)
@@ -501,8 +550,8 @@ public sealed class MainWindow : GradientForm
     /// hears or watches it twice. Only the dock's 「投到大屏」 continues from the Preview position.</summary>
     private void TakeFileToProgram(MediaFile file)
     {
-        if (!ReferenceEquals(_preview.CurrentFile, file)) _preview.RequestPlay(file, PlaybackTrigger.ManualSkip);
-        if (TakeSnapshot(new PlaybackEngine.Snapshot(file, null, -1, TimeSpan.Zero, false))) PausePreview();
+        // Double-click: the 投屏 key unless 设置 made it the single click (then the click already cast it).
+        if (!_settingsStore.Current.ClickTakesToAir) CastFile(file);
     }
 
     /// <summary>Pause Preview right after something went on air (see <see cref="TakeFileToProgram"/>).</summary>
@@ -530,13 +579,9 @@ public sealed class MainWindow : GradientForm
     private void RunActivityItem(Activity activity, int index)
     {
         if (index < 0 || index >= activity.Files.Count) return;
-        if (_playback == null)
-        {
-            _preview.RequestPlay(activity, index, PlaybackTrigger.ManualSkip);
-            EnterSection(activity);
-            return;
-        }
-        if (TakeSnapshot(new PlaybackEngine.Snapshot(activity.Files[index], activity, index, TimeSpan.Zero, false))) PausePreview();
+        bool cast = CastSnapshot(new PlaybackEngine.Snapshot(activity.Files[index], activity, index, TimeSpan.Zero, false),
+            engine => engine.RequestPlay(activity, index, PlaybackTrigger.ManualSkip));
+        if (!cast && _playback == null) EnterSection(activity);
     }
 
     private Activity? _liveSection;
@@ -585,13 +630,17 @@ public sealed class MainWindow : GradientForm
     /// <param name="style">切换 / 淡入淡出 from the dock; null (Ctrl+Enter) uses the item's or 设置's transition.</param>
     private void TakePreviewToProgram(TransitionStyle? style = null)
     {
-        if (_preview.State is PlaybackChannelState.Loading or PlaybackChannelState.Failed || _preview.CaptureSnapshot() is not { } snapshot)
+        int window = _previewDock.ActiveWindow;
+        var engine = WindowEngine(window);
+        if (_previewDock.ProgramWindow == window || engine.State is PlaybackChannelState.Loading or PlaybackChannelState.Failed
+            || engine.CaptureSnapshot() is not { } snapshot)
         {
-            _toastStack.Show("预览中没有可以投到屏幕的内容。单击文件在预览中打开；双击文件则直接上屏。", ToastSeverity.Warning);
+            _toastStack.Show("本地窗口里没有可以投到大屏的内容。", ToastSeverity.Warning);
             return;
         }
         if (_playback != null) _playback.PendingTransition = style;
-        if (TakeSnapshot(snapshot) && _preview.CanPause) _preview.Pause();
+        // The window taken from now follows the big screen (its own playback stops: no double audio).
+        if (TakeSnapshot(snapshot)) _previewDock.SyncWindowToProgram(window);
         else if (_playback != null) _playback.PendingTransition = null;
     }
 
@@ -601,9 +650,13 @@ public sealed class MainWindow : GradientForm
     {
         var onAir = _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
             ? _playback?.CaptureSnapshot() : null;
-        if (_preview.State is PlaybackChannelState.Loading or PlaybackChannelState.Failed || _preview.CaptureSnapshot() is not { } next)
+        int window = _previewDock.ActiveWindow;
+        int? programWindow = _previewDock.ProgramWindow;
+        var engine = WindowEngine(window);
+        if (programWindow == window || engine.State is PlaybackChannelState.Loading or PlaybackChannelState.Failed
+            || engine.CaptureSnapshot() is not { } next)
         {
-            _toastStack.Show("预览中没有可以对调的内容。", ToastSeverity.Warning);
+            _toastStack.Show("本地窗口里没有可以对调的内容。", ToastSeverity.Warning);
             return;
         }
         if (_playback != null) _playback.PendingTransition = TransitionStyle.Dissolve;
@@ -612,9 +665,11 @@ public sealed class MainWindow : GradientForm
             if (_playback != null) _playback.PendingTransition = null;
             return;
         }
-        if (onAir == null) { if (_preview.CanPause) _preview.Pause(); return; }
-        _preview.RequestPlay(onAir.Value with { Paused = true }, PlaybackTrigger.ManualSkip);
-        PausePreview();
+        _previewDock.SyncWindowToProgram(window);
+        // What was on air comes back, paused, into the window that followed the big screen.
+        if (onAir == null || programWindow is not { } back) return;
+        _previewDock.UseForLocalPlayback(back);
+        WindowEngine(back).RequestPlay(onAir.Value with { Paused = true }, PlaybackTrigger.ManualSkip);
     }
 
     private bool TakeSnapshot(PlaybackEngine.Snapshot snapshot)
@@ -688,7 +743,7 @@ public sealed class MainWindow : GradientForm
     private void TogglePlayPause()
     {
         var engine = _playback != null && _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
-            ? _playback : _preview;
+            ? _playback : WindowEngine(_previewDock.ActiveWindow);
         if (engine.CurrentFile == null) return;
         if (engine.IsPaused || engine.IsCompleted) engine.Resume();
         else if (engine.CanPause) engine.Pause();
@@ -741,10 +796,7 @@ public sealed class MainWindow : GradientForm
 
     private void OnPlaybackDeclinedByCastSwitch(MediaFile file)
     {
-        _statusLabel.Text = $"⚠ 投屏开关已关闭 · 未投放：{Path.GetFileName(file.SourcePath)}";
-        ModernUi.SetForegroundRole(_statusLabel, UiForegroundRole.Warning);
-        _declinedMessageTimer.Stop(); // restart rather than stack — see the timer's own construction comment.
-        _declinedMessageTimer.Start();
+        _toastStack.Show($"投屏开关已关闭，未投放：{Path.GetFileName(file.SourcePath)}", ToastSeverity.Warning);
     }
 
     /// <summary>PLANNING.md §11 Toast "涉及播放的异常需带可执行按钮（重试/移除）" — this is that
@@ -838,6 +890,8 @@ public sealed class MainWindow : GradientForm
             // Preview engine first (it joins its playback threads), then the surface it presents through.
             _preview.Dispose();
             _previewVideoSurface?.Dispose();
+            _preview2.Dispose();
+            _preview2VideoSurface?.Dispose();
             _music.Dispose();
 
             // ShowPanel() only ever keeps the *currently active* panel inside _contentHost.Controls

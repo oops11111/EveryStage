@@ -8,21 +8,19 @@ using EveryStage.Terminal.StateMachine;
 namespace EveryStage.Terminal.UI;
 
 /// <summary>
-/// 「监看」— the right-hand column beside every main page: the Preview monitor and its transport on
-/// top, the big 「投到大屏」 button, then what is on the extended display (大屏) and its controls.
+/// 「监看」— the right-hand column beside every main page.
 ///
-/// Everything above 「投到大屏」 operates the Preview engine, which renders into <see cref="PreviewSurface"/>
-/// inside this column and never touches the extended display. 「投到大屏」 (<see cref="TakeRequested"/>),
-/// 暂停大屏 and 「停止输出」 (<see cref="StopProgramRequested"/>) are the only controls that affect
-/// Program; MainWindow owns both engines and performs take/stop. The 大屏 section shows Program's status
-/// and which source is on air (local media vs. a device cast).
+/// Top row: the big screen's status, 「停止输出」 and 「收起」. Below it two identical monitor windows (no
+/// role labels). Each window has its own preview engine and the same compact transport, and either plays
+/// its own content locally or follows the big screen: then it shows exactly what the extended display
+/// shows (<see cref="ProgramMirror"/>, red flashing border) and its transport drives the big screen.
+/// MainWindow decides which window does what (<see cref="ProgramWindow"/>, <see cref="FreeWindow"/>):
+/// a cast goes on air and the window already following the big screen keeps following it, else the
+/// first free window starts to, else the top one; a file dropped on a window plays in that window.
+/// Between the windows: 切换 / 淡入淡出 / ⇄ 对调, which put the active local window on air.
 ///
-/// When the Preview engine fails, an error card covers the monitor with the file name, failure stage,
-/// container and codecs, a suggestion, and 重试 / 跳过 / 从文件库移除 / 用系统程序打开.
-///
-/// Laid out by hand (<see cref="OnLayout"/>), top to bottom at the column's width: the monitor keeps
-/// 16:9 and gives up height first when the window is short; the optional footer (the background-music
-/// card) shows only while it fits.
+/// When a window's engine fails, an error card covers it (重试 / 跳过 / 从文件库移除 / 用系统程序打开).
+/// Laid out by hand (<see cref="OnLayout"/>): the two windows share whatever height is left.
 /// </summary>
 internal sealed class SharedPreviewDock : Panel
 {
@@ -30,10 +28,14 @@ internal sealed class SharedPreviewDock : Panel
     private static UiPalette MonitorPalette => UiPalette.For(AppTheme.Dark);
     private readonly System.Windows.Forms.Timer _feedbackTimer = new() { Interval = 150 };
     private Control? _flashingCard;
+
+    /// <summary>A short red outline on the device card when a device cast goes on air (the window that
+    /// follows the big screen already flashes on its own).</summary>
     public void FlashProgram(bool device)
     {
+        if (!device) return;
         _flashingCard?.Invalidate();
-        _flashingCard = device ? _deviceCard.Card : _programMirror;
+        _flashingCard = _deviceCard.Card;
         _flashingCard.Paint -= PaintOnAirFeedback;
         _flashingCard.Paint += PaintOnAirFeedback;
         _feedbackTimer.Tick -= EndOnAirFeedback;
@@ -63,42 +65,23 @@ internal sealed class SharedPreviewDock : Panel
         _flashingCard = null;
         card?.Invalidate();
     }
-    private const int MinProgressWidth = 90;
+
     private const int ButtonHeight = 30;
     private const int SourceCardHeight = 46;
     private const int Gap = 10;
     private const string IconFont = "Segoe MDL2 Assets";
 
     private readonly OutputStateMachine _stateMachine;
-    private readonly Label _title;
+    private readonly Label _status;
+    private readonly RoundedActionButton _stopOutputButton;
     private readonly RoundedActionButton _collapseButton;
-    private readonly Badge _previewBadge;
-    private readonly Label _previewState;
-    private readonly Panel _previewFrame;
-    private readonly Badge _programBadge;
-    private readonly Label _programState;
-    private readonly RoundedActionButton _previousButton;
-    private readonly RoundedActionButton _playPauseButton;
-    private readonly RoundedActionButton _stopButton;
-    private readonly RoundedActionButton _nextButton;
-    private readonly Label _timecode;
-    private readonly MediaTrack _progress;
-    private readonly Label _volumeIcon;
-    private readonly MediaTrack _volume;
-    private readonly RoundedActionButton _loopButton;
-    private readonly RoundedActionButton _scaleButton;
+    private readonly MonitorWindow[] _windows;
     private readonly RoundedActionButton _takeButton;
     private readonly RoundedActionButton _fadeButton;
     private readonly RoundedActionButton _swapButton;
-    private readonly ProgramMirror _programMirror = new();
-    private readonly RoundedActionButton _programPauseButton;
-    private readonly RoundedActionButton _stopOutputButton;
-    private readonly SourceCardView _localCard;
     private readonly DeviceCastCard _deviceCard;
-    private readonly ErrorCard _errorCard;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly ToolTip _toolTip = new();
-    private PlaybackEngine? _preview;
     private PlaybackEngine? _program;
     private Bitmap? _placeholder;
     private string? _deviceName;
@@ -107,29 +90,39 @@ internal sealed class SharedPreviewDock : Panel
     private DocumentControlBar? _documentBar;
     private DocumentProgramSync? _documentSync;
     private readonly PresenterStrip _presenter = new() { Visible = false };
+    private readonly RoundedActionButton _presenterViewButton;
+    private PresenterWindow? _presenterWindow;
     private bool _documentBarShown;
     private Control? _footer;
     private Control? _runControls;
+    private int _activeWindow;
 
-    /// <summary>The Preview channel's output surface (MainWindow builds the Preview engine on it).</summary>
-    public PreviewSurface PreviewSurface { get; }
+    /// <summary>The top window's surface (MainWindow builds the first preview engine on it).</summary>
+    public PreviewSurface PreviewSurface => _windows[0].Surface;
 
-    /// <summary>PVW → PGM: 「切换」 (cut) passes <see cref="TransitionStyle.Cut"/>, 「淡入淡出」
+    /// <summary>The bottom window's surface (MainWindow builds the second preview engine on it).</summary>
+    public PreviewSurface SecondSurface => _windows[1].Surface;
+
+    /// <summary>The active local window on air: 「切换」 passes <see cref="TransitionStyle.Cut"/>, 「淡入淡出」
     /// <see cref="TransitionStyle.Dissolve"/>.</summary>
     public event Action<TransitionStyle>? TakeRequested;
 
-    /// <summary>「⇄ 对调」: PVW and PGM swap contents (PVW goes on air with a fade, the old PGM comes back
-    /// into PVW, paused).</summary>
+    /// <summary>「⇄ 对调」: the active local window goes on air with a fade, what was on air comes back into
+    /// the window that was following the big screen, paused.</summary>
     public event Action? SwapRequested;
 
-    /// <summary>The extended display's screen rectangle while something is on air (the PGM monitor copies it).</summary>
+    /// <summary>A file (from the library) or a path (from Explorer) was dropped on window 0 / 1.</summary>
+    public event Action<int, MediaFile?, string?>? FileDropped;
+
+    /// <summary>The extended display's screen rectangle while something is on air (copied into the window
+    /// that follows the big screen).</summary>
     public Func<Rectangle?>? ProgramScreenBounds
     {
-        get => _programMirror.SourceBounds;
-        set => _programMirror.SourceBounds = value;
+        get => _windows[0].Mirror.SourceBounds;
+        set { foreach (var window in _windows) window.Mirror.SourceBounds = value; }
     }
 
-    /// <summary>"停止输出": take whatever is on the extended display off air (Preview is unaffected).</summary>
+    /// <summary>"停止输出": take whatever is on the extended display off air.</summary>
     public event Action? StopProgramRequested;
 
     /// <summary>「收起 ›」: MainWindow hides the column and gives the page the full width.</summary>
@@ -149,133 +142,126 @@ internal sealed class SharedPreviewDock : Panel
         BackColor = Color.Transparent;
         DoubleBuffered = true;
 
-        var smallFont = new Font(ModernUi.UiFont, 9F);
-        _title = ModernUi.SetForegroundRole(new Label { Text = "监看", AutoSize = false, Font = new Font(ModernUi.UiFontSemibold, 11F), TextAlign = ContentAlignment.MiddleLeft }, UiForegroundRole.Text);
+        // Top row: big-screen status · 停止输出 · 收起.
+        _status = ModernUi.SetForegroundRole(new Label
+        {
+            Text = "○ 大屏待机", AutoSize = false, AutoEllipsis = true, Font = new Font(ModernUi.UiFontSemibold, 9.5F),
+            TextAlign = ContentAlignment.MiddleLeft, AccessibleName = "大屏状态",
+        }, UiForegroundRole.Muted);
+        _stopOutputButton = TextButton("■ 停止输出", "停止扩展屏上的输出（急停 F12）");
+        ModernUi.StyleButton(_stopOutputButton, danger: true);
+        _stopOutputButton.AccessibleName = "停止输出（急停 F12）";
         _collapseButton = TextButton("收起 ›", "收起监看栏，文件区占满整个宽度");
         _collapseButton.Font = new Font(ModernUi.UiFont, 8.5F);
         _collapseButton.Click += (_, _) => CollapseRequested?.Invoke();
 
-        _previewBadge = new Badge("预览 · PVW") { AccessibleName = "预览（PVW）" };
-        _previewState = ModernUi.SetForegroundRole(new Label { Text = "待机", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
-        _previewFrame = new Panel { BackColor = ModernUi.Border, Padding = new Padding(2) };
-        PreviewSurface = ModernUi.SetBackgroundRole(new PreviewSurface { Dock = DockStyle.Fill, Margin = Padding.Empty }, UiBackgroundRole.MediaBlack);
-        ModernUi.SetBackgroundRole(PreviewSurface.VideoHost, UiBackgroundRole.MediaBlack);
-        ModernUi.SetBackgroundRole(PreviewSurface.ContentSurface, UiBackgroundRole.MediaBlack);
-        _previewFrame.Controls.Add(PreviewSurface);
+        _windows = new[] { new MonitorWindow(this, 0), new MonitorWindow(this, 1) };
 
-        _previousButton = IconButton("", "上一项 / 上一页");
-        _playPauseButton = IconButton("", "播放 / 暂停");
-        _stopButton = IconButton("", "停止预览");
-        _nextButton = IconButton("", "下一项 / 下一页");
-        _timecode = ModernUi.SetForegroundRole(new Label { Text = "--:-- / --:--", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft }, UiForegroundRole.Muted);
-        _progress = new MediaTrack();
-        _volumeIcon = ModernUi.SetForegroundRole(new Label { Text = "", Font = new Font(IconFont, 10F), TextAlign = ContentAlignment.MiddleCenter }, UiForegroundRole.Muted);
-        _volume = new MediaTrack { Value = 1f };
-        _loopButton = IconButton("", "循环播放当前文件（不保存到文件设置）");
-        _scaleButton = TextButton("满宽", "视频显示：满宽（横向铺满，上下可能裁切）→ 适应（完整显示）→ 填充（铺满裁切）");
-
-        // PVW → PGM, mixer style: 切换 (cut), 淡入淡出 (fade), ⇄ 对调 (swap PVW and PGM).
-        _takeButton = TextButton("切换 ↓", "把预览（PVW）直接切到大屏（PGM）");
+        _takeButton = TextButton("切换 ↓", "把正在本地播放的窗口直接切到大屏");
         ModernUi.StyleButton(_takeButton, primary: true);
-        _takeButton.Font = new Font(ModernUi.UiFontSemibold, 10.5F);
+        _takeButton.Font = new Font(ModernUi.UiFontSemibold, 10F);
         _takeButton.AccessibleName = "切换到大屏";
-        _fadeButton = TextButton("淡入淡出 ↓", "预览（PVW）以淡入淡出切到大屏（PGM），时长同「设置 · 大屏过场」");
+        _fadeButton = TextButton("淡入淡出 ↓", "把正在本地播放的窗口淡入淡出切到大屏，时长同「设置 · 大屏过场」");
         ModernUi.StyleButton(_fadeButton, primary: true);
-        _fadeButton.Font = new Font(ModernUi.UiFontSemibold, 10.5F);
+        _fadeButton.Font = new Font(ModernUi.UiFontSemibold, 10F);
         _fadeButton.AccessibleName = "淡入淡出到大屏";
-        _swapButton = TextButton("⇄ 对调", "预览与大屏对调：预览内容淡入淡出上屏，原大屏内容回到预览（暂停）");
+        _swapButton = TextButton("⇄ 对调", "本地窗口的内容淡入淡出上屏，原大屏内容回到另一个窗口（暂停）");
 
-        _programBadge = new Badge("大屏 · PGM") { Danger = true, AccessibleName = "大屏（PGM）" };
-        _programState = ModernUi.SetForegroundRole(new Label { Text = "未连接扩展屏", Font = smallFont, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
-        _localCard = new SourceCardView("本地媒体");
         _deviceCard = new DeviceCastCard();
         _deviceCard.TakeRequested += () => DeviceTakeRequested?.Invoke();
         _deviceCard.RevertRequested += () => DeviceRevertRequested?.Invoke();
         _deviceCard.VideoHost.SizeChanged += (_, _) => DeviceVideoHostResized?.Invoke(
             Math.Max(1, _deviceCard.VideoHost.ClientSize.Width), Math.Max(1, _deviceCard.VideoHost.ClientSize.Height));
-        _programPauseButton = TextButton("暂停大屏", "暂停 / 继续扩展屏上的本地媒体");
-        _stopOutputButton = TextButton("停止输出", "停止扩展屏上的正式输出（预览保留）");
-        ModernUi.StyleButton(_stopOutputButton, danger: true);
 
-        Controls.AddRange(new Control[]
-        {
-            _title, _collapseButton, _previewBadge, _previewState, _previewFrame,
-            _previousButton, _playPauseButton, _stopButton, _nextButton, _volumeIcon, _volume, _loopButton, _scaleButton,
-            _timecode, _progress, _presenter, _takeButton, _fadeButton, _swapButton, _programBadge, _programState, _programMirror, _deviceCard.Card,
-            _programPauseButton, _stopOutputButton,
-        });
+        _presenterViewButton = TextButton("⤢ 演讲者视图", "打开可缩放、可最大化的演讲者视图（当前页、下一页、备注、计时）");
+        _presenterViewButton.Visible = false;
+        _presenterViewButton.Click += (_, _) => OpenPresenterView();
 
-        _errorCard = new ErrorCard();
-        _errorCard.Retry += () => _preview?.RetryCurrentFile();
-        _errorCard.Skip += () => { if (_preview != null && !_preview.NextManual()) _preview.Stop(); };
-        _errorCard.Remove += file => RemoveFromLibraryRequested?.Invoke(file);
-        _errorCard.OpenExternally += file => ExternalOpener.OpenWithDefaultApp(FindForm(), file.SourcePath);
+        Controls.AddRange(new Control[] { _status, _stopOutputButton, _collapseButton, _presenter, _presenterViewButton, _takeButton, _fadeButton, _swapButton, _deviceCard.Card });
+        foreach (var window in _windows) window.AddTo(this);
 
-        _previousButton.Click += (_, _) => _preview?.PreviousManual();
-        _nextButton.Click += (_, _) => _preview?.NextManual();
-        _playPauseButton.Click += (_, _) =>
-        {
-            if (_preview == null) return;
-            if (_preview.IsPaused || _preview.IsCompleted) _preview.Resume(); else _preview.Pause();
-            RefreshNow();
-        };
-        _stopButton.Click += (_, _) => { _preview?.Stop(); RefreshNow(); };
-        _progress.ValueCommitted += fraction =>
-        {
-            if (_preview?.Duration is { } duration) _preview.SeekTo(TimeSpan.FromTicks((long)(duration.Ticks * fraction)));
-            RefreshNow();
-        };
-        _volume.ValueCommitted += value => { if (_preview != null) _preview.AudioVolume = value; };
-        _volume.ValueChanging += value => { if (_preview != null) _preview.AudioVolume = value; };
-        _loopButton.Click += (_, _) => { if (_preview != null) _preview.LoopCurrent = !_preview.LoopCurrent; RefreshNow(); };
-        _scaleButton.Click += (_, _) =>
-        {
-            if (_preview == null) return;
-            _preview.VideoScaleMode = _preview.VideoScaleMode switch
-            {
-                VideoScaleMode.FitWidth => VideoScaleMode.Fit,
-                VideoScaleMode.Fit => VideoScaleMode.Fill,
-                _ => VideoScaleMode.FitWidth,
-            };
-            RefreshNow();
-        };
         _takeButton.Click += (_, _) => TakeRequested?.Invoke(TransitionStyle.Cut);
         _fadeButton.Click += (_, _) => TakeRequested?.Invoke(TransitionStyle.Dissolve);
         _swapButton.Click += (_, _) => SwapRequested?.Invoke();
-        _programMirror.Click += (_, _) => { if (_program == null) ExtendDisplayWizard.Show(FindForm()); };
-        _programPauseButton.Click += (_, _) =>
-        {
-            if (_program == null) return;
-            if (_program.IsPaused || _program.IsCompleted) _program.Resume(); else if (_program.CanPause) _program.Pause();
-            RefreshNow();
-        };
         _stopOutputButton.Click += (_, _) => StopProgramRequested?.Invoke();
 
         _timer = new System.Windows.Forms.Timer { Interval = 200 };
         _timer.Tick += (_, _) => RefreshNow();
         _timer.Start();
-        ShowIdleSplash();
+        foreach (var window in _windows) ShowIdleSplash(window);
         RefreshNow();
-
-        RoundedActionButton IconButton(string glyph, string tip)
-        {
-            var button = new RoundedActionButton { Text = glyph, Height = ButtonHeight, Margin = Padding.Empty, Padding = Padding.Empty };
-            ModernUi.StyleButton(button);
-            button.Font = new Font(IconFont, 10F);
-            _toolTip.SetToolTip(button, tip);
-            return button;
-        }
-
-        RoundedActionButton TextButton(string text, string tip)
-        {
-            var button = new RoundedActionButton { Text = text, Height = ButtonHeight, Margin = Padding.Empty, Padding = Padding.Empty };
-            ModernUi.StyleButton(button);
-            _toolTip.SetToolTip(button, tip);
-            return button;
-        }
     }
 
-    /// <summary>The 流程 page's 「下一项 ▶」 controls, shown under the 大屏 section while that page is
+    private RoundedActionButton IconButton(string glyph, string tip)
+    {
+        var button = new RoundedActionButton { Text = glyph, Height = ButtonHeight, Margin = Padding.Empty, Padding = Padding.Empty };
+        ModernUi.StyleButton(button);
+        button.Font = new Font(IconFont, 10F);
+        _toolTip.SetToolTip(button, tip);
+        return button;
+    }
+
+    private RoundedActionButton TextButton(string text, string tip)
+    {
+        var button = new RoundedActionButton { Text = text, Height = ButtonHeight, Margin = Padding.Empty, Padding = Padding.Empty };
+        ModernUi.StyleButton(button);
+        _toolTip.SetToolTip(button, tip);
+        return button;
+    }
+
+    // --- Window roles (MainWindow decides; see the class comment) ---
+
+    /// <summary>The window that follows the big screen, or null.</summary>
+    public int? ProgramWindow => Array.FindIndex(_windows, w => w.SyncedToProgram) is var i and >= 0 ? i : null;
+
+    /// <summary>The window the take buttons put on air (the last local window used).</summary>
+    public int ActiveWindow
+    {
+        get => _activeWindow;
+        set { _activeWindow = Math.Clamp(value, 0, 1); RefreshNow(); }
+    }
+
+    public PlaybackEngine? EngineOf(int window) => _windows[window].Engine;
+
+    /// <summary>The first window with nothing in it; with both in use the top one (or, for local playback,
+    /// the one that does not follow the big screen).</summary>
+    public int FreeWindow(bool forLocalPlayback)
+    {
+        for (int i = 0; i < _windows.Length; i++) if (!_windows[i].Occupied) return i;
+        if (forLocalPlayback && _windows[0].SyncedToProgram) return 1;
+        return 0;
+    }
+
+    /// <summary>Window <paramref name="window"/> follows the big screen (its own playback stops); any other
+    /// window that did is released.</summary>
+    public void SyncWindowToProgram(int window)
+    {
+        for (int i = 0; i < _windows.Length; i++)
+        {
+            bool sync = i == window;
+            if (sync && !_windows[i].SyncedToProgram) _windows[i].Engine?.Stop();
+            _windows[i].SyncedToProgram = sync;
+        }
+        if (_activeWindow == window) _activeWindow = 1 - window;
+        RefreshNow();
+    }
+
+    /// <summary>No window follows the big screen any more (output stopped).</summary>
+    public void ReleaseProgramWindow()
+    {
+        foreach (var window in _windows) window.SyncedToProgram = false;
+        RefreshNow();
+    }
+
+    /// <summary>Plays locally in <paramref name="window"/>: it stops following the big screen if it did.</summary>
+    public void UseForLocalPlayback(int window)
+    {
+        _windows[window].SyncedToProgram = false;
+        _activeWindow = window;
+        RefreshNow();
+    }
+
+    /// <summary>The 流程 page's 「下一项 ▶」 controls, shown at the bottom of the column while that page is
     /// visible (null removes them). They take the footer's place.</summary>
     public void SetRunControls(Control? controls)
     {
@@ -296,7 +282,7 @@ internal sealed class SharedPreviewDock : Panel
         PerformLayout();
     }
 
-    /// <summary>A control pinned under the 大屏 section (the background-music card), shown while it fits.</summary>
+    /// <summary>A control pinned at the bottom (the background-music card), shown while it fits.</summary>
     public void SetFooter(Control footer)
     {
         if (_footer != null) Controls.Remove(_footer);
@@ -308,103 +294,64 @@ internal sealed class SharedPreviewDock : Panel
     protected override void OnLayout(LayoutEventArgs levent)
     {
         base.OnLayout(levent);
-        if (_stopOutputButton == null) return; // raised from the base constructor / Padding setter
+        if (_windows == null) return; // raised from the base constructor / Padding setter
         int S(int v) => LogicalToDeviceUnits(v);
         var area = DisplayRectangle;
         area = new Rectangle(area.Left + S(Padding.Left) - Padding.Left, area.Top + S(Padding.Top) - Padding.Top,
             Math.Max(1, area.Width - (S(Padding.Horizontal) - Padding.Horizontal)), Math.Max(1, area.Height - (S(Padding.Vertical) - Padding.Vertical)));
-        int x = area.Left, w = area.Width, gap = S(Gap), button = S(ButtonHeight), label = S(22);
+        int x = area.Left, w = area.Width, gap = S(Gap), button = S(ButtonHeight);
 
-        // Everything but the monitor has a fixed height; the monitor gets 16:9 or what is left.
-        int deviceHeight = _deviceConnected ? Math.Max(S(SourceCardHeight), w * 9 / 16) : S(SourceCardHeight);
+        int deviceHeight = _deviceConnected ? Math.Max(S(SourceCardHeight), w * 9 / 16) : 0;
         int documentHeight = _documentBarShown ? button + S(6) : 0;
-        int presenterHeight = _presenter.Visible ? S(PresenterStrip.LogicalHeight) + S(6) : 0;
-        documentHeight += presenterHeight;
-        int fixedHeight = S(28) + gap / 2 + label + S(4) + (button + S(6)) * 2 + documentHeight + gap
-            + S(40) + gap + label + S(4) + S(6) + deviceHeight + gap + button
+        int presenterHeight = _presenter.Visible ? S(PresenterStrip.LogicalHeight) + S(6) + button + S(6) : 0;
+        int windowChrome = MonitorWindow.ChromeHeight(S);
+        int fixedHeight = button + gap                                   // status row
+            + windowChrome * 2 + gap                                     // captions + transports
+            + documentHeight + presenterHeight
+            + S(36) + gap                                                // take row
+            + (deviceHeight > 0 ? deviceHeight + gap : 0)
             + (_runControls != null ? _runControls.Height + gap : 0);
-        // Two monitors (PVW above, PGM below) share what is left, each at most 16:9 of the width. A short
-        // window first gives up the PVW progress row, then the idle 设备来投 card, then monitor height.
         int fullMonitor = (w - S(4)) * 9 / 16 + S(4);
-        int minMonitors = S(96);
-        bool showProgressRow = area.Height - fixedHeight >= minMonitors;
-        if (!showProgressRow) fixedHeight -= button + S(6);
-        bool showDeviceCard = _deviceConnected || area.Height - fixedHeight >= minMonitors;
-        if (!showDeviceCard) fixedHeight -= deviceHeight + gap;
-        // At the very smallest window (流程 run controls docked in) the monitors take what is left rather
-        // than push the controls below the column.
         int monitorsTotal = Math.Clamp(area.Height - fixedHeight, S(48), fullMonitor * 2);
-        int monitor = Math.Min(fullMonitor, monitorsTotal / 2);
-        int programMonitor = Math.Min(fullMonitor, monitorsTotal - monitor);
+        int first = Math.Min(fullMonitor, monitorsTotal / 2), second = Math.Min(fullMonitor, monitorsTotal - first);
 
         int y = area.Top;
-        _collapseButton.Bounds = new Rectangle(area.Right - S(64), y + (S(28) - S(26)) / 2, S(64), S(26));
-        _title.Bounds = new Rectangle(x, y, w - S(70), S(28));
-        y += S(28) + gap / 2;
+        int collapseWidth = S(64), stopWidth = S(96);
+        _collapseButton.Bounds = new Rectangle(area.Right - collapseWidth, y, collapseWidth, button);
+        _stopOutputButton.Bounds = new Rectangle(_collapseButton.Left - S(6) - stopWidth, y, stopWidth, button);
+        _status.Bounds = new Rectangle(x, y, Math.Max(1, _stopOutputButton.Left - S(8) - x), button);
+        y += button + gap;
 
-        int badgeWidth = _previewBadge.PreferredWidth;
-        _previewBadge.Bounds = new Rectangle(x, y + (label - S(18)) / 2, badgeWidth, S(18));
-        _previewState.Bounds = new Rectangle(x + badgeWidth + S(6), y, w - badgeWidth - S(6), label);
-        y += label + S(4);
-        _previewFrame.Bounds = new Rectangle(x, y, w, monitor);
-        y += monitor + S(6);
-
-        // Transport row 1: ⏮ ⏯ ⏹ ⏭ · volume · loop · fit.
-        int icon = S(34), step = icon + S(4);
-        var row = new[] { _previousButton, _playPauseButton, _stopButton, _nextButton };
-        for (int i = 0; i < row.Length; i++) row[i].Bounds = new Rectangle(x + i * step, y, icon, button);
-        int scaleWidth = S(52);
-        _scaleButton.Bounds = new Rectangle(area.Right - scaleWidth, y, scaleWidth, button);
-        _loopButton.Bounds = new Rectangle(_scaleButton.Left - S(4) - icon, y, icon, button);
-        int volumeLeft = x + row.Length * step + S(2);
-        int volumeRight = _loopButton.Left - S(6);
-        bool volumeFits = volumeRight - volumeLeft >= S(70);
-        _volumeIcon.Visible = _volume.Visible = volumeFits;
-        _volumeIcon.Bounds = new Rectangle(volumeLeft, y, S(22), button);
-        _volume.Bounds = new Rectangle(volumeLeft + S(22), y + (button - S(24)) / 2, Math.Max(1, volumeRight - volumeLeft - S(22)), S(24));
-        y += button + S(6);
-
-        // Transport row 2: timecode · progress (dropped on a short window).
-        int timeWidth = TextRenderer.MeasureText("00:00:00 / 00:00:00", _timecode.Font).Width;
-        bool timeFits = showProgressRow && w - timeWidth >= S(MinProgressWidth);
-        _progress.Visible = showProgressRow;
-        _timecode.Visible = timeFits;
-        _timecode.Bounds = new Rectangle(x, y, timeWidth, button);
-        int progressLeft = timeFits ? x + timeWidth + S(4) : x;
-        _progress.Bounds = new Rectangle(progressLeft, y + (button - S(24)) / 2, Math.Max(1, area.Right - progressLeft), S(24));
-        if (showProgressRow) y += button + S(6);
-
-        if (_documentBar != null)
+        y = _windows[0].Layout(x, y, w, first, S);
+        if (_documentBar != null && _documentBarShown)
         {
-            int barHeight = documentHeight - presenterHeight;
-            _documentBar.Bounds = new Rectangle(x, y, w, Math.Max(1, barHeight));
-            y += barHeight;
+            _documentBar.Bounds = new Rectangle(x, y, w, button);
+            y += button + S(6);
         }
         if (_presenter.Visible)
         {
             _presenter.Bounds = new Rectangle(x, y, w, S(PresenterStrip.LogicalHeight));
-            y += presenterHeight;
+            y += S(PresenterStrip.LogicalHeight) + S(6);
+            _presenterViewButton.Bounds = new Rectangle(x, y, w, button);
+            y += button + S(6);
         }
-        y += gap;
-        int swapWidth = S(72), takeWidth = (w - swapWidth - S(12)) / 2;
-        _takeButton.Bounds = new Rectangle(x, y, takeWidth, S(40));
-        _fadeButton.Bounds = new Rectangle(x + takeWidth + S(6), y, takeWidth, S(40));
-        _swapButton.Bounds = new Rectangle(area.Right - swapWidth, y, swapWidth, S(40));
-        y += S(40) + gap;
+        _presenterViewButton.Visible = _presenter.Visible;
 
-        badgeWidth = _programBadge.PreferredWidth;
-        _programBadge.Bounds = new Rectangle(x, y + (label - S(18)) / 2, badgeWidth, S(18));
-        _programState.Bounds = new Rectangle(x + badgeWidth + S(6), y, w - badgeWidth - S(6), label);
-        y += label + S(4);
-        _programMirror.Bounds = new Rectangle(x, y, w, programMonitor);
-        y += programMonitor + S(6);
-        _deviceCard.Card.Visible = showDeviceCard;
-        _deviceCard.Card.Bounds = new Rectangle(x, y, w, deviceHeight);
-        if (showDeviceCard) y += deviceHeight + gap;
-        int half = (w - S(8)) / 2;
-        _programPauseButton.Bounds = new Rectangle(x, y, half, button);
-        _stopOutputButton.Bounds = new Rectangle(x + half + S(8), y, w - half - S(8), button);
-        y += button + gap;
+        int swapWidth = S(72), takeWidth = (w - swapWidth - S(12)) / 2;
+        _takeButton.Bounds = new Rectangle(x, y, takeWidth, S(36));
+        _fadeButton.Bounds = new Rectangle(x + takeWidth + S(6), y, takeWidth, S(36));
+        _swapButton.Bounds = new Rectangle(area.Right - swapWidth, y, swapWidth, S(36));
+        y += S(36) + gap;
+
+        y = _windows[1].Layout(x, y, w, second, S);
+        y += gap;
+
+        _deviceCard.Card.Visible = deviceHeight > 0;
+        if (deviceHeight > 0)
+        {
+            _deviceCard.Card.Bounds = new Rectangle(x, y, w, deviceHeight);
+            y += deviceHeight + gap;
+        }
 
         if (_runControls != null)
         {
@@ -421,20 +368,17 @@ internal sealed class SharedPreviewDock : Panel
         }
     }
 
-    /// <summary>Binds the Preview engine (built by MainWindow on <see cref="PreviewSurface"/>).</summary>
-    public void BindPreview(PlaybackEngine preview)
-    {
-        if (_preview != null) _preview.StateChanged -= OnPreviewStateChanged;
-        _preview = preview;
-        _preview.StateChanged += OnPreviewStateChanged;
-        _volume.Value = _preview.AudioVolume;
-        RefreshNow();
-    }
+    /// <summary>Binds the top window's engine (built by MainWindow on <see cref="PreviewSurface"/>).</summary>
+    public void BindPreview(PlaybackEngine preview) => _windows[0].Bind(preview);
+
+    /// <summary>Binds the bottom window's engine (built on <see cref="SecondSurface"/>).</summary>
+    public void BindSecondPreview(PlaybackEngine preview) => _windows[1].Bind(preview);
 
     /// <summary>The Program engine, or null while no extended display is bound.</summary>
     public void AttachProgram(PlaybackEngine? program)
     {
         _program = program;
+        if (program == null) ReleaseProgramWindow();
         RefreshNow();
     }
 
@@ -448,35 +392,24 @@ internal sealed class SharedPreviewDock : Panel
         if (relayout) PerformLayout();
     }
 
-    private void OnPreviewStateChanged(PlaybackChannelState state)
+    /// <summary>Idle windows show the branded splash rather than a bare dark box.</summary>
+    private void ShowIdleSplash(MonitorWindow window)
     {
-        if (state == PlaybackChannelState.Idle) ShowIdleSplash();
-        RefreshNow();
-    }
-
-    /// <summary>Idle monitor shows the branded splash rather than a bare dark box.</summary>
-    private void ShowIdleSplash()
-    {
-        _placeholder ??= PreviewPlaceholder.Create(800, 450); // wide splash: the preview fills its width
-        PreviewSurface.ShowImageSurface();
-        PreviewSurface.ContentSurface.SetFrame(_placeholder);
+        _placeholder ??= PreviewPlaceholder.Create(800, 450);
+        window.Surface.ShowImageSurface();
+        window.Surface.ContentSurface.SetFrame(_placeholder);
     }
 
     internal void RefreshTheme()
     {
         var palette = MonitorPalette;
         BackColor = palette.Rail;
-        _title.ForeColor = palette.Text;
-        _timecode.ForeColor = _volumeIcon.ForeColor = palette.Muted;
-        // These are media surfaces, not theme chrome: an empty frame must stay black.
-        PreviewSurface.BackColor = Color.Black;
-        PreviewSurface.VideoHost.BackColor = Color.Black;
-        PreviewSurface.ContentSurface.BackColor = Color.Black;
-        _errorCard.RefreshTheme(palette);
+        foreach (var window in _windows) window.RefreshTheme(palette);
         RefreshNow();
     }
 
-    /// <summary>Adds the document control row (PDF / Word / presentation controls and Program sync).</summary>
+    /// <summary>Adds the document control row (PDF / Word / presentation controls and Program sync) under
+    /// the top window.</summary>
     public void BindDocumentSync(DocumentProgramSync sync)
     {
         _documentSync = sync;
@@ -499,114 +432,62 @@ internal sealed class SharedPreviewDock : Panel
         PerformLayout();
     }
 
+    private EveryStage.Terminal.Documents.SlideShowSession? CurrentShow =>
+        _program?.DocumentMode == DocumentPlaybackMode.NativeShow ? _program.OfficeSession as EveryStage.Terminal.Documents.SlideShowSession : null;
+
+    /// <summary>演讲者视图: a normal, resizable and maximizable window (like a presentation program's own
+    /// presenter view) for the show running on the big screen.</summary>
+    private void OpenPresenterView()
+    {
+        if (_presenterWindow is { IsDisposed: false })
+        {
+            if (_presenterWindow.WindowState == FormWindowState.Minimized) _presenterWindow.WindowState = FormWindowState.Normal;
+            _presenterWindow.Activate();
+            return;
+        }
+        _presenterWindow = new PresenterWindow(() => CurrentShow, () => ProgramScreenBounds?.Invoke(), () => _program);
+        _presenterWindow.Show(FindForm());
+    }
+
     private void RefreshNow()
     {
         if (IsDisposed) return;
         var palette = MonitorPalette;
         _documentSync?.FollowProgramShow();
         RefreshDocumentBar();
-        var show = _program?.DocumentMode == DocumentPlaybackMode.NativeShow ? _program.OfficeSession as EveryStage.Terminal.Documents.SlideShowSession : null;
+        var show = CurrentShow;
         if (_presenter.Visible != (show != null))
         {
             _presenter.Visible = show != null;
             PerformLayout();
         }
         _presenter.Update(show);
-        var preview = _preview;
-        var file = preview?.CurrentFile;
-        var state = preview?.State ?? PlaybackChannelState.Idle;
+
         bool programLive = _stateMachine.State == OutputState.Active;
         var source = programLive ? _stateMachine.Source : ProgramSource.None;
-
-        // 「预览」 line: file + state.
-        string fileLabel = file == null ? "" : Path.GetFileName(file.SourcePath) + (file.IsBackgroundAudio ? "（背景音乐）" : "") + " · ";
-        (string text, UiForegroundRole role) = state switch
-        {
-            PlaybackChannelState.Loading => (fileLabel + "加载中", UiForegroundRole.Warning),
-            PlaybackChannelState.Playing => (fileLabel + "预览中", UiForegroundRole.Muted),
-            PlaybackChannelState.Paused when preview!.IsCompleted => (fileLabel + "播放完成", UiForegroundRole.Muted),
-            PlaybackChannelState.Paused => (fileLabel + "已暂停", UiForegroundRole.Warning),
-            PlaybackChannelState.Failed => (fileLabel + "播放失败", UiForegroundRole.Danger),
-            _ => ("待机 · 单击文件在此预览", UiForegroundRole.Muted),
-        };
-        if (preview?.CurrentContentNote is { } note && state == PlaybackChannelState.Playing) text += "（" + note + "）";
-        if (preview?.Muted == true && state is PlaybackChannelState.Playing or PlaybackChannelState.Paused) text += " · 预监静音";
-        SetTextRole(_previewState, text, role);
-        bool previewHasContent = state is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed);
-        var frameColor = previewHasContent ? palette.Preview : palette.Border;
-        if (_previewFrame.BackColor != frameColor) _previewFrame.BackColor = frameColor;
-        _previewBadge.Active = previewHasContent;
-
-        // Program status (independent of Preview).
         var programState = ProgramStatus.Compute(_program != null, programLive, _program?.State);
-        (string programText, UiForegroundRole programRole) = programState switch
+        (string statusText, UiForegroundRole statusRole) = programState switch
         {
-            ProgramOutputState.Disconnected => ("未连接扩展屏 · 仅本地预览", UiForegroundRole.Muted),
-            ProgramOutputState.Failed => ("播放失败", UiForegroundRole.Danger),
-            ProgramOutputState.Live when source == ProgramSource.DeviceCast => ("输出中 · 设备来投", UiForegroundRole.Text),
-            ProgramOutputState.Live => ((_program?.CurrentFile is { } pf ? Path.GetFileName(pf.SourcePath) : "本地媒体")
-                + (_program?.Position is { } pp && _program.CanSeek ? " · " + Format(pp) : "") + (_program?.IsPaused == true ? " · 已暂停" : ""), UiForegroundRole.Text),
-            _ => (_stateMachine.CastSwitchOn ? "待机 · 没有输出" : "待机（投屏开关已关闭）", UiForegroundRole.Muted),
+            ProgramOutputState.Disconnected => ("○ 未连接扩展屏 · 仅本机播放", UiForegroundRole.Muted),
+            ProgramOutputState.Failed => ("● 大屏播放失败", UiForegroundRole.Danger),
+            ProgramOutputState.Live when source == ProgramSource.DeviceCast => ("● 大屏输出中 · 设备来投", UiForegroundRole.Danger),
+            ProgramOutputState.Live => ("● 大屏输出中" + (_program?.CurrentFile is { } pf ? " · " + Path.GetFileName(pf.SourcePath) : "")
+                + (_program?.IsPaused == true ? " · 已暂停" : ""), UiForegroundRole.Danger),
+            _ => (_stateMachine.CastSwitchOn ? "○ 大屏待机" : "○ 大屏待机 · 投屏开关已关闭", _stateMachine.CastSwitchOn ? UiForegroundRole.Muted : UiForegroundRole.Warning),
         };
-        SetTextRole(_programState, programText, programRole);
-        _programBadge.Active = programState == ProgramOutputState.Live;
-
-        // Transport.
-        bool hasFile = file != null && state != PlaybackChannelState.Idle;
-        _previousButton.Enabled = hasFile && state != PlaybackChannelState.Loading;
-        _nextButton.Enabled = hasFile && state != PlaybackChannelState.Loading;
-        _stopButton.Enabled = hasFile;
-        bool canToggle = preview != null && (preview.CanPause || preview.IsPaused || preview.IsCompleted);
-        _playPauseButton.Enabled = canToggle;
-        SetText(_playPauseButton, preview != null && (preview.IsPaused || preview.IsCompleted || state != PlaybackChannelState.Playing) ? "\uE768" : "\uE769", null);
-
-        var duration = preview?.Duration;
-        var position = preview?.Position ?? TimeSpan.Zero;
-        bool timeline = preview?.CanSeek == true;
-        SetText(_timecode, timeline ? $"{Format(position)} / {(duration is { } d ? Format(d) : "--:--")}" : "--:-- / --:--", null);
-        _progress.Enabled = timeline && duration.HasValue;
-        if (!_progress.IsDragging) _progress.Value = duration is { Ticks: > 0 } dd ? (float)(position.Ticks / (double)dd.Ticks) : 0f;
-
-        _loopButton.Enabled = hasFile;
-        _loopButton.ForeColor = preview?.LoopCurrent == true ? palette.Accent : palette.Text;
-        _scaleButton.Enabled = file?.Kind == MediaKind.Video && hasFile;
-        SetText(_scaleButton, preview?.VideoScaleMode switch { VideoScaleMode.Fill => "填充", VideoScaleMode.Fit => "适应", _ => "满宽" }, null);
-
-        // Disabled (not just a warning on click) while no extended display is bound.
-        _takeButton.Enabled = _program != null && hasFile && state != PlaybackChannelState.Failed && state != PlaybackChannelState.Loading;
-        _fadeButton.Enabled = _takeButton.Enabled;
-        _swapButton.Enabled = _takeButton.Enabled;
-        _programMirror.OnAir = programLive;
-        _programMirror.IdleText = _program == null ? "未连接扩展屏\n点此打开扩展屏向导（Win+P）" : "大屏未输出";
-        _programMirror.Cursor = _program == null ? Cursors.Hand : Cursors.Default;
+        SetTextRole(_status, statusText, statusRole);
         _stopOutputButton.Enabled = programLive;
-        bool programLocal = programLive && source == ProgramSource.LocalMedia && _program != null;
-        _programPauseButton.Enabled = programLocal && (_program!.CanPause || _program.IsPaused || _program.IsCompleted);
-        SetText(_programPauseButton, programLocal && (_program!.IsPaused || _program.IsCompleted) ? "继续大屏" : "暂停大屏", null);
 
-        // Source cards: which source is on air.
-        string localStatus = state switch
-        {
-            _ when source == ProgramSource.LocalMedia => "输出中",
-            PlaybackChannelState.Idle => "待机",
-            PlaybackChannelState.Failed => "预览失败 · 未投屏",
-            _ => "预览中 · 未投屏",
-        };
-        _localCard.Update(source == ProgramSource.LocalMedia, localStatus,
-            source == ProgramSource.LocalMedia || state == PlaybackChannelState.Failed ? UiForegroundRole.Danger : state == PlaybackChannelState.Idle ? UiForegroundRole.Muted : UiForegroundRole.Success);
+        foreach (var window in _windows) window.Refresh(palette, _program, programLive, source, window.Index == _activeWindow);
+
+        var active = _windows[_activeWindow];
+        var activeState = active.Engine?.State ?? PlaybackChannelState.Idle;
+        bool canTake = _program != null && !active.SyncedToProgram && active.Engine?.CurrentFile != null
+            && activeState is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed or PlaybackChannelState.Loading);
+        _takeButton.Enabled = _fadeButton.Enabled = _swapButton.Enabled = canTake;
+
         _deviceCard.Update(_deviceConnected, _deviceName ?? "设备来投", _deviceOnProgram,
             _program == null ? "未连接扩展屏" : "等待设备来投", _program != null);
-
-        // Error card.
-        if (state == PlaybackChannelState.Failed && preview?.LastError is { } error)
-        {
-            _errorCard.Show(error);
-            PreviewSurface.SetOverlayCard(_errorCard);
-        }
-        else
-        {
-            PreviewSurface.SetOverlayCard(null);
-        }
     }
 
     private static void SetText(Control control, string text, Color? color)
@@ -627,68 +508,240 @@ internal sealed class SharedPreviewDock : Panel
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _feedbackTimer.Dispose();
         if (disposing)
         {
+            _feedbackTimer.Dispose();
             _timer.Stop();
             _timer.Dispose();
             _toolTip.Dispose();
-            if (_preview != null) _preview.StateChanged -= OnPreviewStateChanged;
-            PreviewSurface.ContentSurface.SetFrame(null);
+            foreach (var window in _windows) window.Dispose();
             _placeholder?.Dispose();
-            _errorCard.Dispose();
+            _presenterWindow?.Dispose();
         }
         base.Dispose(disposing);
     }
 
-    /// <summary>One "信号源" card whose highlight and status line follow what is on air.</summary>
-    private sealed class SourceCardView
+    /// <summary>
+    /// One of the two identical monitor windows: a frame with the window's own preview surface and, on top
+    /// of it while it follows the big screen, the <see cref="ProgramMirror"/>; a caption line; and the
+    /// compact transport (⏮ ⏯ ⏹ ⏭ · progress · time) that drives this window's engine — or the big screen
+    /// while the window follows it. Files can be dropped on it.
+    /// </summary>
+    private sealed class MonitorWindow
     {
-        private readonly Label _state;
-        private readonly GlassPanel _thumb;
-        private bool _selected;
-        public GlassPanel Card { get; }
+        private readonly SharedPreviewDock _dock;
+        private readonly Panel _frame;
+        private readonly Label _caption;
+        private readonly RoundedActionButton _previous, _playPause, _stop, _next;
+        private readonly MediaTrack _progress;
+        private readonly Label _time;
+        private readonly ErrorCard _error;
+        private bool _synced;
+        private bool _sawLive;          // the output has been on air since this window started following it
+        private DateTime _syncedAt;
 
-        public SourceCardView(string title)
+        public int Index { get; }
+        public PreviewSurface Surface { get; }
+        public ProgramMirror Mirror { get; } = new() { Dock = DockStyle.Fill, Visible = false };
+        public PlaybackEngine? Engine { get; private set; }
+        private PlaybackEngine? _program;
+
+        public bool SyncedToProgram
         {
-            Card = new GlassPanel
+            get => _synced;
+            set
             {
-                Height = SourceCardHeight, Margin = Padding.Empty,
-                Padding = new Padding(6, 5, 8, 5), CornerRadius = 9, GlassTint = ModernUi.SurfaceRaised,
-            };
-            _thumb = new GlassPanel { Dock = DockStyle.Left, Width = 42, CornerRadius = 7, GlassTint = ModernUi.Surface };
-            _thumb.Paint += (_, e) =>
-            {
-                int s = 20;
-                var r = new Rectangle((_thumb.Width - s) / 2, (_thumb.Height - s) / 2, s, s);
-                var palette = MonitorPalette;
-                VectorIcons.Draw(e.Graphics, NavIcon.Devices, r, _selected ? palette.ProgramBorder : palette.Muted);
-            };
-            var labels = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(10, 0, 0, 0) };
-            var name = ModernUi.SetForegroundRole(new Label
-            {
-                Text = title, Dock = DockStyle.Top, Height = 18,
-                Font = new Font(ModernUi.UiFontSemibold, 9F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true,
-            }, UiForegroundRole.Text);
-            _state = new Label { Dock = DockStyle.Fill, Font = new Font(ModernUi.UiFont, 8F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
-            labels.Controls.Add(_state);
-            labels.Controls.Add(name);
-            Card.Controls.Add(labels);
-            Card.Controls.Add(_thumb);
+                if (_synced == value) return;
+                _synced = value;
+                _syncedAt = DateTime.UtcNow;
+                _sawLive = false;
+                Mirror.Visible = value;
+                if (value) Mirror.BringToFront();
+            }
         }
 
-        public void Update(bool selected, string status, UiForegroundRole role)
+        public bool Occupied => _synced || Engine is { State: not PlaybackChannelState.Idle };
+
+        /// <summary>The engine the transport drives: the big screen while following it.</summary>
+        private PlaybackEngine? Controlled => _synced ? _program : Engine;
+
+        public MonitorWindow(SharedPreviewDock dock, int index)
         {
-            SetTextRole(_state, "● " + status, role);
-            _selected = selected;
-            var palette = MonitorPalette;
-            Card.GlassTint = selected
-                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(palette.GlassTint, palette.ProgramBorder, 0.19f))
-                : palette.GlassTint;
-            _thumb.GlassTint = selected
-                ? Color.FromArgb(202, Panels.ActivityRowView.Blend(palette.GlassTint, palette.ProgramBorder, 0.11f))
-                : palette.GlassTint;
-            Card.Invalidate(true);
+            _dock = dock;
+            Index = index;
+            _frame = new Panel { BackColor = ModernUi.Border, Padding = new Padding(2) };
+            Surface = ModernUi.SetBackgroundRole(new PreviewSurface { Dock = DockStyle.Fill, Margin = Padding.Empty }, UiBackgroundRole.MediaBlack);
+            ModernUi.SetBackgroundRole(Surface.VideoHost, UiBackgroundRole.MediaBlack);
+            ModernUi.SetBackgroundRole(Surface.ContentSurface, UiBackgroundRole.MediaBlack);
+            _frame.Controls.Add(Surface);
+            _frame.Controls.Add(Mirror);
+            Mirror.Click += (_, _) => { if (_program == null) ExtendDisplayWizard.Show(_dock.FindForm()); };
+            _caption = ModernUi.SetForegroundRole(new Label { Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
+            _previous = dock.IconButton("", "上一项 / 上一页");
+            _playPause = dock.IconButton("", "播放 / 暂停");
+            _stop = dock.IconButton("", "停止");
+            _next = dock.IconButton("", "下一项 / 下一页");
+            _progress = new MediaTrack();
+            _time = ModernUi.SetForegroundRole(new Label { Text = "--:-- / --:--", Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleRight }, UiForegroundRole.Muted);
+            _error = new ErrorCard();
+            _error.Retry += () => Engine?.RetryCurrentFile();
+            _error.Skip += () => { if (Engine != null && !Engine.NextManual()) Engine.Stop(); };
+            _error.Remove += file => dock.RemoveFromLibraryRequested?.Invoke(file);
+            _error.OpenExternally += file => ExternalOpener.OpenWithDefaultApp(dock.FindForm(), file.SourcePath);
+
+            _previous.Click += (_, _) => { Activate(); Controlled?.PreviousManual(); };
+            _next.Click += (_, _) => { Activate(); Controlled?.NextManual(); };
+            _playPause.Click += (_, _) =>
+            {
+                Activate();
+                var engine = Controlled;
+                if (engine == null) return;
+                if (engine.IsPaused || engine.IsCompleted) engine.Resume(); else if (engine.CanPause) engine.Pause();
+            };
+            // Stop: a local window stops its own playback; the window following the big screen stops the output.
+            _stop.Click += (_, _) =>
+            {
+                if (_synced) dock.StopProgramRequested?.Invoke();
+                else Engine?.Stop();
+            };
+            _progress.ValueCommitted += fraction =>
+            {
+                var engine = Controlled;
+                if (engine?.Duration is { } duration) engine.SeekTo(TimeSpan.FromTicks((long)(duration.Ticks * fraction)));
+            };
+
+            // Drop a library card (in-process MediaFile) or Explorer files on the window: play them here.
+            foreach (var target in new Control[] { _frame, Surface, Surface.VideoHost, Surface.ContentSurface, Mirror })
+            {
+                target.AllowDrop = true;
+                target.DragEnter += (_, e) => e.Effect = Dropped(e.Data) is { } ? DragDropEffects.Copy : DragDropEffects.None;
+                target.DragDrop += (_, e) =>
+                {
+                    if (Dropped(e.Data) is not { } drop) return;
+                    dock.FileDropped?.Invoke(Index, drop.File, drop.Path);
+                };
+            }
+        }
+
+        private static (MediaFile? File, string? Path)? Dropped(IDataObject? data)
+        {
+            if (data?.GetData(Panels.MediaGrid.DragFormat) is MediaFile file) return (file, null);
+            if (data?.GetData(DataFormats.FileDrop) is string[] { Length: > 0 } paths && FileLibraryStore.InferKind(paths[0]) is not null and not MediaKind.Audio)
+                return (null, paths[0]);
+            return null;
+        }
+
+        private void Activate()
+        {
+            if (!_synced) _dock._activeWindow = Index;
+        }
+
+        public void AddTo(SharedPreviewDock dock) => dock.Controls.AddRange(new Control[] { _frame, _caption, _previous, _playPause, _stop, _next, _progress, _time });
+
+        public void Bind(PlaybackEngine engine)
+        {
+            if (Engine != null) Engine.StateChanged -= OnStateChanged;
+            Engine = engine;
+            Engine.StateChanged += OnStateChanged;
+        }
+
+        private void OnStateChanged(PlaybackChannelState state)
+        {
+            if (_dock.InvokeRequired) { _dock.BeginInvoke(() => OnStateChanged(state)); return; }
+            if (state == PlaybackChannelState.Idle) _dock.ShowIdleSplash(this);
+            if (state is PlaybackChannelState.Loading or PlaybackChannelState.Playing && !_synced) _dock._activeWindow = Index;
+            _dock.RefreshNow();
+        }
+
+        /// <summary>Height of everything but the picture: caption + transport row.</summary>
+        public static int ChromeHeight(Func<int, int> s) => s(20) + s(4) + s(ButtonHeight) + s(6);
+
+        public int Layout(int x, int y, int w, int pictureHeight, Func<int, int> S)
+        {
+            _frame.Bounds = new Rectangle(x, y, w, pictureHeight);
+            y += pictureHeight + S(4);
+            _caption.Bounds = new Rectangle(x, y, w, S(20));
+            y += S(20) + S(4);
+            int icon = S(32), step = icon + S(4), button = S(ButtonHeight);
+            var row = new[] { _previous, _playPause, _stop, _next };
+            for (int i = 0; i < row.Length; i++) row[i].Bounds = new Rectangle(x + i * step, y, icon, button);
+            int timeWidth = TextRenderer.MeasureText("00:00 / 00:00", _time.Font).Width + S(4);
+            int progressLeft = x + row.Length * step + S(4);
+            _time.Bounds = new Rectangle(x + w - timeWidth, y, timeWidth, button);
+            _progress.Bounds = new Rectangle(progressLeft, y + (button - S(24)) / 2, Math.Max(1, _time.Left - S(6) - progressLeft), S(24));
+            return y + button + S(6);
+        }
+
+        public void Refresh(UiPalette palette, PlaybackEngine? program, bool programLive, ProgramSource source, bool active)
+        {
+            _program = program;
+            // Output stopped (after having come on air — going on air can take a moment, e.g. a native show):
+            // the window is free again. Never on air within 15 s: give up following.
+            if (_synced && programLive) _sawLive = true;
+            if (_synced && !programLive && (_sawLive || DateTime.UtcNow - _syncedAt > TimeSpan.FromSeconds(15))) SyncedToProgram = false;
+            Mirror.OnAir = _synced && programLive;
+            Mirror.IdleText = program == null ? "未连接扩展屏\n点此打开扩展屏向导（Win+P）" : "大屏未输出";
+            var engine = Controlled;
+            var file = engine?.CurrentFile;
+            var state = engine?.State ?? PlaybackChannelState.Idle;
+
+            string name = _synced && source == ProgramSource.DeviceCast ? "设备来投"
+                : file == null ? "" : Path.GetFileName(file.SourcePath);
+            string caption = _synced
+                ? (programLive ? "● 大屏 · " + name + (engine?.IsPaused == true ? " · 已暂停" : "") : "大屏未输出")
+                : state switch
+                {
+                    PlaybackChannelState.Loading => name + " · 加载中",
+                    PlaybackChannelState.Playing => name,
+                    PlaybackChannelState.Paused when engine!.IsCompleted => name + " · 播放完成",
+                    PlaybackChannelState.Paused => name + " · 已暂停",
+                    PlaybackChannelState.Failed => name + " · 播放失败",
+                    _ => "空闲 · 把文件拖到这里，或单击文件播放",
+                };
+            if (!_synced && engine?.Muted == true && state is PlaybackChannelState.Playing or PlaybackChannelState.Paused) caption += " · 静音（大屏输出中）";
+            SetTextRole(_caption, caption, _synced && programLive ? UiForegroundRole.Danger
+                : state == PlaybackChannelState.Failed ? UiForegroundRole.Danger : file == null ? UiForegroundRole.Muted : UiForegroundRole.Text);
+
+            // Frame: red while following the big screen (the mirror flashes itself), accent for the active
+            // local window, plain otherwise.
+            bool hasContent = state is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed);
+            var frameColor = _synced ? palette.ProgramBorder : active && hasContent ? palette.Accent : palette.Border;
+            if (_frame.BackColor != frameColor) _frame.BackColor = frameColor;
+
+            bool hasFile = file != null && state != PlaybackChannelState.Idle;
+            bool controllable = _synced ? programLive && source == ProgramSource.LocalMedia : hasFile;
+            _previous.Enabled = _next.Enabled = controllable && state != PlaybackChannelState.Loading;
+            _stop.Enabled = _synced ? programLive : hasFile;
+            bool canToggle = controllable && engine != null && (engine.CanPause || engine.IsPaused || engine.IsCompleted);
+            _playPause.Enabled = canToggle;
+            SetText(_playPause, engine != null && (engine.IsPaused || engine.IsCompleted || state != PlaybackChannelState.Playing) ? "" : "", null);
+            var duration = engine?.Duration;
+            var position = engine?.Position ?? TimeSpan.Zero;
+            bool timeline = controllable && engine?.CanSeek == true;
+            SetText(_time, timeline ? $"{Format(position)} / {(duration is { } d ? Format(d) : "--:--")}" : "--:-- / --:--", null);
+            _progress.Enabled = timeline && duration.HasValue;
+            if (!_progress.IsDragging) _progress.Value = timeline && duration is { Ticks: > 0 } dd ? (float)(position.Ticks / (double)dd.Ticks) : 0f;
+
+            if (!_synced && Engine?.State == PlaybackChannelState.Failed && Engine.LastError is { } error)
+            {
+                _error.Show(error);
+                Surface.SetOverlayCard(_error);
+            }
+            else Surface.SetOverlayCard(null);
+        }
+
+        public void RefreshTheme(UiPalette palette)
+        {
+            Surface.BackColor = Surface.VideoHost.BackColor = Surface.ContentSurface.BackColor = Color.Black;
+            _time.ForeColor = palette.Muted;
+            _error.RefreshTheme(palette);
+        }
+
+        public void Dispose()
+        {
+            if (Engine != null) Engine.StateChanged -= OnStateChanged;
+            Surface.ContentSurface.SetFrame(null);
+            _error.Dispose();
         }
     }
 

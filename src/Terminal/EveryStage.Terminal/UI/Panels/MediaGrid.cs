@@ -68,6 +68,10 @@ internal sealed class MediaGrid : Control
     /// <summary>Whether dragging to reorder is allowed right now (e.g. not while a filter hides cards).</summary>
     public Func<bool>? CanReorder { get; set; }
 
+    /// <summary>Drag-and-drop format of a card dragged out of the grid (the in-process <see cref="MediaFile"/>),
+    /// e.g. onto a 监看 window.</summary>
+    public const string DragFormat = "EveryStage.MediaFile";
+
     /// <summary>A drag was started while <see cref="CanReorder"/> said no (the owner explains why).</summary>
     public event Action<Point>? ReorderBlocked;
 
@@ -324,9 +328,30 @@ internal sealed class MediaGrid : Control
         {
             var size = SystemInformation.DragSize;
             if (Math.Abs(e.X - _mouseDown.X) < size.Width && Math.Abs(e.Y - _mouseDown.Y) < size.Height) return;
-            if (CanReorder?.Invoke() == false) { _pressed = null; ReorderBlocked?.Invoke(e.Location); return; }
+            if (CanReorder?.Invoke() == false)
+            {
+                // No reordering now (filtered): the drag can only go somewhere else, e.g. a 监看 window.
+                var file = _pressed.File;
+                _pressed = null;
+                var result = DoDragDrop(new DataObject(DragFormat, file), DragDropEffects.Copy);
+                if (result == DragDropEffects.None && ClientRectangle.Contains(PointToClient(MousePosition))) ReorderBlocked?.Invoke(e.Location);
+                return;
+            }
             _dragging = true;
             Cursor = Cursors.SizeAll;
+        }
+        // Leaving the grid sideways turns the reorder drag into a drag to another control (a 监看 window).
+        if (e.X < 0 || e.X > ClientSize.Width)
+        {
+            var file = _pressed.File;
+            _pressed = null;
+            _dragging = false;
+            _insertAt = -1;
+            _autoScroll.Stop();
+            Cursor = Cursors.Default;
+            Invalidate();
+            DoDragDrop(new DataObject(DragFormat, file), DragDropEffects.Copy);
+            return;
         }
         _dragPoint = e.Location;
         UpdateInsertion(e.Location);

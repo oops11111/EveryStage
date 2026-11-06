@@ -283,6 +283,15 @@ internal static class DocumentTests
         Console.WriteLine("PASS: in-flight PDF view is released after output or engine disposal");
     }
 
+    /// <summary>A field of one of the 监看 column's two windows (0 top, 1 bottom).</summary>
+    private static T DockWindowField<T>(SharedPreviewDock dock, int window, string name)
+    {
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var windows = (Array)typeof(SharedPreviewDock).GetField("_windows", flags)!.GetValue(dock)!;
+        var item = windows.GetValue(window)!;
+        return (T)item.GetType().GetField(name, flags)!.GetValue(item)!;
+    }
+
     private static void TestHotkeyRegistration()
     {
         int failures = 0;
@@ -490,14 +499,14 @@ internal static class DocumentTests
         setNotes.Invoke(presenter, new object[] { "" });
         var take = (Button)typeof(SharedPreviewDock).GetField("_takeButton", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock)!;
         var monitorFlags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var previewStatus = (Label)typeof(SharedPreviewDock).GetField("_previewState", monitorFlags)!.GetValue(dock)!;
-        var programStatus = (Label)typeof(SharedPreviewDock).GetField("_programState", monitorFlags)!.GetValue(dock)!;
-        var localCard = typeof(SharedPreviewDock).GetField("_localCard", monitorFlags)!.GetValue(dock)!;
-        var localStatus = (Label)localCard.GetType().GetField("_state", monitorFlags)!.GetValue(localCard)!;
+        // Two identical 监看 windows (captions) and the big-screen status at the top of the column.
+        var previewStatus = DockWindowField<Label>(dock, 0, "_caption");
+        var programStatus = DockWindowField<Label>(dock, 1, "_caption");
+        var localStatus = (Label)typeof(SharedPreviewDock).GetField("_status", monitorFlags)!.GetValue(dock)!;
         var deviceCard = typeof(SharedPreviewDock).GetField("_deviceCard", monitorFlags)!.GetValue(dock)!;
         var deviceFrame = (Control)deviceCard.GetType().GetField("_videoFrame", monitorFlags)!.GetValue(deviceCard)!;
         var deviceCaption = (Label)deviceCard.GetType().GetField("_caption", monitorFlags)!.GetValue(deviceCard)!;
-        var errorCard = (Control)typeof(SharedPreviewDock).GetField("_errorCard", monitorFlags)!.GetValue(dock)!;
+        var errorCard = DockWindowField<Control>(dock, 0, "_error");
         var errorTitle = (Label)errorCard.GetType().GetField("_title", monitorFlags)!.GetValue(errorCard)!;
         var errorDetail = (Label)errorCard.GetType().GetField("_detail", monitorFlags)!.GetValue(errorCard)!;
         var errorSuggestion = (Label)errorCard.GetType().GetField("_suggestion", monitorFlags)!.GetValue(errorCard)!;
@@ -915,7 +924,7 @@ internal static class DocumentTests
         Require(WaitFor(() => feedbackProgram.State == PlaybackChannelState.Failed, 3000) && lastFeedback.GetValue(window) == null,
             "Failed output generated a success notification.");
         var statusDock = (SharedPreviewDock)typeof(MainWindow).GetField("_previewDock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
-        var programStatusLabel = (Label)typeof(SharedPreviewDock).GetField("_programState", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(statusDock)!;
+        var programStatusLabel = (Label)typeof(SharedPreviewDock).GetField("_status", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(statusDock)!;
         typeof(SharedPreviewDock).GetMethod("RefreshNow", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(statusDock, null);
         programStatusLabel.ForeColor = Color.Magenta;
         Require(ModernUi.ApplyForegroundRole(programStatusLabel, UiPalette.For(AppTheme.Dark))
@@ -928,8 +937,8 @@ internal static class DocumentTests
         typeof(SharedPreviewDock).GetMethod("RefreshNow", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(statusDock, null);
         programStatusLabel.ForeColor = Color.Magenta;
         Require(ModernUi.ApplyForegroundRole(programStatusLabel, UiPalette.For(AppTheme.Dark))
-            && programStatusLabel.ForeColor == UiPalette.For(AppTheme.Dark).Text,
-            $"Live program did not return to its text role (output={outputState.State}, source={outputState.Source}, engine={feedbackProgram.State}, label={programStatusLabel.Text}).");
+            && programStatusLabel.ForeColor == UiPalette.For(AppTheme.Dark).Danger,
+            $"Live program status is not shown in the on-air (danger) role (output={outputState.State}, source={outputState.Source}, engine={feedbackProgram.State}, label={programStatusLabel.Text}).");
         var dock = (SharedPreviewDock)typeof(MainWindow).GetField("_previewDock", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
         Require(WaitFor(() => typeof(SharedPreviewDock).GetField("_flashingCard", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(dock) == null, 2000),
             "On-air flash did not finish.");
@@ -938,7 +947,7 @@ internal static class DocumentTests
         WriteColoredPdf(progressPdf, 3);
         var progressFile = new MediaFile { SourcePath = progressPdf, Kind = MediaKind.Document };
         var previewEngine = (PlaybackEngine)typeof(MainWindow).GetField("_preview", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
-        var errorCard = (Control)typeof(SharedPreviewDock).GetField("_errorCard", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(statusDock)!;
+        var errorCard = DockWindowField<Control>(statusDock, 0, "_error");
         int ownerThread = Environment.CurrentManagedThreadId, failedThread = -1, playingThread = -1;
         previewEngine.StateChanged += state =>
         {
@@ -1242,6 +1251,42 @@ internal static class DocumentTests
             Require(WaitFor(() => stack.Notices.Count == 0, 5000), "Notices did not close by themselves after 3 s.");
             Require(type.GetField("_onAir", flags) == null, "The ON AIR bar is still there.");
             Console.WriteLine("PASS: notices sit in the right column (max 3, fixed height, close after 3 s); no ON AIR bar");
+        }
+        // Two identical 监看 windows: with only the main display, files play in the first free window
+        // (both busy: the top one); a file dropped on a window plays in that window.
+        {
+            // Single-screen routing: run with no Program engine attached (restored afterwards).
+            var playbackField = type.GetField("_playback", flags)!;
+            var savedProgram = playbackField.GetValue(window);
+            playbackField.SetValue(window, null);
+            var routingDock = (SharedPreviewDock)type.GetField("_previewDock", flags)!.GetValue(window)!;
+            var top = (PlaybackEngine)type.GetField("_preview", flags)!.GetValue(window)!;
+            var bottom = (PlaybackEngine)type.GetField("_preview2", flags)!.GetValue(window)!;
+            string routingDir = Path.Combine(Path.GetTempPath(), "EveryStage-Routing-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(routingDir);
+            MediaFile Image(string name)
+            {
+                string path = Path.Combine(routingDir, name);
+                using (var bitmap = new Bitmap(32, 18)) bitmap.Save(path, ImageFormat.Png);
+                return new MediaFile { SourcePath = path, Kind = MediaKind.Image };
+            }
+            var click = type.GetMethod("OnFileClicked", flags)!;
+            var a1 = Image("a.png"); var b1 = Image("b.png"); var c1 = Image("c.png"); var d1 = Image("d.png");
+            click.Invoke(window, new object[] { a1 });
+            Require(WaitFor(() => ReferenceEquals(top.CurrentFile, a1) && top.State != PlaybackChannelState.Loading, 3000), "First file did not play in the top window.");
+            click.Invoke(window, new object[] { b1 });
+            Require(WaitFor(() => ReferenceEquals(bottom.CurrentFile, b1), 3000), "Second file did not play in the free bottom window.");
+            click.Invoke(window, new object[] { c1 });
+            Require(WaitFor(() => ReferenceEquals(top.CurrentFile, c1), 3000) && ReferenceEquals(bottom.CurrentFile, b1),
+                "With both windows busy the top window was not used.");
+            var dropped = typeof(SharedPreviewDock).GetField("FileDropped", flags)!.GetValue(routingDock) as Delegate;
+            dropped!.DynamicInvoke(1, d1, null);
+            Require(WaitFor(() => ReferenceEquals(bottom.CurrentFile, d1), 3000), "A file dropped on the bottom window did not play there.");
+            top.Stop();
+            bottom.Stop();
+            Pump(50);
+            playbackField.SetValue(window, savedProgram);
+            Console.WriteLine("PASS: 监看 windows: first free window, then the top one; a dropped file plays where it was dropped");
         }
         string[] pages = { "_filesPanel", "_activitiesPanel", "_devicesPanel", "_settingsPanel" };
         foreach (var size in new[] { new Size(1440, 900), new Size(1024, 640) })
