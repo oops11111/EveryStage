@@ -34,6 +34,9 @@ internal sealed class SlideTransitionPicker : Control
     private Rectangle _effectsLabel, _directionsLabel, _durationRow, _previewLabel, _hint;
     private float _previewT = 0.5f;
     private Point _hover = new(-1, -1);
+    /// <summary>Which hoverable element <see cref="_hover"/> is over: card i → i, direction
+    /// i → 100 + i, none → −1. OnMouseMove repaints only when this changes.</summary>
+    private int _hoverTarget = -1;
 
     /// <summary>The operator changed the effect, direction or duration (设置 saves it at once).</summary>
     public event Action? SelectionChanged;
@@ -136,11 +139,23 @@ internal sealed class SlideTransitionPicker : Control
         Invalidate();
     }
 
+    private int HoverTargetAt(Point location)
+    {
+        for (int i = 0; i < _cards.Length; i++) if (_cards[i].Contains(location)) return i;
+        for (int i = 0; i < _directions.Length; i++) if (_directions[i].Contains(location)) return 100 + i;
+        return -1;
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
         _hover = e.Location;
         Cursor = _cards.Concat(_directions).Any(r => r.Contains(e.Location)) ? Cursors.Hand : Cursors.Default;
+        // The paint only depends on which target is hot, so moving inside one card must not
+        // invalidate (that redraws every card and the preview) on each mouse-move tick.
+        int target = HoverTargetAt(e.Location);
+        if (target == _hoverTarget) return;
+        _hoverTarget = target;
         Invalidate();
     }
 
@@ -148,6 +163,7 @@ internal sealed class SlideTransitionPicker : Control
     {
         base.OnMouseLeave(e);
         _hover = new Point(-1, -1);
+        _hoverTarget = -1;
         Invalidate();
     }
 

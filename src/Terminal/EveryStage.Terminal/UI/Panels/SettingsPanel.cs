@@ -82,8 +82,8 @@ public sealed class SettingsPanel : UserControl
         // The last save result, beside the page title (there is no 「保存设置」: every change saves at once).
         _savedLabel = ModernUi.SetForegroundRole(new Label { AutoSize = true, Location = new Point(84, 18), BackColor = Color.Transparent }, UiForegroundRole.Success);
 
-        // One scrolling page of sections (design): 外观 · 通用 · 输出与播放 · 网络与设备 · 诊断 · 关于.
-        // Each row: title + description on the left, its control(s) on the right, an effect tag
+        // Sections are paged, not one long scroll (D-03): a left nav picks one section at a time.
+        // Each section: title + description on the left, its control(s) on the right, an effect tag
         // (即时生效 / 保存后生效 / 重启后生效) beside the title.
         var page = new FlowLayoutPanel
         {
@@ -91,10 +91,12 @@ public sealed class SettingsPanel : UserControl
             BackColor = Color.Transparent, Padding = new Padding(0, 0, 0, 16),
         };
         var sections = new List<SettingsSection>();
+        var sectionTitles = new List<string>();
         SettingsSection Section(string title, string? effect = null, UiForegroundRole effectRole = UiForegroundRole.Muted)
         {
             var section = new SettingsSection(title, effect, effectRole);
             sections.Add(section);
+            sectionTitles.Add(title);
             page.Controls.Add(section);
             return section;
         }
@@ -102,7 +104,9 @@ public sealed class SettingsPanel : UserControl
         {
             int width = Math.Max(LogicalToDeviceUnits(420), page.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
             page.SuspendLayout();
-            foreach (var section in sections) section.FitToWidth(width);
+            // P-07: hidden sections (all but the selected one, since D-03 paging) are skipped —
+            // SelectSection fits a section at the current width when it becomes visible.
+            foreach (var section in sections) if (section.Visible) section.FitToWidth(width);
             page.ResumeLayout();
             page.PerformLayout();
         };
@@ -331,8 +335,61 @@ public sealed class SettingsPanel : UserControl
         }, UiForegroundRole.Text));
         heading.Controls.Add(_savedLabel);
 
-        // Dock order: the last Top control added sits highest, so heading goes in last.
-        Controls.Add(page);
+        // --- 分区分页导航 (D-03) ---
+        // Paging instead of search: the section set is fixed and small, and live operation needs a
+        // stable, known position for every setting — an operator mid-show must be able to go
+        // straight to 热键 without hunting. Search could layer on top later; the nav never depends
+        // on it. The selected highlight is maintained by hand below: a theme switch re-paints
+        // controls from the new palette and can wash the highlight back to the default button look
+        // — cosmetic only (which section is shown never changes), and the next click restores it.
+        var navButtons = new List<Button>();
+        var nav = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Left, Width = LogicalToDeviceUnits(148), FlowDirection = FlowDirection.TopDown,
+            WrapContents = false, BackColor = Color.Transparent, Padding = new Padding(0, 8, 8, 0),
+        };
+
+        void SelectSection(int index)
+        {
+            for (int i = 0; i < sections.Count; i++) sections[i].Visible = i == index;
+            // P-07: the Resize handler skips hidden sections, so fit the newly shown one now,
+            // at the page's current width (same formula as that handler).
+            int fitWidth = Math.Max(LogicalToDeviceUnits(420), page.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
+            sections[index].FitToWidth(fitWidth);
+            for (int i = 0; i < navButtons.Count; i++)
+            {
+                if (i == index)
+                {
+                    navButtons[i].BackColor = ModernUi.NavActive;
+                    navButtons[i].ForeColor = ModernUi.AccentText;
+                }
+                else ModernUi.StyleButton(navButtons[i]); // unselected: re-style back to the default look
+            }
+            page.AutoScrollPosition = Point.Empty;
+        }
+
+        for (int i = 0; i < sections.Count; i++)
+        {
+            int index = i;
+            var navButton = new RoundedActionButton
+            {
+                Text = sectionTitles[i], TextAlign = ContentAlignment.MiddleLeft,
+                Width = LogicalToDeviceUnits(132), Height = LogicalToDeviceUnits(36),
+                Margin = new Padding(0, 0, 0, 4),
+            };
+            ModernUi.StyleButton(navButton);
+            navButton.Click += (_, _) => SelectSection(index);
+            navButtons.Add(navButton);
+            nav.Controls.Add(navButton);
+        }
+        SelectSection(0); // 外观 first, as before (it headed the old single scroll page)
+
+        // Dock order: within body the nav must claim the left edge first, so page is added before
+        // the nav (later additions dock first). At this level heading (Top) still goes in last.
+        var body = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent };
+        body.Controls.Add(page);
+        body.Controls.Add(nav);
+        Controls.Add(body);
         Controls.Add(heading);
         WireInstantSave();
     }
@@ -578,19 +635,29 @@ public sealed class SettingsPanel : UserControl
             }
         }
 
+        // L-03: the two Assign rejections below are pure feedback (nothing to decide, no detail to
+        // read back), so they go to the toast stack like other result notices; the modal stays as
+        // the fallback when no toast host is wired. Confirmations and failed-save reports elsewhere
+        // in this section keep their modals — those need a decision or must not be missed.
+        void NotifyHotkeyProblem(string message, string title, MessageBoxIcon icon)
+        {
+            if (ShowToast is { } show) show(message, ToastSeverity.Warning, Array.Empty<ToastAction>());
+            else MessageBox.Show(this, message, title, MessageBoxButtons.OK, icon);
+        }
+
         void Assign(HotkeyAction action, Keys keys)
         {
             var button = buttons[action];
             if (!Hotkeys.IsAssignable(keys))
             {
-                MessageBox.Show(this, $"{Hotkeys.Format(keys)} 不能用作热键（Tab、Space、Delete、退格和单独的修饰键保留给系统与编辑）。", "热键", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                NotifyHotkeyProblem($"{Hotkeys.Format(keys)} 不能用作热键（Tab、Space、Delete、退格和单独的修饰键保留给系统与编辑）。", "热键", MessageBoxIcon.Information);
                 return;
             }
             var current = _settingsStore.Current;
             var map = Enum.GetValues<HotkeyAction>().ToDictionary(a => a, current.HotkeyFor);
             if (Hotkeys.ConflictWith(map, action, keys) is { } other)
             {
-                MessageBox.Show(this, $"{Hotkeys.Format(keys)} 已被「{Hotkeys.Label(other)}」使用，未修改。请先给那一项换一个键。", "热键冲突", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                NotifyHotkeyProblem($"{Hotkeys.Format(keys)} 已被「{Hotkeys.Label(other)}」使用，未修改。请先给那一项换一个键。", "热键冲突", MessageBoxIcon.Warning);
                 return;
             }
             if (action == HotkeyAction.EmergencyStopGlobal)
@@ -653,6 +720,11 @@ public sealed class SettingsPanel : UserControl
 
     private sealed class SettingsSection : Panel
     {
+        // P-06: header fonts created once for the app's lifetime instead of on every
+        // OnPaintBackground of every section. Never disposed — process-lifetime by design.
+        private static readonly Font TitleFont = new(ModernUi.UiFontSemibold, 11.5F);
+        private static readonly Font EffectFont = new(ModernUi.UiFont, 8.5F);
+
         private readonly string _title;
         private readonly string? _effect;
         private readonly UiForegroundRole _effectRole;
@@ -742,12 +814,10 @@ public sealed class SettingsPanel : UserControl
                 g.FillPath(fill, path);
                 g.DrawPath(border, path);
             }
-            using var titleFont = new Font(ModernUi.UiFontSemibold, 11.5F);
-            var titleSize = TextRenderer.MeasureText(_title, titleFont);
-            TextRenderer.DrawText(g, _title, titleFont, new Point(S(18), S(14)), palette.Text);
+            var titleSize = TextRenderer.MeasureText(_title, TitleFont);
+            TextRenderer.DrawText(g, _title, TitleFont, new Point(S(18), S(14)), palette.Text);
             if (_effect != null)
-                using (var effectFont = new Font(ModernUi.UiFont, 8.5F))
-                    TextRenderer.DrawText(g, "● " + _effect, effectFont, new Point(S(18) + titleSize.Width + S(6), S(18)), ModernUi.Foreground(_effectRole, palette));
+                TextRenderer.DrawText(g, "● " + _effect, EffectFont, new Point(S(18) + titleSize.Width + S(6), S(18)), ModernUi.Foreground(_effectRole, palette));
             using var divider = new Pen(palette.IsHighContrast ? palette.Border : ModernUi.Mix(palette.Surface, palette.Border, 0.35f));
             foreach (int y in _dividers) g.DrawLine(divider, S(18), y, Width - S(18), y);
         }

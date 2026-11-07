@@ -34,6 +34,13 @@ public sealed partial class MainForm
             _liveCastStatsLabel.Text = $"投屏出错：{_liveCastSession.LastError}";
             _qualityLabel.ForeColor = ModernUi.Danger;
             _qualityLabel.Text = "●  投屏连接异常";
+            _statusBandLabel.ForeColor = ModernUi.Danger;
+            _statusBandLabel.Text = "⚠  投屏连接异常";
+            _statusBandHintLabel.Text = "投屏已中断：检查局域网连接后停止投屏并重新开始；仍不行可点此状态带展开诊断工具定位。";
+            _statusBandHintLabel.Visible = true;
+            _statusBand.GlassTint = Color.FromArgb(220, 66, 26, 22);
+            _statusBand.Invalidate();
+            _statusBandPaintedAlive = null;
             _liveCastStatsTimer.Stop();
             return;
         }
@@ -68,6 +75,7 @@ public sealed partial class MainForm
         _qualityLabel.Text = _liveCastSession.IsTerminalAlive
             ? $"●  {qualityLatency}  ·  终端在线"
             : $"●  {qualityLatency}  ·  等待终端确认";
+        UpdateStatusBand();
         // The trailing "（仅代表状态通道...）" caveat is the one piece of this project's README risk
         // #35 that's actually user-facing rather than just a code comment: it directly answers that
         // risk's own complaint ("这个仓库现在把两者放在UI上却没有特别提醒用户这个区别") without
@@ -146,15 +154,63 @@ public sealed partial class MainForm
               "（同一端口上出现了陌生/无关的包，不是这次投屏本身的问题）"
             : "";
 
+        // Two lines added with P-24/P-30: the bitrate tier this session actually selected for
+        // its resolution (LiveCastSession.SelectedBitrateBps — until now the tier existed only
+        // as a constant buried in session setup), and the encoder's TuningSummary VERBATIM —
+        // including any failed entries, unedited on purpose: a "bframes=0x80004001" softened
+        // into something friendlier would hide exactly the diagnostic the line exists for.
+        // Both are unconditional (unlike the only-if-nonzero lines below) because they describe
+        // this session's own configuration, not an anomaly; they do add two more lines to a
+        // label whose height the rttLine comment above already flags as a tight fit — accepted
+        // for the same reason given there.
         _liveCastStatsLabel.Text =
             $"分辨率: {_liveCastSession.Width}x{_liveCastSession.Height}\n" +
+            $"码率档位: {_liveCastSession.SelectedBitrateBps / 1_000_000} Mbps（按分辨率分档）\n" +
             $"已捕获帧数: {_liveCastSession.FramesCaptured}   已发送访问单元: {_liveCastSession.AccessUnitsSent}\n" +
             $"已发送字节数: {_liveCastSession.BytesSent}\n" +
+            $"编码器调节: {_liveCastSession.EncoderTuningSummary}\n" +
             audioLine + "\n" +
             terminalLine +
             rttLine +
             backpressureLine +
             encoderBackpressureLine +
             payloadTypeMismatchLine;
+    }
+
+    /// <summary>D-04: drives the paired view's full-width 状态带 from the same
+    /// <see cref="LiveCastSession.IsTerminalAlive"/> signal <see cref="_liveStateLabel"/> and
+    /// <see cref="_qualityLabel"/> already use, so all three always agree. Alive collapses to one
+    /// confident line （投屏中 · 终端已确认， Success tone, no hint); not-alive switches to the
+    /// Warning tone and shows the one actionable hint — what to check, and where the diagnostics
+    /// live — because "等待终端确认" alone left the operator with no next step. The error case is
+    /// handled inline in <see cref="RefreshLiveCastStats"/> (it returns early there), not here.
+    /// GlassTint is a plain property read at paint time, hence the explicit Invalidate.</summary>
+    // P-05: the last state the band was painted with. RefreshLiveCastStats runs every 500 ms;
+    // without this guard the band re-set its text/tint and repainted its whole gradient every
+    // tick even when nothing had changed. The error branch in RefreshLiveCastStats resets this
+    // to null because it paints the band directly (and stops the timer).
+    private bool? _statusBandPaintedAlive;
+
+    private void UpdateStatusBand()
+    {
+        bool alive = _liveCastSession!.IsTerminalAlive;
+        if (_statusBandPaintedAlive == alive) return;
+        _statusBandPaintedAlive = alive;
+        if (alive)
+        {
+            _statusBandLabel.ForeColor = ModernUi.Success;
+            _statusBandLabel.Text = "●  投屏中 · 终端已确认";
+            _statusBandHintLabel.Visible = false;
+            _statusBand.GlassTint = Color.FromArgb(215, 18, 58, 38);
+        }
+        else
+        {
+            _statusBandLabel.ForeColor = ModernUi.Warning;
+            _statusBandLabel.Text = "⚠  等待终端确认 · 终端无响应";
+            _statusBandHintLabel.Text = "终端长时间无响应时，检查终端机是否开着，或展开下方诊断工具定位（点此状态带也可展开）。";
+            _statusBandHintLabel.Visible = true;
+            _statusBand.GlassTint = Color.FromArgb(220, 62, 48, 18);
+        }
+        _statusBand.Invalidate();
     }
 }

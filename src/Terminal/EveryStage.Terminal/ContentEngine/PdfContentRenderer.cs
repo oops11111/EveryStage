@@ -9,6 +9,9 @@ namespace EveryStage.Terminal.ContentEngine;
 /// PDFium P/Invoke — view-only paging is all the requirements call for here (unlike Office
 /// documents through WPS, PDFs in this product aren't editable), so a maintained managed wrapper
 /// is the lower-risk choice. See this project's README for the native-dependency caveat.
+///
+/// 仅供缩略图在后台线程使用，播放路径禁用（同步整页渲染会阻塞调用线程）——播放走
+/// Documents 层的 PdfDocumentView 后台渲染管线，本类只剩 CreateThumbnail 一个实际用途。
 /// </summary>
 public sealed class PdfContentRenderer : IContentRenderer
 {

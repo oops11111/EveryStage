@@ -29,6 +29,9 @@ public sealed partial class MainForm
         BeginInvoke(new Action(RefreshTerminalList));
     }
 
+    // P-04: see the signature check in RefreshTerminalList.
+    private string _terminalListSignature = "";
+
     private void RefreshTerminalList()
     {
         // Preserve selection across refreshes by DeviceId rather than list index, since the list is
@@ -50,6 +53,15 @@ public sealed partial class MainForm
                 .OrderBy(p => p.DeviceName)
                 .Select(p => new TerminalListEntry(p.DeviceId, p.DeviceName, null, p.PairedAt)))
             .ToList();
+
+        // P-04: this runs on a 1-second timer. Rebuilding unconditionally (Clear + re-Add)
+        // repainted every card and churned the selection once a second even when nothing on
+        // the LAN had changed. The signature covers exactly what a card displays — identity,
+        // name, online/offline — so an unchanged signature means the existing items already
+        // show the right thing; keep them (and the user's selection) untouched.
+        string signature = string.Join("\n", entries.Select(e => $"{e.DeviceId}|{e.DeviceName}|{(e.Live != null ? 1 : 0)}"));
+        if (signature == _terminalListSignature) return;
+        _terminalListSignature = signature;
 
         _terminalListBox.BeginUpdate();
         _terminalListBox.Items.Clear();

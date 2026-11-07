@@ -130,12 +130,43 @@ public sealed partial class ActivitiesPanel
             "删除方案", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
         if (confirm != DialogResult.Yes) return;
 
+        // Remember the slot and whether this was the current scenario, so the undo offer below can
+        // put the scenario back exactly where it was.
+        int index = _store.Scenarios.IndexOf(current);
+        bool wasCurrent = _store.CurrentScenarioId == current.Id;
         _store.Scenarios.Remove(current);
         _store.CurrentScenarioId = _store.Scenarios.First().Id;
         if (!TrySave()) return;
         _fileOpLog.LogScenarioDeleted(current.Id, current.Name);
         RefreshScenarioCombo();
         RefreshTree();
+        OfferUndoScenarioDelete(current, index, wasCurrent);
+    }
+
+    /// <summary>删后撤销 for a scenario deletion (L-01). The pre-delete confirmation stays, but a
+    /// scenario is a whole show's running order — deleting the wrong one is accident-grade, and a
+    /// confirmation the operator clicked through cannot be unclicked. So a successful delete offers
+    /// 撤销 in a toast instead (a toast with actions stays 10 s, the same window 设置 gives after a
+    /// risky change). The offer is only made after the delete AND its save succeeded: if TrySave
+    /// failed it has already rolled the screen back to disk, and there is nothing to undo. There is
+    /// deliberately no "restored" file-operation log entry — FileOperationLogger has no such event,
+    /// and logging the restore as a creation would falsify the record; the deletion itself stays
+    /// logged as what it was.</summary>
+    private void OfferUndoScenarioDelete(Scenario deleted, int index, bool wasCurrent)
+    {
+        if (ShowToast == null) return;
+        ShowToast($"方案“{deleted.Name}”已删除", ToastSeverity.Info, new ToastAction[]
+        {
+            new("撤销", () =>
+            {
+                if (_store.Scenarios.Contains(deleted)) return; // already back; a second click changes nothing.
+                _store.Scenarios.Insert(Math.Min(index, _store.Scenarios.Count), deleted);
+                if (wasCurrent) _store.CurrentScenarioId = deleted.Id;
+                if (!TrySave()) return;
+                RefreshScenarioCombo();
+                RefreshTree();
+            }),
+        });
     }
 
     private void OnNewActivity()
@@ -176,9 +207,32 @@ public sealed partial class ActivitiesPanel
             "删除活动", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
         if (confirm != DialogResult.Yes) return;
 
+        // Remember the owning scenario and slot, for the undo offer below (same reasoning as
+        // OfferUndoScenarioDelete: confirmation first, 10 s 撤销 after a successful delete).
+        int index = scenario.Activities.IndexOf(activity);
         scenario.Activities.Remove(activity);
         if (!TrySave()) return;
         _fileOpLog.LogActivityDeleted(scenario.Id, activity.Id, activity.Name);
         RefreshTree();
+        OfferUndoActivityDelete(scenario, activity, index);
+    }
+
+    /// <summary>删后撤销 for an activity deletion — see <see cref="OfferUndoScenarioDelete"/> for why
+    /// this exists and why the restore is not logged as a creation. One extra guard: if the owning
+    /// scenario was itself deleted inside the undo window, the activity's home is gone and the undo
+    /// quietly does nothing rather than resurrecting half a scenario.</summary>
+    private void OfferUndoActivityDelete(Scenario scenario, Activity deleted, int index)
+    {
+        if (ShowToast == null) return;
+        ShowToast($"活动“{deleted.Name}”已删除", ToastSeverity.Info, new ToastAction[]
+        {
+            new("撤销", () =>
+            {
+                if (!_store.Scenarios.Contains(scenario) || scenario.Activities.Contains(deleted)) return;
+                scenario.Activities.Insert(Math.Min(index, scenario.Activities.Count), deleted);
+                if (!TrySave()) return;
+                RefreshTree();
+            }),
+        });
     }
 }

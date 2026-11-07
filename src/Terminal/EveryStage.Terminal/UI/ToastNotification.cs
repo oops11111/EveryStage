@@ -19,6 +19,12 @@ public sealed class ToastNotification : Panel
 {
     private const int AccentBarWidth = 4;
 
+    // P-10: one shared font for every toast instead of a new Font per notification (which
+    // was also never disposed). Process-lifetime by design, like the other static UI fonts.
+    private static readonly Font SharedFont = new(ModernUi.UiFont, 8F);
+
+    private readonly Label _messageLabel;
+
     /// <summary>Raised once, whichever way this toast goes away — "×", an action button, the stack's
     /// timer or <see cref="Dismiss"/>.</summary>
     public event Action? Dismissed;
@@ -39,7 +45,7 @@ public sealed class ToastNotification : Panel
         ModernUi.SetBackgroundRole(this, UiBackgroundRole.ContentRaised);
         Size = new Size(width, height);
         int S(int v) => LogicalToDeviceUnits(v);
-        var font = new Font(ModernUi.UiFont, 8F);
+        var font = SharedFont;
 
         // One compact line: accent bar · message · actions as links · ×.
         var accentBar = ModernUi.SetBackgroundRole(new Panel
@@ -87,7 +93,7 @@ public sealed class ToastNotification : Panel
                 right -= S(2);
             }
         }
-        var messageLabel = ModernUi.SetForegroundRole(new Label
+        _messageLabel = ModernUi.SetForegroundRole(new Label
         {
             Text = message.Replace("\r", " ").Replace("\n", " · "),
             AutoEllipsis = true,
@@ -95,9 +101,14 @@ public sealed class ToastNotification : Panel
             TextAlign = ContentAlignment.MiddleLeft,
             Bounds = Rectangle.FromLTRB(S(3) + S(5), 0, Math.Max(S(40), right), height),
         }, UiForegroundRole.Text);
-        new ToolTip().SetToolTip(messageLabel, message);
 
         Controls.Add(accentBar);
-        Controls.Add(messageLabel);
+        Controls.Add(_messageLabel);
     }
+
+    /// <summary>Points the given (shared) ToolTip at the message label, showing the full
+    /// un-truncated text. Called by <see cref="ToastStack"/> with its single ToolTip instance
+    /// (P-10) — a ToolTip serves any number of controls, so toasts no longer each allocate
+    /// one and leak it on dispose.</summary>
+    internal void AttachToolTip(ToolTip toolTip) => toolTip.SetToolTip(_messageLabel, Message);
 }

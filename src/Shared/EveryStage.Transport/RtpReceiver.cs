@@ -92,10 +92,26 @@ public sealed class RtpReceiver : IDisposable
         IPAddress? expectedAddress = null, byte? fecPayloadType = null)
     {
         _socket = new UdpClient(listenPort);
+        ConfigureSocketBuffers(_socket);
         _expectedPayloadType = expectedPayloadType;
         _authentication = authentication;
         _expectedAddress = expectedAddress;
         _fecPayloadType = fecPayloadType;
+    }
+
+    /// <summary>Sizes the socket's kernel buffers for media bursts (P-26). The sender emits a
+    /// whole access unit's packets back-to-back with no pacing, and a keyframe access unit is
+    /// hundreds of KB across hundreds of packets: with the small OS-default receive buffer, the
+    /// kernel drops the tail of the burst before this class's receive loop can read it — exactly
+    /// the keyframe data the decoder needs most, lost at the moment it's sent. 4 MB receive /
+    /// 1 MB send gives bursts room to land. Best effort by design: the OS may clamp a request to
+    /// its own maximum or refuse it outright, and neither may fail session setup — hence the
+    /// swallowed exceptions. Independently duplicated in <see cref="RtpSession"/> rather than
+    /// shared, matching this repo's "each file keeps its own copy" convention.</summary>
+    private static void ConfigureSocketBuffers(UdpClient socket)
+    {
+        try { socket.Client.ReceiveBufferSize = 4 * 1024 * 1024; } catch (Exception) { }
+        try { socket.Client.SendBufferSize = 1 * 1024 * 1024; } catch (Exception) { }
     }
 
     public void Start() => _receiveLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token));

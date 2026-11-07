@@ -178,9 +178,26 @@ public sealed class AudioContentController : IDisposable
     public void Play(string path, TimeSpan? fadeDuration = null, TimeSpan startAt = default, bool startPaused = false)
     {
         Stop();
-        _recoveryAttempted = false;
+        PlayPrepared(CreateSource(path), path, fadeDuration, startAt, startPaused);
+    }
 
-        var source = new AudioDecodeSource(path);
+    /// <summary>The expensive half of <see cref="Play"/>: opening the file and negotiating formats
+    /// with Media Foundation (<see cref="AudioDecodeSource"/>'s constructor). Touches no controller
+    /// state, so it is safe to call on a background thread — <c>PlaybackEngine</c> does exactly that
+    /// so opening an audio file no longer freezes the UI (audit P-16), and pre-constructs the next
+    /// item's source the same way (P-22). The caller owns the returned source until
+    /// <see cref="PlayPrepared"/> takes it over (or disposes it itself if playback moved on).</summary>
+    internal AudioDecodeSource CreateSource(string path) => new(path);
+
+    /// <summary>The cheap half of <see cref="Play"/>: adopts a source built by
+    /// <see cref="CreateSource"/> (possibly on a background thread), opens the audio output for it
+    /// and starts playing. Playback must already be stopped (<see cref="Play"/> stops itself;
+    /// asynchronous callers stop first). Takes ownership of <paramref name="source"/> even on
+    /// failure — it is disposed before the exception escapes, exactly as <see cref="Play"/>'s own
+    /// construction path behaved.</summary>
+    internal void PlayPrepared(AudioDecodeSource source, string path, TimeSpan? fadeDuration = null, TimeSpan startAt = default, bool startPaused = false)
+    {
+        _recoveryAttempted = false;
         AudioPlaybackClock audioClock;
         try
         {

@@ -141,8 +141,11 @@ public sealed class MainWindow : GradientForm
         var activitiesButton = ModernUi.RailButton(NavIcon.Activities, "流程");
         var devicesButton = ModernUi.RailButton(NavIcon.Devices, "设备");
         var settingsButton = ModernUi.RailButton(NavIcon.Settings, "设置");
+        // 快捷键速查 (L-04): not a page nav item — it lives at the rail's bottom and opens a dialog.
+        var hotkeysButton = ModernUi.RailButton(NavIcon.Keyboard, "快捷键");
         var navButtons = new[] { filesButton, activitiesButton, devicesButton, settingsButton };
         rail.Controls.AddRange(navButtons);
+        rail.Controls.Add(hotkeysButton);
         rail.Layout += (_, _) =>
         {
             int width = LogicalToDeviceUnits(60), height = LogicalToDeviceUnits(58), y = LogicalToDeviceUnits(12);
@@ -151,6 +154,8 @@ public sealed class MainWindow : GradientForm
                 button.Bounds = new Rectangle((rail.ClientSize.Width - width) / 2, y, width, height);
                 y += height + LogicalToDeviceUnits(6);
             }
+            hotkeysButton.Bounds = new Rectangle((rail.ClientSize.Width - width) / 2,
+                rail.ClientSize.Height - height - LogicalToDeviceUnits(12), width, height);
         };
         rail.Paint += (_, e) => DrawEdge(e.Graphics, rail, right: true);
 
@@ -283,6 +288,7 @@ public sealed class MainWindow : GradientForm
         activitiesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, activitiesButton); ShowPanel(_activitiesPanel); };
         devicesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, devicesButton); ShowPanel(_devicesPanel); };
         settingsButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, settingsButton); ShowPanel(_settingsPanel); };
+        hotkeysButton.Click += (_, _) => { using var dialog = new HotkeyListDialog(_settingsStore.Current); dialog.ShowDialog(this); };
 
         var titleBar = new AppTitleBar(this, "终端机");
         // 大屏 status and 「停止输出」 live at the top of the 监看 column (not in the title bar).
@@ -310,6 +316,8 @@ public sealed class MainWindow : GradientForm
         // Event notices: a fixed three-slot area at the bottom of the 监看 column (第二十一轮).
         _toastStack = new ToastStack { Dock = DockStyle.Bottom };
         _settingsPanel.ShowToast = (message, severity, actions) => _toastStack.Show(message, severity, actions);
+        _activitiesPanel.ShowToast = (message, severity, actions) => _toastStack.Show(message, severity, actions);
+        _filesPanel.ShowToast = (message, severity, actions) => _toastStack.Show(message, severity, actions);
         _monitorColumn.Controls.Add(_toastStack);
         _monitorColumn.Controls.SetChildIndex(_previewDock, 0);
         _emergencyHotkey = new EmergencyStopHotkey(StopProgramOutput, message => _toastStack.Show(message, ToastSeverity.Critical));

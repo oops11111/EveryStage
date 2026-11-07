@@ -231,6 +231,19 @@ public static class DiscoveryProtocol
         public long PayloadTypeMismatches { get; set; }
         public double? EstimatedPacketLossPercent { get; set; }
         public long VideoPacketsLost { get; set; }
+
+        /// <summary>Cumulative count of keyframe requests raised by this Terminal's current cast
+        /// receiver: its H.264 decoder had to drop one or more queued access units under
+        /// backpressure, or hit a decode error, so the picture it shows is built on a damaged
+        /// reference chain until the next IDR arrives (P-25). The Caster forces an IDR on its
+        /// encoder whenever a status report's value exceeds the last value it saw for the cast,
+        /// so recovery no longer waits for the next GOP boundary (up to a full GOP of visible
+        /// corruption). Monotonically increasing for the lifetime of one receiver instance; a
+        /// rebuilt receiver restarts from 0, which the Caster treats as "no new requests".
+        /// Wire compatibility: this envelope is plain System.Text.Json, so an older Terminal
+        /// simply never sends the field (it deserializes as 0 = "no requests") and an older
+        /// Caster ignores the unknown property — adding it is backward compatible both ways.</summary>
+        public long KeyframeRequests { get; set; }
     }
 
     /// <summary>Caster acknowledgment for one status report. A duplicate report receives another

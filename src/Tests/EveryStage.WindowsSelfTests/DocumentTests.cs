@@ -1438,6 +1438,36 @@ internal static class DocumentTests
         Require(library.Files[^1].Id == order[0], "文件库 reorder to the end failed.");
 
         applyTheme.Invoke(window, new object[] { AppTheme.Dark });
+        // L-06 三档截图对比的最小两档：上面的主循环按窗口 Size 覆盖 1440×900 与 1024×640 两档，
+        // 这里再按 ClientSize 补 960×600（主窗口 MinimumSize 对应的最小客户区）和 1024×640 两轮，
+        // 各截流程/文件/设置三页。发布时把这批图与大档截图一起人工对比，及早发现小窗口下控件被
+        // 截断或重叠的回归——这类问题自动断言很难逐页兜住，靠的就是改版时三档并排看。
+        void CapturePageAtCurrentSize(string pageField, string fileName)
+        {
+            showPanel.Invoke(window, new[] { type.GetField(pageField, flags)!.GetValue(window)! });
+            Pump(150);
+            using var shot = new Bitmap(window.Width, window.Height);
+            window.DrawToBitmap(shot, new Rectangle(Point.Empty, window.Size));
+            shot.Save(Path.Combine(output, fileName), ImageFormat.Png);
+        }
+        var sizeBeforeSmallShots = window.Size;
+        try
+        {
+            foreach (var clientSize in new[] { new Size(960, 600), new Size(1024, 640) })
+            {
+                window.ClientSize = clientSize;
+                Pump(150);
+                string suffix = $"{clientSize.Width}x{clientSize.Height}";
+                CapturePageAtCurrentSize("_activitiesPanel", $"activities-{suffix}.png");
+                CapturePageAtCurrentSize("_filesPanel", $"files-{suffix}.png");
+                CapturePageAtCurrentSize("_settingsPanel", $"settings-{suffix}.png");
+            }
+        }
+        finally
+        {
+            window.Size = sizeBeforeSmallShots;
+            Pump(150);
+        }
         Console.WriteLine($"INFO: main window screenshots in {output}");
     }
 

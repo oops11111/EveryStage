@@ -36,25 +36,43 @@ public sealed partial class ActivitiesPanel
             using var fileDialog = new PlayModeDialog(
                 $"文件播放方式 — {Path.GetFileName(file.SourcePath)}", file.PlayModeOverride, allowInherit: true);
             if (fileDialog.ShowDialog(this) != DialogResult.OK) return;
-            if (fileDialog.SelectedPlayMode == file.PlayModeOverride) return; // no actual change.
-
-            // LogPlaybackPropertyChanged, not LogActivityModified — this is the first real caller
-            // this method has ever had (see this project's README "已知风险"): a per-file property
-            // value changing is exactly what it exists to record, more precisely than the generic
-            // "activity modified" log the file-list-membership operations above use.
-            string? oldValue = file.PlayModeOverride?.ToString();
-            string? newValue = fileDialog.SelectedPlayMode?.ToString();
-            file.PlayModeOverride = fileDialog.SelectedPlayMode;
-            if (!TrySave()) return;
-            _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.PlayModeOverride), oldValue, newValue);
+            ApplyPlayModeOverride(file, fileDialog.SelectedPlayMode);
             return;
         }
 
         using var dialog = new PlayModeDialog($"活动播放方式 — {activity.Name}", activity.DefaultPlayMode);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        if (dialog.SelectedPlayMode == activity.DefaultPlayMode) return; // no actual change — nothing to log/save.
+        ApplyActivityPlayMode(scenario, activity, dialog.SelectedPlayMode!.Value); // never null — allowInherit defaults false above.
+    }
 
-        activity.DefaultPlayMode = dialog.SelectedPlayMode!.Value; // never null — allowInherit defaults false above.
+    /// <summary>Applies a new <see cref="MediaFile.PlayModeOverride"/>: no-change check, set,
+    /// <see cref="TrySave"/>, per-property log — the shared tail of the dialog handler above and
+    /// the 详情面板's in-place editor (ActivitiesPanel.Details.cs), so the single-file dialog, the
+    /// detail panel and (with its own loop) 统一设置属性 can never drift apart on how this property
+    /// is saved or logged.</summary>
+    private void ApplyPlayModeOverride(MediaFile file, PlayMode? newPlayMode)
+    {
+        if (newPlayMode == file.PlayModeOverride) return; // no actual change.
+
+        // LogPlaybackPropertyChanged, not LogActivityModified — this is the first real caller
+        // this method has ever had (see this project's README "已知风险"): a per-file property
+        // value changing is exactly what it exists to record, more precisely than the generic
+        // "activity modified" log the file-list-membership operations above use.
+        string? oldValue = file.PlayModeOverride?.ToString();
+        string? newValue = newPlayMode?.ToString();
+        file.PlayModeOverride = newPlayMode;
+        if (!TrySave()) return;
+        _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.PlayModeOverride), oldValue, newValue);
+    }
+
+    /// <summary>Applies a new <see cref="Activity.DefaultPlayMode"/> — same shared-tail reasoning
+    /// as <see cref="ApplyPlayModeOverride"/> (dialog handler above + 详情面板). No-ops on no
+    /// actual change.</summary>
+    private void ApplyActivityPlayMode(Scenario scenario, Activity activity, PlayMode newPlayMode)
+    {
+        if (newPlayMode == activity.DefaultPlayMode) return; // no actual change — nothing to log/save.
+
+        activity.DefaultPlayMode = newPlayMode;
         if (!TrySave()) return;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
     }
@@ -72,23 +90,33 @@ public sealed partial class ActivitiesPanel
         using var dialog = new AudioPropertiesDialog(
             $"音频属性 — {Path.GetFileName(file.SourcePath)}", file.IsBackgroundAudio, file.BackgroundAudioVisual);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        if (dialog.IsBackgroundAudio == file.IsBackgroundAudio && dialog.BackgroundAudioVisual == file.BackgroundAudioVisual)
+        ApplyAudioProperties(file, dialog.IsBackgroundAudio, dialog.BackgroundAudioVisual);
+    }
+
+    /// <summary>Applies a new <see cref="MediaFile.IsBackgroundAudio"/>/
+    /// <see cref="MediaFile.BackgroundAudioVisual"/> pair — shared tail of the dialog handler
+    /// above and the 详情面板 (ActivitiesPanel.Details.cs); see <see cref="ApplyPlayModeOverride"/>
+    /// for the reasoning. Refreshes the tree because <see cref="MediaFile.IsBackgroundAudio"/>
+    /// changes the file node's own text (<see cref="BuildFileNodeText"/>).</summary>
+    private void ApplyAudioProperties(MediaFile file, bool isBackgroundAudio, AudioVisual backgroundAudioVisual)
+    {
+        if (isBackgroundAudio == file.IsBackgroundAudio && backgroundAudioVisual == file.BackgroundAudioVisual)
             return; // no actual change — nothing to log/save.
 
         // Two separate LogPlaybackPropertyChanged calls rather than one combined entry — same
         // per-property granularity OnEditPlayMode already uses, so the log can show exactly which
         // of the two properties actually changed rather than always recording both regardless.
-        if (dialog.IsBackgroundAudio != file.IsBackgroundAudio)
+        if (isBackgroundAudio != file.IsBackgroundAudio)
         {
             _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.IsBackgroundAudio),
-                file.IsBackgroundAudio.ToString(), dialog.IsBackgroundAudio.ToString());
-            file.IsBackgroundAudio = dialog.IsBackgroundAudio;
+                file.IsBackgroundAudio.ToString(), isBackgroundAudio.ToString());
+            file.IsBackgroundAudio = isBackgroundAudio;
         }
-        if (dialog.BackgroundAudioVisual != file.BackgroundAudioVisual)
+        if (backgroundAudioVisual != file.BackgroundAudioVisual)
         {
             _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.BackgroundAudioVisual),
-                file.BackgroundAudioVisual.ToString(), dialog.BackgroundAudioVisual.ToString());
-            file.BackgroundAudioVisual = dialog.BackgroundAudioVisual;
+                file.BackgroundAudioVisual.ToString(), backgroundAudioVisual.ToString());
+            file.BackgroundAudioVisual = backgroundAudioVisual;
         }
         if (!TrySave()) return;
         // Unlike OnEditPlayMode/OnEditStayDuration/OnEditCompletionAction just above/below (none of
@@ -111,22 +139,31 @@ public sealed partial class ActivitiesPanel
         using var dialog = new FadeDialog(
             $"淡入淡出 — {Path.GetFileName(file.SourcePath)}", file.VolumeFollowsFade, file.FadeDuration);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        if (dialog.VolumeFollowsFade == file.VolumeFollowsFade && dialog.FadeDuration == file.FadeDuration)
+        ApplyFade(file, dialog.VolumeFollowsFade, dialog.FadeDuration);
+    }
+
+    /// <summary>Applies a new <see cref="MediaFile.VolumeFollowsFade"/>/
+    /// <see cref="MediaFile.FadeDuration"/> pair — shared tail of the dialog handler above and
+    /// the 详情面板 (ActivitiesPanel.Details.cs); see <see cref="ApplyPlayModeOverride"/> for
+    /// the reasoning. No tree refresh: neither field appears in the node's text.</summary>
+    private void ApplyFade(MediaFile file, bool volumeFollowsFade, TimeSpan? fadeDuration)
+    {
+        if (volumeFollowsFade == file.VolumeFollowsFade && fadeDuration == file.FadeDuration)
             return; // no actual change — nothing to log/save.
 
         // Two separate LogPlaybackPropertyChanged calls, same per-property granularity
         // OnEditAudioProperties already uses for its own two-field dialog.
-        if (dialog.VolumeFollowsFade != file.VolumeFollowsFade)
+        if (volumeFollowsFade != file.VolumeFollowsFade)
         {
             _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.VolumeFollowsFade),
-                file.VolumeFollowsFade.ToString(), dialog.VolumeFollowsFade.ToString());
-            file.VolumeFollowsFade = dialog.VolumeFollowsFade;
+                file.VolumeFollowsFade.ToString(), volumeFollowsFade.ToString());
+            file.VolumeFollowsFade = volumeFollowsFade;
         }
-        if (dialog.FadeDuration != file.FadeDuration)
+        if (fadeDuration != file.FadeDuration)
         {
             _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.FadeDuration),
-                file.FadeDuration?.ToString(), dialog.FadeDuration?.ToString());
-            file.FadeDuration = dialog.FadeDuration;
+                file.FadeDuration?.ToString(), fadeDuration?.ToString());
+            file.FadeDuration = fadeDuration;
         }
         if (!TrySave()) return;
     }
@@ -164,7 +201,15 @@ public sealed partial class ActivitiesPanel
 
         using var dialog = new StayDurationDialog($"停留时长 — {Path.GetFileName(file.SourcePath)}", file.StayDuration);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        if (dialog.SelectedStayDuration == file.StayDuration) return; // no actual change — nothing to log/save.
+        ApplyStayDuration(file, dialog.SelectedStayDuration);
+    }
+
+    /// <summary>Applies a new <see cref="MediaFile.StayDuration"/> — shared tail of the dialog
+    /// handler above and the 详情面板 (ActivitiesPanel.Details.cs); see
+    /// <see cref="ApplyPlayModeOverride"/> for the reasoning.</summary>
+    private void ApplyStayDuration(MediaFile file, TimeSpan? newStayDuration)
+    {
+        if (newStayDuration == file.StayDuration) return; // no actual change — nothing to log/save.
 
         // LogPlaybackPropertyChanged, same per-property granularity OnEditPlayMode/
         // OnEditAudioProperties already use — same established convention as OnEditPlayMode's own
@@ -172,8 +217,8 @@ public sealed partial class ActivitiesPanel
         // through as a real null, not the string "null", since LogPlaybackPropertyChanged's two
         // value parameters are themselves string?.
         string? oldValue = file.StayDuration?.ToString();
-        string? newValue = dialog.SelectedStayDuration?.ToString();
-        file.StayDuration = dialog.SelectedStayDuration;
+        string? newValue = newStayDuration?.ToString();
+        file.StayDuration = newStayDuration;
         if (!TrySave()) return;
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.StayDuration), oldValue, newValue);
     }
@@ -189,13 +234,40 @@ public sealed partial class ActivitiesPanel
 
         using var dialog = new CompletionActionDialog($"完成后动作 — {Path.GetFileName(file.SourcePath)}", file.OnCompletion);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        if (dialog.SelectedCompletionAction == file.OnCompletion) return; // no actual change — nothing to log/save.
+        ApplyCompletionAction(file, dialog.SelectedCompletionAction);
+    }
+
+    /// <summary>Applies a new <see cref="MediaFile.OnCompletion"/> — shared tail of the dialog
+    /// handler above and the 详情面板 (ActivitiesPanel.Details.cs); see
+    /// <see cref="ApplyPlayModeOverride"/> for the reasoning.</summary>
+    private void ApplyCompletionAction(MediaFile file, CompletionAction newCompletionAction)
+    {
+        if (newCompletionAction == file.OnCompletion) return; // no actual change — nothing to log/save.
 
         string oldValue = file.OnCompletion.ToString();
-        string newValue = dialog.SelectedCompletionAction.ToString();
-        file.OnCompletion = dialog.SelectedCompletionAction;
+        string newValue = newCompletionAction.ToString();
+        file.OnCompletion = newCompletionAction;
         if (!TrySave()) return;
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.OnCompletion), oldValue, newValue);
+    }
+
+    /// <summary>Applies a new <see cref="MediaFile.AllowManualSkip"/>. Unlike the other Apply*
+    /// methods this one has no single-file dialog to share with — "允许手动切换" only ever had a
+    /// row in <see cref="BatchPropertiesDialog"/> (see that dialog's own comment) — so this is
+    /// the 详情面板's apply path, written to the same convention as <see cref="ApplyCompletionAction"/>
+    /// (no-change check, set, <see cref="TrySave"/>, per-property
+    /// <see cref="FileOperationLogger.LogPlaybackPropertyChanged"/> with
+    /// <c>nameof(MediaFile.AllowManualSkip)</c>, matching <see cref="OnEditBatchProperties"/>'s
+    /// own log entry for this property).</summary>
+    private void ApplyAllowManualSkip(MediaFile file, bool allowManualSkip)
+    {
+        if (allowManualSkip == file.AllowManualSkip) return; // no actual change — nothing to log/save.
+
+        string oldValue = file.AllowManualSkip.ToString();
+        string newValue = allowManualSkip.ToString();
+        file.AllowManualSkip = allowManualSkip;
+        if (!TrySave()) return;
+        _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.AllowManualSkip), oldValue, newValue);
     }
 
     private void OnRemoveFile()

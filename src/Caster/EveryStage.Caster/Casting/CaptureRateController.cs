@@ -51,4 +51,28 @@ public sealed class CaptureRateController
         }
         return CurrentStride;
     }
+
+    /// <summary>Local congestion signal from the send queue's own depth (P-31) — zero network
+    /// latency, unlike <see cref="Update"/>'s status-report inputs, which arrive at best once a
+    /// second; a queue backing up RIGHT NOW shouldn't wait for the next report to react. Raises
+    /// the stride immediately: depth past 15 access units means at least stride 2, and the same
+    /// .75 queue ratio <see cref="Update"/> treats as severe means <see cref="MaxStride"/>.
+    /// Raise-only on purpose: lowering stays with <see cref="Update"/>'s three-healthy-reports
+    /// hysteresis, so a queue that drains the moment the stride rises doesn't oscillate straight
+    /// back to full rate.</summary>
+    public void NoteQueueDepth(int queuedAccessUnits, int maxQueuedAccessUnits)
+    {
+        if (maxQueuedAccessUnits <= 0) return;
+        double queueRatio = Math.Clamp((double)queuedAccessUnits / maxQueuedAccessUnits, 0, 1);
+        if (queueRatio >= .75)
+        {
+            _healthyUpdates = 0;
+            Volatile.Write(ref _stride, MaxStride);
+        }
+        else if (queuedAccessUnits > 15)
+        {
+            _healthyUpdates = 0;
+            Volatile.Write(ref _stride, Math.Max(CurrentStride, 2));
+        }
+    }
 }

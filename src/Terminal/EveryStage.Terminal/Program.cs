@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net;
 using Microsoft.Win32;
 using EveryStage.Discovery;
@@ -5,6 +6,7 @@ using EveryStage.Terminal.Audio;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Devices;
 using EveryStage.Terminal.Display;
+using EveryStage.Terminal.Documents;
 using EveryStage.Terminal.Logging;
 using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.Receiving;
@@ -90,12 +92,30 @@ internal static class Program
             SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
 
         var repository = new ScenarioRepository();
+        // Startup stage timings (P-23): see TraceStartup below for the channel choice.
+        var storeLoadClock = Stopwatch.StartNew();
         var store = repository.Load();
+        TraceStartup($"启动阶段 方案存储加载：{storeLoadClock.ElapsedMilliseconds} ms");
 
         using var context = new TerminalApplicationContext(store, repository, crashLogger);
         using var activation = SingleInstance.ListenForActivation(context.ActivateMainWindow);
         Application.Run(context);
         GC.KeepAlive(singleInstance);
+    }
+
+    /// <summary>P-23: one startup-timing line to the daily startup log under the standard log
+    /// root (plus a Debug mirror). Never throws — a logging failure must not break startup.</summary>
+    internal static void TraceStartup(string line)
+    {
+        Debug.WriteLine(line);
+        try
+        {
+            string dir = Path.Combine(LogPaths.DefaultRoot, "startup");
+            Directory.CreateDirectory(dir);
+            File.AppendAllText(Path.Combine(dir, $"startup-{DateTime.Now:yyyyMMdd}.log"),
+                $"{DateTime.Now:HH:mm:ss} {line}\n");
+        }
+        catch (Exception) { /* best effort only */ }
     }
 }
 
@@ -187,6 +207,25 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
     public TerminalApplicationContext(ScenarioStore store, ScenarioRepository repository, CrashLogger crashLogger)
     {
+        // P-23: per-stage startup timings — everything below runs serially before the main
+        // window is shown, and until now nothing measured where that time goes. The marks only
+        // ever measure the SYNCHRONOUS part of each stage (DiscoveryService.Start, for instance,
+        // returns once its background loops are launched, not once they have done any work).
+        // Channel choice: every existing logger in this project is bound to one PLANNING.md
+        // §14.4 category (crash/playback/file/device/document) and none accepts a generic
+        // startup entry — CrashLogger in particular records only unhandled exceptions, so
+        // writing timings there would falsify the crash record. TraceStartup therefore writes
+        // a dedicated daily file under the same log root (and mirrors to Debug output; the
+        // Debug mirror alone would compile away in Release, which is why the file exists).
+        var startupClock = Stopwatch.StartNew();
+        long lastStageMark = 0;
+        void MarkStartupStage(string stage)
+        {
+            long now = startupClock.ElapsedMilliseconds;
+            Program.TraceStartup($"启动阶段 {stage}：{now - lastStageMark} ms");
+            lastStageMark = now;
+        }
+
         _store = store;
         _repository = repository;
         _crashLogger = crashLogger;
@@ -200,6 +239,10 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // Applied once, here, at startup — AppSettings.CastSwitchDefaultOn's own doc comment
         // explains why this never runs again after this point (it's a default, not a live toggle).
         _stateMachine.SetCastSwitch(_settingsStore.Current.CastSwitchDefaultOn);
+        MarkStartupStage("设置加载");
+        // P-17(b): the Data-layer pre-show check asks this probe instead of referencing the
+        // Documents layer itself (CoreSelfTests compiles PreShowCheck standalone).
+        PreShowCheck.ConversionCachedProbe = path => DocumentConversionCache.Shared.TryGet(path) != null;
 
         var extendedDisplay = MonitorService.GetBoundExtendedDisplay(preferredDeviceName: _settingsStore.Current.PreferredMonitorDeviceName);
         if (extendedDisplay != null) TryBindExtendedDisplay(extendedDisplay);
@@ -215,6 +258,8 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         // HandleDisplaySettingsChanged's own "no overlay yet" branch (see its doc comment) now
         // actually tries to build this whole graph live once a display shows up, rather than only
         // ever telling the operator to restart.
+
+        MarkStartupStage("扩展屏绑定");
 
         // Runtime display-configuration changes (PLANNING.md §5, this project's README "已知风险" on
         // OverlayWindow.Rebind/VideoSurface.Resize previously existing but never having a caller) —
@@ -239,6 +284,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _discovery.CastStartRequested += OnCastStartRequested;
         _discovery.CastStopRequested += OnCastStopRequested;
         _discovery.Start();
+        MarkStartupStage("设备身份与发现服务");
 
         // Periodic acknowledgment back to whichever Caster is currently casting to this Terminal —
         // see DiscoveryProtocol.CastStatusMessage for why this exists — plus the reverse check
@@ -258,7 +304,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         };
 
         var library = new FileLibraryStore();
+        MarkStartupStage("文件库加载");
         _mainWindow = new MainWindow(_stateMachine, _playback, library, pairedDevices, _store, _repository, _settingsStore, _identity, _connectionLog);
+        MarkStartupStage("主窗口构造");
         // Unpairing a device (or taking away 「允许投放」) while it casts stops that cast immediately and
         // falls back to what was on screen before (P0-D3); it never needs the Caster's cooperation.
         _mainWindow.DeviceAccessRevoked += deviceId =>
@@ -270,6 +318,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             EveryStage.Terminal.Remote.HttpControlToken.Current, _uiContext);
         ApplyHttpControl(_settingsStore.Current);
         _settingsStore.SettingsChanged += settings => _uiContext.Post(_ => ApplyHttpControl(settings), null);
+        MarkStartupStage("HTTP 外控启动");
         _deviceCastController = new DeviceCastController(
             _mainWindow, _identity.DeviceId, _discovery, _connectionLog, _stateMachine,
             () => _overlay, () => _videoSurface, () => _playback, audioOutputFactory: _settingsStore.OpenAudioOutput,
@@ -294,14 +343,18 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             var seen = _discovery.LastSighting(id);
             return (seen?.Address.ToString(), seen?.At, _discovery.ActiveCasterDeviceId == id);
         };
+        MarkStartupStage("设备投屏接线");
         _mainWindow.Show();
+        MarkStartupStage("主窗口显示");
         try { _defaultAudioDeviceMonitor = new DefaultAudioDeviceMonitor(_uiContext, id =>
         {
             _settingsStore.NotifyDefaultAudioOutputChanged(id);
             _deviceCastController?.OnDefaultAudioOutputChanged();
         }); }
         catch (Exception ex) { _crashLogger.LogUnhandledException("DefaultAudioDeviceMonitor.Start", ex); }
+        MarkStartupStage("默认音频设备监视");
         _mainWindow.StartBackgroundMusic();
+        MarkStartupStage("开机背景音乐");
 
         _tray = new TrayIconController(_stateMachine);
         _tray.ExitRequested += OnExitRequested;
@@ -319,6 +372,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _mainWindow.ShowStartupProblem("无法修改数据文件，导入、方案和设置都将无法保存。\n" + EveryStage.Terminal.Data.DataDirectory.PermissionHint);
             _tray.ShowNotification("EveryStage 数据目录无法写入", "导入和保存会失败。请重新运行 EveryStage 安装程序修复权限。");
         }
+
+        MarkStartupStage("托盘与启动检查");
+        Program.TraceStartup($"启动总时长：{startupClock.ElapsedMilliseconds} ms");
     }
 
     /// <summary>Shows, restores and activates the main window (tray 「打开」, a second launch).</summary>

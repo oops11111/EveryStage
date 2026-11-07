@@ -1051,7 +1051,7 @@ internal sealed class BrandMark : Control
     }
 }
 
-internal enum NavIcon { Files, Activities, Devices, Settings }
+internal enum NavIcon { Files, Activities, Devices, Settings, Keyboard }
 
 /// <summary>PLANNING.md §8.1 的左侧导航项——设计图里是「圆角图标 + 文字」的一整块，选中态是一个
 /// 圆角高亮块（非之前的字形按钮）。图标用 GDI+ 矢量绘制，不引入任何图标字体/图片资源依赖。
@@ -1167,6 +1167,7 @@ internal static class VectorIcons
             case NavIcon.Activities: DrawCalendar(g, r, pen); break;
             case NavIcon.Devices: DrawMonitor(g, r, pen); break;
             case NavIcon.Settings: DrawGear(g, r, pen, brush); break;
+            case NavIcon.Keyboard: DrawKeyboard(g, r, pen, brush); break;
         }
     }
 
@@ -1198,6 +1199,20 @@ internal static class VectorIcons
         g.DrawRectangle(pen, screen.X, screen.Y, screen.Width, screen.Height);
         g.DrawLine(pen, r.Left + r.Width * 0.5f, screen.Bottom, r.Left + r.Width * 0.5f, r.Top + r.Height * 0.86f);
         g.DrawLine(pen, r.Left + r.Width * 0.30f, r.Top + r.Height * 0.90f, r.Left + r.Width * 0.70f, r.Top + r.Height * 0.90f);
+    }
+
+    private static void DrawKeyboard(Graphics g, Rectangle r, Pen pen, SolidBrush brush)
+    {
+        var body = new RectangleF(r.Left + r.Width * 0.04f, r.Top + r.Height * 0.22f, r.Width * 0.92f, r.Height * 0.56f);
+        g.DrawRectangle(pen, body.X, body.Y, body.Width, body.Height);
+        // Two rows of key dots and a spacebar line — reads as a keyboard at rail-icon size.
+        foreach (float fy in new[] { 0.38f, 0.52f })
+            foreach (float fx in new[] { 0.24f, 0.42f, 0.58f, 0.76f })
+            {
+                float d = Math.Max(2f, r.Width * 0.07f);
+                g.FillEllipse(brush, r.Left + r.Width * fx - d / 2, r.Top + r.Height * fy - d / 2, d, d);
+            }
+        g.DrawLine(pen, r.Left + r.Width * 0.32f, r.Top + r.Height * 0.68f, r.Left + r.Width * 0.68f, r.Top + r.Height * 0.68f);
     }
 
     private static void DrawGear(Graphics g, Rectangle r, Pen pen, SolidBrush brush)

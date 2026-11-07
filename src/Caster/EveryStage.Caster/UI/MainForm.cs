@@ -115,6 +115,14 @@ public sealed partial class MainForm : GradientForm
     private readonly Label _privacyReminderLabel;
     private readonly Label _liveCastStatsLabel;
     private readonly Button _stopCastButton;
+    // D-04 status band (see RefreshLiveCastStats/UpdateStatusBand in MainForm.LiveCast.cs) and the
+    // diagnostics toggle/panel, promoted from constructor locals so the band can offer a
+    // click-to-expand path into the diagnostics area.
+    private readonly GlassPanel _statusBand;
+    private readonly Label _statusBandLabel;
+    private readonly Label _statusBandHintLabel;
+    private readonly Button _diagnosticsToggle;
+    private readonly GlassPanel _diagnosticsPanel;
     private readonly Button _captureSelfTestButton;
     private readonly Label _captureStatsLabel;
     private readonly Button _encodeSelfTestButton;
@@ -202,7 +210,8 @@ public sealed partial class MainForm : GradientForm
         // --- 待机态 (PLANNING.md §12) ---
         _terminalListBox = new ListBox
         {
-            Bounds = new Rectangle(24, 104, 472, 190),
+            Size = new Size(472, 190),
+            Margin = new Padding(0, 0, 0, 22),
             DisplayMember = nameof(TerminalListEntry.DisplayText), // else ListBox shows the record's generated ToString().
             Font = new Font(ModernUi.UiFont, 11F),
             DrawMode = DrawMode.OwnerDrawFixed,
@@ -210,6 +219,12 @@ public sealed partial class MainForm : GradientForm
             BorderStyle = BorderStyle.None,
             IntegralHeight = false,
         };
+        // P-04: owner-drawn cards flicker without double buffering; ListBox exposes
+        // DoubleBuffered only as a protected property, so set it once via reflection rather
+        // than growing a ListBox subclass for this one flag.
+        typeof(ListBox).GetProperty("DoubleBuffered",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(_terminalListBox, true);
         _terminalListBox.DrawItem += DrawTerminalCard;
         // Only a live (online) entry has a real IP address to pair/cast to — an offline paired
         // entry is shown for visibility (PLANNING.md §12 "已配对直显") but can't be selected to
@@ -229,19 +244,19 @@ public sealed partial class MainForm : GradientForm
             Text = "点击\"开始投屏\"后，将投放整个屏幕（全屏捕获），而不是仅本窗口或某个应用。\n" +
                    "画面经过设备认证，但未加密传输：请只在受信任的局域网中投屏。",
             ForeColor = Color.DimGray,
-            Bounds = new Rectangle(24, 536, 472, 52),
+            Size = new Size(472, 52),
         };
 
         // PLANNING.md §12"选择捕获哪个显示器"——之前ScreenCaptureSource固定捕获outputIndex=0，
         // 多显示器场景完全没有UI选择。RefreshMonitorList()（下面）在构造函数末尾和每次回到待机态
         // 时都会重新枚举，跟这一轮刚修过的SettingsPanel显示器列表是同一个"别只枚举一次"教训。
-        var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font(ModernUi.UiFontSemibold, 16F), AutoSize = true, Location = new Point(24, 30) };
-        var connected = new Label { Text = "●  已连接", ForeColor = ModernUi.Success, AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Bounds = new Rectangle(360, 34, 136, 24) };
-        var targetLabel = new Label { Text = "选择终端", ForeColor = ModernUi.Muted, AutoSize = true, Location = new Point(24, 80) };
-        var monitorLabel = new Label { Text = "显示器", ForeColor = ModernUi.Muted, AutoSize = true, Bounds = new Rectangle(24, 316, 472, 22) };
+        var standbyTitle = new Label { Text = "投屏器 · 待机", Font = new Font(ModernUi.UiFontSemibold, 16F), AutoSize = true, Location = new Point(0, 0) };
+        var connected = new Label { Text = "●  已连接", ForeColor = ModernUi.Success, AutoSize = false, TextAlign = ContentAlignment.MiddleRight, Bounds = new Rectangle(336, 2, 136, 24) };
+        var targetLabel = new Label { Text = "选择终端", ForeColor = ModernUi.Muted, AutoSize = true, Margin = new Padding(0, 0, 0, 6) };
+        var monitorLabel = new Label { Text = "显示器", ForeColor = ModernUi.Muted, AutoSize = true, Size = new Size(472, 22), Margin = new Padding(0, 0, 0, 4) };
         _monitorComboBox = new ComboBox
         {
-            DropDownStyle = ComboBoxStyle.DropDownList, Bounds = new Rectangle(24, 342, 472, 36),
+            DropDownStyle = ComboBoxStyle.DropDownList, Size = new Size(472, 36), Margin = new Padding(0, 0, 0, 22),
             DrawMode = DrawMode.OwnerDrawFixed, ItemHeight = LogicalToDeviceUnits(30), FlatStyle = FlatStyle.Flat,
         };
         _monitorComboBox.DrawItem += DrawMonitorItem;
@@ -250,7 +265,8 @@ public sealed partial class MainForm : GradientForm
         {
             Text = "开始投屏",
             Enabled = false,
-            Bounds = new Rectangle(24, 400, 472, 50),
+            Size = new Size(472, 50),
+            Margin = new Padding(0, 0, 0, 16),
         };
         _startButton.Click += OnStartButtonClick;
         ModernUi.Primary(_startButton);
@@ -259,20 +275,42 @@ public sealed partial class MainForm : GradientForm
         {
             Text = "移除配对",
             Enabled = false,
-            Bounds = new Rectangle(24, 466, 472, 34),
+            Size = new Size(472, 34),
+            Margin = new Padding(0, 0, 0, 36),
         };
         _removePairingButton.Click += OnRemovePairingClick;
 
+        // D-01 第一步（顶层布局面板化）: the standby view's top-level stacking used to be nine
+        // hand-placed absolute Y coordinates — every insertion meant re-measuring everything below
+        // it (this constructor's own ClientSize comment above is a nine-step record of exactly that
+        // pain). The top level now rides a vertical FlowLayoutPanel: children keep their width
+        // (472) and height, and the old gaps between them are reproduced as bottom Margins. The
+        // title + "● 已连接" pair travels as one fixed-height row container because the flow is
+        // strictly top-down. Card interiors still use relative Bounds — converting those is a
+        // later, per-card step, deliberately not bundled into this one. The flow's Padding
+        // (16 horizontal on top of the panel's own 8) reproduces the old 24px left/right inset,
+        // and its 22 top reproduces the old title Y of 30 (8 + 22).
+        var standbyTitleRow = new Panel
+        {
+            Size = new Size(472, 28), Margin = new Padding(0, 0, 0, 22), BackColor = Color.Transparent,
+        };
+        standbyTitleRow.Controls.AddRange(new Control[] { standbyTitle, connected });
+        var standbyFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            AutoScroll = true, BackColor = Color.Transparent, Padding = new Padding(16, 22, 16, 16),
+        };
+        standbyFlow.Controls.AddRange(new Control[]
+        {
+            standbyTitleRow, targetLabel, _terminalListBox, monitorLabel, _monitorComboBox,
+            _startButton, _removePairingButton, privacyLabel,
+        });
         _standbyPanel = new GlassPanel
         {
             Dock = DockStyle.Fill, Padding = new Padding(8), CornerRadius = 20, AutoScroll = true,
             GlassTint = Color.FromArgb(190, 12, 31, 52),
         };
-        _standbyPanel.Controls.AddRange(new Control[]
-        {
-            standbyTitle, connected, targetLabel, _terminalListBox, privacyLabel, monitorLabel,
-            _monitorComboBox, _startButton, _removePairingButton,
-        });
+        _standbyPanel.Controls.Add(standbyFlow);
         RefreshMonitorList();
         // Displays plugged in or removed while this window waits: DXGI output indices are positional, so
         // a stale list could make the chosen entry capture a different physical screen than the one the
@@ -295,7 +333,7 @@ public sealed partial class MainForm : GradientForm
         };
         var liveCard = new GlassPanel
         {
-            Bounds = new Rectangle(24, 82, 472, 166), CornerRadius = 16,
+            Size = new Size(472, 166), Margin = new Padding(0, 0, 0, 16), CornerRadius = 16,
             GlassTint = Color.FromArgb(215, 20, 39, 62),
         };
         var liveMonitorGlyph = new Panel { Bounds = new Rectangle(24, 40, 72, 60), BackColor = Color.Transparent };
@@ -324,7 +362,7 @@ public sealed partial class MainForm : GradientForm
         };
         var privacyCard = new GlassPanel
         {
-            Bounds = new Rectangle(24, 264, 472, 68), CornerRadius = 14,
+            Size = new Size(472, 68), Margin = new Padding(0, 0, 0, 12), CornerRadius = 14,
             GlassTint = Color.FromArgb(220, 60, 46, 20),
         };
         privacyCard.Controls.Add(_privacyReminderLabel);
@@ -335,12 +373,45 @@ public sealed partial class MainForm : GradientForm
         // here — every control below this one shifted down by that same 18px.
         _liveCastStatsLabel = new Label { Bounds = new Rectangle(12, 38, 430, 120), ForeColor = ModernUi.Muted };
 
-        _stopCastButton = new Button { Text = "停止投屏", Bounds = new Rectangle(24, 344, 472, 50) };
+        _stopCastButton = new Button { Text = "停止投屏", Size = new Size(472, 50), Margin = new Padding(0, 0, 0, 18) };
         _stopCastButton.Click += (_, _) => ShowStandby();
         ModernUi.Primary(_stopCastButton, danger: true);
 
-        var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font(ModernUi.UiFontSemibold, 16F), AutoSize = true, Location = new Point(24, 30) };
-        _liveStateLabel = new Label { Text = "●  已连接 · 等待终端投到大屏", ForeColor = ModernUi.Warning, AutoSize = true, Location = new Point(292, 42) };
+        var castingTitle = new Label { Text = "投屏器 · 投屏中", Font = new Font(ModernUi.UiFontSemibold, 16F), AutoSize = true, Location = new Point(0, 0) };
+        _liveStateLabel = new Label { Text = "●  已连接 · 等待终端投到大屏", ForeColor = ModernUi.Warning, AutoSize = true, Location = new Point(268, 10) };
+
+        // D-04 状态带: the paired view's health used to be one small line of text at the title's
+        // right (_liveStateLabel) plus another inside liveCard (_qualityLabel) — easy to miss at a
+        // glance across a room. This band promotes the same signal to a full-width strip directly
+        // under the title: RefreshLiveCastStats (MainForm.LiveCast.cs) drives it from the same
+        // IsTerminalAlive source, so the three can never disagree. The small labels keep their
+        // existing jobs (title-row liveness detail, in-card quality/RTT detail) — the band only
+        // adds the at-a-glance layer, plus the "what to do next" hint the small labels had no room
+        // for. Clicking the band toggles the diagnostics area (that's why the toggle/panel below
+        // are fields now, not constructor locals).
+        _statusBandLabel = new Label
+        {
+            Text = "●  正在建立连接 · 等待终端确认",
+            Font = new Font(ModernUi.UiFontSemibold, 11.5F),
+            ForeColor = ModernUi.Warning,
+            Bounds = new Rectangle(16, 7, 440, 24),
+        };
+        _statusBandHintLabel = new Label
+        {
+            Text = "终端长时间无响应时，检查终端机是否开着，或展开下方诊断工具定位（点此状态带也可展开）。",
+            Font = new Font(ModernUi.UiFont, 9F),
+            ForeColor = ModernUi.Muted,
+            Bounds = new Rectangle(16, 33, 440, 20),
+        };
+        _statusBand = new GlassPanel
+        {
+            Size = new Size(472, 60), Margin = new Padding(0, 0, 0, 12), CornerRadius = 14,
+            GlassTint = Color.FromArgb(220, 62, 48, 18), Cursor = Cursors.Hand,
+        };
+        _statusBand.Controls.AddRange(new Control[] { _statusBandLabel, _statusBandHintLabel });
+        // The band's click-to-expand wiring lives further down, right after _diagnosticsToggle /
+        // _diagnosticsPanel are assigned — creating that delegate here, before the fields it
+        // dereferences exist, is both a nullable-analysis error and a worse read.
 
         var diagnosticsNoteLabel = new Label
         {
@@ -409,20 +480,20 @@ public sealed partial class MainForm : GradientForm
         _deviceIdentitySelfTestButton.Click += OnDeviceIdentitySelfTestClick;
         _deviceIdentityStatsLabel = new Label { Bounds = new Rectangle(12, 991, 296, 40), ForeColor = Color.DimGray };
 
-        var diagnosticsToggle = new Button { Text = "诊断工具  ▾", Bounds = new Rectangle(24, 412, 472, 36) };
-        var diagnosticsPanel = new GlassPanel
+        _diagnosticsToggle = new Button { Text = "诊断工具  ▾", Size = new Size(472, 36), Margin = new Padding(0, 0, 0, 8) };
+        _diagnosticsPanel = new GlassPanel
         {
-            Bounds = new Rectangle(24, 456, 472, 130),
+            Size = new Size(472, 130),
             AutoScroll = true,
             AutoScrollMinSize = new Size(0, 1040),
             Visible = false,
         };
-        diagnosticsToggle.Click += (_, _) =>
+        _diagnosticsToggle.Click += (_, _) =>
         {
-            diagnosticsPanel.Visible = !diagnosticsPanel.Visible;
-            diagnosticsToggle.Text = diagnosticsPanel.Visible ? "诊断工具  ▴" : "诊断工具  ▾";
+            _diagnosticsPanel.Visible = !_diagnosticsPanel.Visible;
+            _diagnosticsToggle.Text = _diagnosticsPanel.Visible ? "诊断工具  ▴" : "诊断工具  ▾";
         };
-        diagnosticsPanel.Controls.AddRange(new Control[]
+        _diagnosticsPanel.Controls.AddRange(new Control[]
         {
             _liveCastStatsLabel, diagnosticsNoteLabel,
             _captureSelfTestButton, _captureStatsLabel,
@@ -435,16 +506,40 @@ public sealed partial class MainForm : GradientForm
             _deviceIdentitySelfTestButton, _deviceIdentityStatsLabel,
         });
 
+        EventHandler toggleDiagnostics = (_, _) =>
+        {
+            _diagnosticsPanel.Visible = !_diagnosticsPanel.Visible;
+            _diagnosticsToggle.Text = _diagnosticsPanel.Visible ? "诊断工具  ▴" : "诊断工具  ▾";
+        };
+        _statusBand.Click += toggleDiagnostics;
+        _statusBandLabel.Click += toggleDiagnostics;
+        _statusBandHintLabel.Click += toggleDiagnostics;
+
+        // D-01 第一步（同待机面板）: the paired view's top level rides the same vertical flow —
+        // title row container, then the D-04 状态带 as an ordinary flow item, then the cards and
+        // buttons in their old visual order, old gaps reproduced as bottom Margins. liveCard /
+        // privacyCard / _diagnosticsPanel interiors keep their relative Bounds untouched.
+        var pairedTitleRow = new Panel
+        {
+            Size = new Size(472, 30), Margin = new Padding(0, 0, 0, 10), BackColor = Color.Transparent,
+        };
+        pairedTitleRow.Controls.AddRange(new Control[] { castingTitle, _liveStateLabel });
+        var pairedFlow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
+            AutoScroll = true, BackColor = Color.Transparent, Padding = new Padding(16, 22, 16, 16),
+        };
+        pairedFlow.Controls.AddRange(new Control[]
+        {
+            pairedTitleRow, _statusBand, liveCard, privacyCard,
+            _stopCastButton, _diagnosticsToggle, _diagnosticsPanel,
+        });
         _pairedPanel = new GlassPanel
         {
             Dock = DockStyle.Fill, Visible = false, Padding = new Padding(8), CornerRadius = 20, AutoScroll = true,
             GlassTint = Color.FromArgb(190, 12, 31, 52),
         };
-        _pairedPanel.Controls.AddRange(new Control[]
-        {
-            castingTitle, _liveStateLabel, liveCard, privacyCard,
-            _stopCastButton, diagnosticsToggle, diagnosticsPanel,
-        });
+        _pairedPanel.Controls.Add(pairedFlow);
 
         // Observed WinForms docking: the BACK-most control docks FIRST and claims its edge; the
         // FRONT-most gets the remainder. Send the title bar to the back so it owns the full top

@@ -1,3 +1,4 @@
+using EveryStage.Rendering.Decode;
 using EveryStage.Terminal.ContentEngine;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Display;
@@ -27,35 +28,95 @@ public sealed partial class PlaybackEngine
         AudioController.LevelChanged -= OnAudioLevelChanged;
         AudioController.LevelChanged += OnAudioLevelChanged;
 
-        // Bug fixed here: unlike PlayImageAsync/PlayDocumentAsync (each wrapped in their own
-        // try/catch specifically for this reason — see OnImageOrDocumentFailed's own doc comment),
-        // nothing ever caught a failure from this method's own two calls. AudioController.Play's
-        // own `new AudioDecodeSource(path)` is exactly the same "the file was deleted/moved/
-        // corrupted since being added to an activity" real, reachable failure mode as
-        // ImageContentRenderer/PdfContentRenderer's LoadAsync — the only difference is this method
-        // is synchronous, so an uncaught exception here propagated all the way out of PlayFile
-        // itself instead of vanishing into an unobserved Task. AudioController.PlaybackFailed
-        // (OnAudioFailed, wired above) only covers a failure AFTER Play() already started
-        // successfully, on the background playback thread — it was never reachable for a
-        // synchronous construction failure like this one. Reusing OnImageOrDocumentFailed here
-        // rather than inventing a parallel "audio load failed" path: its actual behavior (clear
-        // ContentSurface, log, raise PlaybackAbnormallyInterrupted) is exactly what a standalone-
-        // audio load failure needs too, despite the name — same "not worth a rename for one more
-        // caller" reasoning EveryStage.Transport.RtpVideoClock's own doc comment already gives for
-        // an analogous situation.
+        // Bug fixed here (and preserved through the P-16 asynchronous rework below): unlike
+        // PlayImageAsync/PlayDocumentAsync (each wrapped in their own try/catch specifically for
+        // this reason — see OnImageOrDocumentFailed's own doc comment), nothing ever caught a
+        // failure from this method's own calls. AudioController.Play's own
+        // `new AudioDecodeSource(path)` is exactly the same "the file was deleted/moved/corrupted
+        // since being added to an activity" real, reachable failure mode as
+        // ImageContentRenderer/PdfContentRenderer's LoadAsync — when this method was synchronous,
+        // an uncaught exception propagated all the way out of PlayFile itself instead of vanishing
+        // into an unobserved Task. AudioController.PlaybackFailed (OnAudioFailed, wired above)
+        // only covers a failure AFTER Play() already started successfully, on the background
+        // playback thread — it was never reachable for a construction failure like this one.
+        // Reusing OnImageOrDocumentFailed here rather than inventing a parallel "audio load
+        // failed" path: its actual behavior (clear ContentSurface, log, raise
+        // PlaybackAbnormallyInterrupted) is exactly what a standalone-audio load failure needs
+        // too, despite the name — same "not worth a rename for one more caller" reasoning
+        // EveryStage.Transport.RtpVideoClock's own doc comment already gives for an analogous
+        // situation. Every failure of the now-asynchronous open (construction on the background
+        // thread, or adopting the source here) funnels into OnStandaloneAudioOpenFailed, which
+        // applies exactly the handling this try/catch used to apply inline.
         try
         {
             ApplyAudioVisual(file);
             AudioController.Muted = _muted;
-            AudioController.Play(file.SourcePath, FadeDurationFor(file), startAt);
-            SetState(PlaybackChannelState.Playing);
+            // Stopping the previous track stays on this thread (Play() used to do it first):
+            // its bounded join is normally fast — the 2 s BoundedJoin ceiling is only the
+            // pathological case of a worker stuck inside a Media Foundation call.
+            AudioController.Stop();
         }
         catch (Exception ex)
         {
-            if (ex is EveryStage.Rendering.Decode.MediaOpenException { Stage: EveryStage.Rendering.Decode.MediaFailureStage.Render })
-                _waitingAudioOutput = (file, startAt, _contentLoadVersion);
-            OnImageOrDocumentFailed(file, ex);
+            OnStandaloneAudioOpenFailed(file, startAt, ex);
+            return;
         }
+        _ = PlayStandaloneAudioAsync(file, startAt);
+    }
+
+    /// <summary>Asynchronous half of <see cref="PlayStandaloneAudio"/> (audit P-16): constructing
+    /// the <see cref="AudioDecodeSource"/> — Media Foundation opening the file and negotiating
+    /// formats — runs on a background thread (or is adopted from the P-22 prefetch when sequential
+    /// playback predicted this file), mirroring <see cref="PlayImageAsync"/>'s load-version +
+    /// current-file guard: a request the operator has already moved past has its source disposed,
+    /// never played and never leaked. Failures land in
+    /// <see cref="OnStandaloneAudioOpenFailed"/>, the same handling the synchronous open used.</summary>
+    private async Task PlayStandaloneAudioAsync(MediaFile file, TimeSpan startAt)
+    {
+        int version = _contentLoadVersion;
+        var controller = AudioController;
+        AudioDecodeSource? source = null;
+        Exception? failure = null;
+        var prepared = TakePreparedAudio(file);
+        try
+        {
+            source = prepared != null
+                ? await prepared.ConfigureAwait(false)
+                : await Task.Run(() => controller.CreateSource(file.SourcePath)).ConfigureAwait(false);
+        }
+        catch (Exception ex) { failure = ex; }
+        try
+        {
+            _output.Post(() =>
+            {
+                if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile))
+                {
+                    source?.Dispose(); // stale — the operator already moved on
+                    return;
+                }
+                if (failure != null) { OnStandaloneAudioOpenFailed(file, startAt, failure); return; }
+                var opened = source!;
+                source = null; // PlayPrepared owns it from here, including on failure
+                try
+                {
+                    controller.PlayPrepared(opened, file.SourcePath, FadeDurationFor(file), startAt);
+                    SetState(PlaybackChannelState.Playing);
+                }
+                catch (Exception ex) { OnStandaloneAudioOpenFailed(file, startAt, ex); }
+            });
+        }
+        catch (InvalidOperationException) { source?.Dispose(); } // output closed while the file was opening
+    }
+
+    /// <summary>The failure handling <see cref="PlayStandaloneAudio"/>'s synchronous open used to
+    /// apply inline: a Render-stage failure (no usable audio output) is remembered so
+    /// <see cref="OnDefaultAudioOutputChanged"/> can resume this file when an output returns;
+    /// everything else goes through the shared <see cref="OnImageOrDocumentFailed"/> path.</summary>
+    private void OnStandaloneAudioOpenFailed(MediaFile file, TimeSpan startAt, Exception ex)
+    {
+        if (ex is MediaOpenException { Stage: MediaFailureStage.Render })
+            _waitingAudioOutput = (file, startAt, _contentLoadVersion);
+        OnImageOrDocumentFailed(file, ex);
     }
 
     /// <summary>Entry point for <see cref="RequestPlay(Activity, int, PlaybackTrigger)"/>/
@@ -99,18 +160,69 @@ public sealed partial class PlaybackEngine
         BackgroundAudioController.PlaybackFailed -= OnBackgroundAudioFailed;
         BackgroundAudioController.PlaybackFailed += OnBackgroundAudioFailed;
 
+        // The decode source's construction moved off this thread (audit P-16, same rework as
+        // PlayStandaloneAudio): constructing it synchronously here used to freeze the UI whenever
+        // navigation passed over a background-audio slot. Stopping the previous track stays on
+        // this thread (Play() used to do it first; its bounded join is normally fast). Every
+        // failure of the asynchronous open funnels into OnBackgroundAudioOpenFailed, which
+        // applies exactly the handling this try/catch used to apply inline.
         try
         {
-            BackgroundAudioController.Play(file.SourcePath, FadeDurationFor(file));
+            BackgroundAudioController.Stop();
         }
         catch (Exception ex)
         {
-            if (ex is EveryStage.Rendering.Decode.MediaOpenException { Stage: EveryStage.Rendering.Decode.MediaFailureStage.Render })
-                _waitingBackgroundOutput = (file, TimeSpan.Zero, _backgroundAudioGeneration);
-            _backgroundAudioFile = null;
-            _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
-            RaisePlaybackAbnormallyInterrupted(file, ex.Message);
+            OnBackgroundAudioOpenFailed(file, _backgroundAudioGeneration, ex);
+            return;
         }
+        _ = PlayBackgroundAudioAsync(file, _backgroundAudioGeneration);
+    }
+
+    /// <summary>Asynchronous half of <see cref="PlayBackgroundAudio"/>: constructs the decode
+    /// source on a background thread and posts back, guarded by the background-audio generation
+    /// and current track — a start the operator has already superseded (another track, a stop, a
+    /// device cast) has its source disposed, never played and never leaked.</summary>
+    private async Task PlayBackgroundAudioAsync(MediaFile file, int generation)
+    {
+        var controller = BackgroundAudioController;
+        AudioDecodeSource? source = null;
+        Exception? failure = null;
+        try
+        {
+            source = await Task.Run(() => controller.CreateSource(file.SourcePath)).ConfigureAwait(false);
+        }
+        catch (Exception ex) { failure = ex; }
+        try
+        {
+            _output.Post(() =>
+            {
+                if (generation != _backgroundAudioGeneration || !ReferenceEquals(file, _backgroundAudioFile))
+                {
+                    source?.Dispose(); // stale — superseded before it ever started
+                    return;
+                }
+                if (failure != null) { OnBackgroundAudioOpenFailed(file, generation, failure); return; }
+                var opened = source!;
+                source = null; // PlayPrepared owns it from here, including on failure
+                try { controller.PlayPrepared(opened, file.SourcePath, FadeDurationFor(file)); }
+                catch (Exception ex) { OnBackgroundAudioOpenFailed(file, generation, ex); }
+            });
+        }
+        catch (InvalidOperationException) { source?.Dispose(); } // output closed while the file was opening
+    }
+
+    /// <summary>The failure handling <see cref="PlayBackgroundAudio"/>'s synchronous open used to
+    /// apply inline: a Render-stage failure (no usable audio output) is remembered so
+    /// <see cref="OnDefaultAudioOutputChanged"/> can resume this track when an output returns;
+    /// the track is then cleared, logged and reported — without touching the visual surface,
+    /// which an overlay track was never shown on.</summary>
+    private void OnBackgroundAudioOpenFailed(MediaFile file, int generation, Exception ex)
+    {
+        if (ex is MediaOpenException { Stage: MediaFailureStage.Render })
+            _waitingBackgroundOutput = (file, TimeSpan.Zero, generation);
+        _backgroundAudioFile = null;
+        _playbackLogger.LogAbnormalInterruption(file.Id, ex.Message);
+        RaisePlaybackAbnormallyInterrupted(file, ex.Message);
     }
 
     /// <summary>PLANNING.md doesn't say what any <see cref="MediaFile.OnCompletion"/> value should

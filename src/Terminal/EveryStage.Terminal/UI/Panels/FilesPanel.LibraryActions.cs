@@ -129,11 +129,26 @@ public sealed partial class FilesPanel
         }
         _fileOpLog.LogActivityModified(dialog.SelectedScenario.Id, dialog.SelectedActivity.Id, dialog.SelectedActivity.Name);
 
-        MessageBox.Show(this,
+        ShowSuccessNotice(
             files.Count == 1
-                ? $"已将 \"{Path.GetFileName(files[0].SourcePath)}\" 加入活动 \"{dialog.SelectedActivity.Name}\"。"
-                : $"已将选中的 {files.Count} 个文件加入活动 \"{dialog.SelectedActivity.Name}\"。",
-            "加入活动", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                ? $"已将 \"{Path.GetFileName(files[0].SourcePath)}\" 加入活动 \"{dialog.SelectedActivity.Name}\""
+                : $"已将 {files.Count} 个文件加入活动 \"{dialog.SelectedActivity.Name}\"",
+            "加入活动");
+    }
+
+    /// <summary>Success results go to the toast stack when MainWindow wired <see cref="ShowToast"/>
+    /// (审查 L-03 的迁移规则：纯结果通知走通知栏，不弹模态抢焦点；需要当场决策的确认框和需要
+    /// 看明细的汇总框——导入被拒/需转码汇总、保存失败——仍保留 MessageBox，不走这里）。通知是
+    /// 单行短文本，所以文案保持一行放得下；未接线时回退到原来的信息框，保证独立使用本面板时
+    /// 成功反馈不丢。</summary>
+    private void ShowSuccessNotice(string message, string title)
+    {
+        if (ShowToast is { } show)
+        {
+            show(message, ToastSeverity.Info, Array.Empty<ToastAction>());
+            return;
+        }
+        MessageBox.Show(this, message, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void ImportPaths(IEnumerable<string> paths)
@@ -142,26 +157,42 @@ public sealed partial class FilesPanel
         // 本次成功导入、但编码可能不受支持的文件：导入照常成功（不阻断），结束后统一提示
         // 可能需要转码，见方法末尾的汇总框；逐个收集是为了在提示里带上各自的原因。
         var needsTranscode = new List<MediaFile>();
+        var importedFiles = new List<MediaFile>();
         // Audio goes to the background music (the selected 歌单), not into the library.
         var all = paths.ToList();
         var audio = all.Where(p => FileLibraryStore.InferKind(p) == MediaKind.Audio).ToList();
         if (audio.Count > 0) AudioDropped?.Invoke(audio);
-        foreach (var path in all.Except(audio))
+        var rest = all.Except(audio).ToList();
+        if (rest.Count > 0)
         {
-            MediaFile? imported;
-            try { imported = _library.Import(path); }
+            // 性能审查 P-19: one batch import = one library save at the end, instead of a full
+            // save per file. Results align with `rest` by index; a null slot is a rejected path,
+            // counted and reported exactly as the old per-file loop counted it.
+            IReadOnlyList<MediaFile?> results;
+            try { results = _library.ImportMany(rest); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 MessageBox.Show(this, $"导入未完成：{DataDirectory.Describe(ex)}\n此前成功导入的文件已保留。", "文件库保存失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                break;
+                results = Array.Empty<MediaFile?>();
             }
-            if (imported == null) rejected.Add(Path.GetFileName(path));
-            else
+            for (int i = 0; i < results.Count; i++)
             {
+                var imported = results[i];
+                if (imported == null) { rejected.Add(Path.GetFileName(rest[i])); continue; }
+                importedFiles.Add(imported);
                 _fileOpLog.LogFileImported(imported.Id, imported.SourcePath);
                 if (imported.NeedsTranscode) needsTranscode.Add(imported);
             }
         }
+        // 性能审查 P-17: an Office document's first play pays a cold-start conversion on the spot
+        // (static slides / read-only pages always need it, and so does every presentation's
+        // Preview) — kick that conversion off in the background now, at import time, so the wait
+        // leaves the show moment. The conversion cache serialises through its own gate, so
+        // several documents simply queue; failures are logged there and retried on demand at
+        // play time, so nothing is surfaced in the UI here.
+        foreach (var file in importedFiles)
+            if (IsUnconvertedOfficeDocument(file))
+                _ = PrewarmConversionAsync(file.SourcePath);
         if (audio.Count < all.Count) Refresh_();
 
         string message = "";
@@ -185,6 +216,31 @@ public sealed partial class FilesPanel
         }
         if (message.Length > 0)
             MessageBox.Show(this, message, "导入", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    /// <summary>True for a Word/presentation document with no cached playback conversion yet
+    /// (性能审查 P-17) — the same test 开演前检查 reports as its 未预转换 finding, sharing
+    /// <see cref="Documents.DocumentConversionCache.TryGet"/> as the one definition of "cached".</summary>
+    private static bool IsUnconvertedOfficeDocument(MediaFile file) =>
+        file.Kind == MediaKind.Document
+        && Documents.DocumentFormats.Of(file.SourcePath) is Documents.DocumentFormat.Word or Documents.DocumentFormat.Presentation
+        && Documents.DocumentConversionCache.Shared.TryGet(file.SourcePath) == null;
+
+    /// <summary>Background pre-conversion kicked off at import time (性能审查 P-17). Never throws
+    /// and never touches the UI: the conversion cache logs failures itself, and playback retries
+    /// on demand with its normal error surface if this did not succeed.</summary>
+    private static async Task PrewarmConversionAsync(string sourcePath)
+    {
+        try
+        {
+            await Documents.DocumentConversionCache.Shared
+                .GetOrConvertAsync(sourcePath, Documents.DocumentFormats.Of(sourcePath))
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.TraceError("Pre-conversion failed for {0}: {1}", sourcePath, ex);
+        }
     }
 
     /// <summary>为什么这个文件可能需要转码：优先用导入时探测到的具体原因，没探测到时给一句通用说明。</summary>

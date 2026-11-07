@@ -236,6 +236,7 @@ internal sealed class DeviceCastController : IDisposable
             PayloadTypeMismatches = _receiver.PayloadTypeMismatches,
             EstimatedPacketLossPercent = _receiver.EstimatedPacketLossPercent,
             VideoPacketsLost = _receiver.VideoPacketsLost,
+            KeyframeRequests = _receiver.FrameStatistics.KeyframeRequests,
         };
         _ = _transport.SendCastStatusAsync(_casterEndPoint, status);
     }

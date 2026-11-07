@@ -155,6 +155,23 @@ public sealed class LiveCastSession : IDisposable
     private readonly CaptureRateController _captureRateController = new();
     private int _captureFrameCounter;
 
+    // P-27 pacing state: session-clock ticks of the last frame that PASSED the pacing gate in
+    // RunLoop (not necessarily the last frame submitted — the stride gate below it may still
+    // drop that frame; see RunLoop for why the timestamp belongs to the gate, not the submit).
+    private long _lastPacedFrameTicks = long.MinValue;
+
+    // One submit opportunity per 1/30s of session time, matching the encoder's declared frame
+    // rate, minus a 1ms tolerance: Desktop Duplication present times jitter around the exact
+    // 33.33ms cadence of a 30fps-equivalent desktop, and a strict >= 33.33ms test would reject
+    // roughly half of a genuinely-30fps desktop's frames and halve the effective rate.
+    private const long MinSubmitIntervalTicks = TimeSpan.TicksPerSecond / 30 - TimeSpan.TicksPerMillisecond;
+
+    // Last KeyframeRequests value seen in a Terminal status report (P-25) — the Caster forces
+    // an IDR whenever a report's value exceeds this. Reset by StartAsync; a Terminal that
+    // rebuilds its receiver restarts its count from 0, which simply re-baselines this (see
+    // OnCastStatusReceived).
+    private long _lastKeyframeRequestsSeen;
+
     // Audio timestamping (audit A-3): the AAC encoder buffers PCM across calls, so an access unit's
     // audio usually began in an EARLIER capture buffer than the one that produced it; PcmTimeline maps
     // each access unit to the capture time of its first sample. Touched only on the single capture
@@ -187,6 +204,25 @@ public sealed class LiveCastSession : IDisposable
 
     public int Width { get; private set; }
     public int Height { get; private set; }
+
+    /// <summary>The encoder bitrate tier chosen for this session's capture size — see
+    /// <see cref="SelectBitrateBps"/> (P-24). 0 until <see cref="StartAsync"/> has measured the
+    /// capture. Shown in the UI's stats block so an operator can see which tier a cast is
+    /// actually running at rather than guessing from the resolution alone.</summary>
+    public int SelectedBitrateBps { get; private set; }
+
+    /// <summary>Forwards <see cref="H264HardwareEncoder.TuningSummary"/> verbatim for the stats
+    /// UI (P-30): which CodecAPI settings the encoder MFT accepted at startup, failed HRESULTs
+    /// included, deliberately unedited — softening a failure entry would hide exactly the
+    /// diagnostic this exists to surface. Empty before <see cref="StartAsync"/> constructs an
+    /// encoder.</summary>
+    public string EncoderTuningSummary => _encoder?.TuningSummary ?? "";
+
+    /// <summary>Forwards <see cref="H264HardwareEncoder.ForceKeyframeSummary"/> — the most recent
+    /// forced-keyframe request's outcome (P-25), same verbatim-diagnostics reasoning as
+    /// <see cref="EncoderTuningSummary"/>. Empty until the first request or before Start.</summary>
+    public string EncoderForceKeyframeSummary => _encoder?.ForceKeyframeSummary ?? "";
+
     public long FramesCaptured { get; private set; }
     public long AccessUnitsSent { get; private set; }
     public long BytesSent { get; private set; }
@@ -343,6 +379,15 @@ public sealed class LiveCastSession : IDisposable
         TerminalPayloadTypeMismatches = status.PayloadTypeMismatches;
         TerminalPacketLossPercent = status.EstimatedPacketLossPercent;
         TerminalVideoPacketsLost = status.VideoPacketsLost;
+        // P-25: the Terminal's decoder asked for keyframes (it dropped access units under
+        // backpressure or hit a decode error, so its picture is damaged until the next IDR).
+        // Force one whenever its cumulative count passes what we've already acted on. A count
+        // that went DOWN means the Terminal rebuilt its receiver and restarted from 0 — adopt
+        // it as the new baseline without forcing: that receiver's stream effectively restarts
+        // anyway, and forcing an IDR for requests a dead receiver made would be noise.
+        if (status.KeyframeRequests > _lastKeyframeRequestsSeen)
+            _encoder?.ForceKeyframe();
+        _lastKeyframeRequestsSeen = status.KeyframeRequests;
         _captureRateController.Update(status.EstimatedPacketLossPercent, RealRoundTripEstimate,
             status.VideoError, Volatile.Read(ref _queuedAccessUnitCount), MaxQueuedAccessUnits,
             _encoder?.FramesDroppedForBackpressure ?? 0);
@@ -385,6 +430,9 @@ public sealed class LiveCastSession : IDisposable
         TerminalPayloadTypeMismatches = 0;
         TerminalPacketLossPercent = null;
         TerminalVideoPacketsLost = 0;
+        SelectedBitrateBps = 0;
+        _lastKeyframeRequestsSeen = 0;
+        _lastPacedFrameTicks = long.MinValue;
         _captureRateController.Reset();
         _captureFrameCounter = 0;
         LastStatusReceivedAt = null;
@@ -405,7 +453,8 @@ public sealed class LiveCastSession : IDisposable
             Width = _capture.Width;
             Height = _capture.Height;
             _converter = new BgraToNv12Converter(_gpu);
-            _encoder = new H264HardwareEncoder(_gpu, Width, Height, frameRateNumerator: 30, bitrateBps: 4_000_000);
+            SelectedBitrateBps = SelectBitrateBps(Width, Height);
+            _encoder = new H264HardwareEncoder(_gpu, Width, Height, frameRateNumerator: 30, bitrateBps: SelectedBitrateBps);
             _rtpSession = new RtpSession(new IPEndPoint(_terminal.Address, DiscoveryProtocol.VideoRtpPort), PayloadType,
                 authentication: new MediaPacketAuthentication(_discoveryClient.DeriveMediaKey(_terminal, mediaSessionId, "video"), mediaSessionId),
                 fecPayloadType: RtpSession.DefaultFecPayloadType);
@@ -486,6 +535,22 @@ public sealed class LiveCastSession : IDisposable
         }
     }
 
+    /// <summary>Encoder bitrate tier by captured pixel count (P-24). The bitrate used to be a
+    /// fixed 4 Mbps at every resolution — visibly starved at 1440p/4K (blocky text, smeared
+    /// motion), and simply oversized for a 720p secondary screen. Judged by total pixels so the
+    /// tiers are aspect-ratio independent, boundaries inclusive of the named size: at or below
+    /// 1280×720 (921,600 px) → 4 Mbps; at or below 1920×1080 (2,073,600 px) → 8 Mbps; at or
+    /// below 2560×1440 (3,686,400 px) → 12 Mbps; anything above → 16 Mbps. Frame rate stays 30
+    /// regardless (the encoder's declared rate and RunLoop's pacing budget, P-27).</summary>
+    private static int SelectBitrateBps(int width, int height)
+    {
+        long pixels = (long)width * height;
+        if (pixels <= 1280L * 720) return 4_000_000;
+        if (pixels <= 1920L * 1080) return 8_000_000;
+        if (pixels <= 2560L * 1440) return 12_000_000;
+        return 16_000_000;
+    }
+
     private void RunLoop(D3D11Device gpu, ScreenCaptureSource capture, BgraToNv12Converter converter, H264HardwareEncoder encoder, CancellationToken token)
     {
         try
@@ -515,6 +580,24 @@ public sealed class LiveCastSession : IDisposable
                 using (frame)
                 {
                     if (!frame.HasNewImage) continue;
+
+                    // P-27 pacing: Desktop Duplication reports EVERY desktop update — up to
+                    // 120+ a second on a high-refresh display — and until now each one was
+                    // converted and submitted, so the converter and the encoder's input queue
+                    // did several times the work for frames the encoder's own declared 30fps
+                    // mostly turns into duplicates, churning GPU/CPU for nothing. Skip, BEFORE
+                    // the GPU conversion, any frame arriving sooner than 1/30s after the last
+                    // frame that passed this gate. Pacing runs FIRST and the congestion stride
+                    // below then samples the paced stream: pacing defines the base 30fps
+                    // cadence, stride divides that cadence under congestion (stride 2 → ~15fps,
+                    // stride 3 → ~10fps) — a predictable composition, unlike striding the raw
+                    // arrival rate, where the same stride would mean different output rates on
+                    // 60Hz and 120Hz desktops. The gate timestamp is updated on passing the
+                    // gate (not on submit) so stride-divided output keeps an even cadence.
+                    if (_lastPacedFrameTicks != long.MinValue
+                        && captureTicks - _lastPacedFrameTicks < MinSubmitIntervalTicks) continue;
+                    _lastPacedFrameTicks = captureTicks;
+
                     int stride = _captureRateController.CurrentStride;
                     if (++_captureFrameCounter % stride != 0) continue;
 
@@ -593,6 +676,10 @@ public sealed class LiveCastSession : IDisposable
         // IDR frame self-heals the resulting gap within about a second either way.
         if (Interlocked.CompareExchange(ref _queuedAccessUnitCount, 0, 0) >= MaxQueuedAccessUnits)
         {
+            // A completely full queue is also the strongest local congestion signal there is —
+            // feed it to the capture-rate controller now (P-31) rather than letting it wait for
+            // the next 1-second status report to arrive via OnCastStatusReceived.
+            _captureRateController.NoteQueueDepth(MaxQueuedAccessUnits, MaxQueuedAccessUnits);
             AccessUnitsDroppedForBackpressure++;
             StatsUpdated?.Invoke();
             return;
@@ -604,7 +691,11 @@ public sealed class LiveCastSession : IDisposable
         // one slot per empty access unit until the queue read as permanently full and every later
         // frame was dropped — video stopped for the rest of the cast (audit A-1).
         if (nalUnits.Count == 0) return;
-        Interlocked.Increment(ref _queuedAccessUnitCount); // decremented in RunSendLoop once sent.
+        int queuedAccessUnits = Interlocked.Increment(ref _queuedAccessUnitCount); // decremented in RunSendLoop once sent.
+        // P-31: local congestion signal — the send queue's own depth, available the moment it
+        // grows, with none of the status channel's ~1s latency. Raise-only; recovery stays with
+        // the status-driven path's hysteresis in CaptureRateController.Update.
+        _captureRateController.NoteQueueDepth(queuedAccessUnits, MaxQueuedAccessUnits);
         bool lastWritten = false;
         for (int i = 0; i < nalUnits.Count; i++)
         {

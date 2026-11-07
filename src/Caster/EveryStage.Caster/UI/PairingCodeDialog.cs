@@ -31,7 +31,7 @@ public sealed class PairingCodeDialog : Form
         };
         var hint = new Label
         {
-            Text = "请在终端机上核对同一组数字后点接受",
+            Text = "请到终端机跟前，核对同一组数字后点「接受」",
             Bounds = new Rectangle(16, 108, 328, 24),
             TextAlign = ContentAlignment.MiddleCenter,
             ForeColor = Color.DimGray,

@@ -20,6 +20,10 @@ public sealed class ToastStack : Panel
     public static readonly TimeSpan ActionLifetime = TimeSpan.FromSeconds(10);
 
     private readonly List<ToastNotification> _toasts = new();
+    /// <summary>One ToolTip for every toast's full-text hover (P-10) — a ToolTip can serve
+    /// any number of controls, replacing the per-toast instance ToastNotification used to
+    /// allocate and never dispose.</summary>
+    private readonly ToolTip _sharedToolTip = new();
     private bool _floating;
 
     public ToastStack()
@@ -70,6 +74,7 @@ public sealed class ToastStack : Panel
     {
         while (_toasts.Count >= MaxVisible) _toasts[0].Dismiss();
         var toast = new ToastNotification(message, severity, actions, Math.Max(S(120), ClientSize.Width - S(Margin_) * 2), S(SlotHeight));
+        toast.AttachToolTip(_sharedToolTip);
         var expiry = new System.Windows.Forms.Timer { Interval = (int)(toast.HasActions ? ActionLifetime : Lifetime).TotalMilliseconds };
         expiry.Tick += (_, _) => toast.Dismiss();
         toast.Dismissed += () =>
@@ -104,6 +109,12 @@ public sealed class ToastStack : Panel
             toast.Bounds = new Rectangle(S(Margin_), y, width, toast.Height);
             y -= S(Gap);
         }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _sharedToolTip.Dispose();
+        base.Dispose(disposing);
     }
 
     protected override void OnResize(EventArgs eventargs)

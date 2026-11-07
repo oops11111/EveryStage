@@ -67,9 +67,19 @@ public sealed class RawRtpReceiver : IDisposable
     public RawRtpReceiver(int listenPort, byte? expectedPayloadType = null, MediaPacketAuthentication? authentication = null, IPAddress? expectedAddress = null)
     {
         _socket = new UdpClient(listenPort);
+        ConfigureSocketBuffers(_socket);
         _expectedPayloadType = expectedPayloadType;
         _authentication = authentication;
         _expectedAddress = expectedAddress;
+    }
+
+    // Same reasoning as RtpReceiver.ConfigureSocketBuffers: the OS default UDP receive buffer
+    // can overflow on bursty traffic; a failed set must never break reception, hence the
+    // swallowed per-setting try/catch.
+    private static void ConfigureSocketBuffers(UdpClient client)
+    {
+        try { client.Client.ReceiveBufferSize = 4 * 1024 * 1024; } catch (SocketException) { }
+        try { client.Client.SendBufferSize = 1024 * 1024; } catch (SocketException) { }
     }
 
     public void Start() => _receiveLoop = Task.Run(() => ReceiveLoopAsync(_cts.Token));

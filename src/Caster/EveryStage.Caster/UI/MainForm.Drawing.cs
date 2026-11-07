@@ -11,6 +11,10 @@ namespace EveryStage.Caster.UI;
 
 public sealed partial class MainForm
 {
+    // P-04: shared card fonts for DrawTerminalCard (fixed sizes, so statics are safe).
+    private static readonly Font CardTitleFont = new(ModernUi.UiFontSemibold, 12F);
+    private static readonly Font CardMetaFont = new(ModernUi.UiFont, 9.5F);
+
     private void DrawTerminalCard(object? sender, DrawItemEventArgs e)
     {
         if (e.Index < 0 || e.Index >= _terminalListBox.Items.Count) return;
@@ -34,8 +38,10 @@ public sealed partial class MainForm
         var iconRect = new Rectangle(card.Left + S(20), card.Top + (card.Height - S(40)) / 2, S(48), S(40));
         DrawMonitorGlyph(g, iconRect, Color.FromArgb(150, 178, 220));
 
-        using var titleFont = new Font(ModernUi.UiFontSemibold, 12F);
-        using var metaFont = new Font(ModernUi.UiFont, 9.5F);
+        // P-04: process-lifetime statics, never disposed — these two were allocated on every
+        // card paint (and this list repaints on every refresh tick it doesn't skip).
+        var titleFont = CardTitleFont;
+        var metaFont = CardMetaFont;
         int textLeft = iconRect.Right + S(18);
         TextRenderer.DrawText(g, entry.DeviceName, titleFont,
             new Rectangle(textLeft, card.Top + S(14), card.Width - textLeft - S(60) + card.Left, S(28)), ModernUi.Text,

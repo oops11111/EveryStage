@@ -107,7 +107,7 @@ public sealed partial class MainForm
         else
         {
             MessageBox.Show(this,
-                response == null ? "终端机未响应（超时）。" : $"终端机拒绝了配对请求：{response.Reason ?? "未说明原因"}",
+                response == null ? "终端机未响应（超时）。请到终端机跟前看是否有配对确认弹窗，点「确认」后回到这里重试；若终端机没开机或不在同一局域网，也会这样超时。" : $"终端机拒绝了配对请求：{response.Reason ?? "未说明原因"}",
                 "配对失败", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }

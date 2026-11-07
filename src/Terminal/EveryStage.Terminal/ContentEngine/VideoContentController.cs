@@ -161,10 +161,27 @@ public sealed class VideoContentController : IDisposable
     public void Play(string path, TimeSpan? fadeDuration = null, TimeSpan startAt = default, bool startPaused = false)
     {
         Stop();
+        PlayPrepared(CreateSource(path), path, fadeDuration, startAt, startPaused);
+    }
+
+    /// <summary>The expensive half of <see cref="Play"/>: opening the file and negotiating formats
+    /// with Media Foundation (<see cref="VideoDecodeSource"/>'s constructor, including trying audio
+    /// tracks one by one when the first can't be decoded). Touches no controller state, so it is
+    /// safe to call on a background thread — <c>PlaybackEngine</c> does exactly that so opening a
+    /// video no longer freezes the UI (audit P-16), and pre-constructs the next item's source the
+    /// same way (P-22). The caller owns the returned source until <see cref="PlayPrepared"/> takes
+    /// it over (or disposes it itself if playback moved on meanwhile).</summary>
+    internal VideoDecodeSource CreateSource(string path) => new(path, _surface.Gpu);
+
+    /// <summary>The cheap half of <see cref="Play"/>: adopts a source built by
+    /// <see cref="CreateSource"/> (possibly on a background thread) and starts playing it. Playback
+    /// must already be stopped (<see cref="Play"/> stops itself; asynchronous callers stop first).
+    /// Takes ownership of <paramref name="source"/> even on failure — it is disposed before the
+    /// exception escapes, exactly as <see cref="Play"/>'s own construction path behaved.</summary>
+    internal void PlayPrepared(VideoDecodeSource source, string path, TimeSpan? fadeDuration = null, TimeSpan startAt = default, bool startPaused = false)
+    {
         _sourcePath = path;
         _recoveryAttempted = false;
-
-        var source = new VideoDecodeSource(path, _surface.Gpu);
         try
         {
             _fadeDuration = fadeDuration is { Ticks: > 0 } ? fadeDuration : null;

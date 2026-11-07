@@ -48,6 +48,10 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     /// <summary>The visible 活动节目单: one <see cref="ActivityRowView"/> per activity. <see cref="_tree"/>
     /// stays hidden as the selection/model adapter every editing handler reads via <see cref="GetSelection"/>.</summary>
     private readonly FlowLayoutPanel _activityRows;
+    /// <summary>The row width <see cref="LayoutRows"/> last fitted, so a drag-resize that fires
+    /// Resize repeatedly at the same width doesn't refit every row each time (P-07). Reset by
+    /// <see cref="RefreshTree"/> whenever the rows themselves are rebuilt.</summary>
+    private int _lastRowsLayoutWidth = -1;
     private readonly Label _activityCount;
     private readonly Label _emptyState;
     private readonly System.Windows.Forms.Timer _saveFeedbackTimer;
@@ -91,6 +95,12 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     /// <summary>The engine that drives the big screen (null while no extended display is bound). The
     /// run sheet's 「大屏播放中 / 下一项 / 已播」 follow it, or the Preview engine when it is null.</summary>
     public Func<PlaybackEngine?>? ProgramEngine { get; set; }
+
+    /// <summary>Shows a toast in the main window (wired by MainWindow to its ToastStack; same pattern as
+    /// SettingsPanel's). The delete flows in ActivitiesPanel.Scenarios.cs use it for the 10 s 撤销 offer
+    /// after a scenario/activity is deleted. Null when not wired — deletions then behave exactly as
+    /// before, just without the undo offer.</summary>
+    public Func<string, ToastSeverity, ToastAction[], ToastNotification>? ShowToast { get; set; }
 
     /// <summary>Run this item now: MainWindow puts it on the big screen (or in Preview without one).</summary>
     public event Action<Activity, int>? RunRequested;
@@ -302,7 +312,7 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             HideSelection = false,
         };
         _tree.DrawNode += DrawActivityNode;
-        _tree.AfterSelect += (_, _) => { UpdateButtonStates(); RefreshCardStyles(); };
+        _tree.AfterSelect += (_, _) => { UpdateButtonStates(); RefreshCardStyles(); RefreshFileDetails(); };
         _tree.NodeMouseDoubleClick += OnNodeDoubleClick;
         _tree.NodeMouseClick += OnTreeNodeMouseClick;
         // Activity.IsCollapsed (PLANNING.md §6/§11's "可折叠") until now was collected (cloned by
@@ -383,9 +393,21 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             var live = LiveEngine?.CurrentFile;
             if (ReferenceEquals(live, _lastLiveFile))
             {
-                if (Visible && (ProgramEngine?.Invoke() is { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused }
-                    || _playback is { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused }))
-                    foreach (Control row in _activityRows.Controls) row.Invalidate();
+                // P-02: only the row containing the live file repaints (its progress/state is
+                // what actually moves) — invalidating every row every 400 ms repainted the
+                // whole run sheet for one row's progress. If the live file belongs to no row
+                // here (e.g. played straight from the 文件 panel), no row is invalidated.
+                if (Visible && _lastLiveFile != null
+                    && (ProgramEngine?.Invoke() is { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused }
+                        || _playback is { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused }))
+                {
+                    foreach (var row in _activityRows.Controls.OfType<ActivityRowView>())
+                    {
+                        if (!row.Activity.Files.Contains(_lastLiveFile)) continue;
+                        row.Invalidate();
+                        break;
+                    }
+                }
                 return;
             }
             _lastLiveFile = live;
@@ -395,8 +417,14 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         _visibleFileCheckTimer.Tick += (_, _) => _ = RefreshVisibleFileStatesAsync();
         _visibleFileCheckTimer.Start();
 
+        BuildDetailPanel();
+
         // Dock order: the last Top control added sits highest, so the header goes in last.
+        // _detailPanel is added right after _activityRows so that, in the reverse order docking
+        // runs in, its Right dock is processed before the list's Fill — it claims the right edge
+        // first and _activityRows fills what remains (see ActivitiesPanel.Details.cs).
         Controls.Add(_activityRows);
+        Controls.Add(_detailPanel);
         Controls.Add(_emptyState);
         Controls.Add(_tree);
         Controls.Add(columnHeader);
@@ -534,6 +562,8 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     {
         int width = Math.Max(LogicalToDeviceUnits(320),
             _activityRows.Width - SystemInformation.VerticalScrollBarWidth - _activityRows.Padding.Horizontal - 2);
+        if (width == _lastRowsLayoutWidth) return; // same width as last fit — nothing to redo (P-07)
+        _lastRowsLayoutWidth = width;
         _activityRows.SuspendLayout();
         foreach (var row in _activityRows.Controls.OfType<ActivityRowView>()) row.FitToWidth(width);
         _activityRows.ResumeLayout();
@@ -660,6 +690,7 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             }
         }
         _activityRows.ResumeLayout(true);
+        _lastRowsLayoutWidth = -1; // rows were just rebuilt — they must be fitted even at the same width
         LayoutRows();
 
         UpdateCountLabel();
@@ -758,6 +789,70 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     {
         if (InvokeRequired) { BeginInvoke(() => OnStateChanged(state)); return; }
         RefreshCardStyles();
+    }
+
+    /// <summary>L-05: keyboard selection navigation. The visible list is
+    /// <see cref="ActivityRowView"/>s driven by the hidden <see cref="_tree"/>, which never has
+    /// focus — so without this, moving the selection was mouse-only even though everything the
+    /// selection drives (「编辑 ▾」 menu, detail panel) is keyboard-reachable. Plain Up/Down —
+    /// when focus is NOT in a control that uses those keys itself (a combo picking a value, a
+    /// text box, a seconds spinner, a list, the tree) — moves <see cref="_tree"/>'s selection
+    /// one step through the flat activity-then-its-files order, stopping at both ends. A target
+    /// file inside a collapsed activity expands that activity first (through the same
+    /// AfterExpand path a manual toggle takes, so the collapse state persists the same way),
+    /// and the owning activity's row is scrolled into view. This deliberately only fills the
+    /// "selection" gap: 上屏 / 下一项 / 上一项 / 急停 already have configurable global hotkeys
+    /// handled by MainWindow.ProcessCmdKey, and this panel's own command surface is real buttons
+    /// and menus (Tab-reachable, keyboard-operable) — with selection movable, the whole panel is
+    /// walkable by keyboard end to end.</summary>
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData is Keys.Up or Keys.Down
+            && FocusedLeafControl() is not (ComboBox or TextBoxBase or NumericUpDown or ListBox or TreeView)
+            && MoveSelectionByKey(keyData == Keys.Down ? 1 : -1))
+            return true;
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    /// <summary>The control that actually has keyboard focus inside this panel, walking down
+    /// nested containers the same way MainWindow.ProcessCmdKey's own helper does.</summary>
+    private Control? FocusedLeafControl()
+    {
+        Control? active = ActiveControl;
+        while (active is ContainerControl { ActiveControl: { } inner }) active = inner;
+        return active;
+    }
+
+    /// <summary>Moves the tree selection <paramref name="delta"/> steps (±1) in the flat
+    /// activity-then-its-files order. Returns false only when there is nothing to select;
+    /// at either end the selection stays put but the key still counts as handled, so the list
+    /// doesn't scroll out from under a selection the operator is stepping through.</summary>
+    private bool MoveSelectionByKey(int delta)
+    {
+        var flat = new List<TreeNode>();
+        foreach (TreeNode activityNode in _tree.Nodes)
+        {
+            flat.Add(activityNode);
+            foreach (TreeNode fileNode in activityNode.Nodes) flat.Add(fileNode);
+        }
+        if (flat.Count == 0) return false;
+
+        int index = _tree.SelectedNode is { } selected ? flat.IndexOf(selected) : -1;
+        int target = index < 0
+            ? (delta > 0 ? 0 : flat.Count - 1)
+            : Math.Clamp(index + delta, 0, flat.Count - 1);
+        var node = flat[target];
+        if (node.Parent is { } parent && !parent.IsExpanded) parent.Expand();
+        _tree.SelectedNode = node;
+        if (node.Tag is Activity activity) ScrollActivityRowIntoView(activity);
+        else if (node.Parent?.Tag is Activity owner) ScrollActivityRowIntoView(owner);
+        return true;
+    }
+
+    private void ScrollActivityRowIntoView(Activity activity)
+    {
+        foreach (var row in _activityRows.Controls.OfType<ActivityRowView>())
+            if (row.Activity == activity) { _activityRows.ScrollControlIntoView(row); return; }
     }
 
     protected override void Dispose(bool disposing)

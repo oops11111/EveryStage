@@ -73,7 +73,14 @@ public static class SlideTransitions
         float edge = t * (1 + FadeSoftness), solid = edge - FadeSoftness;
         if (solid > 0) DrawBand(g, r, to, d, 0, Math.Min(1, solid), null);
         int extent = Vertical(d) ? r.Height : r.Width;
-        int strips = Math.Max(8, (int)(FadeSoftness * extent / FadeStripPixels));
+        // Strip thickness scales with the extent (audit P-12): at a fixed 3px the strip count grew
+        // linearly with resolution (~126 strips at 1080p, ~252 at 4K, each a ColorMatrix DrawImage
+        // per frame), so bigger outputs made the fade slower. Thickness = extent/160 keeps the
+        // count roughly constant (~56 across the soft edge) at any resolution; the 3px floor keeps
+        // small surfaces as smooth as before. The soft edge's total width (FadeSoftness x extent)
+        // is unchanged.
+        int stripThickness = Math.Max(FadeStripPixels, extent / 160);
+        int strips = Math.Max(8, (int)(FadeSoftness * extent / stripThickness));
         using var attributes = new ImageAttributes();
         var matrix = new ColorMatrix();
         for (int i = 0; i < strips; i++)
@@ -154,13 +161,30 @@ public static class SlideTransitions
         return drops;
     }
 
-    private static void DrawRain(Graphics g, Rectangle r, Bitmap from, Bitmap to, float t, SlideTransitionDirection d)
+    // Single-entry memo for DrawRain's clip path (audit P-13): rebuilding 220 ellipses into a new
+    // GraphicsPath every frame was a fixed per-frame cost at any resolution. The path depends only
+    // on (t, bounds, direction), so the last one is kept and reused while t stays within the same
+    // 0.01 quantum; a miss disposes the old path before building its replacement (never two alive
+    // beyond the swap), and the survivor is one small path for the process's lifetime. All drawing
+    // here happens on UI threads and SetClip only reads the path, so sharing one instance is safe.
+    private static GraphicsPath? s_rainPath;
+    private static (int Step, Rectangle Bounds, SlideTransitionDirection Direction) s_rainPathKey;
+
+    private static GraphicsPath RainPath(Rectangle r, float t, SlideTransitionDirection d)
     {
-        g.DrawImage(from, r);
-        if (t <= 0) return;
-        if (t >= 1) { g.DrawImage(to, r); return; }
+        int step = (int)Math.Round(t / 0.01f);
+        var key = (step, r, d);
+        if (s_rainPath != null && s_rainPathKey == key) return s_rainPath;
+        s_rainPath?.Dispose();
+        s_rainPath = BuildRainPath(r, step * 0.01f, d);
+        s_rainPathKey = key;
+        return s_rainPath;
+    }
+
+    private static GraphicsPath BuildRainPath(Rectangle r, float t, SlideTransitionDirection d)
+    {
         float maxRadius = (float)Math.Sqrt((double)r.Width * r.Height) * 0.075f;
-        using var path = new GraphicsPath(FillMode.Winding);
+        var path = new GraphicsPath(FillMode.Winding);
         // Fully soaked band behind the drops.
         float band = t * 1.25f - 0.25f;
         if (band > 0) path.AddRectangle(Band(r, d, 0, Math.Min(1, band)));
@@ -174,8 +198,16 @@ public static class SlideTransitions
             var center = Map(r, d, along, across);
             path.AddEllipse(center.X - radius, center.Y - radius, radius * 2, radius * 2);
         }
+        return path;
+    }
+
+    private static void DrawRain(Graphics g, Rectangle r, Bitmap from, Bitmap to, float t, SlideTransitionDirection d)
+    {
+        g.DrawImage(from, r);
+        if (t <= 0) return;
+        if (t >= 1) { g.DrawImage(to, r); return; }
         var state = g.Save();
-        g.SetClip(path, CombineMode.Intersect);
+        g.SetClip(RainPath(r, t, d), CombineMode.Intersect);
         g.DrawImage(to, r);
         g.Restore(state);
     }

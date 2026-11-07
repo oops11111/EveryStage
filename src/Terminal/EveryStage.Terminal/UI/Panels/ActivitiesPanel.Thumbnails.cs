@@ -15,17 +15,16 @@ public sealed partial class ActivitiesPanel
         string? sourceKey = null;
         try
         {
-            (thumbnail, unavailable, sourceKey) = await Task.Run(() =>
+            sourceKey = await Task.Run(() => FilesPanel.ThumbnailCacheKey(file));
+            unavailable = sourceKey == null;
+            // 性能审查 P-21: builds go through the shared scheduler (concurrency cap + in-flight
+            // dedup shared with the 文件 page) instead of an unbounded Task.Run per row.
+            try { thumbnail = await ThumbnailDiskCache.Shared.GetOrBuildSharedAsync(file); }
+            catch (Exception ex)
             {
-                string? observed = FilesPanel.ThumbnailCacheKey(file);
-                bool missing = observed == null;
-                try { return (ThumbnailDiskCache.Shared.GetOrBuild(file), missing, observed); }
-                catch (Exception ex)
-                {
-                    System.Diagnostics.Trace.TraceError("Activity thumbnail failed: {0}", ex);
-                    return ((Image?)null, missing, observed);
-                }
-            });
+                System.Diagnostics.Trace.TraceError("Activity thumbnail failed: {0}", ex);
+                thumbnail = null;
+            }
         }
         catch (Exception ex) { System.Diagnostics.Trace.TraceError("Activity thumbnail failed: {0}", ex); }
         if (IsDisposed || Disposing || generation != _thumbnailGeneration) { thumbnail?.Dispose(); return; }

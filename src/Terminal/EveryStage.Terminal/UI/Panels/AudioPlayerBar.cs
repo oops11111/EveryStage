@@ -35,6 +35,29 @@ internal sealed class AudioPlayerBar : GlassPanel
     private const string AddGlyph = "\uECC8";    // Segoe MDL2 AddTo (circled plus)
     private const string ImportGlyph = "\uE898"; // Segoe MDL2 Upload
 
+    // P-06: paint fonts created once for the app's lifetime instead of on every OnPaint
+    // (this bar repaints on a 500 ms refresh while bound). Never disposed — they live as
+    // long as the process.
+    private static readonly Font EmptyFont = new(ModernUi.UiFont, 9.5F);
+    private static readonly Font TitleFont = new(ModernUi.UiFontSemibold, 10.5F);
+    private static readonly Font TimeFont = new(ModernUi.UiFont, 9F);
+
+    // The ♫ glyph font's size follows the icon tile (28/40 logical px by layout, × DPI), so
+    // it can't be one fixed static instance — cache one per pixel size instead of one per paint.
+    private static Font? _noteFontCache;
+    private static float _noteFontCacheSize;
+
+    private static Font NoteFontFor(float pixelSize)
+    {
+        if (_noteFontCache == null || _noteFontCacheSize != pixelSize)
+        {
+            _noteFontCache?.Dispose();
+            _noteFontCache = new Font("Segoe UI Symbol", pixelSize, GraphicsUnit.Pixel);
+            _noteFontCacheSize = pixelSize;
+        }
+        return _noteFontCache;
+    }
+
     private readonly FileOperationLogger _fileOpLog;
     private readonly FileLibraryStore _library;
     private PlaybackEngine? _playback;
@@ -335,20 +358,18 @@ internal sealed class AudioPlayerBar : GlassPanel
         using (var tilePath = RoundedBox(_iconTile, S(9)))
         using (var tileBg = new LinearGradientBrush(_iconTile, Color.FromArgb(22, 56, 100), Color.FromArgb(14, 40, 74), 60F))
             g.FillPath(tileBg, tilePath);
-        using (var noteFont = new Font("Segoe UI Symbol", _iconTile.Height * 0.46f, GraphicsUnit.Pixel))
-            TextRenderer.DrawText(g, "♫", noteFont, _iconTile, Color.FromArgb(188, 214, 255),
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        TextRenderer.DrawText(g, "♫", NoteFontFor(_iconTile.Height * 0.46f), _iconTile, Color.FromArgb(188, 214, 255),
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 
         if (_boundFile == null)
         {
-            using var emptyFont = new Font(ModernUi.UiFont, 9.5F);
-            TextRenderer.DrawText(g, EmptyText, emptyFont, _titleRect, ModernUi.Muted,
+            TextRenderer.DrawText(g, EmptyText, EmptyFont, _titleRect, ModernUi.Muted,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             return;
         }
 
         // File name doubles as the track selector:「背景音乐.mp3 ▾」.
-        using (var titleFont = new Font(ModernUi.UiFontSemibold, 10.5F))
+        var titleFont = TitleFont;
         {
             var nameRect = Rectangle.FromLTRB(_titleRect.Left, _titleRect.Top, _titleRect.Right - S(16), _titleRect.Bottom);
             string name = Path.GetFileName(_boundFile.SourcePath);
@@ -357,8 +378,7 @@ internal sealed class AudioPlayerBar : GlassPanel
             int nameWidth = Math.Min(nameRect.Width, TextRenderer.MeasureText(g, name, titleFont, nameRect.Size, TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding).Width);
             DrawChevron(g, new Point(nameRect.Left + nameWidth + S(12), _titleRect.Top + _titleRect.Height / 2), ModernUi.Muted);
         }
-        using (var timeFont = new Font(ModernUi.UiFont, 9F))
-            TextRenderer.DrawText(g, PositionText(), timeFont, _timeRect, ModernUi.Muted,
+        TextRenderer.DrawText(g, PositionText(), TimeFont, _timeRect, ModernUi.Muted,
                 (_compact ? TextFormatFlags.Right : TextFormatFlags.Left) | TextFormatFlags.VerticalCenter);
 
         // Play/pause — a bare white glyph, as in the reference (no button chrome).

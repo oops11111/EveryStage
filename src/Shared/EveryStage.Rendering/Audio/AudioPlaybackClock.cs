@@ -51,14 +51,22 @@ public sealed class AudioPlaybackClock : IDisposable
         }
     }
 
-    public AudioPlaybackClock(int sampleRate, int channels, string? deviceId = null)
+    /// <param name="bufferDuration">Capacity of the internal playback queue. Defaults to 5
+    /// seconds, which is what local file playback has always used; a caller fed by a live network
+    /// stream (the cast receiver) passes a few hundred milliseconds instead, since queued-but-
+    /// unplayed audio IS end-to-end latency there. Only a capacity — the latency convergence
+    /// mechanism for live streams is <see cref="MaxQueueLatency"/>, because the provider's
+    /// overflow policy keeps the oldest audio and discards the incoming tail (verified against
+    /// NAudio 2.2.1), so capacity alone would pin a backed-up queue at its high-water mark rather
+    /// than draining it back down.</param>
+    public AudioPlaybackClock(int sampleRate, int channels, string? deviceId = null, TimeSpan? bufferDuration = null)
     {
         if (SimulateNoOutputDevice)
             throw new COMException("找不到元素。（模拟：没有音频输出设备）", unchecked((int)0x80070490));
         _format = new WaveFormat(sampleRate, 16, channels);
         _buffer = new BufferedWaveProvider(_format)
         {
-            BufferDuration = TimeSpan.FromSeconds(5),
+            BufferDuration = bufferDuration ?? TimeSpan.FromSeconds(5),
             DiscardOnBufferOverflow = true,
         };
         // Shared mode + a modest latency: this validates/serves the decode->render pipeline, not
@@ -177,7 +185,31 @@ public sealed class AudioPlaybackClock : IDisposable
         set => _output.Volume = value;
     }
 
-    public void Enqueue(byte[] pcm) => _buffer.AddSamples(pcm, 0, pcm.Length);
+    /// <summary>Optional ceiling on queued-but-unplayed audio, enforced inside
+    /// <see cref="Enqueue"/>: when the buffered duration already exceeds it, the stale queue is
+    /// discarded wholesale (the provider offers no partial discard — <c>ClearBuffer</c> is all
+    /// there is) before the new data is added, snapping playback latency back to ~one chunk. The
+    /// listener hears a short gap instead of permanently delayed audio. Null (the default) means
+    /// never discard: local file playback sets nothing and behaves exactly as before. Set by the
+    /// cast receiver on every clock it holds (see <c>CastReceiver.CreateAudioState</c>, P-29).</summary>
+    public TimeSpan? MaxQueueLatency { get; set; }
+
+    private long _staleBufferDiscards;
+
+    /// <summary>How many times <see cref="Enqueue"/> discarded the queued audio for exceeding
+    /// <see cref="MaxQueueLatency"/> — a diagnostic for how often the live path had to snap its
+    /// latency back; local playback (no limit set) always reads 0.</summary>
+    public long StaleBufferDiscards => Interlocked.Read(ref _staleBufferDiscards);
+
+    public void Enqueue(byte[] pcm)
+    {
+        if (MaxQueueLatency is { } limit && BufferedDurationTicks > limit.Ticks)
+        {
+            _buffer.ClearBuffer();
+            Interlocked.Increment(ref _staleBufferDiscards);
+        }
+        _buffer.AddSamples(pcm, 0, pcm.Length);
+    }
 
     /// <summary>Current hardware playback position, converted to 100ns ticks so it's directly
     /// comparable against the MF sample timestamps video frames carry. Never moves backwards for one

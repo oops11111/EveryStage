@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using EveryStage.Rendering.Audio;
 using EveryStage.Rendering.Decode;
@@ -43,9 +44,11 @@ namespace EveryStage.Terminal.Receiving;
 /// Decode calls happen synchronously on whatever thread invokes
 /// <see cref="RtpReceiver.NalUnitReceived"/> — that event fires from `RtpReceiver`'s own single
 /// sequential background receive loop (see its doc comment), so calls into this class from that side
-/// are never concurrent with each other. The audio side runs on its own, entirely independent
-/// <c>RawRtpReceiver</c> background loop, and a third thread (<see cref="RunPresentLoop"/>) does the
-/// actual GPU presentation. The presentation thread snapshots the current audio clock and its
+/// are never concurrent with each other. The audio side is received on its own, entirely independent
+/// <c>RawRtpReceiver</c> background loop, which as of P-35 only enqueues payloads — a dedicated
+/// processing thread (<see cref="RunAudioProcessLoop"/>) does the AAC decode and playback
+/// enqueueing, so a slow decode can no longer stall packet reception — and a third thread
+/// (<see cref="RunPresentLoop"/>) does the actual GPU presentation. The presentation thread snapshots the current audio clock and its
 /// synchronized offset estimator together; a bounded queue transfers ownership of video frames.
 /// All three also independently bump
 /// <see cref="LastPacketReceivedAt"/>, which <c>TerminalApplicationContext.CheckCastLiveness</c>
@@ -131,8 +134,29 @@ public sealed class CastReceiver : IDisposable
     private const int MaxConsecutiveAudioErrors = 90;
 
     // RTP timeline position of the audio packet being processed; read by EnqueueAudio, which runs
-    // synchronously inside its processing (the AAC decoder is synchronous) on the audio receive thread.
+    // synchronously inside its processing (the AAC decoder is synchronous) on the dedicated audio
+    // processing thread (see RunAudioProcessLoop) — processing stays sequential on that one
+    // thread, so this hand-off field needs no synchronization of its own.
     private long _pendingAudioTimelineTicks;
+
+    // P-35 hand-off between the audio receive thread and the processing thread: bounded,
+    // drop-oldest, counted. Capacity 8 access units is roughly 185ms of AAC (1024 samples per
+    // unit at 44.1kHz) — enough to ride out a decode hiccup, small enough that what gets dropped
+    // under sustained overload is audibly stale rather than building latency. The semaphore count
+    // is kept exactly in sync with the queue depth (a drop-then-enqueue releases nothing), the
+    // same accounting rule H264HardwareDecoder.SubmitAccessUnit documents.
+    private const int MaxPendingAudioAccessUnits = 8;
+    private readonly ConcurrentQueue<(byte[] Payload, uint Timestamp)> _pendingAudio = new();
+    private readonly SemaphoreSlim _audioAvailable = new(0);
+    private CancellationTokenSource? _audioProcessCts;
+    private Thread? _audioProcessThread;
+    private long _audioAccessUnitsDropped;
+
+    /// <summary>Audio access units dropped because the processing queue was already
+    /// <see cref="MaxPendingAudioAccessUnits"/> deep when a newer one arrived (P-35) — the OLDEST
+    /// queued unit is discarded, never the new arrival, so what is lost is the stalest audio.
+    /// Should stay 0 unless AAC decoding genuinely cannot keep up with the stream.</summary>
+    public long AudioAccessUnitsDropped => Interlocked.Read(ref _audioAccessUnitsDropped);
 
     // Non-null only when the Caster signaled AAC (DiscoveryProtocol.CastStartMessage.AudioIsAac) —
     // see OnAudioPayloadReceived for how this changes which path a received payload takes before
@@ -166,7 +190,8 @@ public sealed class CastReceiver : IDisposable
     internal CastFrameStatistics FrameStatistics => new(FramesDecoded,
         Interlocked.Read(ref _programSubmitted), Interlocked.Read(ref _programSkipped),
         Interlocked.Read(ref _previewSubmitted), Interlocked.Read(ref _previewSkipped),
-        _pendingFrames.OverflowCount, Interlocked.Read(ref _audioLateDropped));
+        _pendingFrames.OverflowCount, Interlocked.Read(ref _audioLateDropped),
+        _decoder?.KeyframeRequests ?? 0);
     public long BytesReceived { get; private set; }
 
     /// <summary>Access units dropped because the packet carrying their marker bit never
@@ -219,6 +244,11 @@ public sealed class CastReceiver : IDisposable
     /// <summary>The decoder's own terminal-failure flag, the decode-side counterpart of
     /// <see cref="PresentLoopFailed"/>. See H264HardwareDecoder.DecodeLoopFailed.</summary>
     public bool DecodeLoopFailed => _decoder?.DecodeLoopFailed ?? false;
+
+    /// <summary>The decoder's cumulative keyframe-request count (P-25) — forwarded to the Caster
+    /// in the periodic CastStatus report (see <see cref="FrameStatistics"/>), whose side forces an
+    /// IDR whenever the count grows. See H264HardwareDecoder.KeyframeRequests.</summary>
+    public long KeyframeRequests => _decoder?.KeyframeRequests ?? 0;
 
     /// <summary>Combined video+audio "gap events / (received + gap events)" ratio as a percentage —
     /// see <see cref="RtpReceiver.GapEvents"/>'s own doc comment for why this is an honest
@@ -329,7 +359,8 @@ public sealed class CastReceiver : IDisposable
                 try
                 {
                     var clock = audioOutputFactory?.Invoke(audioSampleRate, PcmDownmix.OutputChannels(audioChannels))
-                        ?? new AudioPlaybackClock(audioSampleRate, PcmDownmix.OutputChannels(audioChannels));
+                        ?? new AudioPlaybackClock(audioSampleRate, PcmDownmix.OutputChannels(audioChannels),
+                            bufferDuration: TimeSpan.FromMilliseconds(300));
                     _audioState = CreateAudioState(clock);
                 }
                 catch (Exception ex)
@@ -396,6 +427,19 @@ public sealed class CastReceiver : IDisposable
             _audioState?.Clock.Start();
             _audioRtpReceiver!.Start();
 
+            // P-35: the processing thread that actually decodes what the audio receive loop
+            // enqueues — started after the receiver so no payload can arrive before it exists
+            // (the bounded queue would absorb early arrivals anyway; this ordering just keeps
+            // the common case trivially correct).
+            var audioCts = new CancellationTokenSource();
+            _audioProcessCts = audioCts;
+            _audioProcessThread = new Thread(() => RunAudioProcessLoop(audioCts.Token))
+            {
+                IsBackground = true,
+                Name = "EveryStage.CastAudio",
+            };
+            _audioProcessThread.Start();
+
             var cts = new CancellationTokenSource();
             _presentCts = cts;
             _presentThread = new Thread(() => RunPresentLoop(cts.Token))
@@ -444,12 +488,62 @@ public sealed class CastReceiver : IDisposable
 
     private void OnAudioPayloadReceived(byte[] payload, uint timestamp)
     {
-        // Unsubscribing does not cancel a delegate invocation already captured by the receiver.
-        // Keep native audio use and teardown mutually exclusive, including after its stop timeout.
-        lock (_audioLifetimeLock)
+        // P-35: the receive thread only enqueues. ProcessAudioPayload (AAC decode + WASAPI
+        // enqueue) used to run synchronously here, under _audioLifetimeLock, on RawRtpReceiver's
+        // receive loop — one slow decode stalled packet reception itself, and the burst that
+        // piled up meanwhile landed all at once when it finished. Decoding now runs on the
+        // dedicated processing thread (RunAudioProcessLoop), which re-checks _audioStopped
+        // under _audioLifetimeLock before touching anything native, so an invocation already
+        // captured by the receiver landing here after Dispose is still safe: at worst it
+        // enqueues an item nobody will ever process, into a queue that is garbage-collected
+        // with this receiver.
+        if (_audioStopped) return;
+        bool dropped = false;
+        while (_pendingAudio.Count >= MaxPendingAudioAccessUnits && _pendingAudio.TryDequeue(out _))
         {
-            if (_audioStopped) return;
-            ProcessAudioPayload(payload, timestamp);
+            Interlocked.Increment(ref _audioAccessUnitsDropped);
+            dropped = true;
+        }
+        _pendingAudio.Enqueue((payload, timestamp));
+        if (!dropped) _audioAvailable.Release();
+    }
+
+    /// <summary>Entry point for the dedicated audio processing thread (P-35) — a raw
+    /// <see cref="Thread"/> like the present loop, for the same reason: an exception escaping it
+    /// is caught and recorded as <see cref="AudioError"/> rather than crashing the process or
+    /// vanishing unobserved. Processing is strictly sequential here, which is what keeps
+    /// <see cref="_pendingAudioTimelineTicks"/>' set-then-read hand-off to <see cref="EnqueueAudio"/>
+    /// (via the synchronous AAC decoder callback) coherent. No reordering is attempted: payloads
+    /// are processed in arrival order, and the transport gives this layer no sequence information
+    /// an honest reorder window could be built on.</summary>
+    private void RunAudioProcessLoop(CancellationToken token)
+    {
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try { _audioAvailable.Wait(token); }
+                catch (OperationCanceledException) { break; }
+                if (!_pendingAudio.TryDequeue(out var item)) continue;
+
+                // The same mutual exclusion the old receive-thread path provided directly:
+                // processing touches the AAC decoder, the playback clock and the
+                // migration/recovery state, all of which Dispose tears down under this lock —
+                // and the stopped check inside it is what keeps a late item (enqueued while
+                // teardown was in flight) from touching any of them after disposal.
+                lock (_audioLifetimeLock)
+                {
+                    if (_audioStopped) continue;
+                    ProcessAudioPayload(item.Payload, item.Timestamp);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Recorded, not swallowed: a silently dead processing thread would freeze the cast's
+            // audio with no diagnosable trace anywhere, while AudioError is already what the
+            // periodic CastStatus report carries back to the Caster.
+            AudioError = ex.Message;
         }
     }
 
@@ -503,18 +597,20 @@ public sealed class CastReceiver : IDisposable
         }
 
         // No jitter buffer, no reordering/loss recovery — enqueued straight into WASAPI playback as
-        // it arrives. BufferedWaveProvider (inside AudioPlaybackClock) discards on overflow rather
-        // than blocking, so a burst of late packets thins itself out instead of building unbounded
-        // latency; a dropped/reordered RTP packet here just becomes an audible gap/glitch, the same
-        // "no loss recovery" limitation the video side already has and documents.
+        // it arrives. BufferedWaveProvider (inside AudioPlaybackClock) discards the incoming tail
+        // on overflow rather than blocking, and the clock's MaxQueueLatency snap-back (set in
+        // CreateAudioState, P-29) discards a backed-up queue wholesale, so a burst of late packets
+        // costs a short gap instead of permanently raised latency; a dropped/reordered RTP packet
+        // here just becomes an audible gap/glitch, the same "no loss recovery" limitation the
+        // video side already has and documents.
         EnqueueAudio(payload);
     }
 
     private void OnAacPcmDecoded(byte[] pcm)
     {
-        // Raised synchronously from within _audioDecoder.SubmitAccessUnit, called above from
-        // OnAudioPayloadReceived — same calling-thread context (the audio RTP receive loop) the
-        // raw-PCM path's direct Enqueue already runs on.
+        // Raised synchronously from within _audioDecoder.SubmitAccessUnit, called from
+        // ProcessAudioPayload — same calling-thread context (the dedicated audio processing
+        // thread, P-35) the raw-PCM path's direct Enqueue already runs on.
         EnqueueAudio(pcm);
     }
 
@@ -563,6 +659,13 @@ public sealed class CastReceiver : IDisposable
 
     private AudioSyncState CreateAudioState(AudioPlaybackClock clock)
     {
+        // P-29: every clock this receiver holds gets the latency snap-back — including the one
+        // built by the injected output factory, which is shared with local playback's
+        // construction path and so cannot be handed a cast-specific setting at construction.
+        // If a jitter burst backs the playback queue up past 300ms, the stale audio is discarded
+        // wholesale inside Enqueue instead of pinning end-to-end latency at the high-water mark
+        // for the rest of the cast. See AudioPlaybackClock.MaxQueueLatency.
+        clock.MaxQueueLatency = TimeSpan.FromMilliseconds(300);
         var state = new AudioSyncState(clock);
         state.FaultHandler = reason => OnAudioClockFaulted(state, reason);
         clock.Faulted += state.FaultHandler;
@@ -587,7 +690,7 @@ public sealed class CastReceiver : IDisposable
         }
     }
 
-    // Called only under _audioLifetimeLock by the RTP audio thread. Do not seek live input: use the
+    // Called only under _audioLifetimeLock by the audio processing thread. Do not seek live input: use the
     // first newly received decoded packet to seed a new RTP-to-audio-clock mapping instead.
     private void TryRecoverAudio()
     {
@@ -600,7 +703,8 @@ public sealed class CastReceiver : IDisposable
         AudioSyncState? replacement = null;
         try
         {
-            replacement = CreateAudioState(new AudioPlaybackClock((int)_audioSampleRate, PcmDownmix.OutputChannels(_sourceAudioChannels)));
+            replacement = CreateAudioState(new AudioPlaybackClock((int)_audioSampleRate, PcmDownmix.OutputChannels(_sourceAudioChannels),
+                bufferDuration: TimeSpan.FromMilliseconds(300)));
             replacement.Clock.Start();
             if (_audioState is { } old)
             {
@@ -824,8 +928,14 @@ public sealed class CastReceiver : IDisposable
                     if (submitted) Interlocked.Increment(ref _programSubmitted);
                     else if (!token.IsCancellationRequested) Interlocked.Increment(ref _programSkipped);
                 }
-                bool previewSubmitted = _surface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: true, token,
-                    waitMilliseconds: _programSurface == null ? 250 : 0);
+                // P-33: the preview never waits — no frame-latency wait (waitMilliseconds: 0
+                // turns an unsignalled latency object into an immediate skip) and no vsync
+                // block (vsync: false) — so a busy or occluded preview window can only drop
+                // its own frames, never delay the program present above or stall this loop
+                // behind a wait for a display nobody is watching. The program present keeps
+                // its vsync and bounded wait exactly as before.
+                bool previewSubmitted = _surface.PresentFrame(frame.Texture, frame.ArraySlice, frame.Width, frame.Height, vsync: false, token,
+                    waitMilliseconds: 0);
                 if (previewSubmitted) Interlocked.Increment(ref _previewSubmitted);
                 else if (!token.IsCancellationRequested) Interlocked.Increment(ref _previewSkipped);
             }
@@ -871,6 +981,19 @@ public sealed class CastReceiver : IDisposable
 
         if (_audioRtpReceiver != null) _audioRtpReceiver.PayloadReceived -= OnAudioPayloadReceived;
         _audioRtpReceiver?.Dispose();
+        // Stop the audio processing thread (P-35) before the lock block below disposes what it
+        // works with. Bounded, and deliberately NOT under _audioLifetimeLock — the thread holds
+        // that lock while it processes an access unit, so joining while holding it could
+        // deadlock; joining without it lets the thread finish its current unit, then observe
+        // cancellation (or the stopped flag inside the lock, checked before every item) and
+        // exit. If it does not stop in time, the same stopped flag still protects the disposal
+        // below: the thread can never START processing another item once it is set, and an item
+        // already in flight holds the lock the disposal block is waiting on, so it finishes
+        // before disposal proceeds — the same bounded-exposure shape the receive-thread path
+        // had before P-35.
+        _audioProcessCts?.Cancel();
+        bool audioProcessStopped = EveryStage.Terminal.ContentEngine.BoundedJoin.Join(_audioProcessThread, "cast audio processing thread");
+        if (audioProcessStopped) _audioProcessCts?.Dispose();
         List<AudioSyncState> statesToDispose;
         lock (_audioLifetimeLock)
         {

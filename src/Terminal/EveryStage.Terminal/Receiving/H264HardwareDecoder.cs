@@ -99,6 +99,30 @@ public sealed class H264HardwareDecoder : IDisposable
     /// Non-zero means visible corruption until the next IDR.</summary>
     public int AccessUnitsDropped => Volatile.Read(ref _accessUnitsDropped);
 
+    private long _keyframeRequests;
+
+    /// <summary>Cumulative keyframe requests raised by this decoder (P-25). Incremented once per
+    /// <see cref="SubmitAccessUnit"/> call that had to drop at least one queued access unit — per
+    /// drop EPISODE, not per dropped unit: one damaged reference chain needs exactly one IDR to
+    /// heal, however many units were lost — and once when decoding fails outright (the event
+    /// loop dying on the asynchronous path, or a throw on the synchronous path). <c>CastReceiver</c>
+    /// forwards this count in the periodic CastStatus report; the Caster forces an IDR on its
+    /// encoder whenever the reported value grows, so a damaged picture heals on the next frame
+    /// instead of waiting up to a full GOP for the next scheduled keyframe.</summary>
+    public long KeyframeRequests => Interlocked.Read(ref _keyframeRequests);
+
+    /// <summary>Raised whenever <see cref="KeyframeRequests"/> increments — on the caller's
+    /// thread for the submit-side drop/synchronous-failure cases, on the event-loop thread when
+    /// the loop dies. Handlers must be thread-safe; <c>CastReceiver</c> reads the count
+    /// cumulatively rather than depending on this event, which exists for diagnostics/tests.</summary>
+    public event Action? KeyframeRequested;
+
+    private void NoteKeyframeRequest()
+    {
+        Interlocked.Increment(ref _keyframeRequests);
+        KeyframeRequested?.Invoke();
+    }
+
     /// <summary>True when the MFT reported MF_TRANSFORM_ASYNC and this class is running its event
     /// loop. Expected to be true for any hardware decoder; exposed so a diagnostic can assert which
     /// path was actually taken rather than assuming.</summary>
@@ -201,9 +225,22 @@ public sealed class H264HardwareDecoder : IDisposable
 
         if (!_isAsynchronous)
         {
-            EnsureDeviceStillValid();
-            SubmitAccessUnitCore(annexBAccessUnit, sampleTimeTicks);
-            DrainOutput();
+            try
+            {
+                EnsureDeviceStillValid();
+                SubmitAccessUnitCore(annexBAccessUnit, sampleTimeTicks);
+                DrainOutput();
+            }
+            catch
+            {
+                // A decode failure on the synchronous path damages the reference chain exactly
+                // like a drop does (P-25) — count a keyframe request before the exception
+                // propagates to the caller, which records it as a decode error either way.
+                // DrainOutput's normal "nothing to take" outcome is a returned false, not a
+                // throw, so reaching this catch is a genuine failure.
+                NoteKeyframeRequest();
+                throw;
+            }
             return;
         }
 
@@ -213,6 +250,9 @@ public sealed class H264HardwareDecoder : IDisposable
             Interlocked.Increment(ref _accessUnitsDropped);
             dropped = true;
         }
+        // One request per SubmitAccessUnit call that dropped anything (P-25) — see
+        // KeyframeRequests' own doc comment for why this counts episodes, not units.
+        if (dropped) NoteKeyframeRequest();
 
         _pending.Enqueue((annexBAccessUnit, sampleTimeTicks));
 
@@ -261,6 +301,9 @@ public sealed class H264HardwareDecoder : IDisposable
             // Set BEFORE raising, so a handler that reacts to the failure already sees the loop
             // as terminally dead rather than merely having reported one error.
             Volatile.Write(ref _decodeLoopFailed, 1);
+            // The decode chain is broken (P-25): count a keyframe request alongside the failure,
+            // before DecodingFailed, so a handler reacting to the failure already sees it.
+            NoteKeyframeRequest();
             DecodingFailed?.Invoke(ex);
         }
     }

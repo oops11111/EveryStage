@@ -101,6 +101,54 @@ public sealed class FileLibraryStore
     public MediaFile? Import(string sourcePath)
     {
         EnsureWritable();
+        var file = CreateEntry(sourcePath);
+        if (file == null) return null;
+
+        _files.Add(file);
+        try { Save(); }
+        catch { _files.Remove(file); throw; }
+        return file;
+    }
+
+    /// <summary>Batch import (性能审查 P-19): registers every recognised path in memory first and
+    /// saves the library ONCE at the end, instead of <see cref="Import"/>'s full save per file
+    /// (each save serialises the whole library and flushes to disk, so importing N files used to
+    /// cost N full writes). The returned list is aligned with <paramref name="sourcePaths"/>: a
+    /// null slot means that path was rejected (unrecognised extension), exactly as
+    /// <see cref="Import"/> returning null does — per-file skip/count semantics are unchanged.
+    /// If the single save fails, the whole batch is rolled back (nothing from this call stays in
+    /// the library) and the exception propagates, mirroring <see cref="Import"/>'s own
+    /// rollback-on-save-failure, just at batch granularity.</summary>
+    public IReadOnlyList<MediaFile?> ImportMany(IEnumerable<string> sourcePaths)
+    {
+        EnsureWritable();
+        var paths = sourcePaths.ToList();
+        var results = new MediaFile?[paths.Count];
+        var added = new List<MediaFile>();
+        for (int i = 0; i < paths.Count; i++)
+        {
+            var file = CreateEntry(paths[i]);
+            if (file == null) continue;
+            results[i] = file;
+            added.Add(file);
+        }
+        if (added.Count == 0) return results;
+
+        _files.AddRange(added);
+        try { Save(); }
+        catch
+        {
+            foreach (var file in added) _files.Remove(file);
+            throw;
+        }
+        return results;
+    }
+
+    /// <summary>Builds the library entry for one path (kind inference + import-time transcode
+    /// hint), or null when the extension isn't recognised. Shared by <see cref="Import"/> and
+    /// <see cref="ImportMany"/> so both judge a file identically.</summary>
+    private MediaFile? CreateEntry(string sourcePath)
+    {
         var kind = InferKind(sourcePath);
         if (kind == null) return null;
 
@@ -110,9 +158,6 @@ public sealed class FileLibraryStore
             file.NeedsTranscode = true;
             file.TranscodeReason = transcodeReason;
         }
-        _files.Add(file);
-        try { Save(); }
-        catch { _files.Remove(file); throw; }
         return file;
     }
 

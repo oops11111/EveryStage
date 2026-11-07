@@ -45,6 +45,7 @@ public sealed class RtpSession : IDisposable
         _authentication = authentication;
         _fecPayloadType = fecPayloadType;
         _socket = new UdpClient();
+        ConfigureSocketBuffers(_socket);
 
         // RFC 3550 §5.1: SSRC and the initial sequence number SHOULD be chosen randomly per
         // session — makes colliding with another session on the same port pair vanishingly
@@ -52,6 +53,22 @@ public sealed class RtpSession : IDisposable
         // harder. Random.Shared is thread-safe should this ever need to be called concurrently.
         _ssrc = unchecked((uint)Random.Shared.Next());
         _sequenceNumber = (ushort)Random.Shared.Next(ushort.MaxValue + 1);
+    }
+
+    /// <summary>Sizes the socket's kernel buffers for media bursts (P-26). The send loop emits a
+    /// whole access unit's packets back-to-back with no pacing, and a keyframe access unit is
+    /// hundreds of KB across hundreds of packets: with the small OS-default buffers, whatever
+    /// doesn't fit is dropped by the kernel before it ever leaves this machine (send side) or
+    /// before the receive loop can read it (receive side) — exactly the keyframe data the far
+    /// decoder needs most, lost at the moment it's sent. 4 MB receive / 1 MB send gives bursts
+    /// room to land. Best effort by design: the OS may clamp a request to its own maximum or
+    /// refuse it outright, and neither may fail session setup — hence the swallowed exceptions.
+    /// Independently duplicated in <see cref="RtpReceiver"/> rather than shared, matching this
+    /// repo's "each file keeps its own copy" convention.</summary>
+    private static void ConfigureSocketBuffers(UdpClient socket)
+    {
+        try { socket.Client.ReceiveBufferSize = 4 * 1024 * 1024; } catch (Exception) { }
+        try { socket.Client.SendBufferSize = 1 * 1024 * 1024; } catch (Exception) { }
     }
 
     /// <summary>Packetizes one NAL unit and sends the resulting RTP packet(s).</summary>

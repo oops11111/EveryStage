@@ -1,3 +1,4 @@
+using EveryStage.Rendering.Decode;
 using EveryStage.Terminal.ContentEngine;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Display;
@@ -75,6 +76,14 @@ public sealed partial class PlaybackEngine : IDisposable
     private int _backgroundAudioGeneration;
     private (MediaFile File, TimeSpan Position, int Generation)? _waitingAudioOutput;
     private (MediaFile File, TimeSpan Position, int Generation)? _waitingBackgroundOutput;
+
+    // Next-item prefetch (audit P-22): a decode source constructed ahead of time on a background
+    // thread for the item sequential playback is expected to advance to, keyed by MediaFile
+    // reference — the identity every other staleness guard in this class uses. Adopted by
+    // PlayVideoAsync/PlayStandaloneAudioAsync when that advance actually happens; dropped (and
+    // disposed once its construction finishes) the moment a different item is played instead.
+    private (MediaFile File, Task<VideoDecodeSource> Opening)? _preparedVideo;
+    private (MediaFile File, Task<AudioDecodeSource> Opening)? _preparedAudio;
     private readonly PlaybackLogger _playbackLogger;
     private VideoContentController? _videoController;
     private AudioContentController? _audioController;
@@ -348,6 +357,8 @@ public sealed partial class PlaybackEngine : IDisposable
     public void Stop()
     {
         ++_contentLoadVersion;
+        DropPreparedVideo();
+        DropPreparedAudio();
         _waitingAudioOutput = null;
         var stoppedFile = _currentFile;
         if (_currentFile != null) _playbackLogger.LogPlaybackEnded(_currentFile.Id, "stopped");
@@ -521,6 +532,11 @@ public sealed partial class PlaybackEngine : IDisposable
     {
         ++_contentLoadVersion;
         _waitingAudioOutput = null;
+        // A prefetched source (P-22) is only worth keeping when this play IS the item it was
+        // warmed for — anything else means the operator changed direction and it would never be
+        // adopted. (When it does match, the async open below adopts it via the Take* methods.)
+        if (_preparedVideo is { } staleVideo && !ReferenceEquals(staleVideo.File, file)) DropPreparedVideo();
+        if (_preparedAudio is { } staleAudio && !ReferenceEquals(staleAudio.File, file)) DropPreparedAudio();
         _stayDurationTimer?.Stop();
         _stayDurationTimer?.Dispose();
         _stayDurationTimer = null;
@@ -606,14 +622,22 @@ public sealed partial class PlaybackEngine : IDisposable
                     // Program surface sets Stretch when it starts.
                     _videoSurface!.ScaleMode = _videoScaleMode;
                     _videoSurface.ColorMatrix = EveryStage.Rendering.VideoColorMatrix.Auto; // a cast may have left BT.601
-                    // Opening the file happens synchronously here (missing file, unsupported codec);
-                    // OnVideoFailed only covers failures after playback has started.
-                    VideoController.Play(file.SourcePath, FadeDurationFor(file), startAt);
+                    // Stopping the previous video stays on this thread (Play() used to do it first):
+                    // its bounded join is normally fast — the 2 s BoundedJoin ceiling is only the
+                    // pathological case of a worker stuck inside a Media Foundation call.
+                    VideoController.Stop();
                 }
                 catch (Exception ex)
                 {
                     Fail(file, ex);
+                    break;
                 }
+                // Opening the file itself (missing file, unsupported codec) used to happen
+                // synchronously inside Play() right here, freezing the UI for the whole Media
+                // Foundation open + format negotiation; it now runs on a background thread
+                // (audit P-16) and PlayVideoAsync reports its failure through the same Fail()
+                // path this catch used. OnVideoFailed only covers failures after playback starts.
+                _ = PlayVideoAsync(file, FadeDurationFor(file), startAt);
                 break;
 
             case MediaKind.Audio:
@@ -626,6 +650,152 @@ public sealed partial class PlaybackEngine : IDisposable
         }
 
         FileStarted?.Invoke(file);
+        PrefetchNext();
+    }
+
+    /// <summary>Opens a video file off the UI thread (audit P-16), mirroring
+    /// <see cref="PlayImageAsync"/>'s shape exactly: the expensive half of
+    /// <see cref="VideoContentController.Play"/> — Media Foundation opening the file and
+    /// negotiating formats, trying audio tracks one by one — runs via
+    /// <see cref="VideoContentController.CreateSource"/> on a background thread (or is adopted
+    /// from the P-22 prefetch when sequential playback predicted this file), while stopping the
+    /// previous video already happened synchronously in <see cref="PlayFile"/>. The completion
+    /// posts back to the output's UI thread and re-checks the load version and current file
+    /// before adopting the source: a request the operator has already moved past has its source
+    /// disposed, never played and never leaked. An open failure lands in <see cref="Fail"/> —
+    /// the same error-card path a synchronous open failure took before this was asynchronous.</summary>
+    private async Task PlayVideoAsync(MediaFile file, TimeSpan? fadeDuration, TimeSpan startAt)
+    {
+        int version = _contentLoadVersion;
+        var controller = VideoController;
+        VideoDecodeSource? source = null;
+        Exception? failure = null;
+        var prepared = TakePreparedVideo(file);
+        try
+        {
+            source = prepared != null
+                ? await prepared.ConfigureAwait(false)
+                : await Task.Run(() => controller.CreateSource(file.SourcePath)).ConfigureAwait(false);
+        }
+        catch (Exception ex) { failure = ex; }
+        try
+        {
+            _output.Post(() =>
+            {
+                if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile))
+                {
+                    source?.Dispose(); // stale — the operator already moved on
+                    return;
+                }
+                if (failure != null) { Fail(file, failure); return; }
+                var opened = source!;
+                source = null; // PlayPrepared owns it from here, including on failure
+                try { controller.PlayPrepared(opened, file.SourcePath, fadeDuration, startAt); }
+                catch (Exception ex) { Fail(file, ex); }
+            });
+        }
+        catch (InvalidOperationException) { source?.Dispose(); } // output closed while the file was opening
+    }
+
+    /// <summary>Next-item warm-up for sequential playback (audit P-22, the minimal useful form).
+    /// Once an item has started under <see cref="PlayMode.SequentialAuto"/>, peek at the item
+    /// auto-advance will land on next — within the current activity only; cross-activity advance
+    /// is not predicted — and pay its opening cost now, in the background: an Office document's
+    /// conversion-cache warm-up (the P-17 cold start), or a video/standalone-audio decode source
+    /// constructed off-thread. Under ManualSelect there is no "next" worth guessing, and a file
+    /// played with no activity context has no queue to peek into. Warmed sources are keyed by
+    /// MediaFile reference and dropped by <see cref="PlayFile"/> the moment a different item is
+    /// played instead.</summary>
+    private void PrefetchNext()
+    {
+        if (_currentActivity == null || _currentFile == null
+            || EffectivePlayMode(_currentFile) != PlayMode.SequentialAuto)
+        {
+            DropPreparedVideo();
+            DropPreparedAudio();
+            return;
+        }
+        int origin = PlaybackQueueNavigator.ResolveScanOrigin(_currentActivity, _currentFile, _currentFileIndex, 1);
+        int next = PlaybackQueueNavigator.FindNextPlayable(_currentActivity, origin, 1);
+        if (next < 0)
+        {
+            DropPreparedVideo();
+            DropPreparedAudio();
+            return;
+        }
+        var nextFile = _currentActivity.Files[next];
+        if (_preparedVideo is { } staleVideo && !ReferenceEquals(staleVideo.File, nextFile)) DropPreparedVideo();
+        if (_preparedAudio is { } staleAudio && !ReferenceEquals(staleAudio.File, nextFile)) DropPreparedAudio();
+        switch (nextFile.Kind)
+        {
+            case MediaKind.Document:
+                // GetOrConvertAsync is itself serialized, so a warm-up still running when the
+                // item is actually reached is joined by the real play, never duplicated.
+                if (DocumentFormats.IsOffice(nextFile.SourcePath) && ConversionCache.TryGet(nextFile.SourcePath) == null)
+                    _ = WarmNextConversionAsync(nextFile);
+                break;
+            case MediaKind.Video:
+                if (_videoSurface != null && _preparedVideo == null)
+                {
+                    var controller = VideoController;
+                    _preparedVideo = (nextFile, Task.Run(() => controller.CreateSource(nextFile.SourcePath)));
+                }
+                break;
+            case MediaKind.Audio:
+                // FindNextPlayable only ever lands on non-background files, so this is the
+                // standalone track PlayStandaloneAudioAsync will adopt.
+                if (_preparedAudio == null)
+                {
+                    var controller = AudioController;
+                    _preparedAudio = (nextFile, Task.Run(() => controller.CreateSource(nextFile.SourcePath)));
+                }
+                break;
+        }
+    }
+
+    /// <summary>Hands the prefetched opening for <paramref name="file"/> to its consumer, if one
+    /// was warmed for exactly this file; the slot is cleared either way it matched.</summary>
+    private Task<VideoDecodeSource>? TakePreparedVideo(MediaFile file)
+    {
+        if (_preparedVideo is { } prepared && ReferenceEquals(prepared.File, file))
+        {
+            _preparedVideo = null;
+            return prepared.Opening;
+        }
+        return null;
+    }
+
+    private Task<AudioDecodeSource>? TakePreparedAudio(MediaFile file)
+    {
+        if (_preparedAudio is { } prepared && ReferenceEquals(prepared.File, file))
+        {
+            _preparedAudio = null;
+            return prepared.Opening;
+        }
+        return null;
+    }
+
+    /// <summary>Drops a warmed source nobody will adopt now; its construction may still be
+    /// running, so disposal happens when it finishes. A failed construction here is nobody's
+    /// error to report — nothing was ever asked to play it.</summary>
+    private void DropPreparedVideo()
+    {
+        if (_preparedVideo is not { } prepared) return;
+        _preparedVideo = null;
+        _ = DiscardPreparedAsync(prepared.Opening);
+    }
+
+    private void DropPreparedAudio()
+    {
+        if (_preparedAudio is not { } prepared) return;
+        _preparedAudio = null;
+        _ = DiscardPreparedAsync(prepared.Opening);
+    }
+
+    private static async Task DiscardPreparedAsync<T>(Task<T> opening) where T : class, IDisposable
+    {
+        try { (await opening.ConfigureAwait(false)).Dispose(); }
+        catch (Exception) { }
     }
 
     private async Task PlayImageAsync(MediaFile file)
@@ -762,6 +932,8 @@ public sealed partial class PlaybackEngine : IDisposable
     public void StopForDeviceCast()
     {
         ++_contentLoadVersion;
+        DropPreparedVideo();
+        DropPreparedAudio();
         _waitingAudioOutput = null;
         if (_currentFile != null)
         {
@@ -803,6 +975,8 @@ public sealed partial class PlaybackEngine : IDisposable
         // cannot draw afterwards, drop the frame the surface holds (its owner may dispose it), and
         // dispose the stay timer rather than only stopping it.
         ++_contentLoadVersion;
+        DropPreparedVideo();
+        DropPreparedAudio();
         _waitingAudioOutput = null;
         _output.ContentSurface.SetFrame(null);
         IsPaused = false;
@@ -851,6 +1025,8 @@ public sealed partial class PlaybackEngine : IDisposable
     public void Dispose()
     {
         ++_contentLoadVersion;
+        DropPreparedVideo();
+        DropPreparedAudio();
         _output.ContentSurface.Disposed -= OnDocumentOutputDisposed;
         _settingsStore.DefaultAudioOutputChanged -= OnDefaultAudioOutputChanged;
         if (_stateMachine != null) _stateMachine.StateChanged -= OnOutputStateChanged;

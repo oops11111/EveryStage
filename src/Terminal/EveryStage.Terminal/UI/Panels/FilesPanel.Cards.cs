@@ -11,6 +11,13 @@ public sealed partial class FilesPanel
     private const int NameRowHeight = 20;
     private const int MetaRowHeight = 16;
 
+    // P-06: the card fonts are created once for the app's lifetime instead of per card per
+    // paint (DrawMediaCard runs for every visible card on every grid repaint). Deliberately
+    // never disposed — they live as long as the process, like ActivityRowView's static fonts.
+    private static readonly Font CardBadgeFont = new(ModernUi.UiFont, 8F, FontStyle.Bold);
+    private static readonly Font CardNameFont = new(ModernUi.UiFont, 9.5F);
+    private static readonly Font CardMetaFont = new(ModernUi.UiFont, 8F);
+
     private readonly record struct CardGeometry(Rectangle Card, Rectangle Thumb, Rectangle Name, Rectangle Meta, Rectangle More);
 
     /// <summary>Card geometry shared by painting (<see cref="DrawMediaCard"/>), the ⋯ hit test and
@@ -84,7 +91,7 @@ public sealed partial class FilesPanel
             g.FillPolygon(triBrush, new[] { new PointF(cx - s, cy - s * 1.2f), new PointF(cx - s, cy + s * 1.2f), new PointF(cx + s * 1.3f, cy) });
         }
 
-        using var badgeFont = new Font(ModernUi.UiFont, 8F, FontStyle.Bold);
+        var badgeFont = CardBadgeFont;
         // Type chip (JPG / MP4 / PPT / PDF / DOC …) bottom-left; 大屏 / 预览 tag top-left.
         if (media != null)
         {
@@ -123,14 +130,12 @@ public sealed partial class FilesPanel
 
         // Name (with ⋯ on the same row) and the meta line (kind · size).
         string name = Path.GetFileName(item.File.SourcePath);
-        using (var nameFont = new Font(ModernUi.UiFont, 9.5F))
-            TextRenderer.DrawText(g, name, nameFont, layout.Name, ModernUi.Text,
-                TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
+        TextRenderer.DrawText(g, name, CardNameFont, layout.Name, ModernUi.Text,
+            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
         if (item.Meta.Length > 0)
-            using (var metaFont = new Font(ModernUi.UiFont, 8F))
-                TextRenderer.DrawText(g, item.Meta, metaFont, layout.Meta,
-                    item.Unavailable && !ModernUi.Palette.IsHighContrast ? ModernUi.Palette.Danger : ModernUi.Muted,
-                    TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(g, item.Meta, CardMetaFont, layout.Meta,
+                item.Unavailable && !ModernUi.Palette.IsHighContrast ? ModernUi.Palette.Danger : ModernUi.Muted,
+                TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPrefix);
 
         using (var dots = new SolidBrush(ModernUi.Muted))
         {

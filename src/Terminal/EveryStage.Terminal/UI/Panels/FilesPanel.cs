@@ -84,7 +84,6 @@ public sealed partial class FilesPanel : UserControl
     private CancellationTokenSource? _thumbnailLoad;
     private CancellationToken _thumbnailPassToken; // token of the thumbnail pass already running (or done)
     private bool _thumbnailPassRunning;
-    private readonly SemaphoreSlim _thumbnailWorker = new(1, 1);
     private readonly Dictionary<string, Image> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly Queue<string> _thumbnailCacheOrder = new();
     private const int ThumbnailCacheCapacity = 128;
@@ -123,6 +122,13 @@ public sealed partial class FilesPanel : UserControl
     /// <summary>What Program shows right now (null when nothing local is on air) — the 「大屏」 badge.</summary>
     public Func<MediaFile?>? ProgramFile { get; set; }
     public Func<PlaybackEngine?>? ProgramPlayback { get; set; }
+
+    /// <summary>Shows a toast in the main window (same wiring as <c>SettingsPanel.ShowToast</c>:
+    /// MainWindow points this at its <c>ToastStack</c>). Pure success results go through here
+    /// instead of a modal MessageBox (审查 L-03: a result the operator does not have to decide
+    /// anything about must not steal focus mid-show); when it is not wired, callers fall back to
+    /// the MessageBox they used before — see <c>ShowSuccessNotice</c>.</summary>
+    public Func<string, ToastSeverity, ToastAction[], ToastNotification>? ShowToast { get; set; }
 
     /// <summary>Raised when the user double-clicks a file to play it standalone (no activity
     /// context — see <c>PlaybackEngine.RequestPlay(MediaFile)</c>'s own doc comment on what that
@@ -713,9 +719,10 @@ public sealed partial class FilesPanel : UserControl
         }
         _fileOpLog.LogActivityModified(dialog.SelectedScenario.Id, dialog.SelectedActivity.Id, dialog.SelectedActivity.Name);
 
-        MessageBox.Show(this,
-            $"已将 \"{Path.GetFileName(file.SourcePath)}\" 作为背景音乐加入活动 \"{dialog.SelectedActivity.Name}\"。",
-            "加入活动音轨", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        // Pure success result: toast, not a modal (see ShowSuccessNotice / 审查 L-03).
+        ShowSuccessNotice(
+            $"已将 \"{Path.GetFileName(file.SourcePath)}\" 作为背景音乐加入活动 \"{dialog.SelectedActivity.Name}\"",
+            "加入活动音轨");
     }
 
 

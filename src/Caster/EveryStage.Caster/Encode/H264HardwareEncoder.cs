@@ -478,6 +478,71 @@ public sealed class H264HardwareEncoder : IDisposable
     /// a failed HRESULT means that setting kept the vendor default. For diagnostics on real hardware.</summary>
     public string TuningSummary { get; } = "";
 
+    // CODECAPI_AVEncVideoForceKeyFrame (codecapi.h), defined locally: EncoderGuids collects the
+    // keys used during stream setup, while this one is only ever set mid-stream from
+    // ForceKeyframe below.
+    private static readonly Guid CodecApiAvEncVideoForceKeyFrame = new("f47ceab9-643e-4f49-940d-3200a679fab4");
+
+    private int _forceKeyframeAccepted;
+    private volatile string _forceKeyframeSummary = "";
+
+    /// <summary>How many <see cref="ForceKeyframe"/> calls the encoder MFT accepted (returned a
+    /// success HRESULT) — requests the MFT refused are visible in
+    /// <see cref="ForceKeyframeSummary"/> instead.</summary>
+    public int ForceKeyframeAccepted => Volatile.Read(ref _forceKeyframeAccepted);
+
+    /// <summary>The most recent <see cref="ForceKeyframe"/> call's outcome, in the same terse
+    /// "name=result" shape <see cref="TuningSummary"/> uses ("forcekeyframe=ok",
+    /// "forcekeyframe=0x80004001", ...). Empty until the first call. For diagnostics: a Terminal
+    /// whose decoder keeps asking for keyframes while this stays at a failure value explains a
+    /// picture that only heals on GOP boundaries.</summary>
+    public string ForceKeyframeSummary => _forceKeyframeSummary;
+
+    /// <summary>Asks the encoder MFT to make the next frame it encodes an IDR (P-25) — the
+    /// receiving half of the keyframe-request chain: the Terminal's decoder counts a request
+    /// whenever it drops access units or fails to decode, the count rides the periodic
+    /// CastStatus report, and <c>LiveCastSession</c> calls this whenever the reported count
+    /// grows. Goes through the same ICodecAPI channel <see cref="ApplyLowLatencySettings"/>
+    /// uses, with a VT_BOOL true (the same marshaling as its lowlatency set). Never throws: a
+    /// vendor MFT that refuses keeps its GOP cadence, and the one-second GOP from
+    /// <see cref="ConfigureOutputType"/>'s MF_MT_MAX_KEYFRAME_SPACING still bounds how long the
+    /// Terminal's picture stays damaged — the outcome is recorded in
+    /// <see cref="ForceKeyframeSummary"/> instead.</summary>
+    public void ForceKeyframe()
+    {
+        if (Volatile.Read(ref _disposed) != 0) return;
+        object? rcw = null;
+        try
+        {
+            rcw = Marshal.GetObjectForIUnknown(_encoder.NativePointer);
+            if (rcw is not ICodecApi api)
+            {
+                _forceKeyframeSummary = "forcekeyframe=codecapi-unsupported";
+                return;
+            }
+            var key = CodecApiAvEncVideoForceKeyFrame;
+            object value = true;
+            int hr = api.SetValue(ref key, ref value);
+            if (hr >= 0)
+            {
+                Interlocked.Increment(ref _forceKeyframeAccepted);
+                _forceKeyframeSummary = "forcekeyframe=ok";
+            }
+            else
+            {
+                _forceKeyframeSummary = $"forcekeyframe=0x{hr:x8}";
+            }
+        }
+        catch (Exception ex)
+        {
+            _forceKeyframeSummary = $"forcekeyframe={ex.GetType().Name}";
+        }
+        finally
+        {
+            if (rcw != null && Marshal.IsComObject(rcw)) Marshal.ReleaseComObject(rcw);
+        }
+    }
+
     // ICodecAPI (strmif.h). Vortice.MediaFoundation 3.6.2 does not bind it, so it is declared here; only
     // the methods up to SetValue are called, the earlier ones exist to keep the vtable order.
     [ComImport, Guid("901db4c7-31ce-41a2-85dc-8fa0bf41b8da"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]

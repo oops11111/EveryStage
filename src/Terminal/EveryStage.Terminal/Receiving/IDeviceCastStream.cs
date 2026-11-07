@@ -2,9 +2,14 @@ using EveryStage.Terminal.Display;
 
 namespace EveryStage.Terminal.Receiving;
 
-/// <summary>Counts decoded frames and presentation submissions, not physical screen refreshes.</summary>
+/// <summary>Counts decoded frames and presentation submissions, not physical screen refreshes.
+/// <c>KeyframeRequests</c> is the cumulative count of keyframe requests this stream's decoder has
+/// raised (access units dropped under backpressure, or decode errors — P-25); it rides along here
+/// so <c>DeviceCastController</c> can forward it in the periodic CastStatus report without growing
+/// a second statistics channel. It defaults to 0 so test doubles need not report it.</summary>
 internal readonly record struct CastFrameStatistics(long Decoded, long ProgramSubmitted, long ProgramSkipped,
-    long PreviewSubmitted, long PreviewSkipped, long QueueOverflow, long AudioLateDropped);
+    long PreviewSubmitted, long PreviewSkipped, long QueueOverflow, long AudioLateDropped,
+    long KeyframeRequests = 0);
 
 internal interface IDeviceCastStream : IDisposable
 {

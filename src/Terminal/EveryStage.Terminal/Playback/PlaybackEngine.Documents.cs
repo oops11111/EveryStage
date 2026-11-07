@@ -272,6 +272,23 @@ public sealed partial class PlaybackEngine
         RaiseDocumentChanged();
     }
 
+    /// <summary>P-22 prefetch for documents: warm the next item's conversion cache in the
+    /// background once the current item has started, so its first real play hits
+    /// <see cref="DocumentConversionCache.TryGet"/> instead of paying the Office/WPS cold start
+    /// (P-17) at switch time. Fire-and-forget: a failed warm-up is only logged — the real play
+    /// will retry the conversion itself and surface any failure through the normal path.</summary>
+    private async Task WarmNextConversionAsync(MediaFile file)
+    {
+        try
+        {
+            await ConversionCache.GetOrConvertAsync(file.SourcePath, DocumentFormats.Of(file.SourcePath)).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            DocLog.LogEvent("conversion_prefetch_failed", file.SourcePath, detail: ex.Message);
+        }
+    }
+
     private async Task PlayConvertedAsync(MediaFile file, DocumentPlaybackSettings settings, PdfViewportState initial)
     {
         int version = _contentLoadVersion;

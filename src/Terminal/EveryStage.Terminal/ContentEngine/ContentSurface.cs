@@ -27,7 +27,7 @@ public sealed class ContentSurface : Control
     public EveryStage.Rendering.VideoScaleMode ScaleMode
     {
         get => _scaleMode;
-        set { _scaleMode = value; Invalidate(); }
+        set { _scaleMode = value; _transitionToDirty = true; Invalidate(); }
     }
 
     /// <summary>The painter currently drawing this surface (null when a plain frame is shown).</summary>
@@ -50,6 +50,11 @@ public sealed class ContentSurface : Control
         BackColor = Color.Black;
         Dock = DockStyle.Fill;
         TabStop = false;
+        // Content painters (the PDF view) and frame producers signal "new content" by invalidating
+        // this surface — there is no other channel (IContentPainter has no changed event). The
+        // transition timer invalidates too, but only to advance the blend; InvalidateTransitionTick
+        // flags its own calls so they don't count as content changes (see PaintTransitionFrame).
+        Invalidated += (_, _) => { if (!_transitionTickInvalidating) _transitionToDirty = true; };
     }
 
     /// <summary>Shows one bitmap (not owned). Replaces any painter. <paramref name="live"/> marks frames
@@ -60,6 +65,7 @@ public sealed class ContentSurface : Control
         if (!ReferenceEquals(frame, _frame)) ReleaseScaled();
         _frame = frame;
         _liveFrames = live;
+        _transitionToDirty = true;
         Invalidate();
     }
 
@@ -69,6 +75,7 @@ public sealed class ContentSurface : Control
         _frame = null;
         ReleaseScaled();
         SwapPainter(painter);
+        _transitionToDirty = true;
         Invalidate();
     }
 
@@ -122,6 +129,12 @@ public sealed class ContentSurface : Control
 
     private Bitmap? _transitionFrom;
     private Bitmap? _transitionTo;
+    // The "to" picture only needs re-rendering when the underlying content actually changed
+    // (audit P-11): for a still image / PDF / PPT page it is identical for the transition's whole
+    // life, yet the old code re-painted it in full on every 15 ms frame — a full-screen GDI render
+    // per frame at 4K. Live frames (_liveFrames) still re-render every frame, as before.
+    private bool _transitionToDirty = true;
+    private bool _transitionTickInvalidating;
     private SlideTransitionSpec _transition;
     private readonly System.Diagnostics.Stopwatch _transitionClock = new();
     private System.Windows.Forms.Timer? _transitionTimer;
@@ -156,7 +169,11 @@ public sealed class ContentSurface : Control
         timer.Tick += (_, _) =>
         {
             if (TransitionProgress >= 1f) EndTransition();
-            Invalidate();
+            // Flagged so the constructor's Invalidated hook doesn't mistake a pure blend-advance
+            // tick for a content change.
+            _transitionTickInvalidating = true;
+            try { Invalidate(); }
+            finally { _transitionTickInvalidating = false; }
         };
         return timer;
     }
@@ -168,6 +185,7 @@ public sealed class ContentSurface : Control
         _transitionFrom = null;
         _transitionTo?.Dispose();
         _transitionTo = null;
+        _transitionToDirty = true;
     }
 
     private float TransitionProgress => (float)(_transitionClock.Elapsed.TotalMilliseconds / Math.Max(1, _transition.Milliseconds));
@@ -178,8 +196,13 @@ public sealed class ContentSurface : Control
         {
             _transitionTo?.Dispose();
             _transitionTo = new Bitmap(Math.Max(1, Width), Math.Max(1, Height));
+            _transitionToDirty = true;
         }
-        using (var live = Graphics.FromImage(_transitionTo)) PaintContent(live);
+        if (_transitionToDirty || _liveFrames)
+        {
+            using (var live = Graphics.FromImage(_transitionTo)) PaintContent(live);
+            _transitionToDirty = false;
+        }
         SlideTransitions.Draw(g, ClientRectangle, _transitionFrom!, _transitionTo,
             SlideTransitions.Ease(TransitionProgress), _transition.Effect, _transition.Direction);
     }
