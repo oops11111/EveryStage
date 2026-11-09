@@ -93,7 +93,9 @@ public sealed partial class MainForm
     {
         var parts = summary.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         _encodeStatsToolTip.SetToolTip(_encodeStatsLabel, summary);
-        return $"低延迟参数 {parts.Count(p => p.EndsWith("=ok", StringComparison.Ordinal))}/{parts.Length}";
+        string mode = parts.Contains("encoder=software") ? "软件编码（本机没有显卡编码器）· " : "";
+        parts = parts.Where(p => !p.StartsWith("encoder=", StringComparison.Ordinal)).ToArray();
+        return $"{mode}低延迟参数 {parts.Count(p => p.EndsWith("=ok", StringComparison.Ordinal))}/{parts.Length}";
     }
 
     private readonly ToolTip _encodeStatsToolTip = new();

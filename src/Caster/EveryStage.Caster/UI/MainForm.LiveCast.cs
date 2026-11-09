@@ -168,6 +168,8 @@ public sealed partial class MainForm
             $"码率档位: {_liveCastSession.SelectedBitrateBps / 1_000_000} Mbps（按分辨率分档）\n" +
             $"已捕获帧数: {_liveCastSession.FramesCaptured}   已发送访问单元: {_liveCastSession.AccessUnitsSent}\n" +
             $"已发送字节数: {_liveCastSession.BytesSent}\n" +
+            (_liveCastSession.EncoderTuningSummary.Contains("encoder=software", StringComparison.Ordinal)
+                ? "视频编码: 软件编码（本机没有可用的显卡编码器，CPU 占用会高一些）\n" : "") +
             $"编码器调节: {_liveCastSession.EncoderTuningSummary}\n" +
             audioLine + "\n" +
             terminalLine +

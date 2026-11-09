@@ -36,7 +36,7 @@ public sealed class H264HardwareEncoder : IDisposable
     private const int OutputStreamId = 0;
 
     private readonly IMFTransform _encoder;
-    private readonly IMFMediaEventGenerator _events;
+    private readonly IMFMediaEventGenerator? _events; // null for the synchronous software encoder.
     private readonly bool _outputProvidesOwnSamples;
     private readonly long _sampleDurationTicks; // 100ns units.
 
@@ -92,55 +92,43 @@ public sealed class H264HardwareEncoder : IDisposable
         _sampleDurationTicks = 10_000_000L / frameRateNumerator;
         _gpu = gpu;
 
-        _encoder = ActivateFirstHardwareEncoder();
-
-        // Bug fixed here (see this class's own Dispose() comment for the normal-teardown half of
-        // the same MFStartup/MFShutdown pairing bug, and H264HardwareDecoder's mirror-image fix for
-        // the identical shape on the decode side): ActivateFirstHardwareEncoder() above already
-        // called MediaFactory.MFStartup() successfully by the time execution reaches this line —
-        // but if any of the steps below throws, this constructor never finishes, so no
-        // H264HardwareEncoder instance ever exists for LiveCastSession to later Dispose() and hit
-        // the MFShutdown() call this class's Dispose() makes. Without this try/catch, that
-        // MFStartup() reference-count increment would leak permanently every time construction
-        // fails this way.
+        // A hardware encoder (NVENC / Quick Sync / AMF) first. A machine without one — no GPU encoder,
+        // a virtual machine, a Remote Desktop session, the basic display driver — used to stop right
+        // here with "No matching Media Foundation transform was found."; it now falls back to Windows'
+        // own software H.264 encoder (synchronous, fed from system memory: more CPU, same stream).
+        Exception? hardwareFailure = null;
+        (IMFTransform Encoder, IMFMediaEventGenerator? Events, bool OwnSamples, string Tuning)? opened = null;
         try
         {
-            UnlockAsyncProcessing(_encoder);
-
-            // ORDER IS LOAD-BEARING. An MFT works out whether a D3D11 hardware configuration
-            // is available while the media types are being negotiated, so the DXGI device
-            // manager has to be attached BEFORE SetOutputType/SetInputType, not after. Bound
-            // afterwards - as this used to be - the transform negotiates a software
-            // configuration and every frame round-trips through system memory. It compiles, it
-            // runs, and it produces correct output; only CPU load and latency reveal that the
-            // zero-copy path this whole pipeline exists for is not actually being used. Same
-            // fix applied on the decode side in Terminal's H264HardwareDecoder.
-            RequireD3D11Aware(_encoder);
-            BindDeviceManager(_encoder, gpu);
-
-            // Before the media types: several encoders only honour GOP size / B-frame count while
-            // negotiating them.
-            TuningSummary = ApplyLowLatencySettings(_encoder, frameRateNumerator, bitrateBps);
-            ConfigureOutputType(_encoder, width, height, frameRateNumerator, bitrateBps);
-            ConfigureInputType(_encoder, width, height, frameRateNumerator);
-
-            _outputProvidesOwnSamples = OutputProvidesOwnSamples(_encoder);
-            _events = _encoder.QueryInterface<IMFMediaEventGenerator>();
-
-            // NOTE: verify these two message constants' exact Vortice enum member names — native
-            // values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING / MFT_MESSAGE_NOTIFY_START_OF_STREAM.
-            _encoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
-            _encoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+            opened = Open(hardware: true, gpu, width, height, frameRateNumerator, bitrateBps);
         }
-        catch
+        catch (Exception ex)
         {
-            _events?.Dispose();
-            _encoder.Dispose();
-            MediaFactory.MFShutdown();
-            throw;
+            hardwareFailure = ex;
         }
+        if (hardwareFailure != null)
+        {
+            try
+            {
+                opened = Open(hardware: false, gpu, width, height, frameRateNumerator, bitrateBps);
+                UsesSoftwareEncoder = true;
+                HardwareUnavailableReason = Describe(hardwareFailure);
+            }
+            catch (Exception softwareFailure)
+            {
+                throw new InvalidOperationException(
+                    "本机没有可用的 H.264 视频编码器，无法投屏。"
+                    + $"显卡硬件编码：{Describe(hardwareFailure)}；Windows 自带软件编码：{Describe(softwareFailure)}。"
+                    + "请更新显卡驱动；如果是 Windows N / KN 版，请先安装「媒体功能包」。", softwareFailure);
+            }
+        }
+        var encoderParts = opened!.Value;
+        _encoder = encoderParts.Encoder;
+        _events = encoderParts.Events;
+        _outputProvidesOwnSamples = encoderParts.OwnSamples;
+        TuningSummary = encoderParts.Tuning;
 
-        _eventLoopTask = Task.Run(() => RunEventLoop(_cts.Token));
+        _eventLoopTask = UsesSoftwareEncoder ? Task.Run(() => RunSyncLoop(_cts.Token)) : Task.Run(() => RunEventLoop(_cts.Token));
     }
 
     /// <summary>Queues one NV12 frame for encoding. Ownership of <paramref name="texture"/> passes
@@ -188,7 +176,7 @@ public sealed class H264HardwareEncoder : IDisposable
                 try
                 {
                     // MF_EVENT_FLAG_NO_WAIT = 1. Vortice exposes the native DWORD directly.
-                    mediaEvent = _events.GetEvent(1);
+                    mediaEvent = _events!.GetEvent(1);
                 }
                 catch (Exception ex) when (ex.HResult == Vortice.MediaFoundation.ResultCode.NoEventsAvailable.Code)
                 {
@@ -299,10 +287,7 @@ public sealed class H264HardwareEncoder : IDisposable
                     // SetSampleDuration's native shape) rather than guessed as C# properties —
                     // verify which form Vortice actually exposes.
                     // A capture time, when given, must still increase strictly for the encoder.
-                    long sampleTime = frame.SampleTime is { } captured ? Math.Max(captured, _nextSampleTime) : _nextSampleTime;
-                    sample.SampleTime = sampleTime;
-                    sample.SampleDuration = _sampleDurationTicks;
-                    _nextSampleTime = sampleTime + (frame.SampleTime == null ? _sampleDurationTicks : 1);
+                    StampSample(sample, frame.SampleTime);
 
                     _encoder.ProcessInput(InputStreamId, sample, 0);
                 }
@@ -310,7 +295,7 @@ public sealed class H264HardwareEncoder : IDisposable
         }
     }
 
-    private void HandleHaveOutput()
+    private bool HandleHaveOutput()
     {
         var outputBuffer = new OutputDataBuffer { StreamID = OutputStreamId };
 
@@ -335,14 +320,14 @@ public sealed class H264HardwareEncoder : IDisposable
             // than leaking it; buffers[0].Sample is the same object as outputBuffer.Sample here
             // since ProcessOutput failed before it could have replaced it.
             outputBuffer.Sample?.Dispose();
-            return;
+            return false;
         }
 
         IMFSample? ownedSample = null;
         try
         {
             ownedSample = outputBuffer.Sample;
-            if (ownedSample == null) return;
+            if (ownedSample == null) return false;
 
             using var contiguousBuffer = ownedSample.ConvertToContiguousBuffer();
             contiguousBuffer.Lock(out var data, out _, out var currentLength);
@@ -350,7 +335,8 @@ public sealed class H264HardwareEncoder : IDisposable
             System.Runtime.InteropServices.Marshal.Copy(data, accessUnit, 0, currentLength);
             contiguousBuffer.Unlock();
 
-            AccessUnitEncoded?.Invoke(accessUnit, ownedSample.SampleTime);
+            AccessUnitEncoded?.Invoke(WithParameterSets(accessUnit), ownedSample.SampleTime);
+            return true;
         }
         finally
         {
@@ -360,6 +346,145 @@ public sealed class H264HardwareEncoder : IDisposable
             // mode — the caller-supplied sample is filled in place, not replaced).
             ownedSample?.Dispose();
         }
+    }
+
+    /// <summary>A capture time, when given, becomes the sample time; it must still increase strictly
+    /// for the encoder.</summary>
+    private void StampSample(IMFSample sample, long? captured)
+    {
+        long sampleTime = captured is { } time ? Math.Max(time, _nextSampleTime) : _nextSampleTime;
+        sample.SampleTime = sampleTime;
+        sample.SampleDuration = _sampleDurationTicks;
+        _nextSampleTime = sampleTime + (captured == null ? _sampleDurationTicks : 1);
+    }
+
+    /// <summary>The software encoder's loop: synchronous MFT, so no events — take a queued frame, read
+    /// the NV12 texture back into system memory, ProcessInput, then drain every output it has.</summary>
+    private void RunSyncLoop(CancellationToken token)
+    {
+        ID3D11Texture2D? staging = null;
+        byte[]? frameBytes = null;
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                try
+                {
+                    if (!_frameAvailable.Wait(NeedInputWaitTimeout, token)) continue;
+                }
+                catch (OperationCanceledException) { break; }
+                catch (ObjectDisposedException) { break; }
+                if (_gpu.Device.DeviceRemovedReason.Failure)
+                    throw new InvalidOperationException("显卡设备已丢失（驱动重置或更新），无法继续编码。");
+                if (!_pendingFrames.TryDequeue(out var frame)) continue;
+
+                IMFSample sample;
+                using (frame.Texture) sample = ReadBack(frame.Texture, frame.ArraySlice, ref staging, ref frameBytes);
+                using (sample)
+                {
+                    StampSample(sample, frame.SampleTime);
+                    _encoder.ProcessInput(InputStreamId, sample, 0);
+                }
+                while (!token.IsCancellationRequested && HandleHaveOutput()) { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Volatile.Write(ref _encodeLoopFailed, 1);
+            EncodingFailed?.Invoke(ex);
+        }
+        finally
+        {
+            staging?.Dispose();
+        }
+    }
+
+    /// <summary>Copies one NV12 texture into a tightly packed (stride = width) system-memory sample.</summary>
+    private IMFSample ReadBack(ID3D11Texture2D texture, int arraySlice, ref ID3D11Texture2D? staging, ref byte[]? frameBytes)
+    {
+        var desc = texture.Description;
+        int width = (int)desc.Width, height = (int)desc.Height;
+        if (staging == null)
+        {
+            var stagingDesc = desc;
+            stagingDesc.Usage = ResourceUsage.Staging;
+            stagingDesc.BindFlags = BindFlags.None;
+            stagingDesc.CPUAccessFlags = CpuAccessFlags.Read;
+            stagingDesc.MiscFlags = ResourceOptionFlags.None;
+            stagingDesc.ArraySize = 1;
+            stagingDesc.MipLevels = 1;
+            staging = _gpu.Device.CreateTexture2D(stagingDesc);
+        }
+        int size = width * height * 3 / 2;
+        if (frameBytes == null || frameBytes.Length != size) frameBytes = new byte[size];
+
+        var context = _gpu.ImmediateContext;
+        context.CopySubresourceRegion(staging, 0, 0, 0, 0, texture, (uint)(arraySlice * Math.Max(1, (int)desc.MipLevels)), null);
+        var mapped = context.Map(staging, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
+        try
+        {
+            int pitch = (int)mapped.RowPitch;
+            // NV12 in a mapped D3D11 texture: height rows of Y, then height/2 rows of interleaved UV,
+            // both at the same row pitch.
+            for (int y = 0; y < height; y++)
+                Marshal.Copy(mapped.DataPointer + y * pitch, frameBytes, y * width, width);
+            for (int y = 0; y < height / 2; y++)
+                Marshal.Copy(mapped.DataPointer + (height + y) * pitch, frameBytes, width * height + y * width, width);
+        }
+        finally
+        {
+            context.Unmap(staging, 0);
+        }
+
+        var buffer = MediaFactory.MFCreateMemoryBuffer(size);
+        using (buffer)
+        {
+            buffer.Lock(out var data, out _, out _);
+            try { Marshal.Copy(frameBytes, 0, data, size); }
+            finally { buffer.Unlock(); }
+            buffer.CurrentLength = size;
+            var sample = MediaFactory.MFCreateSample();
+            sample.AddBuffer(buffer);
+            return sample;
+        }
+    }
+
+    // MF_MT_MPEG_SEQUENCE_HEADER: the SPS/PPS (Annex-B) of the negotiated output type.
+    private static readonly Guid MfMtMpegSequenceHeader = new("3c036de7-3ad0-4c9e-9216-ee6d6ac21cb3");
+    private byte[]? _sequenceHeader;
+    private bool _sequenceHeaderRead;
+
+    /// <summary>The Terminal's decoder needs SPS/PPS before every IDR. Encoders that only report them
+    /// in the output type's sequence header (rather than in band) get them prepended here.</summary>
+    private byte[] WithParameterSets(byte[] accessUnit)
+    {
+        bool idr = false, sps = false;
+        for (int i = 0; i + 3 < accessUnit.Length; i++)
+        {
+            if (accessUnit[i] != 0 || accessUnit[i + 1] != 0) continue;
+            int header = accessUnit[i + 2] == 1 ? i + 3 : accessUnit[i + 2] == 0 && accessUnit[i + 3] == 1 ? i + 4 : -1;
+            if (header < 0 || header >= accessUnit.Length) continue;
+            int type = accessUnit[header] & 0x1F;
+            if (type == 5) idr = true;
+            else if (type == 7) sps = true;
+            i = header;
+        }
+        if (!idr || sps) return accessUnit;
+        if (!_sequenceHeaderRead)
+        {
+            _sequenceHeaderRead = true;
+            try
+            {
+                using var type = _encoder.GetOutputCurrentType(OutputStreamId);
+                _sequenceHeader = type.GetBlob(MfMtMpegSequenceHeader);
+            }
+            catch (Exception) { _sequenceHeader = null; }
+        }
+        if (_sequenceHeader is not { Length: > 0 } parameterSets) return accessUnit;
+        var joined = new byte[parameterSets.Length + accessUnit.Length];
+        parameterSets.CopyTo(joined, 0);
+        accessUnit.CopyTo(joined, parameterSets.Length);
+        return joined;
     }
 
     /// <summary>Builds the caller-allocated output sample <see cref="HandleHaveOutput"/> needs when
@@ -397,28 +522,78 @@ public sealed class H264HardwareEncoder : IDisposable
         return sample;
     }
 
-    private static IMFTransform ActivateFirstHardwareEncoder()
+    /// <summary>True when no hardware encoder could be opened and Windows' software encoder is
+    /// used instead (see the constructor).</summary>
+    public bool UsesSoftwareEncoder { get; }
+
+    /// <summary>Why the hardware encoder was not used, when <see cref="UsesSoftwareEncoder"/>.</summary>
+    public string? HardwareUnavailableReason { get; }
+
+    private static string Describe(Exception ex) => ex.Message.StartsWith("No matching Media Foundation transform", StringComparison.Ordinal)
+        ? "没有找到" : ex.Message;
+
+    /// <summary>Activates and fully configures one encoder MFT. The hardware path is async and D3D11-aware
+    /// (fed GPU textures through the DXGI device manager); the software path is Windows' synchronous
+    /// encoder, fed NV12 read back into system memory by <see cref="RunSyncLoop"/>. Balanced
+    /// MFStartup/MFShutdown on every failure path.</summary>
+    private static (IMFTransform Encoder, IMFMediaEventGenerator? Events, bool OwnSamples, string Tuning) Open(
+        bool hardware, D3D11Device gpu, int width, int height, int frameRateNumerator, int bitrateBps)
+    {
+        var encoder = ActivateFirstEncoder(hardware);
+        IMFMediaEventGenerator? events = null;
+        try
+        {
+            if (hardware)
+            {
+                UnlockAsyncProcessing(encoder);
+
+                // ORDER IS LOAD-BEARING. An MFT works out whether a D3D11 hardware configuration
+                // is available while the media types are being negotiated, so the DXGI device
+                // manager has to be attached BEFORE SetOutputType/SetInputType, not after. Bound
+                // afterwards the transform negotiates a software configuration and every frame
+                // round-trips through system memory. Same fix applied on the decode side in
+                // Terminal's H264HardwareDecoder.
+                RequireD3D11Aware(encoder);
+                BindDeviceManager(encoder, gpu);
+            }
+
+            // Before the media types: several encoders only honour GOP size / B-frame count while
+            // negotiating them.
+            string tuning = (hardware ? "encoder=hardware " : "encoder=software ") + ApplyLowLatencySettings(encoder, frameRateNumerator, bitrateBps);
+            ConfigureOutputType(encoder, width, height, frameRateNumerator, bitrateBps);
+            ConfigureInputType(encoder, width, height, frameRateNumerator);
+
+            bool ownSamples = OutputProvidesOwnSamples(encoder);
+            if (hardware) events = encoder.QueryInterface<IMFMediaEventGenerator>();
+
+            encoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+            encoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+            return (encoder, events, ownSamples, tuning);
+        }
+        catch
+        {
+            events?.Dispose();
+            encoder.Dispose();
+            MediaFactory.MFShutdown();
+            throw;
+        }
+    }
+
+    private static IMFTransform ActivateFirstEncoder(bool hardware)
     {
         MediaFactory.MFStartup().CheckError();
 
-        // Everything below is wrapped so that MFStartup() above is never left unbalanced by this
-        // method throwing before ever returning a usable IMFTransform — see the constructor's own
-        // try/catch (which covers everything AFTER this method returns) for the other half of the
-        // same bug, and H264HardwareDecoder.ActivateFirstHardwareDecoder for the identical fix on
-        // the decode side. MFTEnumEx finding no hardware encoder at all (a real, not just
-        // hypothetical, condition on a machine without a compatible GPU/driver) is exactly the case
-        // this exists for: without this, that specific failure would leak one MFStartup() reference
-        // count every single time casting is attempted from such a machine, for the Caster's entire
-        // uptime.
+        // Wrapped so MFStartup() above is never left unbalanced by a failure here — no matching
+        // encoder at all is a real condition (see the constructor), and would otherwise leak one
+        // MFStartup() reference every time casting is attempted.
         try
         {
             var outputType = new RegisterTypeInfo { GuidMajorType = MFMediaType_Video, GuidSubtype = MFVideoFormat_H264 };
-
-            // NOTE: MFTEnumEx's exact Vortice signature (parameter order, whether flags is a
-            // [Flags] enum called MFTEnumFlag or similar) is unverified.
             return MediaFoundationHelpers.ActivateFirstTransform(
                 MFT_CATEGORY_VIDEO_ENCODER,
-                EnumFlag.EnumFlagHardware | EnumFlag.EnumFlagSortandfilter,
+                hardware
+                    ? EnumFlag.EnumFlagHardware | EnumFlag.EnumFlagSortandfilter
+                    : EnumFlag.EnumFlagSyncmft | EnumFlag.EnumFlagLocalmft | EnumFlag.EnumFlagSortandfilter,
                 null,
                 outputType);
         }
@@ -643,7 +818,7 @@ public sealed class H264HardwareEncoder : IDisposable
         while (_pendingFrames.TryDequeue(out var frame)) frame.Texture.Dispose();
         _frameAvailable.Dispose();
 
-        _events.Dispose();
+        _events?.Dispose();
         _encoder.Dispose();
 
         // Bug fixed here: this class's constructor (via ActivateFirstHardwareEncoder) calls
