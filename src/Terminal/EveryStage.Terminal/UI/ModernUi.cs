@@ -997,7 +997,9 @@ internal sealed class ToggleSwitch : Control
         base.OnKeyDown(e);
     }
 
-    protected override void OnPaintBackground(PaintEventArgs pevent) { }
+    // The background used to be left unpainted (an empty OnPaintBackground): everything outside the
+    // rounded track kept whatever pixels were there before, which on screen showed as stray text
+    // under the switch. The base call paints the parent's background through the transparent areas.
 
     protected override void OnPaint(PaintEventArgs e)
     {
