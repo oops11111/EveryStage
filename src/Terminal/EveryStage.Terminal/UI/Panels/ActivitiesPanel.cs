@@ -45,6 +45,23 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     private readonly ComboBox _scenarioCombo;
     private readonly TreeView _tree;
 
+    /// <summary>AP-06's header search box text — a pure presentation filter: <see cref="RefreshTree"/>
+    /// builds the tree/rows from only the files whose names match, and clearing the text rebuilds
+    /// the full list from the untouched scenario data. Never saved, never logged.</summary>
+    private readonly TextBox _searchBox;
+    private string _filterText = "";
+    private bool IsFiltering => _filterText.Trim().Length > 0;
+
+    /// <summary>Set only around the <see cref="RefreshTree"/> call a search keystroke makes, so
+    /// that call skips the thumbnail-cache reset (see RefreshTree's own comment there).</summary>
+    private bool _refreshForFilterChange;
+
+    /// <summary>The file a Shift+Click range starts from (AP-07): the last file plain- or
+    /// Ctrl+clicked. Stored as the <see cref="MediaFile"/> (data), not a TreeNode —
+    /// <see cref="RefreshTree"/> rebuilds the nodes constantly and the anchor must survive that;
+    /// it is resolved back to a node, in the current tree, when a range is made.</summary>
+    private MediaFile? _multiSelectAnchorFile;
+
     /// <summary>The visible 活动节目单: one <see cref="ActivityRowView"/> per activity. <see cref="_tree"/>
     /// stays hidden as the selection/model adapter every editing handler reads via <see cref="GetSelection"/>.</summary>
     private readonly FlowLayoutPanel _activityRows;
@@ -66,16 +83,16 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     private readonly ToolStripMenuItem _renameActivityItem;
     private readonly ToolStripMenuItem _deleteActivityItem;
     private readonly ToolStripMenuItem _addFileButton;
-    private readonly ToolStripMenuItem _playModeButton;
-    private readonly ToolStripMenuItem _audioPropertiesButton;
-    private readonly ToolStripMenuItem _fadeButton;
-    private readonly ToolStripMenuItem _stayDurationButton;
-    private readonly ToolStripMenuItem _completionActionButton;
     private readonly ToolStripMenuItem _documentSettingsButton;
     private readonly ToolStripMenuItem _batchPropertiesButton;
+    private readonly ToolStripMenuItem _batchRemoveButton;
     private readonly ToolStripMenuItem _removeButton;
     private readonly ToolStripMenuItem _moveUpButton;
     private readonly ToolStripMenuItem _moveDownButton;
+    private readonly ToolStripMenuItem _moveActivityUpItem;
+    private readonly ToolStripMenuItem _moveActivityDownItem;
+    private readonly ToolStripMenuItem _duplicateActivityItem;
+    private readonly ToolStripMenuItem _moveFileToActivityItem;
     private readonly ToolStripMenuItem _musicCueItem;
     private readonly ToolStripMenuItem _transitionItem;
 
@@ -129,8 +146,9 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     /// <see cref="TreeNode.BackColor"/>/<see cref="TreeNode.ForeColor"/> rather than owner-draw.
     /// Only ever holds file nodes (<c>Tag is MediaFile</c>) — activity nodes can't be batch-edited.
     /// Cleared by <see cref="RefreshTree"/> (old <see cref="TreeNode"/> references go stale once the
-    /// tree is rebuilt) and by any plain, non-Ctrl click anywhere in the tree — Shift-range-select is
-    /// deliberately not supported, same scope-minimization reasoning.</summary>
+    /// tree is rebuilt) and by any plain, non-Ctrl click anywhere in the tree. Shift+Click selects
+    /// the range from <see cref="_multiSelectAnchorFile"/> to the clicked file instead (AP-07) —
+    /// the set then drives 统一设置属性... / 批量移除 / 批量「移动到环节」 alike.</summary>
     private readonly HashSet<TreeNode> _multiSelectedFileNodes = new();
 
     public ActivitiesPanel(
@@ -160,6 +178,24 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         var addSectionButton = ActionButton("＋ 环节", OnNewActivity, width: 84);
         var addFileButton = ActionButton("＋ 添加文件", OnAddFile, width: 104);
         var checkButton = ActionButton("开演前检查", () => RunPreShowCheck(requestedByOperator: true), width: 100);
+
+        // AP-06's filter box and AP-08's visible edit entry, both part of the header's right
+        // cluster. Typing filters immediately (TextChanged → RefreshTree, presentation only);
+        // Esc while the box has focus clears it — claimed in ProcessCmdKey, one level before
+        // MainWindow's Esc handling would see the key. The edit button shows the SAME
+        // _editMenu a row right-click shows (built further down; the click only ever runs
+        // after this constructor has finished), through the shared ShowEditMenu path.
+        _searchBox = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(new TextBox
+        {
+            Width = 140,
+            BorderStyle = BorderStyle.FixedSingle,
+            Font = new Font(ModernUi.UiFont, 10F),
+            PlaceholderText = "搜索文件",
+            AccessibleName = "搜索文件",
+        }, UiForegroundRole.Text), UiBackgroundRole.SurfaceRaised);
+        _searchBox.TextChanged += (_, _) => OnSearchTextChanged();
+        RoundedActionButton? editMenuButton = null;
+        editMenuButton = ActionButton("编辑 ▾", () => ShowEditMenu(editMenuButton!, new Point(0, editMenuButton!.Height)), width: 80);
         var scenarioMenu = _scenarioMenu = ModernUi.CreateThemedMenu(this);
         scenarioMenu.Items.Add("新建方案...", null, (_, _) => OnNewScenario());
         scenarioMenu.Items.Add("保存方案", null, (_, _) => OnSaveScenario());
@@ -179,14 +215,30 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         _toolTip.SetToolTip(moreButton, "方案：新建 / 保存 / 另存为 / 删除；全部展开或收起");
         _toolTip.SetToolTip(addFileButton, "从文件库添加到所选环节");
         _toolTip.SetToolTip(checkButton, "检查方案里每个文件是否存在、能否读取、格式是否支持（打开方案时也会自动检查）");
-        header.Controls.AddRange(new Control[] { title, scenarioLabel, _scenarioCombo, _activityCount, checkButton, addSectionButton, addFileButton, moreButton });
+        _toolTip.SetToolTip(_searchBox, "按文件名过滤流程，只显示命中的文件（Esc 清除；过滤不改数据）");
+        _toolTip.SetToolTip(editMenuButton, "编辑选中的环节 / 文件（也可以右键点行，或按菜单键）");
+        header.Controls.AddRange(new Control[] { title, scenarioLabel, _scenarioCombo, _activityCount, checkButton, addSectionButton, addFileButton, editMenuButton, moreButton, _searchBox });
+
+        // AP-12: the header's tab order — search → scenario → check → + section → + file →
+        // edit → scenario menu — and the containers carry the sequence on below (rows, then
+        // the detail panel). Only this top level is pinned here; each container's internals
+        // keep an order of their own.
+        header.TabIndex = 0;
+        _searchBox.TabIndex = 0;
+        _scenarioCombo.TabIndex = 1;
+        checkButton.TabIndex = 2;
+        addSectionButton.TabIndex = 3;
+        addFileButton.TabIndex = 4;
+        editMenuButton!.TabIndex = 5;
+        moreButton.TabIndex = 6;
+        _detailPanel.TabIndex = 2; // _activityRows gets its 1 where it is built, further down
         header.Resize += (_, _) =>
         {
             int cy = (header.ClientSize.Height - 6) / 2, gap = 10;
             title.Location = new Point(0, cy - title.Height / 2);
             scenarioLabel.Location = new Point(title.Right + 16, cy - scenarioLabel.Height / 2);
             int right = header.ClientSize.Width;
-            foreach (var button in new[] { moreButton, addFileButton, addSectionButton, checkButton })
+            foreach (var button in new[] { moreButton, editMenuButton, addFileButton, addSectionButton, checkButton })
             {
                 right -= button.Width;
                 button.Location = new Point(right, cy - button.Height / 2);
@@ -204,6 +256,12 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
                 checkButton.Location = new Point(right + gap, cy - checkButton.Height / 2);
             }
             else checkButton.Width = 100;
+            // The search box is the cluster's leftmost element: whatever room the buttons
+            // (at their possibly-narrowed widths) left over is where it lands, and the
+            // scenario combo's clamp below measures from its left edge.
+            right -= _searchBox.Width;
+            _searchBox.Location = new Point(right, cy - _searchBox.Height / 2);
+            right -= gap;
             _scenarioCombo.Width = Math.Clamp(right - comboLeft - _activityCount.PreferredWidth - 2 * gap, Math.Min(120, Math.Max(60, right - comboLeft - gap)), 240);
             _scenarioCombo.Location = new Point(comboLeft, cy - _scenarioCombo.Height / 2);
             _activityCount.Location = new Point(_scenarioCombo.Right + gap, cy - _activityCount.Height / 2);
@@ -222,48 +280,14 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         _deleteActivityItem.Click += (_, _) => OnDeleteActivity();
         _addFileButton = new ToolStripMenuItem("添加文件...") { Enabled = false };
         _addFileButton.Click += (_, _) => OnAddFile();
-        // Editing PlayMode is new (see PlaybackEngine.EffectivePlayMode's doc comment on why it
-        // previously had nothing to edit — the enum had no runtime effect at all until it did).
-        // Context-sensitive: edits the selected FILE's PlayModeOverride if one is selected, else the
-        // selected ACTIVITY's own DefaultPlayMode — see OnEditPlayMode.
-        _playModeButton = new ToolStripMenuItem("播放方式...") { Enabled = false };
-        _playModeButton.Click += (_, _) => OnEditPlayMode();
-        // Only ever enabled for a selected file whose Kind == MediaKind.Audio — see
-        // UpdateButtonStates. New the same round PlaybackEngine.PlayStandaloneAudio/ApplyAudioVisual
-        // first gave MediaFile.IsBackgroundAudio/BackgroundAudioVisual any runtime effect at all
-        // (see this project's README risk #61), following the same "先做行为、再做UI" order
-        // PlayMode's editor above already established.
-        _audioPropertiesButton = new ToolStripMenuItem("音频属性...") { Enabled = false };
-        _audioPropertiesButton.Click += (_, _) => OnEditAudioProperties();
-        // Only ever enabled for a selected file whose Kind is Video or Audio — see
-        // UpdateButtonStates. New the same round PlaybackEngine.FadeDurationFor first gave
-        // MediaFile.FadeDuration/VolumeFollowsFade any runtime effect at all (see this project's
-        // README risk #109), same "先做行为、再做UI" order as PlayMode/IsBackgroundAudio/
-        // StayDuration before it — except unlike those, the behavior itself is still only half done
-        // (fade-in only), which FadeDialog's own caveat label discloses rather than hiding the
-        // control until fade-out also exists.
-        _fadeButton = new ToolStripMenuItem("淡入淡出...") { Enabled = false };
-        _fadeButton.Click += (_, _) => OnEditFade();
-        // Only ever enabled for a selected file whose Kind is Image or Document (PLANNING.md §6
-        // "停留时长（图片/文档）") — same "先做行为、再做UI" gap as PlayMode/AllowManualSkip/
-        // IsBackgroundAudio before it, except MediaFile.StayDuration's own reading behavior
-        // (PlaybackEngine.ArmStayDurationTimer) already existed and worked; only this editing entry
-        // point was ever missing. Worse than a plain gap: SettingsPanel's own "默认停留时长" help
-        // text already claimed a per-file override could be "配置" from "活动面板" before this
-        // button existed to do it — see this project's README "已知风险".
-        _stayDurationButton = new ToolStripMenuItem("停留时长...") { Enabled = false };
-        _stayDurationButton.Click += (_, _) => OnEditStayDuration();
-        // Enabled for any selected file regardless of Kind — unlike StayDuration/AudioProperties,
-        // MediaFile.OnCompletion applies uniformly (PlaybackEngine.HandleCompletion is reached from
-        // video, standalone audio, and the image/document stay-duration timer alike, see that
-        // method's own callers). No activity-level counterpart exists in the data model at all (no
-        // Activity.DefaultCompletionAction), so — unlike PlayMode — there's nothing to fall back to
-        // editing when only an activity is selected. Same "先做行为、再做UI" gap as StayDuration
-        // before it: HandleCompletion has read and correctly acted on OnCompletion since the round
-        // that gave PlaybackEngine its first real behavior at all, but nothing ever let anyone set
-        // it away from its NextItem default for a specific file — see this project's README.
-        _completionActionButton = new ToolStripMenuItem("完成后动作...") { Enabled = false };
-        _completionActionButton.Click += (_, _) => OnEditCompletionAction();
+        // AP-10 （属性双轨收敛）: the per-file 属性 dialogs that used to hang off this menu —
+        // 播放方式... / 音频属性... / 淡入淡出... / 停留时长... / 完成后动作... — are retired.
+        // The 详情面板 (ActivitiesPanel.Details.cs) edits every one of those in place through
+        // the same Apply* tails in ActivitiesPanel.Editing.cs, so the menu copies were a
+        // second, divergent track for the same properties. What stays, and why: 进入这一项的
+        // 过场 (the panel has no transition editor at all) and 文档播放设置... (the panel only
+        // offers a button that opens this very dialog — it is not an in-place editor, so by
+        // the "只读/间接展示不算覆盖" rule the menu entry is the real one and stays).
         // PDF / Word / presentation playback settings (reading mode, page range, editor, native/static…).
         _documentSettingsButton = new ToolStripMenuItem("文档播放设置...") { Enabled = false };
         _documentSettingsButton.Click += (_, _) => OnEditDocumentSettings();
@@ -272,12 +296,32 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         // GetSelection()/_tree.SelectedNode at all.
         _batchPropertiesButton = new ToolStripMenuItem("统一设置属性...") { Enabled = false };
         _batchPropertiesButton.Click += (_, _) => OnEditBatchProperties();
+        // AP-07's batch twin of 移除文件, right beside 统一设置属性...: same multi-selection,
+        // same "no confirmation, one undo toast" rule as the single remove (AP-02) — the item's
+        // text carries the live count, set in UpdateButtonStates.
+        _batchRemoveButton = new ToolStripMenuItem("批量移除") { Enabled = false };
+        _batchRemoveButton.Click += (_, _) => OnRemoveFilesBatch();
         _removeButton = new ToolStripMenuItem("移除文件") { Enabled = false };
         _removeButton.Click += (_, _) => OnRemoveFile();
         _moveUpButton = new ToolStripMenuItem("上移") { Enabled = false };
         _moveUpButton.Click += (_, _) => MoveSelectedFile(-1);
         _moveDownButton = new ToolStripMenuItem("下移") { Enabled = false };
         _moveDownButton.Click += (_, _) => MoveSelectedFile(1);
+        // Activity-level twins of 上移/下移 (AP-03a): activity order IS the running order, and
+        // before these the only fix for a wrong section order was delete-and-rebuild.
+        _moveActivityUpItem = new ToolStripMenuItem("上移环节") { Enabled = false };
+        _moveActivityUpItem.Click += (_, _) => MoveSelectedActivity(-1);
+        _moveActivityDownItem = new ToolStripMenuItem("下移环节") { Enabled = false };
+        _moveActivityDownItem.Click += (_, _) => MoveSelectedActivity(1);
+        // Deep-copies the selected activity right after itself (AP-04) — CloneActivity, shared
+        // with 另存为, see OnDuplicateActivity.
+        _duplicateActivityItem = new ToolStripMenuItem("复制环节") { Enabled = false };
+        _duplicateActivityItem.Click += (_, _) => OnDuplicateActivity();
+        // 「移动到环节」: moves the selected file to another activity of this scenario, object
+        // and properties intact (AP-03b; filled when the submenu opens, like 背景音乐/过场 below).
+        _moveFileToActivityItem = new ToolStripMenuItem("移动到环节") { Enabled = false };
+        _moveFileToActivityItem.DropDownItems.Add(new ToolStripMenuItem("(placeholder)"));
+        _moveFileToActivityItem.DropDownOpening += (_, _) => FillMoveFileToActivityMenu();
         _editMenu = ModernUi.CreateThemedMenu(this);
         // 「进入本环节时的背景音乐」: keep / fade out / switch to a playlist (filled when the menu opens).
         _musicCueItem = new ToolStripMenuItem("进入本环节时的背景音乐") { Enabled = false };
@@ -287,13 +331,16 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         _transitionItem = new ToolStripMenuItem("进入这一项的过场") { Enabled = false };
         _transitionItem.DropDownItems.Add(new ToolStripMenuItem("(placeholder)"));
         _transitionItem.DropDownOpening += (_, _) => FillTransitionMenu();
+        // Grouped by kind (AP-10's regrouping): run / section structure / per-item settings
+        // the panel doesn't edit in place / file order & placement / batch.
         _editMenu.Items.AddRange(new ToolStripItem[]
         {
             _playSelectedItem, new ToolStripSeparator(),
-            _renameActivityItem, _addFileButton, _playModeButton, _musicCueItem, _deleteActivityItem, new ToolStripSeparator(),
-            _audioPropertiesButton, _fadeButton, _stayDurationButton, _completionActionButton, _transitionItem, _documentSettingsButton, _batchPropertiesButton,
-            new ToolStripSeparator(),
-            _moveUpButton, _moveDownButton, _removeButton,
+            _addFileButton, _renameActivityItem, _duplicateActivityItem,
+            _moveActivityUpItem, _moveActivityDownItem, _deleteActivityItem, new ToolStripSeparator(),
+            _musicCueItem, _transitionItem, _documentSettingsButton, new ToolStripSeparator(),
+            _moveUpButton, _moveDownButton, _moveFileToActivityItem, _removeButton, new ToolStripSeparator(),
+            _batchPropertiesButton, _batchRemoveButton,
         });
         _editMenu.Opening += (_, _) => UpdateButtonStates();
 
@@ -352,6 +399,7 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             Padding = new Padding(0, 0, 0, 12),
             BackColor = Color.Transparent,
         };
+        _activityRows.TabIndex = 1; // AP-12: after the header (0), before the detail panel (2)
         _activityRows.Resize += (_, _) => LayoutRows();
         _emptyState = ModernUi.SetForegroundRole(new Label
         {
@@ -492,26 +540,60 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     /// keep reading that as before, unaffected by this method).</summary>
     private void OnTreeNodeMouseClick(object? sender, TreeNodeMouseClickEventArgs e)
     {
-        if (e.Node.Tag is MediaFile && Control.ModifierKeys.HasFlag(Keys.Control))
+        if (e.Node.Tag is MediaFile file && Control.ModifierKeys.HasFlag(Keys.Control))
         {
-            if (!_multiSelectedFileNodes.Remove(e.Node))
-            {
-                _multiSelectedFileNodes.Add(e.Node);
-                e.Node.BackColor = SystemColors.Highlight;
-                e.Node.ForeColor = SystemColors.HighlightText;
-            }
-            else
-            {
-                e.Node.BackColor = _tree.BackColor;
-                e.Node.ForeColor = _tree.ForeColor;
-            }
+            _multiSelectAnchorFile = file;
+            SetMultiNodeSelected(e.Node, !_multiSelectedFileNodes.Contains(e.Node));
         }
         else
         {
+            if (e.Node.Tag is MediaFile plainFile) _multiSelectAnchorFile = plainFile;
             ClearMultiSelection();
         }
         UpdateButtonStates();
         RefreshCardStyles();
+    }
+
+    /// <summary>Adds/removes one node to/from the multi-selection, keeping the node's own
+    /// highlight colors in step (the rows paint their ✓ marker off the set itself; the colors
+    /// are for the hidden tree's own bookkeeping, same as before AP-07 factored this out).</summary>
+    private void SetMultiNodeSelected(TreeNode node, bool selected)
+    {
+        if (selected)
+        {
+            _multiSelectedFileNodes.Add(node);
+            node.BackColor = SystemColors.Highlight;
+            node.ForeColor = SystemColors.HighlightText;
+        }
+        else
+        {
+            _multiSelectedFileNodes.Remove(node);
+            node.BackColor = _tree.BackColor;
+            node.ForeColor = _tree.ForeColor;
+        }
+    }
+
+    /// <summary>Shift+Click range selection (AP-07): the multi-selection becomes every file
+    /// from <see cref="_multiSelectAnchorFile"/> to <paramref name="target"/> in the tree's
+    /// flat order (across activities — the same order the rows present), replacing the
+    /// previous set, Explorer-anchor style. The anchor itself does not move on a Shift+Click,
+    /// so repeated Shift+Clicks re-range from the same start. With no live anchor — never
+    /// set, or its file has since left the tree — the "range" is just the clicked file.</summary>
+    private void SelectFileRange(MediaFile target)
+    {
+        var flat = new List<TreeNode>();
+        foreach (TreeNode activityNode in _tree.Nodes)
+            foreach (TreeNode fileNode in activityNode.Nodes)
+                flat.Add(fileNode);
+        int to = flat.FindIndex(node => ReferenceEquals(node.Tag, target));
+        if (to < 0) return;
+        int from = _multiSelectAnchorFile is { } anchor
+            ? flat.FindIndex(node => ReferenceEquals(node.Tag, anchor))
+            : -1;
+        if (from < 0) from = to;
+        ClearMultiSelection();
+        for (int i = Math.Min(from, to); i <= Math.Max(from, to); i++)
+            SetMultiNodeSelected(flat[i], true);
     }
 
     /// <summary>设置 「单击即上屏」: a plain click on an item runs it (as a double-click does otherwise).</summary>
@@ -520,16 +602,24 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     private void OnCardNodeClick(TreeNode node)
     {
         _tree.SelectedNode = node;
-        if (node.Tag is MediaFile && Control.ModifierKeys.HasFlag(Keys.Control))
+        var modifiers = Control.ModifierKeys;
+        if (node.Tag is MediaFile file && modifiers.HasFlag(Keys.Shift) && !modifiers.HasFlag(Keys.Control))
         {
-            if (!_multiSelectedFileNodes.Remove(node)) _multiSelectedFileNodes.Add(node);
+            SelectFileRange(file);
+            UpdateButtonStates();
+        }
+        else if (node.Tag is MediaFile && modifiers.HasFlag(Keys.Control))
+        {
+            _multiSelectAnchorFile = (MediaFile)node.Tag;
+            SetMultiNodeSelected(node, !_multiSelectedFileNodes.Contains(node));
             UpdateButtonStates();
         }
         else
         {
+            if (node.Tag is MediaFile clickedFile) _multiSelectAnchorFile = clickedFile;
             ClearMultiSelection();
             UpdateButtonStates();
-            if (node.Tag is MediaFile && Control.ModifierKeys == Keys.None && ClickTakesToAir?.Invoke() == true)
+            if (node.Tag is MediaFile && modifiers == Keys.None && ClickTakesToAir?.Invoke() == true)
                 OnNodeDoubleClick(this, new TreeNodeMouseClickEventArgs(node, MouseButtons.Left, 1, 0, 0));
         }
         RefreshCardStyles();
@@ -610,6 +700,9 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     /// <summary>「展开全部 / 收起全部」: collapses everything if any activity is expanded, else expands all.</summary>
     private void OnToggleExpandAll()
     {
+        // Frozen while a filter is up (AP-06): folding is presentation-frozen there, and this
+        // one persists IsCollapsed — exactly what the filter must never do.
+        if (IsFiltering) return;
         var scenario = CurrentScenario;
         if (scenario == null || scenario.Activities.Count == 0) return;
         bool collapse = scenario.Activities.Any(a => !a.IsCollapsed);
@@ -647,6 +740,17 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         _activityCount.Text = $"{sections} 个环节 · {items} 项";
     }
 
+    /// <summary>AP-06: a search keystroke re-presents the list, filtered. The flag keeps this
+    /// one refresh from resetting the thumbnail cache (below) — the cache is keyed by file,
+    /// not by row, so filtered-out files' thumbnails are still valid when the filter clears.</summary>
+    private void OnSearchTextChanged()
+    {
+        _filterText = _searchBox.Text;
+        _refreshForFilterChange = true;
+        try { RefreshTree(); }
+        finally { _refreshForFilterChange = false; }
+    }
+
     /// <summary>Call after the scenario store changes from outside this control.</summary>
     public void RefreshTree()
     {
@@ -656,12 +760,15 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             _preShowProblems.Clear();
             BeginInvokeWhenReady(() => RunPreShowCheck(requestedByOperator: false));
         }
-        _thumbnailGeneration++;
-        foreach (var image in _thumbnails.Values) image.Dispose();
-        _thumbnails.Clear();
-        _thumbnailsRequested.Clear();
-        _thumbnailUnavailable.Clear();
-        _thumbnailSourceKeys.Clear();
+        if (!_refreshForFilterChange)
+        {
+            _thumbnailGeneration++;
+            foreach (var image in _thumbnails.Values) image.Dispose();
+            _thumbnails.Clear();
+            _thumbnailsRequested.Clear();
+            _thumbnailUnavailable.Clear();
+            _thumbnailSourceKeys.Clear();
+        }
         // Old TreeNode references go stale the moment the tree they belonged to is torn down below —
         // see _multiSelectedFileNodes' own doc comment. No need to reset their BackColor/ForeColor
         // first (they're being discarded, not reused). The selection is carried over by Tag (the
@@ -675,7 +782,9 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         foreach (var row in oldRows) row.Dispose();
 
         var scenario = CurrentScenario;
-        int count = scenario?.Activities.Count ?? 0;
+        string filter = _filterText.Trim();
+        bool filtering = filter.Length > 0;
+        int displayed = 0;
         if (scenario != null)
         {
             for (int i = 0; i < scenario.Activities.Count; i++)
@@ -683,10 +792,23 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
                 var activity = scenario.Activities[i];
                 var activityNode = new TreeNode(activity.Name) { Tag = activity };
                 foreach (var file in activity.Files)
+                {
+                    // AP-06: while filtering, only name-matching files enter the tree/rows at
+                    // all — presentation only, the scenario data is never touched, so clearing
+                    // the filter rebuilds the full list from this same data.
+                    if (filtering && !Path.GetFileName(file.SourcePath).Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
                     activityNode.Nodes.Add(new TreeNode(BuildFileNodeText(file)) { Tag = file });
-                if (activity.IsCollapsed) activityNode.Collapse(); else activityNode.Expand();
+                }
+                if (filtering && activityNode.Nodes.Count == 0) continue; // no match in this section — no row either
+                // While filtering, sections present EXPANDED (a match must never sit hidden
+                // inside a collapsed section) — by expanding the fresh node only, never by
+                // writing Activity.IsCollapsed: the stored fold state stays exactly what
+                // clearing the filter restores. Folding itself is frozen meanwhile
+                // (ToggleCollapsed / OnToggleExpandAll both refuse while filtering).
+                if (filtering || !activity.IsCollapsed) activityNode.Expand(); else activityNode.Collapse();
                 _tree.Nodes.Add(activityNode);
                 _activityRows.Controls.Add(new ActivityRowView(this, activity, activityNode, i + 1));
+                displayed++;
             }
         }
         _activityRows.ResumeLayout(true);
@@ -694,15 +816,18 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         LayoutRows();
 
         UpdateCountLabel();
-        _emptyState.Visible = count == 0;
-        _activityRows.Visible = count > 0;
+        _emptyState.Text = filtering && displayed == 0 && (scenario?.Activities.Count ?? 0) > 0
+            ? $"没有匹配“{filter}”的文件"
+            : "这个方案还没有环节\r\n点右上角「＋ 环节」开始编排流程";
+        _emptyState.Visible = displayed == 0;
+        _activityRows.Visible = displayed > 0;
         if (selectedTag != null && FindNode(selectedTag) is { } reselect) _tree.SelectedNode = reselect;
         RefreshCardStyles();
         UpdateButtonStates();
     }
 
     /// <summary>Flags a background-audio file right in the tree, rather than requiring the operator
-    /// to open "音频属性..." on every audio file just to find out — previously the only place this
+    /// to open the 详情面板's 音频属性 section on every audio file just to find out — previously the only place this
     /// state was visible at all (besides that dialog's own checkbox) was
     /// <c>AudioPropertiesDialog</c>'s red caveat label, shown only while that dialog is actually open.
     /// The label itself used to say "尚未实现，会被跳过" (see this project's README "已知风险" #84
@@ -811,6 +936,41 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             && FocusedLeafControl() is not (ComboBox or TextBoxBase or NumericUpDown or ListBox or TreeView)
             && MoveSelectionByKey(keyData == Keys.Down ? 1 : -1))
             return true;
+
+        // AP-06: Esc while typing in the search box clears the filter. Claimed here, one
+        // level before MainWindow.ProcessCmdKey (where Esc is the in-window emergency stop)
+        // would take it — scoped to the search box only, every other Esc keeps its meaning.
+        if (keyData == Keys.Escape && ReferenceEquals(FocusedLeafControl(), _searchBox))
+        {
+            _searchBox.Clear(); // TextChanged exits the filter and rebuilds the full list
+            return true;
+        }
+
+        // AP-08: the selection's keyboard commands — same input-control exemption as Up/Down
+        // above, so a key an editor control uses itself is never stolen from it.
+        if (FocusedLeafControl() is not (ComboBox or TextBoxBase or NumericUpDown or ListBox or TreeView))
+        {
+            // The menu key / Shift+F10 opens the same edit menu as a right-click, at the
+            // selected row (ShowEditMenuForSelection); with no selection it stays unhandled.
+            if ((keyData == Keys.Apps || keyData == (Keys.F10 | Keys.Shift)) && _tree.SelectedNode != null)
+            {
+                ShowEditMenuForSelection();
+                return true;
+            }
+            // Delete removes a selected FILE — the AP-02 undoable remove, never a silent
+            // data loss. On a selected ACTIVITY it deliberately does nothing: deleting a
+            // section keeps its own confirmed menu path rather than a bare keystroke.
+            if (keyData == Keys.Delete && GetSelection().file != null)
+            {
+                OnRemoveFile();
+                return true;
+            }
+            if (keyData == Keys.F2 && _tree.SelectedNode?.Tag is Activity)
+            {
+                OnRenameActivity();
+                return true;
+            }
+        }
         return base.ProcessCmdKey(ref msg, keyData);
     }
 

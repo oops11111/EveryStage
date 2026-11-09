@@ -217,6 +217,61 @@ public sealed partial class ActivitiesPanel
         OfferUndoActivityDelete(scenario, activity, index);
     }
 
+    /// <summary>Swaps the selected activity with its neighbour (AP-03a, 「上移环节/下移环节」) —
+    /// the activity-level twin of <c>MoveSelectedFile</c>. Activity order is the show's running
+    /// order (automatic progression walks this list — see <see cref="Activity"/>'s doc comment),
+    /// so rehearsal-time reordering of whole sections is a real need that previously meant
+    /// delete-and-rebuild. Selection needs no explicit restore: RefreshTree reselects by Tag,
+    /// so it rides along with the moved activity object.</summary>
+    private void MoveSelectedActivity(int delta)
+    {
+        var (scenario, activity, _) = GetSelection();
+        if (scenario == null || activity == null) return;
+
+        int index = scenario.Activities.IndexOf(activity);
+        int newIndex = index + delta;
+        if (index < 0 || newIndex < 0 || newIndex >= scenario.Activities.Count) return;
+
+        (scenario.Activities[index], scenario.Activities[newIndex]) = (scenario.Activities[newIndex], scenario.Activities[index]);
+        if (!TrySave()) return;
+        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        RefreshTree();
+    }
+
+    /// <summary>Deep-copies the selected activity directly after itself (AP-04, 「复制环节」).
+    /// Id safety was checked before reusing <see cref="CloneActivity"/> here: it builds a
+    /// <c>new Activity</c> (whose <see cref="Activity.Id"/> initializer mints a fresh Guid) and
+    /// clones files via <c>MediaFile.Clone()</c> with its default <c>preserveId: false</c> — so
+    /// a copy inside the SAME scenario carries no duplicate Ids, activity- or file-level, and
+    /// editing it can never alias the original.</summary>
+    private void OnDuplicateActivity()
+    {
+        var (scenario, activity, _) = GetSelection();
+        if (scenario == null || activity == null) return;
+
+        var clone = CloneActivity(activity);
+        clone.Name = DuplicateActivityName(scenario, activity.Name);
+        scenario.Activities.Insert(scenario.Activities.IndexOf(activity) + 1, clone);
+        if (!TrySave()) return;
+        _fileOpLog.LogActivityCreated(scenario.Id, clone.Id, clone.Name);
+        RefreshTree();
+        // RefreshTree's by-Tag reselection keeps the ORIGINAL activity selected; the operator
+        // just made the copy, so land on it instead.
+        foreach (TreeNode node in _tree.Nodes)
+            if (node.Tag == clone) { _tree.SelectedNode = node; break; }
+    }
+
+    /// <summary>「原名 副本」, then 「原名 副本 (2)」, (3), … — the same suffix
+    /// <see cref="OnSaveAsScenario"/> defaults a copied scenario to, with a counter only when
+    /// the plain suffix is already taken.</summary>
+    private static string DuplicateActivityName(Scenario scenario, string baseName)
+    {
+        string candidate = baseName + " 副本";
+        for (int n = 2; scenario.Activities.Any(a => a.Name == candidate); n++)
+            candidate = $"{baseName} 副本 ({n})";
+        return candidate;
+    }
+
     /// <summary>删后撤销 for an activity deletion — see <see cref="OfferUndoScenarioDelete"/> for why
     /// this exists and why the restore is not logged as a creation. One extra guard: if the owning
     /// scenario was itself deleted inside the undo window, the activity's home is gone and the undo

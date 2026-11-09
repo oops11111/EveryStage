@@ -359,7 +359,12 @@ internal sealed class ActivityRowView : Control
         TextRenderer.DrawText(g, Path.GetFileName(file.SourcePath), NameFont,
             Rectangle.FromLTRB(c.Name, bounds.Top + S(8), nameRight, cy + S(2)), text,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-        TextRenderer.DrawText(g, preShowProblem is { } problem ? PreShowCheck.Describe(problem) : unavailable ? "文件不可用" : KindLine(file), SmallFont,
+        // A pre-show problem (or plain unavailability) owns the second line outright; only the
+        // normal kind line differs by width — see NarrowSecondLine for the narrow form (AP-09).
+        string secondLine = preShowProblem is { } problem ? PreShowCheck.Describe(problem)
+            : unavailable ? "文件不可用"
+            : c.Wide ? KindLine(file) : NarrowSecondLine(file);
+        TextRenderer.DrawText(g, secondLine, SmallFont,
             Rectangle.FromLTRB(c.Name, cy + S(2), nameRight, bounds.Bottom - S(8)),
             unavailable && !highContrast ? ModernUi.Danger : ModernUi.Muted,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
@@ -464,13 +469,28 @@ internal sealed class ActivityRowView : Control
     }
 
     /// <summary>The muted second line under the name: what kind of item this is.</summary>
-    private static string KindLine(MediaFile file) => KindOnly(file) + file.TransitionOverride switch
+    private static string KindLine(MediaFile file) => KindOnly(file) + TransitionSuffix(file);
+
+    private static string TransitionSuffix(MediaFile file) => file.TransitionOverride switch
     {
         TransitionStyle.Cut => " · 直切进入",
         TransitionStyle.Dissolve => " · 叠化进入",
         TransitionStyle.DipToBlack => " · 经黑场进入",
         _ => "",
     };
+
+    /// <summary>AP-09: on narrow rows the wide layout's 「时长」 column does not exist at all
+    /// (see <see cref="ColumnsFor"/>), so the duration fact would vanish with it. The narrow
+    /// second line therefore folds the SAME <see cref="DurationText"/> in — kind · duration ·
+    /// transition — instead of inventing a second wording for the same fact. Background audio
+    /// is the one exception: its kind line already says it plays under the whole section, and
+    /// its DurationText （贯穿本环节） would only repeat that.</summary>
+    private static string NarrowSecondLine(MediaFile file)
+    {
+        string line = KindOnly(file);
+        if (!file.IsBackgroundAudio) line += " · " + DurationText(file);
+        return line + TransitionSuffix(file);
+    }
 
     private static string KindOnly(MediaFile file)
     {

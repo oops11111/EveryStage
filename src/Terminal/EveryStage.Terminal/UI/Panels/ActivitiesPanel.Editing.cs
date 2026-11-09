@@ -14,42 +14,31 @@ public sealed partial class ActivitiesPanel
         if (scenario == null || activity == null) return;
 
         using var picker = new LibraryFilePickerDialog(_library.Files);
-        if (picker.ShowDialog(this) != DialogResult.OK || picker.Selected == null) return;
+        if (picker.ShowDialog(this) != DialogResult.OK || picker.SelectedFiles.Count == 0) return;
 
-        activity.Files.Add(picker.Selected.Clone());
+        // One save for the whole batch (AP-01): TrySave writes the entire store either way, so
+        // saving per file would only repeat the same write N times — and if the one save fails,
+        // TrySave's reload rolls every add back together, the all-or-nothing outcome a single
+        // dialog confirmation should have. Each file is still cloned individually, exactly as
+        // the single-pick path did (fresh Id, no shared instance with the library or a sibling).
+        MediaFile? lastAdded = null;
+        foreach (var libraryFile in picker.SelectedFiles)
+        {
+            lastAdded = libraryFile.Clone();
+            activity.Files.Add(lastAdded);
+        }
         if (!TrySave()) return;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
         RefreshTree();
-    }
-
-    private void OnEditPlayMode()
-    {
-        var (scenario, activity, file) = GetSelection();
-        if (scenario == null || activity == null) return;
-
-        // A file node selected within the activity edits that FILE's PlayModeOverride (with an
-        // "inherit" option); selecting just the activity node itself (file == null) edits the
-        // activity's own DefaultPlayMode instead — same GetSelection() distinction UpdateButtonStates
-        // already uses elsewhere in this class.
-        if (file != null)
-        {
-            using var fileDialog = new PlayModeDialog(
-                $"文件播放方式 — {Path.GetFileName(file.SourcePath)}", file.PlayModeOverride, allowInherit: true);
-            if (fileDialog.ShowDialog(this) != DialogResult.OK) return;
-            ApplyPlayModeOverride(file, fileDialog.SelectedPlayMode);
-            return;
-        }
-
-        using var dialog = new PlayModeDialog($"活动播放方式 — {activity.Name}", activity.DefaultPlayMode);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        ApplyActivityPlayMode(scenario, activity, dialog.SelectedPlayMode!.Value); // never null — allowInherit defaults false above.
+        if (lastAdded != null) SelectFileNode(activity, lastAdded);
     }
 
     /// <summary>Applies a new <see cref="MediaFile.PlayModeOverride"/>: no-change check, set,
-    /// <see cref="TrySave"/>, per-property log — the shared tail of the dialog handler above and
-    /// the 详情面板's in-place editor (ActivitiesPanel.Details.cs), so the single-file dialog, the
-    /// detail panel and (with its own loop) 统一设置属性 can never drift apart on how this property
-    /// is saved or logged.</summary>
+    /// <see cref="TrySave"/>, per-property log — the apply path of the 详情面板's in-place
+    /// editor (ActivitiesPanel.Details.cs). The per-file 播放方式... menu dialog that also
+    /// ended here was retired in AP-10 （属性双轨收敛）; the panel and (with its own loop)
+    /// 统一设置属性 remain, and sharing this tail keeps them from drifting apart on how this
+    /// property is saved or logged.</summary>
     private void ApplyPlayModeOverride(MediaFile file, PlayMode? newPlayMode)
     {
         if (newPlayMode == file.PlayModeOverride) return; // no actual change.
@@ -65,9 +54,9 @@ public sealed partial class ActivitiesPanel
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.PlayModeOverride), oldValue, newValue);
     }
 
-    /// <summary>Applies a new <see cref="Activity.DefaultPlayMode"/> — same shared-tail reasoning
-    /// as <see cref="ApplyPlayModeOverride"/> (dialog handler above + 详情面板). No-ops on no
-    /// actual change.</summary>
+    /// <summary>Applies a new <see cref="Activity.DefaultPlayMode"/> — same reasoning as
+    /// <see cref="ApplyPlayModeOverride"/>; called by the 详情面板's 环节播放方式 editor.
+    /// No-ops on no actual change.</summary>
     private void ApplyActivityPlayMode(Scenario scenario, Activity activity, PlayMode newPlayMode)
     {
         if (newPlayMode == activity.DefaultPlayMode) return; // no actual change — nothing to log/save.
@@ -77,34 +66,19 @@ public sealed partial class ActivitiesPanel
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
     }
 
-    /// <summary>Only reachable when a selected file's <c>Kind == MediaKind.Audio</c> — see
-    /// <see cref="UpdateButtonStates"/>. Unlike <see cref="OnEditPlayMode"/> this has no
-    /// activity-level counterpart: <c>IsBackgroundAudio</c>/<c>BackgroundAudioVisual</c> are only
-    /// meaningful per-file (see <c>MediaFile</c>'s own doc comments), there's no equivalent
-    /// activity-wide default to fall back to editing when nothing is selected.</summary>
-    private void OnEditAudioProperties()
-    {
-        var (_, activity, file) = GetSelection();
-        if (activity == null || file == null || file.Kind != MediaKind.Audio) return;
-
-        using var dialog = new AudioPropertiesDialog(
-            $"音频属性 — {Path.GetFileName(file.SourcePath)}", file.IsBackgroundAudio, file.BackgroundAudioVisual);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        ApplyAudioProperties(file, dialog.IsBackgroundAudio, dialog.BackgroundAudioVisual);
-    }
-
     /// <summary>Applies a new <see cref="MediaFile.IsBackgroundAudio"/>/
-    /// <see cref="MediaFile.BackgroundAudioVisual"/> pair — shared tail of the dialog handler
-    /// above and the 详情面板 (ActivitiesPanel.Details.cs); see <see cref="ApplyPlayModeOverride"/>
-    /// for the reasoning. Refreshes the tree because <see cref="MediaFile.IsBackgroundAudio"/>
-    /// changes the file node's own text (<see cref="BuildFileNodeText"/>).</summary>
+    /// <see cref="MediaFile.BackgroundAudioVisual"/> pair — the 详情面板's apply path
+    /// (ActivitiesPanel.Details.cs; the 音频属性... menu dialog was retired in AP-10); see
+    /// <see cref="ApplyPlayModeOverride"/> for the reasoning. Refreshes the tree because
+    /// <see cref="MediaFile.IsBackgroundAudio"/> changes the file node's own text
+    /// (<see cref="BuildFileNodeText"/>).</summary>
     private void ApplyAudioProperties(MediaFile file, bool isBackgroundAudio, AudioVisual backgroundAudioVisual)
     {
         if (isBackgroundAudio == file.IsBackgroundAudio && backgroundAudioVisual == file.BackgroundAudioVisual)
             return; // no actual change — nothing to log/save.
 
         // Two separate LogPlaybackPropertyChanged calls rather than one combined entry — same
-        // per-property granularity OnEditPlayMode already uses, so the log can show exactly which
+        // per-property granularity the other Apply* methods use, so the log can show exactly which
         // of the two properties actually changed rather than always recording both regardless.
         if (isBackgroundAudio != file.IsBackgroundAudio)
         {
@@ -119,32 +93,17 @@ public sealed partial class ActivitiesPanel
             file.BackgroundAudioVisual = backgroundAudioVisual;
         }
         if (!TrySave()) return;
-        // Unlike OnEditPlayMode/OnEditStayDuration/OnEditCompletionAction just above/below (none of
-        // which change anything the tree actually displays), IsBackgroundAudio now affects the file
+        // Unlike the other Apply* methods (none of which change anything the tree actually
+        // displays), IsBackgroundAudio now affects the file
         // node's own text (see BuildFileNodeText) — without this, toggling the checkbox wouldn't be
         // visible here until some unrelated action happened to trigger a full RefreshTree.
         RefreshTree();
     }
 
-    /// <summary>Only reachable when a selected file's <c>Kind</c> is Video or Audio — see
-    /// <see cref="UpdateButtonStates"/>. Same no-activity-level-counterpart reasoning as
-    /// <see cref="OnEditAudioProperties"/>: <c>MediaFile.FadeDuration</c>/<c>VolumeFollowsFade</c>
-    /// are only ever per-file, there is no per-activity default to fall back to editing when nothing
-    /// is selected.</summary>
-    private void OnEditFade()
-    {
-        var (_, activity, file) = GetSelection();
-        if (activity == null || file == null || file.Kind is not (MediaKind.Video or MediaKind.Audio)) return;
-
-        using var dialog = new FadeDialog(
-            $"淡入淡出 — {Path.GetFileName(file.SourcePath)}", file.VolumeFollowsFade, file.FadeDuration);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        ApplyFade(file, dialog.VolumeFollowsFade, dialog.FadeDuration);
-    }
-
     /// <summary>Applies a new <see cref="MediaFile.VolumeFollowsFade"/>/
-    /// <see cref="MediaFile.FadeDuration"/> pair — shared tail of the dialog handler above and
-    /// the 详情面板 (ActivitiesPanel.Details.cs); see <see cref="ApplyPlayModeOverride"/> for
+    /// <see cref="MediaFile.FadeDuration"/> pair — the 详情面板's apply path
+    /// (ActivitiesPanel.Details.cs; the 淡入淡出... menu dialog was retired in AP-10); see
+    /// <see cref="ApplyPlayModeOverride"/> for
     /// the reasoning. No tree refresh: neither field appears in the node's text.</summary>
     private void ApplyFade(MediaFile file, bool volumeFollowsFade, TimeSpan? fadeDuration)
     {
@@ -152,7 +111,7 @@ public sealed partial class ActivitiesPanel
             return; // no actual change — nothing to log/save.
 
         // Two separate LogPlaybackPropertyChanged calls, same per-property granularity
-        // OnEditAudioProperties already uses for its own two-field dialog.
+        // ApplyAudioProperties already uses for its own two-field apply.
         if (volumeFollowsFade != file.VolumeFollowsFade)
         {
             _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.VolumeFollowsFade),
@@ -168,13 +127,9 @@ public sealed partial class ActivitiesPanel
         if (!TrySave()) return;
     }
 
-    /// <summary>Only reachable when a selected file's <c>Kind</c> is Image, or Document that isn't an
-    /// Office document (see <see cref="IsStayDurationApplicable"/>) — see
-    /// <see cref="UpdateButtonStates"/>. Same no-activity-level-counterpart reasoning as
-    /// <see cref="OnEditAudioProperties"/>: <c>MediaFile.StayDuration</c> is only ever a per-file
-    /// override of the 设置 面板's single global default, there is no per-activity default to fall
-    /// back to editing when nothing is selected.</summary>
-    /// <summary>"文档播放设置": PDF reading mode / page range / zoom, Word editor, presentation mode.</summary>
+    /// <summary>"文档播放设置": PDF reading mode / page range / zoom, Word editor, presentation mode.
+    /// Kept as a menu entry under AP-10: the 详情面板 reaches this same dialog through a button —
+    /// it does not edit document settings in place — so this dialog IS the editor, not a second track.</summary>
     private void OnEditDocumentSettings()
     {
         var (_, activity, file) = GetSelection();
@@ -194,25 +149,15 @@ public sealed partial class ActivitiesPanel
         RefreshTree();
     }
 
-    private void OnEditStayDuration()
-    {
-        var (_, activity, file) = GetSelection();
-        if (activity == null || file == null || !IsStayDurationApplicable(file)) return;
-
-        using var dialog = new StayDurationDialog($"停留时长 — {Path.GetFileName(file.SourcePath)}", file.StayDuration);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        ApplyStayDuration(file, dialog.SelectedStayDuration);
-    }
-
-    /// <summary>Applies a new <see cref="MediaFile.StayDuration"/> — shared tail of the dialog
-    /// handler above and the 详情面板 (ActivitiesPanel.Details.cs); see
+    /// <summary>Applies a new <see cref="MediaFile.StayDuration"/> — the 详情面板's apply path
+    /// (ActivitiesPanel.Details.cs; the 停留时长... menu dialog was retired in AP-10); see
     /// <see cref="ApplyPlayModeOverride"/> for the reasoning.</summary>
     private void ApplyStayDuration(MediaFile file, TimeSpan? newStayDuration)
     {
         if (newStayDuration == file.StayDuration) return; // no actual change — nothing to log/save.
 
-        // LogPlaybackPropertyChanged, same per-property granularity OnEditPlayMode/
-        // OnEditAudioProperties already use — same established convention as OnEditPlayMode's own
+        // LogPlaybackPropertyChanged, same per-property granularity the other Apply* methods
+        // use — same established convention as ApplyPlayModeOverride's own
         // oldValue/newValue (see this method's README entry): a null TimeSpan? passes straight
         // through as a real null, not the string "null", since LogPlaybackPropertyChanged's two
         // value parameters are themselves string?.
@@ -223,22 +168,8 @@ public sealed partial class ActivitiesPanel
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.StayDuration), oldValue, newValue);
     }
 
-    /// <summary>Only reachable when a file is selected — see <see cref="UpdateButtonStates"/>.
-    /// Unlike <see cref="OnEditStayDuration"/>/<see cref="OnEditAudioProperties"/>, not restricted to
-    /// a particular <see cref="MediaKind"/>: <c>MediaFile.OnCompletion</c> applies to every kind
-    /// alike (see this button's own construction comment).</summary>
-    private void OnEditCompletionAction()
-    {
-        var (_, activity, file) = GetSelection();
-        if (activity == null || file == null) return;
-
-        using var dialog = new CompletionActionDialog($"完成后动作 — {Path.GetFileName(file.SourcePath)}", file.OnCompletion);
-        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-        ApplyCompletionAction(file, dialog.SelectedCompletionAction);
-    }
-
-    /// <summary>Applies a new <see cref="MediaFile.OnCompletion"/> — shared tail of the dialog
-    /// handler above and the 详情面板 (ActivitiesPanel.Details.cs); see
+    /// <summary>Applies a new <see cref="MediaFile.OnCompletion"/> — the 详情面板's apply path
+    /// (ActivitiesPanel.Details.cs; the 完成后动作... menu dialog was retired in AP-10); see
     /// <see cref="ApplyPlayModeOverride"/> for the reasoning.</summary>
     private void ApplyCompletionAction(MediaFile file, CompletionAction newCompletionAction)
     {
@@ -275,14 +206,74 @@ public sealed partial class ActivitiesPanel
         var (scenario, activity, file) = GetSelection();
         if (scenario == null || activity == null || file == null) return;
 
+        // Remember the slot so the undo offer below can put the same object back exactly where
+        // it was (AP-02).
+        int index = activity.Files.IndexOf(file);
         activity.Files.Remove(file);
         if (!TrySave()) return;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
         RefreshTree();
+        OfferUndoFileRemove(scenario, activity, file, index);
+    }
+
+    /// <summary>删后撤销 for a file removal (AP-02) — the file-level counterpart of
+    /// <see cref="OfferUndoActivityDelete"/>, with one deliberate difference: removing a file
+    /// never had the activity delete's confirmation box, and none is added — the 10 s 撤销 IS
+    /// the misclick recovery, which only works because the removed object itself is what goes
+    /// back (same instance, so every property and the playback state's by-reference identity
+    /// come back with it). As with the activity/scenario offers, the restore is deliberately
+    /// not logged as a creation, and a failed save means there is nothing to offer.</summary>
+    private void OfferUndoFileRemove(Scenario scenario, Activity activity, MediaFile file, int index)
+    {
+        if (ShowToast == null) return;
+        ShowToast($"文件“{Path.GetFileName(file.SourcePath)}”已移除", ToastSeverity.Info, new ToastAction[]
+        {
+            new("撤销", () =>
+            {
+                // Same guards as OfferUndoActivityDelete, one level down: the scenario and the
+                // activity must both still be there, and the file must not already be back
+                // (a second click, or the operator re-added it meanwhile).
+                if (!_store.Scenarios.Contains(scenario) || !scenario.Activities.Contains(activity)
+                    || activity.Files.Contains(file)) return;
+                activity.Files.Insert(Math.Min(index, activity.Files.Count), file);
+                if (!TrySave()) return;
+                RefreshTree();
+                SelectFileNode(activity, file);
+            }),
+        });
+    }
+
+    /// <summary>Moves the selected file to the end of another activity of the same scenario
+    /// (AP-03b, 「移动到环节 ▸」). The object itself moves — no clone — so every per-file
+    /// property (overrides, fades, stay duration…) travels with it, unlike the remove + re-add
+    /// workaround this replaces, which silently reset them all.</summary>
+    private void MoveFileToActivity(Activity target)
+    {
+        var (scenario, activity, file) = GetSelection();
+        if (scenario == null || activity == null || file == null) return;
+        if (ReferenceEquals(target, activity) || !scenario.Activities.Contains(target)) return;
+
+        activity.Files.Remove(file);
+        target.Files.Add(file);
+        // Land visibly: a collapsed target would swallow the file out of sight, so unfold it —
+        // the same reasoning keyboard selection auto-expands a collapsed activity it lands in.
+        // Folded into this edit's own save rather than a separate one.
+        if (target.IsCollapsed) target.IsCollapsed = false;
+        if (!TrySave()) return;
+        // Both activities changed membership; log each, matching the one-LogActivityModified-
+        // per-affected-activity granularity OnAddFile/OnRemoveFile already keep.
+        _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        _fileOpLog.LogActivityModified(scenario.Id, target.Id, target.Name);
+        RefreshTree();
+        SelectFileNode(target, file);
     }
 
     void IActivityRowHost.MoveFile(Activity activity, int from, int insertAt)
     {
+        // The rows' ⋮⋮ drag lands here; while a filter is up it is refused (AP-06, same rule
+        // as the 上移/下移 items in UpdateButtonStates) — the row doesn't know about the
+        // filter, so the guard lives at this single entry point.
+        if (IsFiltering) return;
         var scenario = CurrentScenario;
         if (scenario == null || from < 0 || from >= activity.Files.Count) return;
         var file = activity.Files[from];

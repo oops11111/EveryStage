@@ -30,6 +30,20 @@ public sealed partial class ActivitiesPanel
     // list's width, and a constant "属性" home teaches operators where properties live.
 
     private readonly Panel _detailPanel = new();
+
+    /// <summary>AP-11: the one visible trace of the detail panel while it is auto-hidden on a
+    /// narrow window — a small 「属性」 button at the right end of the column-heading strip.
+    /// Clicking it forces the panel open as a floating overlay (see
+    /// <see cref="_detailPanelForced"/>); created in <see cref="BuildDetailPanel"/> and shown /
+    /// positioned exclusively by <see cref="UpdateDetailPanelVisibility"/>.</summary>
+    private readonly Button _detailToggleButton = new();
+
+    /// <summary>AP-11: true while the operator has forced the detail panel open as an overlay
+    /// on a window too narrow for its docked form. Pure UI state — never persisted. The three
+    /// visibility states and their transitions live in
+    /// <see cref="UpdateDetailPanelVisibility"/>.</summary>
+    private bool _detailPanelForced;
+
     private readonly Label _detailTitle = new();
     private readonly Label _detailKindLabel = new();
     private readonly Label _detailPlaceholder = new();
@@ -90,6 +104,15 @@ public sealed partial class ActivitiesPanel
         _detailPanel.Width = LogicalToDeviceUnits(300); // P-03: DPI-scaled like every other width here
         _detailPanel.BackColor = ModernUi.Surface;
         _detailPanel.Padding = new Padding(12, 10, 12, 10);
+        // AP-11: while the panel floats as a forced overlay it needs an edge against the rows
+        // it covers — the docked form gets that edge from the layout itself, so the line is
+        // only drawn in the forced state.
+        _detailPanel.Paint += (_, e) =>
+        {
+            if (!_detailPanelForced) return;
+            using var pen = new Pen(ModernUi.Border);
+            e.Graphics.DrawLine(pen, 0, 0, 0, _detailPanel.Height - 1);
+        };
 
         _detailTitle.Dock = DockStyle.Top;
         _detailTitle.Height = 24;
@@ -248,6 +271,32 @@ public sealed partial class ActivitiesPanel
         _detailPanel.Controls.Add(_detailKindLabel);
         _detailPanel.Controls.Add(_detailTitle);
 
+        // AP-11: the narrow-window entry point. It belongs to no docked strip — the
+        // column-heading strip is a constructor local in ActivitiesPanel.cs — so it is added
+        // to the panel itself and floated at that strip's right end by
+        // UpdateDetailPanelVisibility (Anchor Top|Right keeps it glued to the right edge
+        // between the explicit repositions on every Resize). It starts hidden: the wide,
+        // docked state is the default and needs no entry point.
+        _detailToggleButton.Text = "属性";
+        _detailToggleButton.Width = LogicalToDeviceUnits(56);
+        _detailToggleButton.Height = LogicalToDeviceUnits(22);
+        _detailToggleButton.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        _detailToggleButton.Visible = false;
+        ModernUi.StyleButton(_detailToggleButton);
+        _detailToggleButton.Click += (_, _) => SetDetailPanelForced(!_detailPanelForced);
+        _detailToggleButton.KeyDown += OnDetailEscapeKeyDown;
+        _toolTip.SetToolTip(_detailToggleButton, "窗口太窄放不下属性面板时，点此以浮层打开");
+        Controls.Add(_detailToggleButton);
+
+        // AP-11: Esc leaves the forced overlay. ProcessCmdKey already belongs to the panel's
+        // selection keys (ActivitiesPanel.cs) and cannot be overridden a second time, so the
+        // overlay listens on the detail panel's own control tree instead — every editor is
+        // created in this method, so one recursive walk here covers them all. (An Esc that
+        // closes an open combo drop-down is consumed by the combo itself; the next Esc then
+        // reaches this handler.)
+        foreach (var control in SelfAndDescendants(_detailPanel))
+            control.KeyDown += OnDetailEscapeKeyDown;
+
         // P-01: visibility is managed separately from content — RefreshFileDetails fills the
         // editors and never touches Visible; UpdateDetailPanelVisibility (below) only decides
         // whether the docked panel is shown at all, and never touches the editors.
@@ -262,10 +311,79 @@ public sealed partial class ActivitiesPanel
     /// the 300-wide detail panel would leave the rows less than 340 logical px (the 320 minimum
     /// plus a small margin), the panel hides and the rows take the full width back. When the
     /// window widens again the panel reappears for whatever the current selection is — the
-    /// editors were kept filled by <see cref="RefreshFileDetails"/> the whole time.</summary>
+    /// editors were kept filled by <see cref="RefreshFileDetails"/> the whole time.
+    ///
+    /// AP-11 adds a third state to that rule, because an auto-hidden panel with no trace left
+    /// operators thinking the properties were gone. The state machine, all of it driven from
+    /// here (on every panel Resize and on every state change):
+    /// - docked: wide enough — panel docked right, toggle hidden;
+    /// - auto-hidden: too narrow and not forced — panel hidden, toggle shown (the only trace);
+    /// - forced overlay: too narrow but the operator clicked the toggle — the SAME panel
+    ///   control undocked and pinned over the rows' right edge (editors untouched, so nothing
+    ///   about editing differs), toggle still shown so it can close it again.
+    /// Forced ends by clicking the toggle again, by Esc inside the panel (see BuildDetailPanel),
+    /// or by the window widening back into the docked state, which is checked first below.</summary>
     private void UpdateDetailPanelVisibility()
     {
-        _detailPanel.Visible = ClientSize.Width - _detailPanel.Width >= LogicalToDeviceUnits(340);
+        bool fits = ClientSize.Width - _detailPanel.Width >= LogicalToDeviceUnits(340);
+        if (_detailPanelForced && fits) SetDetailPanelForced(false); // widened: back to docked
+        if (_detailPanelForced)
+        {
+            int width = Math.Min(_detailPanel.Width, ClientSize.Width);
+            _detailPanel.Bounds = new Rectangle(
+                ClientSize.Width - width, _activityRows.Top, width,
+                Math.Max(0, ClientSize.Height - _activityRows.Top));
+            _detailPanel.Visible = true;
+            _detailPanel.BringToFront();
+        }
+        else
+        {
+            _detailPanel.Visible = fits;
+        }
+        _detailToggleButton.Visible = _detailPanelForced || !fits;
+        if (_detailToggleButton.Visible) PositionDetailToggleButton();
+    }
+
+    /// <summary>AP-11: enters/leaves the forced-overlay state. Forcing undocks the panel;
+    /// <see cref="UpdateDetailPanelVisibility"/> then pins it over the rows and keeps it there
+    /// across resizes until the state ends. Unforcing re-docks it and hands visibility back to
+    /// the width rule in the same call.</summary>
+    private void SetDetailPanelForced(bool forced)
+    {
+        _detailPanelForced = forced;
+        _detailPanel.Dock = forced ? DockStyle.None : DockStyle.Right;
+        UpdateDetailPanelVisibility();
+    }
+
+    /// <summary>AP-11: keeps the 「属性」 toggle at the right end of the column-heading strip.
+    /// The strip panel is a constructor local (ActivitiesPanel.cs), so its geometry is derived
+    /// from the rows host instead: the strip occupies the 26 logical px directly above
+    /// <see cref="_activityRows"/>, whose live Top already reflects the header above it.</summary>
+    private void PositionDetailToggleButton()
+    {
+        if (_activityRows.Top <= 0) return; // not laid out yet — the first real Resize repositions
+        int stripHeight = LogicalToDeviceUnits(26);
+        _detailToggleButton.Location = new Point(
+            ClientSize.Width - _detailToggleButton.Width - LogicalToDeviceUnits(8),
+            _activityRows.Top - stripHeight + (stripHeight - _detailToggleButton.Height) / 2);
+        _detailToggleButton.BringToFront();
+    }
+
+    /// <summary>AP-11: Esc while the forced overlay is open closes it (wired to the toggle
+    /// button and, in BuildDetailPanel, to every control inside the detail panel).</summary>
+    private void OnDetailEscapeKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode != Keys.Escape || !_detailPanelForced) return;
+        e.SuppressKeyPress = true;
+        SetDetailPanelForced(false);
+    }
+
+    private static IEnumerable<Control> SelfAndDescendants(Control root)
+    {
+        yield return root;
+        foreach (Control child in root.Controls)
+            foreach (var descendant in SelfAndDescendants(child))
+                yield return descendant;
     }
 
     private static void ConfigureGroup(TableLayoutPanel group)

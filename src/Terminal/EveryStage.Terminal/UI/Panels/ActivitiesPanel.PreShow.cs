@@ -57,10 +57,26 @@ public sealed partial class ActivitiesPanel
             var item = new ListViewItem(new[] { $"{section}.{finding.Index + 1}", Path.GetFileName(finding.File.SourcePath), PreShowCheck.Describe(finding.Problem) })
             {
                 ToolTipText = finding.File.SourcePath,
+                // AP-05: the finding itself rides along so a click can locate the row it
+                // came from — the position text alone left the operator counting rows.
+                Tag = finding,
             };
             list.Items.Add(item);
         }
         list.ShowItemToolTips = true;
+        // AP-05: single click selects the finding's row in the main panel (the window is
+        // non-modal, so the operator can triage several findings in a row); double click
+        // locates and closes. Wired after population so adding the items can't fire it.
+        list.ItemSelectionChanged += (_, e) =>
+        {
+            if (e.IsSelected && e.Item?.Tag is PreShowFinding clicked) LocatePreShowFinding(clicked);
+        };
+        list.DoubleClick += (_, _) =>
+        {
+            if (list.SelectedItems.Count > 0 && list.SelectedItems[0].Tag is PreShowFinding target
+                && LocatePreShowFinding(target))
+                window.Close();
+        };
         var close = new Button { Text = "关闭", Dock = DockStyle.Bottom, Height = 34 };
         close.Click += (_, _) => window.Close();
         if (findings.Count > 0) window.Controls.Add(list);
@@ -70,5 +86,23 @@ public sealed partial class ActivitiesPanel
         ModernUi.StyleDialog(window);
         _preShowWindow = window;
         window.Show(FindForm()); // non-modal: the show is never blocked
+    }
+
+    /// <summary>AP-05: selects <paramref name="finding"/>'s file in the main panel and scrolls its
+    /// activity row into view, through the exact path keyboard navigation uses
+    /// (<see cref="MoveSelectionByKey"/>): expand the owning activity in the hidden tree first if
+    /// it is collapsed (same AfterExpand path, so the collapse state persists the same way), then
+    /// set <see cref="_tree"/>'s selection — AfterSelect refreshes the rows and the detail panel
+    /// on its own. Returns false and does nothing when the finding is stale: the check ran against
+    /// a snapshot, and by the time the operator clicks, the scenario may have been switched or the
+    /// file removed — <see cref="FindNode"/> searches the tree the panel currently shows, so a
+    /// finding whose file is no longer in it simply has no node to select.</summary>
+    private bool LocatePreShowFinding(PreShowFinding finding)
+    {
+        if (FindNode(finding.File) is not { } node) return false;
+        if (node.Parent is { } parent && !parent.IsExpanded) parent.Expand();
+        _tree.SelectedNode = node;
+        if (node.Parent?.Tag is Activity owner) ScrollActivityRowIntoView(owner);
+        return true;
     }
 }

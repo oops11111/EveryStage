@@ -169,11 +169,40 @@ public sealed partial class ActivitiesPanel
         // Right-clicking one file of an existing Ctrl+click multi-selection keeps that selection, so
         // 统一设置属性... is reachable from the context menu as well as from 编辑 ▾.
         if (!_multiSelectedFileNodes.Contains(node)) OnCardNodeClick(node);
-        _editMenu.Show(source, location);
+        ShowEditMenu(source, location);
+    }
+
+    /// <summary>The one place the shared <see cref="_editMenu"/> is shown from — a row's
+    /// right-click, the header's 「编辑 ▾」 button and the Apps / Shift+F10 keyboard path all
+    /// land here, so every entry point gets the same menu instance and the same
+    /// UpdateButtonStates refresh (via the menu's own Opening handler).</summary>
+    private void ShowEditMenu(Control source, Point location) => _editMenu.Show(source, location);
+
+    /// <summary>AP-08's keyboard path: opens the edit menu anchored at the selected
+    /// selection's row (its header's left edge, below where the ⋮ handle would be), or at the
+    /// panel's own top-left when the selection's row can't be found.</summary>
+    private void ShowEditMenuForSelection()
+    {
+        if (_tree.SelectedNode is not { } node) return;
+        var activity = node.Tag as Activity ?? node.Parent?.Tag as Activity;
+        if (activity != null)
+        {
+            foreach (var row in _activityRows.Controls.OfType<ActivityRowView>())
+            {
+                if (row.Activity != activity) continue;
+                ShowEditMenu(_activityRows, new Point(
+                    row.Left + LogicalToDeviceUnits(28), row.Top + LogicalToDeviceUnits(50)));
+                return;
+            }
+        }
+        ShowEditMenu(this, new Point(LogicalToDeviceUnits(16), LogicalToDeviceUnits(64)));
     }
 
     void IActivityRowHost.ToggleCollapsed(Activity activity)
     {
+        // Frozen while a filter is up (AP-06): sections are presented expanded there, and a
+        // toggle would persist an IsCollapsed change the operator can't even see happen.
+        if (IsFiltering) return;
         // Deferred: this runs inside the row's own MouseDown, and RefreshTree disposes that row.
         BeginInvoke(() =>
         {
