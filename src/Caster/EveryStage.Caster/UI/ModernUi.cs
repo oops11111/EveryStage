@@ -3,6 +3,57 @@ using System.Runtime.InteropServices;
 
 namespace EveryStage.Caster.UI;
 
+/// <summary>Which colours the Caster uses: follow Windows' app mode, or force light / dark.</summary>
+public enum CasterTheme { System, Light, Dark }
+
+/// <summary>One complete colour set. Every control reads the CURRENT palette when it paints or when
+/// <see cref="ModernUi.ApplyTheme"/> walks the tree, so a theme switch is a repaint, not a rebuild.</summary>
+internal sealed record CasterPalette(
+    bool IsDark,
+    Color Background, Color Sidebar, Color Surface, Color SurfaceHover, Color Border, Color ControlBorder,
+    Color Text, Color Muted, Color Faint,
+    Color Accent, Color AccentHover, Color AccentText, Color AccentSoft,
+    Color Danger, Color DangerHover,
+    Color Success, Color Warning, Color DangerText,
+    Color WarningSurface, Color WarningBorder, Color WarningText,
+    Color DangerSurface, Color DangerBorder,
+    Color SuccessSurface, Color SuccessBorder,
+    Color BarBackground, Color BarText, Color BarMuted)
+{
+    public static readonly CasterPalette Light = new(
+        IsDark: false,
+        Background: Color.FromArgb(243, 244, 246), Sidebar: Color.FromArgb(236, 238, 241),
+        Surface: Color.White, SurfaceHover: Color.FromArgb(246, 248, 250),
+        Border: Color.FromArgb(225, 228, 232), ControlBorder: Color.FromArgb(208, 215, 222),
+        Text: Color.FromArgb(27, 31, 36), Muted: Color.FromArgb(87, 96, 106), Faint: Color.FromArgb(140, 149, 159),
+        Accent: Color.FromArgb(0, 95, 184), AccentHover: Color.FromArgb(0, 78, 152), AccentText: Color.White,
+        AccentSoft: Color.FromArgb(232, 241, 251),
+        Danger: Color.FromArgb(198, 47, 56), DangerHover: Color.FromArgb(170, 36, 45),
+        Success: Color.FromArgb(26, 127, 55), Warning: Color.FromArgb(154, 103, 0), DangerText: Color.FromArgb(138, 28, 35),
+        WarningSurface: Color.FromArgb(255, 248, 229), WarningBorder: Color.FromArgb(240, 214, 145), WarningText: Color.FromArgb(110, 74, 0),
+        DangerSurface: Color.FromArgb(255, 241, 240), DangerBorder: Color.FromArgb(243, 184, 180),
+        SuccessSurface: Color.FromArgb(234, 247, 238), SuccessBorder: Color.FromArgb(166, 218, 182),
+        BarBackground: Color.FromArgb(27, 31, 36), BarText: Color.White, BarMuted: Color.FromArgb(201, 209, 217));
+
+    public static readonly CasterPalette Dark = new(
+        IsDark: true,
+        Background: Color.FromArgb(15, 23, 34), Sidebar: Color.FromArgb(11, 18, 27),
+        Surface: Color.FromArgb(23, 34, 49), SurfaceHover: Color.FromArgb(30, 44, 62),
+        Border: Color.FromArgb(38, 52, 69), ControlBorder: Color.FromArgb(52, 70, 92),
+        Text: Color.FromArgb(238, 243, 249), Muted: Color.FromArgb(159, 178, 200), Faint: Color.FromArgb(110, 128, 150),
+        Accent: Color.FromArgb(47, 124, 246), AccentHover: Color.FromArgb(76, 145, 255), AccentText: Color.White,
+        AccentSoft: Color.FromArgb(24, 45, 74),
+        Danger: Color.FromArgb(198, 47, 56), DangerHover: Color.FromArgb(222, 64, 73),
+        Success: Color.FromArgb(95, 224, 160), Warning: Color.FromArgb(255, 198, 92), DangerText: Color.FromArgb(255, 160, 166),
+        WarningSurface: Color.FromArgb(42, 34, 16), WarningBorder: Color.FromArgb(107, 84, 32), WarningText: Color.FromArgb(240, 220, 174),
+        DangerSurface: Color.FromArgb(42, 18, 21), DangerBorder: Color.FromArgb(122, 42, 49),
+        SuccessSurface: Color.FromArgb(15, 42, 31), SuccessBorder: Color.FromArgb(31, 107, 72),
+        BarBackground: Color.FromArgb(6, 10, 16), BarText: Color.White, BarMuted: Color.FromArgb(170, 186, 206));
+}
+
+/// <summary>Text colour role of a <see cref="ThemedLabel"/>.</summary>
+internal enum TextRole { Text, Muted, Faint, Accent, Success, Warning, Danger, WarningText, DangerText }
+
 internal static class ModernUi
 {
     /// <summary>The UI text font: Windows 11's Segoe UI Variable (Text optical size) when it is installed
@@ -14,60 +65,387 @@ internal static class ModernUi
     /// <summary>Semibold counterpart of <see cref="UiFont"/> (headings, labels).</summary>
     internal static readonly string UiFontSemibold = EveryStage.SharedUi.UiFonts.TextSemibold;
 
-    public static readonly Color Background = Color.FromArgb(10, 20, 34);
-    public static readonly Color Surface = Color.FromArgb(18, 37, 59);
-    public static readonly Color SurfaceRaised = Color.FromArgb(25, 48, 76);
-    public static readonly Color Border = Color.FromArgb(48, 75, 106);
-    public static readonly Color Text = Color.FromArgb(239, 245, 255);
-    public static readonly Color Muted = Color.FromArgb(155, 174, 201);
-    public static readonly Color Accent = Color.FromArgb(66, 139, 255);
-    public static readonly Color Danger = Color.FromArgb(239, 63, 68);
-    public static readonly Color Success = Color.FromArgb(42, 210, 128);
-    public static readonly Color Warning = Color.FromArgb(255, 181, 71);
+    public static CasterPalette Palette { get; private set; } = SystemPrefersLight() ? CasterPalette.Light : CasterPalette.Dark;
+    public static CasterTheme Theme { get; private set; } = CasterTheme.System;
 
-    public static void StyleTree(Control root)
-    {
-        root.Font = new Font(ModernUi.UiFont, 10F);
-        Apply(root, isRoot: true);
-    }
+    public static Color Background => Palette.Background;
+    public static Color Surface => Palette.Surface;
+    public static Color Border => Palette.Border;
+    public static Color Text => Palette.Text;
+    public static Color Muted => Palette.Muted;
+    public static Color Accent => Palette.Accent;
+    public static Color Danger => Palette.Danger;
+    public static Color Success => Palette.Success;
+    public static Color Warning => Palette.Warning;
 
-    private static void Apply(Control root, bool isRoot = false)
+    /// <summary>Picks the palette for <paramref name="theme"/> (System reads Windows' "app mode").</summary>
+    public static void SetTheme(CasterTheme theme)
     {
-        if (isRoot) root.BackColor = Background;
-        else if (root is GlassPanel) root.BackColor = Color.Transparent;
-        else if (root is Panel) root.BackColor = Background;
-        if (root is not Label || root.ForeColor == SystemColors.ControlText) root.ForeColor = Text;
-        foreach (Control child in root.Controls)
+        Theme = theme;
+        Palette = theme switch
         {
-            if (child is not Label || child.ForeColor == SystemColors.ControlText) child.ForeColor = Text;
-            child.BackColor = child switch
-            {
-                Button => Surface,
-                ListBox or ComboBox => SurfaceRaised,
-                Label or CheckBox or RadioButton => Color.Transparent,
-                Panel => Background,
-                _ => Background,
-            };
-            if (child is Button button)
-            {
-                button.FlatStyle = FlatStyle.Flat;
-                button.FlatAppearance.BorderColor = Border;
-                button.Cursor = Cursors.Hand;
-            }
-            Apply(child);
-        }
+            CasterTheme.Light => CasterPalette.Light,
+            CasterTheme.Dark => CasterPalette.Dark,
+            _ => SystemPrefersLight() ? CasterPalette.Light : CasterPalette.Dark,
+        };
     }
 
-    public static void Primary(Button button, bool danger = false)
+    public static string ThemeName(CasterTheme theme) => theme switch
     {
-        button.BackColor = danger ? Danger : Accent;
-        button.ForeColor = Color.White;
-        button.FlatStyle = FlatStyle.Flat;
-        button.FlatAppearance.BorderSize = 0;
-        button.Font = new Font(ModernUi.UiFontSemibold, 11F);
+        CasterTheme.Light => "浅色",
+        CasterTheme.Dark => "深色",
+        _ => "跟随系统",
+    };
+
+    /// <summary>HKCU …\Themes\Personalize\AppsUseLightTheme: 1 (or missing) = light apps.</summary>
+    public static bool SystemPrefersLight()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is not int value || value != 0;
+        }
+        catch (Exception) { return true; }
+    }
+
+    public static Color For(TextRole role) => role switch
+    {
+        TextRole.Muted => Palette.Muted,
+        TextRole.Faint => Palette.Faint,
+        TextRole.Accent => Palette.Accent,
+        TextRole.Success => Palette.Success,
+        TextRole.Warning => Palette.Warning,
+        TextRole.Danger => Palette.Danger,
+        TextRole.WarningText => Palette.WarningText,
+        TextRole.DangerText => Palette.DangerText,
+        _ => Palette.Text,
+    };
+
+    /// <summary>Re-colours a whole control tree for the current palette. Custom-painted controls only
+    /// need the repaint; stock controls get their colours set here.</summary>
+    public static void ApplyTheme(Control root)
+    {
+        switch (root)
+        {
+            case ThemedLabel label:
+                label.ForeColor = For(label.Role);
+                label.BackColor = Color.Transparent;
+                break;
+            case CheckBox check:
+                check.ForeColor = Palette.Text;
+                check.BackColor = Color.Transparent;
+                break;
+            case ListBox list:
+                list.ForeColor = Palette.Text;
+                break;
+            case Label label:
+                label.ForeColor = Palette.Text;
+                label.BackColor = Color.Transparent;
+                break;
+            case ThemedSurface surface:
+                surface.BackColor = surface.Kind == SurfaceKind.Sidebar ? Palette.Sidebar : Palette.Background;
+                break;
+        }
+        foreach (Control child in root.Controls) ApplyTheme(child);
+        root.Invalidate();
+    }
+
+    /// <summary>The colour actually painted behind <paramref name="control"/>: the nearest opaque parent,
+    /// or a card's fill (cards draw their own rounded surface over a transparent BackColor).</summary>
+    public static Color BackgroundBehind(Control control)
+    {
+        for (var parent = control.Parent; parent != null; parent = parent.Parent)
+        {
+            if (parent is CardPanel card) return card.FillColor;
+            if (parent.BackColor.A == 255) return parent.BackColor;
+        }
+        return Palette.Background;
+    }
+
+    public static GraphicsPath Rounded(RectangleF bounds, float radius)
+    {
+        float d = Math.Max(1, Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height)));
+        var path = new GraphicsPath();
+        path.AddArc(bounds.Left, bounds.Top, d, d, 180, 90);
+        path.AddArc(bounds.Right - d, bounds.Top, d, d, 270, 90);
+        path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+        path.AddArc(bounds.Left, bounds.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 }
 
+/// <summary>A label whose colour follows the theme by role.</summary>
+internal sealed class ThemedLabel : Label
+{
+    public TextRole Role { get; set; } = TextRole.Text;
+
+    public ThemedLabel()
+    {
+        BackColor = Color.Transparent;
+        UseMnemonic = false;
+    }
+
+    public ThemedLabel With(TextRole role)
+    {
+        Role = role;
+        ForeColor = ModernUi.For(role);
+        return this;
+    }
+}
+
+internal enum SurfaceKind { Background, Sidebar }
+
+/// <summary>A plain panel that takes the page or sidebar background of the current palette.</summary>
+internal class ThemedSurface : Panel
+{
+    public SurfaceKind Kind { get; set; } = SurfaceKind.Background;
+
+    public ThemedSurface()
+    {
+        DoubleBuffered = true;
+        BackColor = ModernUi.Background;
+    }
+}
+
+internal enum CardKind { Normal, Warning, Danger, Success }
+
+/// <summary>A rounded card: surface fill and a 1 px border, or a tinted notice (warning / danger /
+/// success). Children with a transparent background show the card through.</summary>
+internal sealed class CardPanel : Panel
+{
+    public CardKind Kind { get; set; } = CardKind.Normal;
+    public int Radius { get; set; } = 10;
+
+    public CardPanel()
+    {
+        DoubleBuffered = true;
+        SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer, true);
+        BackColor = Color.Transparent;
+    }
+
+    public Color FillColor => Kind switch
+    {
+        CardKind.Warning => ModernUi.Palette.WarningSurface,
+        CardKind.Danger => ModernUi.Palette.DangerSurface,
+        CardKind.Success => ModernUi.Palette.SuccessSurface,
+        _ => ModernUi.Palette.Surface,
+    };
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        var p = ModernUi.Palette;
+        using (var back = new SolidBrush(ModernUi.BackgroundBehind(this)))
+            e.Graphics.FillRectangle(back, ClientRectangle);
+        if (ClientSize.Width < 4 || ClientSize.Height < 4) return;
+        Color fill = FillColor;
+        Color border = Kind switch
+        {
+            CardKind.Warning => p.WarningBorder,
+            CardKind.Danger => p.DangerBorder,
+            CardKind.Success => p.SuccessBorder,
+            _ => p.Border,
+        };
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = ModernUi.Rounded(new RectangleF(0.5f, 0.5f, ClientSize.Width - 1.5f, ClientSize.Height - 1.5f), LogicalToDeviceUnits(Radius));
+        using (var brush = new SolidBrush(fill)) e.Graphics.FillPath(brush, path);
+        using var pen = new Pen(border);
+        e.Graphics.DrawPath(pen, path);
+    }
+}
+
+internal enum ButtonKind { Primary, Secondary, Danger, Ghost }
+
+/// <summary>A rounded, theme-painted push button (keyboard focus and accessibility stay the stock
+/// Button's). <see cref="Glyph"/> draws a small icon left of the text.</summary>
+internal sealed class ActionButton : Button
+{
+    public ButtonKind Kind { get; set; } = ButtonKind.Secondary;
+    public ButtonGlyph Glyph { get; set; } = ButtonGlyph.None;
+    private bool _hot, _pressed;
+
+    public ActionButton()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+            | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+        FlatStyle = FlatStyle.Flat;
+        FlatAppearance.BorderSize = 0;
+        BackColor = Color.Transparent;
+        Cursor = Cursors.Hand;
+        UseMnemonic = false;
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hot = true; Invalidate(); }
+    protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hot = false; _pressed = false; Invalidate(); }
+    protected override void OnMouseDown(MouseEventArgs e) { base.OnMouseDown(e); _pressed = true; Invalidate(); }
+    protected override void OnMouseUp(MouseEventArgs e) { base.OnMouseUp(e); _pressed = false; Invalidate(); }
+    protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var p = ModernUi.Palette;
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        Color behind = ModernUi.BackgroundBehind(this);
+        using (var back = new SolidBrush(behind))
+            g.FillRectangle(back, ClientRectangle);
+
+        bool hot = (_hot || _pressed) && Enabled;
+        (Color fill, Color border, Color ink) = Kind switch
+        {
+            ButtonKind.Primary => (hot ? p.AccentHover : p.Accent, Color.Empty, p.AccentText),
+            ButtonKind.Danger => (hot ? p.DangerHover : p.Danger, Color.Empty, Color.White),
+            ButtonKind.Ghost => (hot ? (behind == p.Surface ? p.Background : p.SurfaceHover) : Color.Empty, Color.Empty, p.Muted),
+            _ => (hot ? p.SurfaceHover : p.Surface, p.ControlBorder, p.Text),
+        };
+        if (!Enabled)
+        {
+            if (Kind is ButtonKind.Primary or ButtonKind.Danger) fill = p.IsDark ? Color.FromArgb(44, 58, 76) : Color.FromArgb(208, 215, 222);
+            ink = p.Faint;
+        }
+        var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+        using var path = ModernUi.Rounded(rect, LogicalToDeviceUnits(8));
+        if (!fill.IsEmpty) using (var brush = new SolidBrush(fill)) g.FillPath(brush, path);
+        if (!border.IsEmpty) using (var pen = new Pen(border)) g.DrawPath(pen, path);
+        if (Focused && ShowFocusCues)
+        {
+            using var focus = new Pen(p.Accent, 2f);
+            using var inner = ModernUi.Rounded(RectangleF.Inflate(rect, -2.5f, -2.5f), LogicalToDeviceUnits(6));
+            g.DrawPath(focus, inner);
+        }
+
+        var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis;
+        Size textSize = TextRenderer.MeasureText(g, Text, Font, Size.Empty, flags);
+        int glyph = Glyph == ButtonGlyph.None ? 0 : LogicalToDeviceUnits(16);
+        int gap = glyph > 0 && Text.Length > 0 ? LogicalToDeviceUnits(8) : 0;
+        int total = glyph + gap + textSize.Width;
+        int left = TextAlign is ContentAlignment.MiddleLeft ? LogicalToDeviceUnits(12) : Math.Max(LogicalToDeviceUnits(6), (Width - total) / 2);
+        if (glyph > 0) Glyphs.Draw(g, Glyph, new Rectangle(left, (Height - glyph) / 2, glyph, glyph), ink);
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(left + glyph + gap, 0, Width - left - glyph - gap, Height), ink, flags);
+    }
+}
+
+/// <summary>A selectable tile (a radio button underneath, so arrow keys and screen readers work): the
+/// monitor picker uses one per display.</summary>
+internal sealed class ChoiceTile : RadioButton
+{
+    public string Badge { get; set; } = "";
+
+    public ChoiceTile()
+    {
+        SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
+            | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
+        BackColor = Color.Transparent;
+        Cursor = Cursors.Hand;
+        AutoSize = false;
+        UseMnemonic = false;
+    }
+
+    protected override void OnCheckedChanged(EventArgs e) { base.OnCheckedChanged(e); Invalidate(); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var p = ModernUi.Palette;
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var back = new SolidBrush(ModernUi.BackgroundBehind(this)))
+            g.FillRectangle(back, ClientRectangle);
+        var rect = new RectangleF(1f, 1f, Width - 2.5f, Height - 2.5f);
+        using var path = ModernUi.Rounded(rect, LogicalToDeviceUnits(8));
+        using (var fill = new SolidBrush(Checked ? p.AccentSoft : p.Surface)) g.FillPath(fill, path);
+        using (var pen = new Pen(Checked ? p.Accent : p.ControlBorder, Checked ? 2f : 1f)) g.DrawPath(pen, path);
+        if (Focused && ShowFocusCues)
+        {
+            using var focus = new Pen(p.Accent, 1f) { DashStyle = DashStyle.Dot };
+            using var inner = ModernUi.Rounded(RectangleF.Inflate(rect, -3f, -3f), LogicalToDeviceUnits(6));
+            g.DrawPath(focus, inner);
+        }
+
+        int pad = LogicalToDeviceUnits(10);
+        var badge = new Rectangle(pad, (Height - LogicalToDeviceUnits(26)) / 2, LogicalToDeviceUnits(40), LogicalToDeviceUnits(26));
+        using (var badgePath = ModernUi.Rounded(badge, LogicalToDeviceUnits(4)))
+        using (var badgeFill = new SolidBrush(Checked ? p.Accent : p.ControlBorder))
+            g.FillPath(badgeFill, badgePath);
+        using (var badgeFont = new Font(ModernUi.UiFontSemibold, 9.5F))
+            TextRenderer.DrawText(g, Badge, badgeFont, badge, Checked ? p.AccentText : p.Muted,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+        TextRenderer.DrawText(g, Text, Font, new Rectangle(badge.Right + pad, 0, Width - badge.Right - pad * 2, Height), p.Text,
+            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+    }
+}
+
+internal enum ButtonGlyph { None, Cast, Stop, Back, Gear, Theme, ChevronDown, ChevronUp, Check, Warning, Cross, Info, Clock, Monitor }
+
+/// <summary>Small line icons drawn with GDI+ (no emoji, no icon font dependency).</summary>
+internal static class Glyphs
+{
+    public static void Draw(Graphics g, ButtonGlyph glyph, Rectangle r, Color color)
+    {
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        float u = r.Width / 24f;
+        PointF P(float x, float y) => new(r.Left + x * u, r.Top + y * u);
+        using var pen = new Pen(color, Math.Max(1.4f, 2f * u)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
+        using var brush = new SolidBrush(color);
+        switch (glyph)
+        {
+            case ButtonGlyph.Cast:
+            case ButtonGlyph.Monitor:
+                using (var screen = ModernUi.Rounded(new RectangleF(P(2, 4).X, P(2, 4).Y, 20 * u, 13 * u), 2 * u)) g.DrawPath(pen, screen);
+                g.DrawLine(pen, P(8, 21), P(16, 21));
+                g.DrawLine(pen, P(12, 17), P(12, 21));
+                if (glyph == ButtonGlyph.Cast) g.FillPolygon(brush, new[] { P(10, 8), P(15, 10.5f), P(10, 13) });
+                break;
+            case ButtonGlyph.Stop:
+                using (var square = ModernUi.Rounded(new RectangleF(P(5, 5).X, P(5, 5).Y, 14 * u, 14 * u), 2 * u)) g.FillPath(brush, square);
+                break;
+            case ButtonGlyph.Back:
+                g.DrawLines(pen, new[] { P(15, 5), P(8, 12), P(15, 19) });
+                break;
+            case ButtonGlyph.ChevronDown:
+                g.DrawLines(pen, new[] { P(6, 9), P(12, 15), P(18, 9) });
+                break;
+            case ButtonGlyph.ChevronUp:
+                g.DrawLines(pen, new[] { P(6, 15), P(12, 9), P(18, 15) });
+                break;
+            case ButtonGlyph.Check:
+                g.DrawLines(pen, new[] { P(5, 12), P(10, 17), P(19, 7) });
+                break;
+            case ButtonGlyph.Cross:
+                g.DrawLine(pen, P(6, 6), P(18, 18));
+                g.DrawLine(pen, P(18, 6), P(6, 18));
+                break;
+            case ButtonGlyph.Warning:
+                g.DrawPolygon(pen, new[] { P(12, 3), P(22, 21), P(2, 21) });
+                g.DrawLine(pen, P(12, 10), P(12, 14));
+                g.FillEllipse(brush, new RectangleF(P(11, 16.5f), new SizeF(2 * u, 2 * u)));
+                break;
+            case ButtonGlyph.Info:
+                g.DrawEllipse(pen, new RectangleF(P(3, 3), new SizeF(18 * u, 18 * u)));
+                g.DrawLine(pen, P(12, 11), P(12, 16));
+                g.FillEllipse(brush, new RectangleF(P(11, 7), new SizeF(2 * u, 2 * u)));
+                break;
+            case ButtonGlyph.Clock:
+                g.DrawEllipse(pen, new RectangleF(P(3, 3), new SizeF(18 * u, 18 * u)));
+                g.DrawLines(pen, new[] { P(12, 7), P(12, 12), P(15, 14) });
+                break;
+            case ButtonGlyph.Gear:
+                g.DrawEllipse(pen, new RectangleF(P(9, 9), new SizeF(6 * u, 6 * u)));
+                for (int i = 0; i < 8; i++)
+                {
+                    double a = i * Math.PI / 4;
+                    g.DrawLine(pen, P(12 + 6 * (float)Math.Cos(a), 12 + 6 * (float)Math.Sin(a)), P(12 + 9 * (float)Math.Cos(a), 12 + 9 * (float)Math.Sin(a)));
+                }
+                break;
+            case ButtonGlyph.Theme:
+                g.DrawEllipse(pen, new RectangleF(P(3, 3), new SizeF(18 * u, 18 * u)));
+                g.FillPie(brush, P(3, 3).X, P(3, 3).Y, 18 * u, 18 * u, 90, 180);
+                break;
+        }
+    }
+}
+
+/// <summary>The borderless main window: solid page colour, resizable from its edges, minimizable
+/// from the task bar.</summary>
 public class GradientForm : Form
 {
     private Size _logicalMinimumSize;
@@ -124,12 +502,8 @@ public class GradientForm : Form
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
-        using var background = new LinearGradientBrush(ClientRectangle,
-            Color.FromArgb(7, 17, 31), Color.FromArgb(18, 39, 65), 35F);
+        using var background = new SolidBrush(ModernUi.Background);
         e.Graphics.FillRectangle(background, ClientRectangle);
-        using var glow = new SolidBrush(Color.FromArgb(24, 65, 137, 232));
-        e.Graphics.FillEllipse(glow, ClientSize.Width / 3, -ClientSize.Height / 3,
-            ClientSize.Width, ClientSize.Height);
     }
 
     /// <summary>WinForms leaves WS_MINIMIZEBOX off a borderless form, so clicking the task-bar button
@@ -164,46 +538,8 @@ public class GradientForm : Form
     }
 }
 
-internal class GlassPanel : Panel
-{
-    public int CornerRadius { get; set; } = 18;
-    public Color GlassTint { get; set; } = Color.FromArgb(195, 14, 32, 53);
-
-    public GlassPanel()
-    {
-        DoubleBuffered = true;
-        BackColor = Color.Transparent;
-        SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer, true);
-    }
-
-    protected override void OnPaintBackground(PaintEventArgs e)
-    {
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        base.OnPaintBackground(e);
-        if (ClientSize.Width < 2 || ClientSize.Height < 2) return;
-        using var path = Rounded(ClientRectangle, LogicalToDeviceUnits(CornerRadius));
-        using var fill = new LinearGradientBrush(ClientRectangle,
-            Color.FromArgb(Math.Min(255, GlassTint.A + 25), GlassTint), GlassTint, 112F);
-        e.Graphics.FillPath(fill, path);
-        using var border = new Pen(Color.FromArgb(75, 166, 207, 255));
-        e.Graphics.DrawPath(border, path);
-    }
-
-    private static GraphicsPath Rounded(Rectangle bounds, int radius)
-    {
-        bounds.Width = Math.Max(1, bounds.Width - 1);
-        bounds.Height = Math.Max(1, bounds.Height - 1);
-        int diameter = Math.Max(2, Math.Min(radius * 2, Math.Min(bounds.Width, bounds.Height)));
-        var path = new GraphicsPath();
-        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
-}
-
+/// <summary>The custom title strip: drag to move, minimize and close. Takes the sidebar colour on its
+/// left part (the sidebar runs under it) and the page colour on the right.</summary>
 internal sealed class AppTitleBar : Panel
 {
     [DllImport("user32.dll")]
@@ -212,39 +548,44 @@ internal sealed class AppTitleBar : Panel
     private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     private readonly Form _form;
+    public int SidebarWidth { get; set; }
 
     public AppTitleBar(Form form)
     {
         _form = form;
         Dock = DockStyle.Top;
-        Height = 42;
-        BackColor = Color.FromArgb(9, 23, 39);
-        var appIcon = new PictureBox
-        {
-            Dock = DockStyle.Left, Width = 42, Padding = new Padding(12, 9, 4, 9),
-            SizeMode = PictureBoxSizeMode.Zoom, Image = form.Icon?.ToBitmap(), BackColor = BackColor,
-        };
-        var title = new Label
-        {
-            Text = "EveryStage Caster", Dock = DockStyle.Left, Width = 220,
-            Padding = new Padding(4, 0, 0, 0), TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = ModernUi.Text, Font = new Font(ModernUi.UiFontSemibold, 10F),
-        };
-        // Minimize and close only: this window has a fixed layout (MaximizeBox = false), so the old
-        // maximize button produced a screen-sized window of empty space.
+        Height = 36;
+        DoubleBuffered = true;
         var close = new CaptionButton(CaptionButton.CloseGlyph, isClose: true);
         var minimize = new CaptionButton(CaptionButton.MinimizeGlyph);
         close.Click += (_, _) => _form.Close();
         minimize.Click += (_, _) => _form.WindowState = FormWindowState.Minimized;
-        Controls.Add(title);
-        Controls.Add(appIcon);
-        // Dock=Right stacks so that the LAST-added control ends up right-most. Windows order left→
-        // right is minimize, maximize, close (close at the far right), so add in that same order.
+        // Dock=Right stacks so that the LAST-added control ends up right-most.
         Controls.Add(minimize);
         Controls.Add(close);
-        title.MouseDown += DragWindow;
-        appIcon.MouseDown += DragWindow;
         MouseDown += DragWindow;
+    }
+
+    protected override void OnPaintBackground(PaintEventArgs e)
+    {
+        var p = ModernUi.Palette;
+        BackColor = p.Background;
+        using (var page = new SolidBrush(p.Background)) e.Graphics.FillRectangle(page, ClientRectangle);
+        using (var side = new SolidBrush(p.Sidebar)) e.Graphics.FillRectangle(side, 0, 0, SidebarWidth, Height);
+        using var line = new Pen(p.Border);
+        e.Graphics.DrawLine(line, SidebarWidth - 1, 0, SidebarWidth - 1, Height);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        var p = ModernUi.Palette;
+        int s(int v) => LogicalToDeviceUnits(v);
+        var icon = new Rectangle(s(20), (Height - s(18)) / 2, s(18), s(18));
+        Glyphs.Draw(e.Graphics, ButtonGlyph.Monitor, icon, p.Accent);
+        using var font = new Font(ModernUi.UiFontSemibold, 10F);
+        TextRenderer.DrawText(e.Graphics, "EveryStage 投屏器", font, new Rectangle(icon.Right + s(10), 0, Math.Max(0, SidebarWidth - icon.Right - s(16)), Height),
+            p.Text, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis);
     }
 
     private void DragWindow(object? sender, MouseEventArgs e)
@@ -260,7 +601,7 @@ internal sealed class AppTitleBar : Panel
 /// for close. Mirrors the Terminal's CaptionButton (each app keeps its own copy).</summary>
 internal sealed class CaptionButton : Control
 {
-    public const string MinimizeGlyph = "\uE921", CloseGlyph = "\uE8BB";
+    public const string MinimizeGlyph = "", CloseGlyph = "";
 
     private static readonly string IconFontFamily = PickIconFont();
     private readonly string _glyph;
@@ -280,6 +621,8 @@ internal sealed class CaptionButton : Control
         SetStyle(ControlStyles.Selectable, false);
         BackColor = Color.Transparent;
         Font = new Font(IconFontFamily, 7.5F);
+        AccessibleName = isClose ? "关闭" : "最小化";
+        AccessibleRole = AccessibleRole.PushButton;
     }
 
     private static string PickIconFont()
@@ -297,7 +640,7 @@ internal sealed class CaptionButton : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
-        var background = Parent?.BackColor ?? ModernUi.Background;
+        var background = ModernUi.Background;
         Color fill = background, ink = ModernUi.Text;
         if (_isClose && (_hot || _pressed))
         {

@@ -12,7 +12,7 @@ namespace EveryStage.Caster.UI;
 public sealed partial class MainForm
 {
     /// <summary>Raised from <see cref="TerminalDiscoveryClient"/>'s background receive loop —
-    /// marshal to the UI thread before touching <see cref="_terminalListBox"/>. Guards against a
+    /// marshal to the UI thread before touching the list. Guards against a
     /// beacon racing ahead of this form's own window handle: <c>Program.cs</c> calls
     /// <c>discoveryClient.Start()</c> before constructing <see cref="MainForm"/> at all, so in
     /// principle a beacon could arrive before this form has a handle to <see cref="Control.BeginInvoke(Delegate)"/>
@@ -31,6 +31,7 @@ public sealed partial class MainForm
 
     // P-04: see the signature check in RefreshTerminalList.
     private string _terminalListSignature = "";
+    private bool _refreshingList;
 
     private void RefreshTerminalList()
     {
@@ -59,30 +60,40 @@ public sealed partial class MainForm
         // the LAN had changed. The signature covers exactly what a card displays — identity,
         // name, online/offline — so an unchanged signature means the existing items already
         // show the right thing; keep them (and the user's selection) untouched.
-        string signature = string.Join("\n", entries.Select(e => $"{e.DeviceId}|{e.DeviceName}|{(e.Live != null ? 1 : 0)}"));
+        string signature = string.Join("\n", entries.Select(e => $"{e.DeviceId}|{e.DeviceName}|{(e.Live != null ? 1 : 0)}|{(e.PairedAt != null ? 1 : 0)}|{e.Live?.Address}"));
         if (signature == _terminalListSignature) return;
         _terminalListSignature = signature;
 
-        _terminalListBox.BeginUpdate();
-        _terminalListBox.Items.Clear();
-        foreach (var entry in entries) _terminalListBox.Items.Add(entry);
-        if (selected != null)
+        _refreshingList = true;
+        try
         {
-            var stillPresent = entries.FirstOrDefault(e => e.DeviceId == selected.DeviceId);
-            if (stillPresent != null) _terminalListBox.SelectedItem = stillPresent;
+            _terminalListBox.BeginUpdate();
+            _terminalListBox.Items.Clear();
+            foreach (var entry in entries) _terminalListBox.Items.Add(entry);
+            if (selected != null)
+            {
+                var stillPresent = entries.FirstOrDefault(e => e.DeviceId == selected.DeviceId);
+                if (stillPresent != null) _terminalListBox.SelectedItem = stillPresent;
+            }
+            // Nothing chosen yet and exactly one castable terminal: choose it, saving a click.
+            if (_terminalListBox.SelectedItem == null && selected == null && entries.Count(e => e.Live != null) == 1)
+                _terminalListBox.SelectedItem = entries.First(e => e.Live != null);
+            _terminalListBox.EndUpdate();
         }
-        _terminalListBox.EndUpdate();
+        finally
+        {
+            _refreshingList = false;
+        }
+
+        // Keep the page in step with the list (a terminal coming online, going offline, or vanishing).
+        if (_currentView == _standbyView || _currentView == _emptyView || _currentView == null)
+        {
+            if (!_starting) ShowSelectedTerminal();
+        }
     }
 
-    /// <summary>Re-enumerates <see cref="ScreenCaptureSource.EnumerateOutputs"/> into
-    /// <see cref="_monitorComboBox"/>, preserving the current selection by
-    /// <see cref="MonitorComboItem.OutputIndex"/> (not list position) if that output still exists —
-    /// same reasoning <c>SettingsPanel.Refresh_()</c> on the Terminal side just applied to its own
-    /// monitor list: re-populating around the last-saved/last-picked value would silently reset an
-    /// in-progress choice, and a monitor that's genuinely gone should fall back rather than stay
-    /// selected. Called once at construction and again from <see cref="ShowStandby"/>, not just
-    /// once ever — the exact staleness mistake this project's README already flagged and fixed for
-    /// the Terminal's own monitor picker.</summary>
+    /// <summary>Displays plugged in or removed: re-list them (the chosen one is kept by device name,
+    /// since output indices shift).</summary>
     private void OnDisplaySettingsChanged(object? sender, EventArgs e)
     {
         if (IsDisposed || !IsHandleCreated) return;
@@ -92,60 +103,35 @@ public sealed partial class MainForm
 
     private void RefreshMonitorList()
     {
-        // Restored by device name: output indices shift when a display is removed (audit A-13).
-        string? previousDevice = (_monitorComboBox.SelectedItem as MonitorComboItem)?.DeviceName;
-        int? previousSelection = (_monitorComboBox.SelectedItem as MonitorComboItem)?.OutputIndex;
-
-        IReadOnlyList<ScreenCaptureSource.MonitorCaptureOption> outputs;
+        IReadOnlyList<EveryStage.Caster.Capture.ScreenCaptureSource.MonitorCaptureOption> outputs;
         try
         {
-            using var gpu = new D3D11Device();
-            outputs = ScreenCaptureSource.EnumerateOutputs(gpu);
+            using var gpu = new EveryStage.Rendering.D3D11Device();
+            outputs = EveryStage.Caster.Capture.ScreenCaptureSource.EnumerateOutputs(gpu);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            // Same "don't let a diagnostic/setup step take the whole form down" reasoning the self-
-            // test runners already apply to their own D3D11Device construction — if even a
-            // throwaway device can't be created here, "开始投屏" is going to fail the identical way,
-            // so there's nothing extra to gain from surfacing a separate error dialog right now.
-            _monitorComboBox.Items.Clear();
-            _monitorComboBox.Items.Add(new MonitorComboItem(0, $"默认显示器（枚举失败：{ex.Message}）"));
-            _monitorComboBox.SelectedIndex = 0;
+            // If even a throwaway device fails, 开始投屏 will fail the same way and say why there.
+            _standbyView.SetMonitors(new[] { new MonitorChoice(0, "默认屏幕", "1", null) });
             return;
         }
 
-        _monitorComboBox.BeginUpdate();
-        _monitorComboBox.Items.Clear();
+        var choices = new List<MonitorChoice>();
+        int number = 0;
         foreach (var output in outputs)
         {
-            string label = $"显示器 {output.OutputIndex}: {output.DeviceName} " +
-                           $"({output.Bounds.Width}x{output.Bounds.Height} @ {output.Bounds.X},{output.Bounds.Y})";
-            _monitorComboBox.Items.Add(new MonitorComboItem(output.OutputIndex, label, output.DeviceName));
+            number++;
+            bool primary = output.Bounds.X == 0 && output.Bounds.Y == 0;
+            string label = $"{(primary ? "主屏" : $"屏幕 {number}")} {output.Bounds.Width}×{output.Bounds.Height}";
+            choices.Add(new MonitorChoice(output.OutputIndex, label, number.ToString(), output.DeviceName));
         }
-
-        if (_monitorComboBox.Items.Count == 0)
-        {
-            // Shouldn't happen on any real machine (there's always at least one display) but a
-            // combo box with nothing selectable would leave "开始投屏" silently falling back to
-            // ScreenCaptureSource's own outputIndex default without the UI ever showing that choice.
-            _monitorComboBox.Items.Add(new MonitorComboItem(0, "默认显示器"));
-        }
-
-        int selectedIndex = 0;
-        for (int i = 0; i < _monitorComboBox.Items.Count; i++)
-        {
-            var item = (MonitorComboItem)_monitorComboBox.Items[i]!;
-            if (previousDevice != null ? item.DeviceName == previousDevice : item.OutputIndex == previousSelection)
-            {
-                selectedIndex = i;
-                break;
-            }
-        }
-        _monitorComboBox.SelectedIndex = selectedIndex;
-        _monitorComboBox.EndUpdate();
+        if (choices.Count == 0) choices.Add(new MonitorChoice(0, "默认屏幕", "1", null));
+        // The primary screen first: it is what most people mean.
+        choices = choices.OrderByDescending(c => c.Label.StartsWith("主屏", StringComparison.Ordinal)).ToList();
+        _standbyView.SetMonitors(choices);
     }
 
-    private void OnRemovePairingClick(object? sender, EventArgs e)
+    private void OnRemovePairingClick()
     {
         if (_terminalListBox.SelectedItem is not TerminalListEntry entry) return;
 
@@ -158,6 +144,8 @@ public sealed partial class MainForm
         if (confirm != DialogResult.Yes) return;
 
         _pairedTerminals.Remove(entry.DeviceId);
+        _terminalListSignature = "";
         RefreshTerminalList();
+        ShowSelectedTerminal();
     }
 }

@@ -7,13 +7,17 @@ namespace EveryStage.Caster;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static int Main(string[] args)
     {
+        // CI: render every page in both themes to PNG and exit (see MainForm.CaptureScreenshots).
+        int screenshotFlag = Array.IndexOf(args, "--ui-screenshots");
+        if (screenshotFlag >= 0 && screenshotFlag + 1 < args.Length) return RunScreenshots(args[screenshotFlag + 1]);
+
         // Keep the compact fixed-layout caster form crisp and correctly sized on Windows 10 at
         // 125%/150% scaling and when it is moved between monitors with different DPI values.
         // One Caster per Windows session (a second copy would fight the first for the ports).
         using var singleInstance = new Mutex(initiallyOwned: true, @"Local\EveryStage.Caster.SingleInstance", out bool firstInstance);
-        if (!firstInstance) return;
+        if (!firstInstance) return 0;
 
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
@@ -72,7 +76,7 @@ internal static class Program
                 $"无法读取或创建设备身份/配对记录文件：\n\n{ex.Message}\n\n" +
                 "请检查程序是否有权限读写系统的应用数据目录（ProgramData\\EveryStage），或磁盘空间是否充足。",
                 "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            return 1;
         }
 
         TerminalDiscoveryClient discoveryClient;
@@ -99,7 +103,7 @@ internal static class Program
                 $"无法启动设备发现（监听UDP端口{DiscoveryProtocol.Port}失败）：\n\n{ex.Message}\n\n" +
                 "可能是另一个EveryStage投屏机实例正在运行，或者该端口被其他程序占用。",
                 "启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return;
+            return 1;
         }
 
         using (discoveryClient)
@@ -108,6 +112,31 @@ internal static class Program
 
             using var mainForm = new MainForm(discoveryClient, identity, pairedTerminals);
             Application.Run(mainForm);
+        }
+        return 0;
+    }
+
+    private static int RunScreenshots(string directory)
+    {
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
+        Application.EnableVisualStyles();
+        Application.SetCompatibleTextRenderingDefault(false);
+        try
+        {
+            string temp = Path.Combine(Path.GetTempPath(), "EveryStage-Caster-Screens-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(temp);
+            var identity = DeviceIdentity.LoadOrCreate("caster", Path.Combine(temp, "identity.json"));
+            var paired = new PairedTerminalStore(Path.Combine(temp, "paired.json"));
+            using var discoveryClient = new TerminalDiscoveryClient(identity, paired);
+            using var mainForm = new MainForm(discoveryClient, identity, paired);
+            mainForm.CaptureScreenshots(Path.GetFullPath(directory));
+            Console.WriteLine($"Caster UI screenshots written to {Path.GetFullPath(directory)}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex);
+            return 1;
         }
     }
 }

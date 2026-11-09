@@ -17,7 +17,7 @@ public sealed partial class MainForm
         {
             _captureSelfTest.Stop();
             _captureStatsTimer.Stop();
-            _captureSelfTestButton.Text = "开始屏幕捕获自检";
+            _captureSelfTestButton.Text = "屏幕捕获自检";
             _captureStatsLabel.Text = "";
         }
         else
@@ -33,14 +33,14 @@ public sealed partial class MainForm
     {
         if (_captureSelfTest.LastError != null)
         {
-            _captureStatsLabel.ForeColor = Color.DarkRed;
+            _captureStatsLabel.ForeColor = ModernUi.Danger;
             _captureStatsLabel.Text = $"捕获出错：{_captureSelfTest.LastError}";
             _captureStatsTimer.Stop();
-            _captureSelfTestButton.Text = "开始屏幕捕获自检";
+            _captureSelfTestButton.Text = "屏幕捕获自检";
             return;
         }
 
-        _captureStatsLabel.ForeColor = Color.DimGray;
+        _captureStatsLabel.ForeColor = ModernUi.Muted;
         _captureStatsLabel.Text =
             $"分辨率: {_captureSelfTest.Width}x{_captureSelfTest.Height}\n" +
             $"已捕获帧数: {_captureSelfTest.FrameCount}    近1秒帧率: {_captureSelfTest.Fps:F1}";
@@ -52,14 +52,14 @@ public sealed partial class MainForm
         {
             _encodeSelfTest.Stop();
             _encodeStatsTimer.Stop();
-            _encodeSelfTestButton.Text = "开始编码自检 (捕获→NV12→H.264)";
+            _encodeSelfTestButton.Text = "视频编码自检（捕获 → H.264）";
             _encodeStatsLabel.Text = "";
         }
         else
         {
             _encodeSelfTest.Start();
             _encodeStatsTimer.Start();
-            _encodeSelfTestButton.Text = "停止编码自检";
+            _encodeSelfTestButton.Text = "停止视频编码自检";
             RefreshEncodeStats();
         }
     }
@@ -68,10 +68,10 @@ public sealed partial class MainForm
     {
         if (_encodeSelfTest.LastError != null)
         {
-            _encodeStatsLabel.ForeColor = Color.DarkRed;
+            _encodeStatsLabel.ForeColor = ModernUi.Danger;
             _encodeStatsLabel.Text = $"编码出错：{_encodeSelfTest.LastError}";
             _encodeStatsTimer.Stop();
-            _encodeSelfTestButton.Text = "开始编码自检 (捕获→NV12→H.264)";
+            _encodeSelfTestButton.Text = "视频编码自检（捕获 → H.264）";
             return;
         }
 
@@ -80,7 +80,7 @@ public sealed partial class MainForm
             ? $"\n⚠ 因编码器跟不上采集而丢弃: {_encodeSelfTest.FramesDroppedForBackpressure} 帧"
             : "";
 
-        _encodeStatsLabel.ForeColor = Color.DimGray;
+        _encodeStatsLabel.ForeColor = ModernUi.Muted;
         _encodeStatsLabel.Text =
             $"已编码访问单元数: {_encodeSelfTest.AccessUnitsEncoded}\n" +
             $"编码总字节数: {_encodeSelfTest.TotalEncodedBytes} · {TuningLine(_encodeSelfTest.TuningSummary)}" +
@@ -106,14 +106,14 @@ public sealed partial class MainForm
         {
             _audioCaptureSelfTest.Stop();
             _audioCaptureStatsTimer.Stop();
-            _audioCaptureSelfTestButton.Text = "开始音频采集自检 (WASAPI loopback)";
+            _audioCaptureSelfTestButton.Text = "声音采集自检";
             _audioCaptureStatsLabel.Text = "";
         }
         else
         {
             _audioCaptureSelfTest.Start();
             _audioCaptureStatsTimer.Start();
-            _audioCaptureSelfTestButton.Text = "停止音频采集自检";
+            _audioCaptureSelfTestButton.Text = "停止声音采集自检";
             RefreshAudioCaptureStats();
         }
     }
@@ -122,14 +122,14 @@ public sealed partial class MainForm
     {
         if (_audioCaptureSelfTest.LastError != null)
         {
-            _audioCaptureStatsLabel.ForeColor = Color.DarkRed;
+            _audioCaptureStatsLabel.ForeColor = ModernUi.Danger;
             _audioCaptureStatsLabel.Text = $"音频采集出错：{_audioCaptureSelfTest.LastError}";
             _audioCaptureStatsTimer.Stop();
-            _audioCaptureSelfTestButton.Text = "开始音频采集自检 (WASAPI loopback)";
+            _audioCaptureSelfTestButton.Text = "声音采集自检";
             return;
         }
 
-        _audioCaptureStatsLabel.ForeColor = Color.DimGray;
+        _audioCaptureStatsLabel.ForeColor = ModernUi.Muted;
         _audioCaptureStatsLabel.Text =
             $"采样率: {_audioCaptureSelfTest.SampleRate}Hz   声道数: {_audioCaptureSelfTest.Channels}\n" +
             $"已捕获字节数: {_audioCaptureSelfTest.TotalBytesCaptured}    近1秒吞吐量: {_audioCaptureSelfTest.BytesPerSecond / 1024.0:F1} KB/s";
@@ -141,14 +141,14 @@ public sealed partial class MainForm
         {
             _aacEncodeSelfTest.Stop();
             _aacEncodeStatsTimer.Stop();
-            _aacEncodeSelfTestButton.Text = "开始AAC编解码自检 (WASAPI loopback→AAC→PCM)";
+            _aacEncodeSelfTestButton.Text = "声音编解码自检（AAC）";
             _aacEncodeStatsLabel.Text = "";
         }
         else
         {
             _aacEncodeSelfTest.Start();
             _aacEncodeStatsTimer.Start();
-            _aacEncodeSelfTestButton.Text = "停止AAC编解码自检";
+            _aacEncodeSelfTestButton.Text = "停止声音编解码自检";
             RefreshAacEncodeStats();
         }
     }
@@ -157,17 +157,17 @@ public sealed partial class MainForm
     {
         if (_aacEncodeSelfTest.LastError != null)
         {
-            _aacEncodeStatsLabel.ForeColor = Color.DarkRed;
+            _aacEncodeStatsLabel.ForeColor = ModernUi.Danger;
             // LastError is shared between AacAudioEncoder and AacAudioDecoder failures (see
             // AacEncodeSelfTestRunner's OnEncodingFailed/OnDecodingFailed) — "编解码" rather than
             // just "编码" so this label doesn't misattribute a decode-side failure to the encoder.
             _aacEncodeStatsLabel.Text = $"AAC编解码出错：{_aacEncodeSelfTest.LastError}";
             _aacEncodeStatsTimer.Stop();
-            _aacEncodeSelfTestButton.Text = "开始AAC编解码自检 (WASAPI loopback→AAC→PCM)";
+            _aacEncodeSelfTestButton.Text = "声音编解码自检（AAC）";
             return;
         }
 
-        _aacEncodeStatsLabel.ForeColor = Color.DimGray;
+        _aacEncodeStatsLabel.ForeColor = ModernUi.Muted;
         _aacEncodeStatsLabel.Text =
             $"采样率: {_aacEncodeSelfTest.SampleRate}Hz   声道数: {_aacEncodeSelfTest.Channels}\n" +
             $"PCM输入字节数: {_aacEncodeSelfTest.TotalPcmBytesIn}\n" +
@@ -178,13 +178,13 @@ public sealed partial class MainForm
     private async void OnTransportSelfTestClick(object? sender, EventArgs e)
     {
         _transportSelfTestButton.Enabled = false;
-        _transportStatsLabel.ForeColor = Color.DimGray;
+        _transportStatsLabel.ForeColor = ModernUi.Muted;
         _transportStatsLabel.Text = "运行中...";
 
         try
         {
             var result = await TransportSelfTest.RunAsync();
-            _transportStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
+            _transportStatsLabel.ForeColor = result.Success ? ModernUi.Muted : ModernUi.Danger;
             _transportStatsLabel.Text = result.Success
                 ? $"通过：{result.NalUnitsSent} 个NAL单元全部往返一致（含FU-A分片重组、PayloadType不匹配丢包校验）。"
                 : $"失败（发送{result.NalUnitsSent}个/收到{result.NalUnitsReceived}个）：{result.FailureReason}";
@@ -194,7 +194,7 @@ public sealed partial class MainForm
             // A self-test throwing outright (e.g. couldn't bind the loopback socket at all) is
             // itself a real, reportable finding — surface it the same as a logical failure rather
             // than let an unhandled exception on the UI thread take the whole app down.
-            _transportStatsLabel.ForeColor = Color.DarkRed;
+            _transportStatsLabel.ForeColor = ModernUi.Danger;
             _transportStatsLabel.Text = $"自检本身出错：{ex.Message}";
         }
         finally
@@ -206,13 +206,13 @@ public sealed partial class MainForm
     private async void OnRawTransportSelfTestClick(object? sender, EventArgs e)
     {
         _rawTransportSelfTestButton.Enabled = false;
-        _rawTransportStatsLabel.ForeColor = Color.DimGray;
+        _rawTransportStatsLabel.ForeColor = ModernUi.Muted;
         _rawTransportStatsLabel.Text = "运行中...";
 
         try
         {
             var result = await RawTransportSelfTest.RunAsync();
-            _rawTransportStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
+            _rawTransportStatsLabel.ForeColor = result.Success ? ModernUi.Muted : ModernUi.Danger;
             _rawTransportStatsLabel.Text = result.Success
                 ? $"通过：{result.PayloadsSent} 个payload全部往返一致，GapEvents=0（本机回环，含PayloadType不匹配丢包校验）。"
                 : $"失败（发送{result.PayloadsSent}个/收到{result.PayloadsReceived}个，GapEvents={result.GapEvents}）：{result.FailureReason}";
@@ -221,7 +221,7 @@ public sealed partial class MainForm
         {
             // Same "a self-test throwing outright is itself a reportable finding" reasoning as
             // OnTransportSelfTestClick above.
-            _rawTransportStatsLabel.ForeColor = Color.DarkRed;
+            _rawTransportStatsLabel.ForeColor = ModernUi.Danger;
             _rawTransportStatsLabel.Text = $"自检本身出错：{ex.Message}";
         }
         finally
@@ -233,13 +233,13 @@ public sealed partial class MainForm
     private async void OnDiscoverySelfTestClick(object? sender, EventArgs e)
     {
         _discoverySelfTestButton.Enabled = false;
-        _discoveryStatsLabel.ForeColor = Color.DimGray;
+        _discoveryStatsLabel.ForeColor = ModernUi.Muted;
         _discoveryStatsLabel.Text = "运行中...";
 
         try
         {
             var result = await DiscoveryProtocolSelfTest.RunAsync();
-            _discoveryStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
+            _discoveryStatsLabel.ForeColor = result.Success ? ModernUi.Muted : ModernUi.Danger;
             _discoveryStatsLabel.Text = result.Success
                 ? $"通过：{result.MessagesVerified} 种消息全部往返一致（本机回环，含全部8种消息类型、畸形数据包不抛异常校验）。"
                 : $"失败（已验证{result.MessagesVerified}种）：{result.FailureReason}";
@@ -248,7 +248,7 @@ public sealed partial class MainForm
         {
             // Same "a self-test throwing outright is itself a reportable finding" reasoning as
             // OnTransportSelfTestClick above.
-            _discoveryStatsLabel.ForeColor = Color.DarkRed;
+            _discoveryStatsLabel.ForeColor = ModernUi.Danger;
             _discoveryStatsLabel.Text = $"自检本身出错：{ex.Message}";
         }
         finally
@@ -263,13 +263,13 @@ public sealed partial class MainForm
         // only does local file I/O against a temp directory (no network/GPU/hardware wait involved),
         // so there's nothing to await and no risk of blocking the UI thread noticeably.
         _pairedTerminalStoreSelfTestButton.Enabled = false;
-        _pairedTerminalStoreStatsLabel.ForeColor = Color.DimGray;
+        _pairedTerminalStoreStatsLabel.ForeColor = ModernUi.Muted;
         _pairedTerminalStoreStatsLabel.Text = "运行中...";
 
         try
         {
             var result = PairedTerminalStoreSelfTest.Run();
-            _pairedTerminalStoreStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
+            _pairedTerminalStoreStatsLabel.ForeColor = result.Success ? ModernUi.Muted : ModernUi.Danger;
             _pairedTerminalStoreStatsLabel.Text = result.Success
                 ? "通过：保存/重新加载/删除/损坏文件回退全部符合预期（临时目录，不影响真实配对列表）。"
                 : $"失败：{result.FailureReason}";
@@ -280,7 +280,7 @@ public sealed partial class MainForm
             // its Result, but this mirrors every other self-test button's own catch block for the
             // same "a self-test throwing outright is itself a reportable finding" reasoning, in case
             // something outside that try/catch (e.g. Path.GetTempPath() itself failing) ever throws.
-            _pairedTerminalStoreStatsLabel.ForeColor = Color.DarkRed;
+            _pairedTerminalStoreStatsLabel.ForeColor = ModernUi.Danger;
             _pairedTerminalStoreStatsLabel.Text = $"自检本身出错：{ex.Message}";
         }
         finally
@@ -294,13 +294,13 @@ public sealed partial class MainForm
         // Synchronous, same reasoning as OnPairedTerminalStoreSelfTestClick just above —
         // DeviceIdentitySelfTest.Run() only does local file I/O against a temp directory.
         _deviceIdentitySelfTestButton.Enabled = false;
-        _deviceIdentityStatsLabel.ForeColor = Color.DimGray;
+        _deviceIdentityStatsLabel.ForeColor = ModernUi.Muted;
         _deviceIdentityStatsLabel.Text = "运行中...";
 
         try
         {
             var result = DeviceIdentitySelfTest.Run();
-            _deviceIdentityStatsLabel.ForeColor = result.Success ? Color.DimGray : Color.DarkRed;
+            _deviceIdentityStatsLabel.ForeColor = result.Success ? ModernUi.Muted : ModernUi.Danger;
             _deviceIdentityStatsLabel.Text = result.Success
                 ? "通过：创建/重新加载/改名保存/损坏文件回退/锁定文件回退全部符合预期（临时目录，不影响真实设备身份）。"
                 : $"失败：{result.FailureReason}";
@@ -311,7 +311,7 @@ public sealed partial class MainForm
             // Result, but this mirrors every other self-test button's own catch block for the same
             // "a self-test throwing outright is itself a reportable finding" reasoning, in case
             // something outside that try/catch (e.g. Path.GetTempPath() itself failing) ever throws.
-            _deviceIdentityStatsLabel.ForeColor = Color.DarkRed;
+            _deviceIdentityStatsLabel.ForeColor = ModernUi.Danger;
             _deviceIdentityStatsLabel.Text = $"自检本身出错：{ex.Message}";
         }
         finally

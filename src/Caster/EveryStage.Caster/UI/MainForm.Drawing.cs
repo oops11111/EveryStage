@@ -1,122 +1,60 @@
 using System.Drawing.Drawing2D;
-using EveryStage.Caster.Capture;
-using EveryStage.Caster.Casting;
-using EveryStage.Caster.Discovery;
-using EveryStage.Caster.Encode;
-using EveryStage.Discovery;
-using EveryStage.Rendering;
-using EveryStage.Transport;
 
 namespace EveryStage.Caster.UI;
 
 public sealed partial class MainForm
 {
-    // P-04: shared card fonts for DrawTerminalCard (fixed sizes, so statics are safe).
-    private static readonly Font CardTitleFont = new(ModernUi.UiFontSemibold, 12F);
-    private static readonly Font CardMetaFont = new(ModernUi.UiFont, 9.5F);
+    // Shared row fonts (fixed sizes, so process-lifetime statics are safe).
+    private static readonly Font RowTitleFont = new(ModernUi.UiFontSemibold, 10.5F);
+    private static readonly Font RowMetaFont = new(ModernUi.UiFont, 9F);
 
-    private void DrawTerminalCard(object? sender, DrawItemEventArgs e)
+    /// <summary>One terminal in the left list: a status dot (filled = online, ring = offline), the
+    /// name, and whether it is paired. The selected row is a raised card with an accent edge.</summary>
+    private void DrawTerminalRow(object? sender, DrawItemEventArgs e)
     {
+        var p = ModernUi.Palette;
+        var g = e.Graphics;
+        using (var back = new SolidBrush(p.Sidebar)) g.FillRectangle(back, e.Bounds);
         if (e.Index < 0 || e.Index >= _terminalListBox.Items.Count) return;
-        e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
         var entry = (TerminalListEntry)_terminalListBox.Items[e.Index];
         bool selected = (e.State & DrawItemState.Selected) != 0;
-        var g = e.Graphics;
-        // Layout in 96-DPI units scaled to the list's DPI: the fixed pixels clipped the title at 125–150 %.
         int S(int value) => _terminalListBox.LogicalToDeviceUnits(value);
-        var card = e.Bounds;
-        card.Inflate(-S(4), -S(6));
-        using (var path = RoundedCard(card, S(14)))
-        using (var fill = new SolidBrush(selected ? Color.FromArgb(26, 48, 82) : Color.FromArgb(22, 34, 54)))
-        using (var border = new Pen(selected ? ModernUi.Accent : Color.FromArgb(44, 62, 90), selected ? 2F : 1F))
-        {
-            g.FillPath(fill, path);
-            g.DrawPath(border, path);
-        }
 
-        // Monitor icon (matches the design's line-art display).
-        var iconRect = new Rectangle(card.Left + S(20), card.Top + (card.Height - S(40)) / 2, S(48), S(40));
-        DrawMonitorGlyph(g, iconRect, Color.FromArgb(150, 178, 220));
-
-        // P-04: process-lifetime statics, never disposed — these two were allocated on every
-        // card paint (and this list repaints on every refresh tick it doesn't skip).
-        var titleFont = CardTitleFont;
-        var metaFont = CardMetaFont;
-        int textLeft = iconRect.Right + S(18);
-        TextRenderer.DrawText(g, entry.DeviceName, titleFont,
-            new Rectangle(textLeft, card.Top + S(14), card.Width - textLeft - S(60) + card.Left, S(28)), ModernUi.Text,
-            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
-        string meta = entry.Live != null ? "在线 · 可投屏" : "离线 · 等待终端上线";
-        TextRenderer.DrawText(g, meta, metaFont,
-            new Rectangle(textLeft, card.Top + S(42), card.Width - textLeft - S(60) + card.Left, S(22)),
-            entry.Live != null ? ModernUi.Muted : Color.FromArgb(128, 143, 164),
-            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
-
-        // Round radio selector on the right (design: filled blue check when selected, empty ring otherwise).
-        var radio = new Rectangle(card.Right - S(46), card.Top + (card.Height - S(26)) / 2, S(26), S(26));
+        var row = Rectangle.Inflate(e.Bounds, 0, -S(3));
         if (selected)
         {
-            using var fillSel = new SolidBrush(ModernUi.Accent);
-            g.FillEllipse(fillSel, radio);
-            using var check = new Pen(Color.White, 2.4F) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            g.DrawLines(check, new[]
-            {
-                new PointF(radio.Left + S(7), radio.Top + S(13)),
-                new PointF(radio.Left + S(11), radio.Top + S(17)),
-                new PointF(radio.Left + S(19), radio.Top + S(8)),
-            });
+            using var path = ModernUi.Rounded(row, S(8));
+            using (var fill = new SolidBrush(p.Surface)) g.FillPath(fill, path);
+            using (var border = new Pen(p.Border)) g.DrawPath(border, path);
+            using var edge = new SolidBrush(p.Accent);
+            g.FillRectangle(edge, row.Left, row.Top + S(12), S(3), row.Height - S(24));
+        }
+
+        bool online = entry.Live != null;
+        bool paired = _pairedTerminals.Find(entry.DeviceId) != null;
+        var dot = new Rectangle(row.Left + S(14), row.Top + (row.Height - S(9)) / 2, S(9), S(9));
+        if (online)
+        {
+            using var dotBrush = new SolidBrush(p.Success);
+            g.FillEllipse(dotBrush, dot);
         }
         else
         {
-            using var ring = new Pen(Color.FromArgb(90, 110, 138), 2F);
-            g.DrawEllipse(ring, radio);
+            using var ring = new Pen(p.Faint, 1.5f);
+            g.DrawEllipse(ring, dot);
         }
-    }
 
-    private static void DrawMonitorGlyph(Graphics g, Rectangle r, Color color)
-    {
-        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        using var pen = new Pen(color, 2.4F) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
-        var screen = new RectangleF(r.Left, r.Top, r.Width, r.Height * 0.72f);
-        using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+        int textLeft = dot.Right + S(12), textWidth = row.Right - textLeft - S(8);
+        var flags = TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter;
+        TextRenderer.DrawText(g, entry.DeviceName, RowTitleFont, new Rectangle(textLeft, row.Top + S(6), textWidth, S(24)),
+            online ? p.Text : p.Muted, flags);
+        string meta = online ? (paired ? "已配对" : "未配对") : "离线";
+        TextRenderer.DrawText(g, meta, RowMetaFont, new Rectangle(textLeft, row.Top + S(28), textWidth, S(20)), p.Muted, flags);
+        if ((e.State & DrawItemState.Focus) != 0 && (e.State & DrawItemState.NoFocusRect) == 0)
         {
-            float d = 8;
-            path.AddArc(screen.Left, screen.Top, d, d, 180, 90);
-            path.AddArc(screen.Right - d, screen.Top, d, d, 270, 90);
-            path.AddArc(screen.Right - d, screen.Bottom - d, d, d, 0, 90);
-            path.AddArc(screen.Left, screen.Bottom - d, d, d, 90, 90);
-            path.CloseFigure();
-            g.DrawPath(pen, path);
+            using var focus = new Pen(p.Accent, 1f) { DashStyle = DashStyle.Dot };
+            g.DrawRectangle(focus, Rectangle.Inflate(row, -2, -2));
         }
-        g.DrawLine(pen, r.Left + r.Width / 2, screen.Bottom, r.Left + r.Width / 2, r.Bottom);
-        g.DrawLine(pen, r.Left + r.Width * 0.30f, r.Bottom, r.Left + r.Width * 0.70f, r.Bottom);
-    }
-
-    private void DrawMonitorItem(object? sender, DrawItemEventArgs e)
-    {
-        e.DrawBackground();
-        using var background = new SolidBrush(ModernUi.SurfaceRaised);
-        e.Graphics.FillRectangle(background, e.Bounds);
-        string text = e.Index >= 0 && e.Index < _monitorComboBox.Items.Count
-            ? _monitorComboBox.Items[e.Index]?.ToString() ?? ""
-            : _monitorComboBox.Text;
-        var iconRect = new Rectangle(e.Bounds.Left + 10, e.Bounds.Top + (e.Bounds.Height - 16) / 2, 20, 16);
-        DrawMonitorGlyph(e.Graphics, iconRect, Color.FromArgb(150, 178, 220));
-        var textRect = new Rectangle(iconRect.Right + 10, e.Bounds.Top, e.Bounds.Width - iconRect.Right - 14, e.Bounds.Height);
-        TextRenderer.DrawText(e.Graphics, text, Font, textRect, ModernUi.Text,
-            TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
-        if ((e.State & DrawItemState.Focus) != 0) e.DrawFocusRectangle();
-    }
-
-    private static System.Drawing.Drawing2D.GraphicsPath RoundedCard(Rectangle r, int radius)
-    {
-        int d = radius * 2;
-        var path = new System.Drawing.Drawing2D.GraphicsPath();
-        path.AddArc(r.Left, r.Top, d, d, 180, 90);
-        path.AddArc(r.Right - d, r.Top, d, d, 270, 90);
-        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-        path.AddArc(r.Left, r.Bottom - d, d, d, 90, 90);
-        path.CloseFigure();
-        return path;
     }
 }

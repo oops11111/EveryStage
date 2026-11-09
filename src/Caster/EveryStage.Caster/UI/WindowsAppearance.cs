@@ -27,6 +27,19 @@ internal static class WindowsAppearance
     /// acrylic blur-behind through the undocumented SetWindowCompositionAttribute; the form paints an
     /// opaque gradient over its whole client area, so the blur was never visible, while that API is
     /// known to make dragging the window stutter on Windows 10 1903+ and Windows 11.</summary>
+    /// <summary>Re-colours the Windows 11 outline after a theme switch.</summary>
+    public static void UpdateBorder(Form form)
+    {
+        if (!IsWindows11 || !form.IsHandleCreated) return;
+        try
+        {
+            int border = ColorTranslator.ToWin32(ModernUi.Border);
+            DwmSetWindowAttribute(form.Handle, DwaBorderColor, ref border, sizeof(int));
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+    }
+
     public static void EnableGlass(Form form)
     {
         if (!IsWindows11) return;

@@ -70,6 +70,18 @@ jobs:
           dotnet run --project src/Tests/EveryStage.WindowsSelfTests/EveryStage.WindowsSelfTests.csproj --no-build --configuration Release 2>&1 | Tee-Object artifacts/test-diagnostics/windows.log
           exit $LASTEXITCODE
 
+      - name: Render Caster UI screenshots
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts/screenshots | Out-Null
+          $exe = Get-ChildItem -Path src/Caster/EveryStage.Caster/bin/Release -Recurse -Filter EveryStage.Caster.exe | Select-Object -First 1
+          if (-not $exe) { throw "EveryStage.Caster.exe not found" }
+          $process = Start-Process -FilePath $exe.FullName -ArgumentList @('--ui-screenshots', (Resolve-Path artifacts/screenshots).Path) -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Caster screenshot run failed with exit code $($process.ExitCode)" }
+          $shots = Get-ChildItem artifacts/screenshots -Filter 'caster-*.png'
+          if ($shots.Count -lt 14) { throw "Expected 14 Caster screenshots, got $($shots.Count)" }
+
       - name: Upload self-test logs and timeout dumps
         if: always()
         uses: actions/upload-artifact@v6

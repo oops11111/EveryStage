@@ -357,6 +357,10 @@ public sealed class LiveCastSession : IDisposable
     /// <see cref="ScreenCaptureSource.EnumerateOutputs"/> for the DXGI adapter-output enumeration
     /// this index refers into. Defaults to 0 (typically the primary display) so existing callers
     /// that don't offer a picker keep the previous behavior unchanged.</param>
+    /// <summary>False when the operator turned off 「同时投送电脑声音」: the cast is video-only from
+    /// the start (no loopback capture, no audio stream announced to the Terminal).</summary>
+    public bool IncludeAudio { get; init; } = true;
+
     public LiveCastSession(TerminalDiscoveryClient discoveryClient, DeviceIdentity identity, DiscoveredTerminal terminal, int outputIndex = 0)
     {
         _discoveryClient = discoveryClient;
@@ -471,6 +475,7 @@ public sealed class LiveCastSession : IDisposable
         _encoder.EncodingFailed += OnEncodingFailed;
 
         TerminalDiscoveryClient.AudioStreamInfo? audioInfo = null;
+        if (IncludeAudio)
         try
         {
             _audioCapture = new AudioCaptureSource();
