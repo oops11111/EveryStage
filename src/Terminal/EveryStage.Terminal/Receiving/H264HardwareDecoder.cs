@@ -195,7 +195,7 @@ public sealed class H264HardwareDecoder : IDisposable
 
     private static (IMFTransform, IMFMediaEventGenerator?, bool, bool, IntPtr) OpenHardware(D3D11Device gpu, int width, int height)
     {
-        var decoder = ActivateFirstHardwareDecoder();
+        var decoder = ActivateFirstHardwareDecoder(gpu.AdapterLuid);
 
         // ActivateFirstHardwareDecoder() above already called MediaFactory.MFStartup(), so everything
         // below is wrapped to keep that paired with an MFShutdown() if setup fails.
@@ -631,7 +631,7 @@ public sealed class H264HardwareDecoder : IDisposable
         if (!valid) throw new DeviceLostException();
     }
 
-    private static IMFTransform ActivateFirstHardwareDecoder()
+    private static IMFTransform ActivateFirstHardwareDecoder(long adapterLuid)
     {
         MediaFactory.MFStartup().CheckError();
         try
@@ -641,7 +641,8 @@ public sealed class H264HardwareDecoder : IDisposable
                 MFT_CATEGORY_VIDEO_DECODER,
                 EnumFlag.EnumFlagHardware | EnumFlag.EnumFlagSortandfilter,
                 inputType,
-                null);
+                null,
+                adapterLuid);
         }
         catch
         {

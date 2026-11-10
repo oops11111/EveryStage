@@ -48,6 +48,25 @@ public sealed class DevicesPanel : UserControl
         var local = ModernUi.SetForegroundRole(new Label { Text = localName == null ? "" : $"本机：{localName}", AutoSize = true, BackColor = Color.Transparent }, UiForegroundRole.Muted);
         var discoverable = ModernUi.SetForegroundRole(new Label { Text = "● 可被局域网发现", AutoSize = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9F) }, UiForegroundRole.Success);
         header.Controls.AddRange(new Control[] { title, local, discoverable });
+        // 刷新: the Terminal does not search for Casters — Casters find it by its periodic broadcast. This
+        // broadcasts right away (a Caster looking for terminals lists this one at once) and re-reads the
+        // paired list.
+        var refresh = new RoundedActionButton { Text = "↻ 刷新", Size = new Size(76, 30) };
+        ModernUi.StyleButton(refresh);
+        new ToolTip().SetToolTip(refresh, "马上向局域网广播本机，让投屏机立刻看到；同时刷新已配对设备列表");
+        var discoverableText = discoverable.Text;
+        var refreshFeedback = new System.Windows.Forms.Timer { Interval = 3000 };
+        refreshFeedback.Tick += (_, _) => { refreshFeedback.Stop(); discoverable.Text = discoverableText; };
+        refresh.Click += (_, _) =>
+        {
+            RefreshRequested?.Invoke();
+            Refresh_();
+            discoverable.Text = "● 已广播，投屏机马上能看到本机";
+            refreshFeedback.Stop();
+            refreshFeedback.Start();
+        };
+        Disposed += (_, _) => refreshFeedback.Dispose();
+        header.Controls.Add(refresh);
         Label? switchLabel = null;
         if (stateMachine != null)
         {
@@ -64,11 +83,19 @@ public sealed class DevicesPanel : UserControl
             title.Location = new Point(0, cy - title.Height / 2);
             local.Location = new Point(title.Right + 16, cy - local.Height / 2 + 2);
             discoverable.Location = new Point(local.Right + 12, cy - discoverable.Height / 2 + 2);
+            int right = header.ClientSize.Width;
             if (_castSwitch != null && switchLabel != null)
             {
                 _castSwitch.Location = new Point(header.ClientSize.Width - _castSwitch.Width, cy - _castSwitch.Height / 2);
                 switchLabel.Location = new Point(_castSwitch.Left - 8 - switchLabel.Width, cy - switchLabel.Height / 2);
+                right = switchLabel.Left - 20;
             }
+            // Narrow page: the button shrinks to its icon first, then the 「可被局域网发现」 note gives way.
+            bool wide = right - LogicalToDeviceUnits(76) >= discoverable.Right + LogicalToDeviceUnits(12);
+            refresh.Text = wide ? "↻ 刷新" : "↻";
+            refresh.Size = new Size(LogicalToDeviceUnits(wide ? 76 : 34), LogicalToDeviceUnits(30));
+            refresh.Location = new Point(right - refresh.Width, cy - refresh.Height / 2);
+            discoverable.Visible = refresh.Left >= discoverable.Right + LogicalToDeviceUnits(8);
         };
 
         // --- 配对请求卡片（有请求时放大显示配对码）---
@@ -183,6 +210,9 @@ public sealed class DevicesPanel : UserControl
 
     /// <summary>A device was unpaired or lost 「允许投放」: if it is casting now, the cast must stop at once.</summary>
     public event Action<Guid>? DeviceAccessRevoked;
+
+    /// <summary>「刷新」 was clicked: broadcast this Terminal now (wired to DiscoveryService.AnnounceNowAsync).</summary>
+    public event Action? RefreshRequested;
 
     private void RemoveDevice(PairedDevice device)
     {

@@ -22,6 +22,11 @@ public sealed class D3D11Device : IDisposable
     public IMFDXGIDeviceManager DeviceManager { get; }
     public uint DeviceManagerResetToken { get; }
 
+    /// <summary>The LUID of the adapter this device runs on, as one 64-bit value (HighPart:LowPart) —
+    /// the form Media Foundation's MFT_ENUM_ADAPTER_LUID attribute uses, so a hardware MFT can be
+    /// matched to the GPU that produces its textures.</summary>
+    public long AdapterLuid { get; }
+
     public D3D11Device()
     {
         // BgraSupport: required by some MF video-processor / debug overlay paths.
@@ -87,6 +92,8 @@ public sealed class D3D11Device : IDisposable
 
             using var dxgiDevice = Device.QueryInterface<IDXGIDevice>();
             using var adapter = dxgiDevice.GetParent<IDXGIAdapter>();
+            var luid = adapter.Description.Luid;
+            AdapterLuid = ((long)luid.HighPart << 32) | luid.LowPart;
             DxgiFactory = adapter.GetParent<IDXGIFactory2>();
 
             manager = MediaFactory.MFCreateDXGIDeviceManager();

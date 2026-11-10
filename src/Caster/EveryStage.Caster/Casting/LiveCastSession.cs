@@ -556,12 +556,49 @@ public sealed class LiveCastSession : IDisposable
         return 16_000_000;
     }
 
+    /// <summary>Set when the hardware encoder took frames and produced nothing, and the session moved
+    /// to the software encoder mid-cast; shown in the cast details.</summary>
+    public string? EncoderFallbackNote { get; private set; }
+
+    /// <summary>A hardware encoder can accept its whole setup and then never ask for input or produce
+    /// output (seen on a real machine: 183 frames captured, 0 sent, 180 dropped). After 3 s and 45
+    /// frames with nothing out, replace it with the software encoder rather than casting no picture.</summary>
+    private H264HardwareEncoder ReplaceSilentHardwareEncoder(D3D11Device gpu, H264HardwareEncoder silent)
+    {
+        var replacement = new H264HardwareEncoder(gpu, Width, Height, frameRateNumerator: 30, bitrateBps: SelectedBitrateBps, forceSoftware: true);
+        replacement.AccessUnitEncoded += OnAccessUnitEncoded;
+        replacement.EncodingFailed += OnEncodingFailed;
+        silent.AccessUnitEncoded -= OnAccessUnitEncoded;
+        silent.EncodingFailed -= OnEncodingFailed;
+        _encoder = replacement;
+        try { silent.Dispose(); } catch (Exception) { }
+        EncoderFallbackNote = "显卡编码器没有输出画面，已自动改用软件编码";
+        StatsUpdated?.Invoke();
+        return replacement;
+    }
+
     private void RunLoop(D3D11Device gpu, ScreenCaptureSource capture, BgraToNv12Converter converter, H264HardwareEncoder encoder, CancellationToken token)
     {
+        int submittedToEncoder = 0;
+        long firstSubmitTicks = 0;
         try
         {
             while (!token.IsCancellationRequested)
             {
+                if (!encoder.UsesSoftwareEncoder && AccessUnitsSent == 0 && submittedToEncoder >= 45
+                    && _clock.Elapsed.Ticks - firstSubmitTicks > TimeSpan.TicksPerSecond * 3)
+                {
+                    try
+                    {
+                        encoder = ReplaceSilentHardwareEncoder(gpu, encoder);
+                        submittedToEncoder = 0;
+                    }
+                    catch (Exception ex)
+                    {
+                        LastError = "显卡编码器没有输出画面，改用软件编码也失败了：" + ex.Message;
+                        break;
+                    }
+                }
                 // The encoder's own loop died (its failure is already in LastError via
                 // OnEncodingFailed): stop capturing into it — the finally below then cancels the
                 // other loops, the same as a capture failure (audit A-21).
@@ -611,6 +648,7 @@ public sealed class LiveCastSession : IDisposable
                     // texture across calls, so it must be copied before handing off to the
                     // encoder's async input queue.
                     encoder.SubmitFrame(CopyTexture(gpu, nv12), captureTime: captureTicks);
+                    if (submittedToEncoder++ == 0) firstSubmitTicks = captureTicks;
                     FramesCaptured++;
                 }
             }

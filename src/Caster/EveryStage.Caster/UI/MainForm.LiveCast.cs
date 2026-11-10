@@ -7,6 +7,8 @@ public sealed partial class MainForm
     private string _castMonitorLabel = "";
     private long _lastDropCount;
     private DateTime _lastDropAt = DateTime.MinValue;
+    private long _lastEncoderDropCount;
+    private DateTime _lastEncoderDropAt = DateTime.MinValue;
 
     /// <summary>The cast is running: the window steps aside and the bar takes over.</summary>
     private void EnterCastingMode(DiscoveredTerminal terminal, string monitorLabel)
@@ -15,6 +17,8 @@ public sealed partial class MainForm
         _castMonitorLabel = monitorLabel;
         _lastDropCount = 0;
         _lastDropAt = DateTime.MinValue;
+        _lastEncoderDropCount = 0;
+        _lastEncoderDropAt = DateTime.MinValue;
         var screen = Screen.FromControl(this);
         _castBar = new CastBar(terminal.DeviceName);
         // Deferred: the bar is closed from inside its own button's click otherwise.
@@ -73,16 +77,25 @@ public sealed partial class MainForm
 
         // Anything dropped for backpressure in the last few seconds means the network or the encoder
         // cannot keep up right now.
-        long drops = session.AccessUnitsDroppedForBackpressure + session.EncoderFramesDroppedForBackpressure;
-        if (drops > _lastDropCount) _lastDropAt = DateTime.UtcNow;
-        _lastDropCount = drops;
+        // Network drops (the send queue) and encoder drops (this PC cannot encode fast enough) are told
+        // apart: calling an encoder stall 「网络拥堵」 sent people looking at the wrong thing.
+        long networkDrops = session.AccessUnitsDroppedForBackpressure;
+        long encoderDrops = session.EncoderFramesDroppedForBackpressure;
+        if (networkDrops > _lastDropCount) _lastDropAt = DateTime.UtcNow;
+        _lastDropCount = networkDrops;
+        if (encoderDrops > _lastEncoderDropCount) _lastEncoderDropAt = DateTime.UtcNow;
+        _lastEncoderDropCount = encoderDrops;
         bool congested = DateTime.UtcNow - _lastDropAt < TimeSpan.FromSeconds(5)
             || session.TerminalPacketLossPercent is > 2.0;
+        bool encoderBusy = DateTime.UtcNow - _lastEncoderDropAt < TimeSpan.FromSeconds(5);
+        bool noPicture = session.AccessUnitsSent == 0 && session.FramesCaptured >= 15;
 
         (CastHealth health, string healthText) = !session.IsTerminalAlive
             ? (session.FramesCaptured == 0 && elapsed < TimeSpan.FromSeconds(5) ? CastHealth.Connecting : CastHealth.Waiting,
                elapsed < TimeSpan.FromSeconds(5) ? "连接中" : "等待终端确认")
+            : noPicture ? (CastHealth.Congested, "画面还没出来")
             : congested ? (CastHealth.Congested, "网络拥堵")
+            : encoderBusy ? (CastHealth.Congested, "电脑忙，已降帧")
             : (CastHealth.Good, session.TerminalOnProgram ? "大屏显示中" : "流畅");
 
         string latency = session.RealRoundTripEstimate is { } rtt
@@ -110,7 +123,7 @@ public sealed partial class MainForm
         {
             $"分辨率 {session.Width}×{session.Height} · 码率档位 {session.SelectedBitrateBps / 1_000_000} Mbps",
             $"已采集 {session.FramesCaptured} 帧 · 已发送 {session.AccessUnitsSent} 个访问单元 / {session.BytesSent / 1024 / 1024} MB",
-            $"编码器：{session.EncoderTuningSummary}",
+            $"编码器：{session.EncoderTuningSummary}" + (session.EncoderFallbackNote is { } note ? $"（{note}）" : ""),
             session.HasAudio
                 ? $"声音：已发送 {session.AudioBytesSent / 1024} KB" + (session.AudioError != null ? $"（出错：{session.AudioError}）" : "")
                 : "声音：未投送" + (session.AudioError != null ? $"（{session.AudioError}）" : ""),

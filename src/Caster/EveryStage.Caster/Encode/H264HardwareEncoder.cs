@@ -87,7 +87,9 @@ public sealed class H264HardwareEncoder : IDisposable
     /// <param name="frameRateNumerator">Assumes an integer frame rate (e.g. 30 or 60) — a real
     /// implementation would want a proper rational frame-rate type to also support rates like
     /// 29.97 correctly; this is a simplification.</param>
-    public H264HardwareEncoder(D3D11Device gpu, int width, int height, int frameRateNumerator, int bitrateBps)
+    /// <param name="forceSoftware">Skip the hardware encoder (used when one was tried and produced
+    /// nothing — see LiveCastSession's no-output fallback).</param>
+    public H264HardwareEncoder(D3D11Device gpu, int width, int height, int frameRateNumerator, int bitrateBps, bool forceSoftware = false)
     {
         _sampleDurationTicks = 10_000_000L / frameRateNumerator;
         _gpu = gpu;
@@ -98,13 +100,17 @@ public sealed class H264HardwareEncoder : IDisposable
         // own software H.264 encoder (synchronous, fed from system memory: more CPU, same stream).
         Exception? hardwareFailure = null;
         (IMFTransform Encoder, IMFMediaEventGenerator? Events, bool OwnSamples, string Tuning)? opened = null;
-        try
+        if (forceSoftware) hardwareFailure = new InvalidOperationException("显卡编码器没有输出画面，已改用软件编码。");
+        else
         {
-            opened = Open(hardware: true, gpu, width, height, frameRateNumerator, bitrateBps);
-        }
-        catch (Exception ex)
-        {
-            hardwareFailure = ex;
+            try
+            {
+                opened = Open(hardware: true, gpu, width, height, frameRateNumerator, bitrateBps);
+            }
+            catch (Exception ex)
+            {
+                hardwareFailure = ex;
+            }
         }
         if (hardwareFailure != null)
         {
@@ -539,7 +545,7 @@ public sealed class H264HardwareEncoder : IDisposable
     private static (IMFTransform Encoder, IMFMediaEventGenerator? Events, bool OwnSamples, string Tuning) Open(
         bool hardware, D3D11Device gpu, int width, int height, int frameRateNumerator, int bitrateBps)
     {
-        var encoder = ActivateFirstEncoder(hardware);
+        var encoder = ActivateFirstEncoder(hardware, gpu.AdapterLuid);
         IMFMediaEventGenerator? events = null;
         try
         {
@@ -579,7 +585,7 @@ public sealed class H264HardwareEncoder : IDisposable
         }
     }
 
-    private static IMFTransform ActivateFirstEncoder(bool hardware)
+    private static IMFTransform ActivateFirstEncoder(bool hardware, long adapterLuid)
     {
         MediaFactory.MFStartup().CheckError();
 
@@ -595,7 +601,8 @@ public sealed class H264HardwareEncoder : IDisposable
                     ? EnumFlag.EnumFlagHardware | EnumFlag.EnumFlagSortandfilter
                     : EnumFlag.EnumFlagSyncmft | EnumFlag.EnumFlagLocalmft | EnumFlag.EnumFlagSortandfilter,
                 null,
-                outputType);
+                outputType,
+                hardware ? adapterLuid : null);
         }
         catch
         {

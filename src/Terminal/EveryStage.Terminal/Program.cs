@@ -309,6 +309,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         MarkStartupStage("主窗口构造");
         // Unpairing a device (or taking away 「允许投放」) while it casts stops that cast immediately and
         // falls back to what was on screen before (P0-D3); it never needs the Caster's cooperation.
+        _mainWindow.DeviceRefreshRequested += () => _ = _discovery.AnnounceNowAsync();
         _mainWindow.DeviceAccessRevoked += deviceId =>
         {
             _discovery.RevokeActiveCast(deviceId);

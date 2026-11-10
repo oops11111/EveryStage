@@ -5,11 +5,24 @@ namespace EveryStage.Rendering;
 
 public static class MediaFoundationHelpers
 {
+    // MFT_ENUM_ADAPTER_LUID: the adapter a hardware MFT belongs to (UINT64, the adapter's LUID).
+    private static readonly Guid MftEnumAdapterLuid = new("1d39518c-e220-4da8-a07f-ba172552d6b1");
+
     public static IMFTransform ActivateFirstTransform(
         Guid category,
         EnumFlag flags,
         RegisterTypeInfo? inputType,
-        RegisterTypeInfo? outputType)
+        RegisterTypeInfo? outputType) => ActivateFirstTransform(category, flags, inputType, outputType, preferredAdapterLuid: null);
+
+    /// <summary>As above, but on a machine with several GPUs prefers the transform that belongs to
+    /// <paramref name="preferredAdapterLuid"/>: Windows lists hardware MFTs of every adapter, and one
+    /// bound to a device on a DIFFERENT adapter can accept its setup and then never produce output.</summary>
+    public static IMFTransform ActivateFirstTransform(
+        Guid category,
+        EnumFlag flags,
+        RegisterTypeInfo? inputType,
+        RegisterTypeInfo? outputType,
+        long? preferredAdapterLuid)
     {
         MediaFactory.MFTEnumEx(category, (uint)flags, inputType, outputType, out var arrayPointer, out var count);
         if (count == 0 || arrayPointer == IntPtr.Zero)
@@ -24,7 +37,18 @@ public static class MediaFoundationHelpers
                 activations.Add(new IMFActivate(activationPointer));
             }
 
-            return activations[0].ActivateObject<IMFTransform>();
+            var chosen = activations[0];
+            if (preferredAdapterLuid is { } wanted)
+            {
+                foreach (var activation in activations)
+                {
+                    long luid;
+                    try { luid = unchecked((long)activation.GetUInt64(MftEnumAdapterLuid)); }
+                    catch (Exception) { continue; } // no adapter recorded (software MFT, older driver)
+                    if (luid == wanted) { chosen = activation; break; }
+                }
+            }
+            return chosen.ActivateObject<IMFTransform>();
         }
         finally
         {

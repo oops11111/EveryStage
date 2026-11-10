@@ -94,6 +94,7 @@ public sealed class MainWindow : GradientForm
     public Control DeviceCastVideoHost => _previewDock.DeviceVideoHost;
     /// <summary>设备页: a device was unpaired or lost 「允许投放」 (stop its cast now if it is casting).</summary>
     public event Action<Guid>? DeviceAccessRevoked;
+    public event Action? DeviceRefreshRequested;
     /// <summary>The extended display's screen rectangle while it is on air (the PGM monitor copies it).</summary>
     public Func<Rectangle?>? ProgramScreenBounds
     {
@@ -268,6 +269,7 @@ public sealed class MainWindow : GradientForm
 
         _devicesPanel = new DevicesPanel(pairedDevices, connectionLog, identity.DeviceName, stateMachine, identity.IsLoadDegraded);
         _devicesPanel.DeviceAccessRevoked += id => DeviceAccessRevoked?.Invoke(id);
+        _devicesPanel.RefreshRequested += () => DeviceRefreshRequested?.Invoke();
         _activitiesPanel = new ActivitiesPanel(
             scenarioStore, scenarioRepository, library, _preview, _fileOpLog, stateMachine)
         {
