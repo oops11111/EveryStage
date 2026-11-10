@@ -190,9 +190,15 @@ public sealed partial class MainForm
         if (raw.Contains("DuplicateOutput", StringComparison.OrdinalIgnoreCase) || raw.Contains("屏幕", StringComparison.Ordinal) && raw.Contains("捕获", StringComparison.Ordinal))
             return new Problem("没能开始投屏", "没法采集这块屏幕的画面。",
                 new[] { "换一块屏幕试试，或者关掉正在全屏独占的程序（例如游戏）后重试。", "仍不行的话，打开「诊断」检查这台电脑。" }, raw);
-        if (raw.Contains("超时", StringComparison.Ordinal) || raw.Contains("未响应", StringComparison.Ordinal) || raw.Contains("timed out", StringComparison.OrdinalIgnoreCase))
-            return new Problem("终端机没有响应", "投屏请求发出去了，但终端机没有回应。",
-                new[] { "确认终端机开着，并且和这台电脑在同一个局域网。", "终端机正在显示别人的投屏时，可能需要先在终端机上同意切换。" }, raw);
+        if (raw.Contains("未确认就绪", StringComparison.Ordinal) || raw.Contains("超时", StringComparison.Ordinal)
+            || raw.Contains("未响应", StringComparison.Ordinal) || raw.Contains("timed out", StringComparison.OrdinalIgnoreCase))
+            return new Problem("终端机没有回应", "开始投屏的请求发出去了，但终端机一直没有确认准备好。",
+                new[]
+                {
+                    "确认终端机程序和投屏器是同一版本（都装最新的安装包）。",
+                    "确认终端机开着、和这台电脑在同一个局域网，并且两台电脑的系统时间相差不超过 2 分钟。",
+                    "仍不行的话，把终端机电脑上 %ProgramData%\\EveryStage\\logs 文件夹发给技术支持。",
+                }, raw);
         if (raw.Contains("拒绝", StringComparison.Ordinal))
             return new Problem("终端机拒绝了投屏", "终端机现在不接受这台电脑的投屏。",
                 new[] { "在终端机上确认允许投屏后重试。" }, raw);

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
@@ -388,8 +389,10 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
         _sightings[msg.SenderDeviceId] = (remoteEndPoint.Address, DateTimeOffset.Now);
         _lastStartMessageId = msg.MessageId;
         _lastStartDeviceId = msg.SenderDeviceId;
+        var answered = new StrongBox<bool>(false);
         void Complete(bool ready, string? error, bool pending = false)
         {
+            if (!pending) Volatile.Write(ref answered.Value, true);
             if (!pending && ready)
             {
                 _activeCasterDeviceId = msg.SenderDeviceId;
@@ -400,6 +403,14 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
             _ = SendStartResultAsync(msg, device.PairingKey!, remoteEndPoint, task);
         }
         if (CastStartRequested == null) { Complete(false, "终端接收服务尚未就绪。"); return; }
+        // Getting ready can take a while (decoder setup, software fallback, a busy UI thread). The
+        // Caster stops waiting after ~10 s with 「终端机未确认就绪」, so if the real answer is not out
+        // within 3 s, say 「准备中」 first: the Caster then waits up to 75 s for the final answer.
+        _ = Task.Delay(TimeSpan.FromSeconds(3), _cts.Token).ContinueWith(_ =>
+        {
+            if (!Volatile.Read(ref answered.Value))
+                _ = SendStartResultAsync(msg, device.PairingKey!, remoteEndPoint, Task.FromResult(new CastStartResult(false, null, true)));
+        }, TaskContinuationOptions.OnlyOnRanToCompletion);
         try { CastStartRequested.Invoke(new CastStartInfo(
             msg.DeviceId, device.DeviceName, msg.Width, msg.Height, msg.PayloadType,
             msg.HasAudio, msg.AudioSampleRate, msg.AudioChannels, msg.AudioPayloadType, msg.AudioIsAac,

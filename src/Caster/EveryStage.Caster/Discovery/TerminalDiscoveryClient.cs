@@ -294,8 +294,10 @@ public sealed class TerminalDiscoveryClient : IDisposable
             var response = await pending.Task;
             if (response.Pending)
             {
-                var final = new TaskCompletionSource<DiscoveryProtocol.CastStartAckMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
-                lock (_gate) _pendingStarts[key] = final;
+                // HandleStartAck already put the TCS for the final answer in place, under the same lock
+                // that completed this one, so a final answer arriving right behind 「准备中」 is not lost.
+                TaskCompletionSource<DiscoveryProtocol.CastStartAckMessage> final;
+                lock (_gate) final = _pendingStarts[key];
                 response = await final.Task.WaitAsync(TimeSpan.FromSeconds(75), linked.Token);
             }
             if (!response.Ready) throw new InvalidOperationException(response.Error ?? "终端机无法开始接收投屏。");
@@ -438,7 +440,20 @@ public sealed class TerminalDiscoveryClient : IDisposable
             || !PairingSecurity.Verify(ack, paired.PairingKey)
             || !_replayGuard.TryAccept(ack, DateTimeOffset.UtcNow)) return;
         lock (_gate)
-            if (_pendingStarts.TryGetValue((ack.SenderDeviceId, ack.MediaSessionId), out var pending)) pending.TrySetResult(ack);
+        {
+            var key = (ack.SenderDeviceId, ack.MediaSessionId);
+            if (!_pendingStarts.TryGetValue(key, out var pending)) return;
+            if (ack.Pending)
+            {
+                // The first 「准备中」 completes the initial wait and installs the wait for the final
+                // answer; a repeated 「准备中」 (the Terminal re-sends on a retried request) changes nothing.
+                if (pending.Task.IsCompleted) return;
+                _pendingStarts[key] = new TaskCompletionSource<DiscoveryProtocol.CastStartAckMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+                pending.TrySetResult(ack);
+                return;
+            }
+            pending.TrySetResult(ack);
+        }
     }
 
     private void HandleStartRejected(DiscoveryProtocol.CastStartRejectedMessage rejected)
