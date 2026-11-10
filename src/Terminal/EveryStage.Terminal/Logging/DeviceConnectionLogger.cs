@@ -55,6 +55,16 @@ public sealed class DeviceConnectionLogger
 
     /// <summary>An authenticated control message was refused as a replay or as too old / from the future
     /// (the two devices' clocks more than the allowed skew apart).</summary>
+    /// <summary>One step of a 开始投屏 request: received, refused (with why), 「准备中」 sent, or answered
+    /// (ready or the error the Caster was given). Without these, a Caster that reported 「终端机没有回应」
+    /// left nothing on the Terminal to say whether the request even arrived.</summary>
+    public void LogCastStart(string deviceId, string outcome, string? detail = null) =>
+        _writer.Write("cast_start", new { deviceId, outcome, detail });
+
+    /// <summary>A pairing confirmation was put in front of the operator.</summary>
+    public void LogPairingPrompt(string deviceId, string deviceName) =>
+        _writer.Write("pairing_prompt_shown", new { deviceId, deviceName });
+
     public void LogMessageRejected(string deviceId, string messageKind, string reason) =>
         _writer.Write("message_rejected", new { deviceId, messageKind, reason });
 }

@@ -181,7 +181,7 @@ internal sealed class PairingView : CasterView
     private readonly ThemedLabel _title = NewLabel("", TextRole.Muted, 11F, align: ContentAlignment.MiddleCenter);
     private readonly ThemedLabel _code = NewLabel("--- ---", TextRole.Text, 40F, semibold: true, ContentAlignment.MiddleCenter);
     private readonly ThemedLabel _instructions = NewLabel(
-        "到终端机跟前，核对屏幕上弹出的是同一组数字，点「接受」。\n接受后这里自动开始投屏，以后不用再配对。",
+        "到终端机跟前，核对屏幕上弹出的是同一组数字，点「接受」。\n接受后这里自动开始投屏，以后不用再配对。\n终端机就在这台电脑上的话，确认框可能被挡住：在任务栏点「投屏设备配对请求」。",
         TextRole.Text, 10.5F, align: ContentAlignment.TopCenter);
     private readonly ThemedLabel _waiting = NewLabel("正在向终端机发送配对请求…", TextRole.Warning, 10F, align: ContentAlignment.MiddleCenter);
     private readonly ActionButton _cancel = NewButton("取消", ButtonKind.Secondary);
@@ -214,7 +214,7 @@ internal sealed class PairingView : CasterView
         int y = Math.Max(S(24), ClientSize.Height / 2 - S(150));
         _title.Bounds = new Rectangle(x, y, w, S(28)); y += S(40);
         _code.Bounds = new Rectangle(x, y, w, S(76)); y += S(88);
-        _instructions.Bounds = new Rectangle(x, y, w, S(52)); y += S(60);
+        _instructions.Bounds = new Rectangle(x, y, w, S(76)); y += S(84);
         _waiting.Bounds = new Rectangle(x, y, w, S(24)); y += S(40);
         _cancel.Bounds = new Rectangle((ClientSize.Width - S(110)) / 2, y, S(110), S(38));
     }

@@ -353,15 +353,23 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
 
     private void HandleCastStart(DiscoveryProtocol.CastStartMessage msg, IPEndPoint remoteEndPoint)
     {
-        if (msg.MediaAuthenticationVersion != 1 || msg.MediaSessionId == Guid.Empty || msg.DeviceId != msg.SenderDeviceId) return;
+        if (msg.MediaAuthenticationVersion != 1 || msg.MediaSessionId == Guid.Empty || msg.DeviceId != msg.SenderDeviceId)
+        {
+            _connectionLog.LogCastStart(msg.SenderDeviceId.ToString(), "ignored_malformed", $"from {remoteEndPoint}");
+            return;
+        }
+        if (msg.MessageId != _lastStartMessageId)
+            _connectionLog.LogCastStart(msg.SenderDeviceId.ToString(), "received", $"from {remoteEndPoint}, {msg.Width}x{msg.Height}");
         var device = _pairedDevices.Find(msg.SenderDeviceId);
         if (device == null || !PairingSecurity.IsSupportedKey(device.PairingKey, device.PairingKeyFormatVersion))
         {
+            _connectionLog.LogCastStart(msg.SenderDeviceId.ToString(), "rejected", device == null ? "not_paired (no pairing record for this caster)" : "not_paired (unsupported key)");
             _ = SendCastStartRejectedAsync(msg, remoteEndPoint, "not_paired");
             return;
         }
         if (!PairingSecurity.Verify(msg, device.PairingKey))
         {
+            _connectionLog.LogCastStart(msg.SenderDeviceId.ToString(), "rejected", "not_paired (signature does not match the stored pairing key)");
             _ = SendCastStartRejectedAsync(msg, remoteEndPoint, "not_paired");
             return;
         }
@@ -393,6 +401,7 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
         void Complete(bool ready, string? error, bool pending = false)
         {
             if (!pending) Volatile.Write(ref answered.Value, true);
+            _connectionLog.LogCastStart(msg.SenderDeviceId.ToString(), pending ? "pending" : ready ? "ready" : "failed", error);
             if (!pending && ready)
             {
                 _activeCasterDeviceId = msg.SenderDeviceId;
@@ -409,7 +418,10 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
         _ = Task.Delay(TimeSpan.FromSeconds(3), _cts.Token).ContinueWith(_ =>
         {
             if (!Volatile.Read(ref answered.Value))
+            {
+                _connectionLog.LogCastStart(msg.SenderDeviceId.ToString(), "pending", "not ready after 3 s");
                 _ = SendStartResultAsync(msg, device.PairingKey!, remoteEndPoint, Task.FromResult(new CastStartResult(false, null, true)));
+            }
         }, TaskContinuationOptions.OnlyOnRanToCompletion);
         try { CastStartRequested.Invoke(new CastStartInfo(
             msg.DeviceId, device.DeviceName, msg.Width, msg.Height, msg.PayloadType,
@@ -717,6 +729,7 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
             raise = !pending.UiRaised;
             pending.UiRaised = true;
         }
+        if (raise) _connectionLog.LogPairingPrompt(pending.DeviceId.ToString(), pending.DeviceName);
         if (raise)
             PairingRequested?.Invoke(new PairingRequest(
                 reveal.RequestId, pending.DeviceId, pending.DeviceName,

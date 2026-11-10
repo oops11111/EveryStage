@@ -28,6 +28,10 @@ public sealed class PairingConfirmationDialog : Form
         MinimizeBox = false;
         ClientSize = new Size(380, 232);
         TopMost = true;
+        // Its own task-bar button: with the Terminal in the tray (or the Caster on the same PC in front),
+        // an owned dialog without one was easy to miss, and an unanswered request expires after 2 minutes.
+        ShowInTaskbar = true;
+        Shown += (_, _) => { Activate(); BringToFront(); };
 
         string code = request.VerificationCode.Length == 6
             ? request.VerificationCode.Insert(3, " ")

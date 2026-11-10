@@ -480,7 +480,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                     using var dialog = new PairingConfirmationDialog(next);
                     if (_overlay != null) OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, _overlay.Monitor);
                     else OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, null);
-                    dialog.ShowDialog(_mainWindow);
+                    // A hidden or minimized owner would hide the request with it: show it unowned then.
+                    if (_mainWindow.Visible && _mainWindow.WindowState != FormWindowState.Minimized) dialog.ShowDialog(_mainWindow);
+                    else dialog.ShowDialog();
                     bool answered = _discovery.RespondToPairing(next.RequestId, dialog.Accepted, dialog.TrustMode, dialog.AllowCast, dialog.AllowMonitor);
                     // The Terminal drops a request after DiscoveryService.PendingRequestTimeout while
                     // this dialog has no timeout of its own; an accept after that used to do nothing silently.
