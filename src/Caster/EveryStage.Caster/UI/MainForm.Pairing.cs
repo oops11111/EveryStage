@@ -162,6 +162,24 @@ public sealed partial class MainForm
     /// <summary>Maps a start failure to plain words and next steps; the raw text stays available.</summary>
     private static Problem ProblemForStartFailure(string raw)
     {
+        // The Terminal reports its own decoder failure back through the cast start: that is the
+        // TERMINAL's machine, not this one.
+        if (raw.Contains("视频解码器", StringComparison.Ordinal))
+            return new Problem("终端机没法显示投屏", "终端机那台电脑找不到可用的视频解码器。",
+                new[]
+                {
+                    "更新终端机电脑的显卡驱动后重试。",
+                    "终端机是 Windows N / KN 版的话：在「设置 › 应用 › 可选功能」里添加「媒体功能包」，重启后重试。",
+                }, raw);
+        // Bare English text: an older Terminal (no software decoder yet) or a component missing on
+        // either side — the message does not say which.
+        if (raw.StartsWith("No matching Media Foundation transform", StringComparison.Ordinal))
+            return new Problem("没能开始投屏", "这台电脑或终端机缺少视频编码 / 解码组件。",
+                new[]
+                {
+                    "把终端机和投屏器都更新到最新版本：新版在没有显卡编解码时会自动改用 Windows 自带的软件编解码。",
+                    "仍不行的话，更新两台电脑的显卡驱动；Windows N / KN 版需要先安装「媒体功能包」。",
+                }, raw);
         if (raw.Contains("视频编码器", StringComparison.Ordinal) || raw.Contains("Media Foundation", StringComparison.OrdinalIgnoreCase))
             return new Problem("没能开始投屏", "这台电脑找不到可用的视频编码器。通常是显卡驱动缺失，或 Windows N / KN 版缺少媒体组件。",
                 new[]

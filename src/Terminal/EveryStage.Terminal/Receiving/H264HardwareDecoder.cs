@@ -141,57 +141,101 @@ public sealed class H264HardwareDecoder : IDisposable
     /// avoid.</summary>
     public bool DecodeLoopFailed => Volatile.Read(ref _decodeLoopFailed) != 0;
 
+    /// <summary>True when no hardware decoder could be used and Windows' software H.264 decoder runs
+    /// instead: frames are decoded in system memory and uploaded to a D3D11 texture for display.</summary>
+    public bool UsesSoftwareDecoder { get; }
+
+    /// <summary>Why the hardware decoder was not used, when <see cref="UsesSoftwareDecoder"/>.</summary>
+    public string? HardwareUnavailableReason { get; }
+
     public H264HardwareDecoder(D3D11Device gpu, int width, int height)
     {
         _gpu = gpu;
-        _decoder = ActivateFirstHardwareDecoder();
+        // A hardware (DXVA) decoder first. A machine without a usable one used to refuse every cast
+        // with "No matching Media Foundation transform was found."; it now falls back to Windows' own
+        // software decoder, the same way the Caster falls back to the software encoder.
+        Exception? hardwareFailure = null;
+        (IMFTransform Decoder, IMFMediaEventGenerator? Events, bool Async, bool OwnSamples, IntPtr Handle)? opened = null;
+        try
+        {
+            opened = OpenHardware(gpu, width, height);
+        }
+        catch (Exception ex)
+        {
+            hardwareFailure = ex;
+        }
+        if (hardwareFailure != null)
+        {
+            try
+            {
+                opened = OpenSoftware(width, height);
+                UsesSoftwareDecoder = true;
+                HardwareUnavailableReason = hardwareFailure.Message;
+            }
+            catch (Exception softwareFailure)
+            {
+                throw new InvalidOperationException(
+                    "终端机没有可用的 H.264 视频解码器，无法接收投屏。"
+                    + $"显卡硬件解码：{Describe(hardwareFailure)}；Windows 自带软件解码：{Describe(softwareFailure)}。"
+                    + "请更新显卡驱动；如果是 Windows N / KN 版，请先安装「媒体功能包」。", softwareFailure);
+            }
+        }
+        var parts = opened!.Value;
+        _decoder = parts.Decoder;
+        _events = parts.Events;
+        _isAsynchronous = parts.Async;
+        _outputProvidesOwnSamples = parts.OwnSamples;
+        _deviceHandle = parts.Handle;
+        if (UsesSoftwareDecoder) ReadSoftwareOutputLayout();
+        if (_isAsynchronous) _eventLoopTask = Task.Run(() => RunEventLoop(_cts.Token));
+    }
 
-        // ActivateFirstHardwareDecoder() above already called MediaFactory.MFStartup() by the time
-        // execution reaches here, so everything below is wrapped to keep that paired with an
-        // MFShutdown() if construction fails - without it, a machine with no usable hardware
-        // decoder configuration leaks one startup reference per attempted device cast, for the
-        // Terminal's entire uptime.
+    private static string Describe(Exception ex) => ex.Message.StartsWith("No matching Media Foundation transform", StringComparison.Ordinal)
+        ? "没有找到" : ex.Message;
+
+    private static (IMFTransform, IMFMediaEventGenerator?, bool, bool, IntPtr) OpenHardware(D3D11Device gpu, int width, int height)
+    {
+        var decoder = ActivateFirstHardwareDecoder();
+
+        // ActivateFirstHardwareDecoder() above already called MediaFactory.MFStartup(), so everything
+        // below is wrapped to keep that paired with an MFShutdown() if setup fails.
         IntPtr deviceHandle = IntPtr.Zero;
+        IMFMediaEventGenerator? events = null;
         try
         {
             // ORDER IS LOAD-BEARING FROM HERE DOWN.
             // 1. Unlock first. Until this is set a hardware MFT rejects everything below with
             //    MF_E_TRANSFORM_ASYNC_LOCKED, including the attribute reads on the next line.
-            UnlockAsyncProcessing(_decoder);
-            _isAsynchronous = ReportsAsynchronous(_decoder);
-            RequestLowLatency(_decoder);
+            UnlockAsyncProcessing(decoder);
+            bool isAsynchronous = ReportsAsynchronous(decoder);
+            RequestLowLatency(decoder);
 
             // 2. Refuse a transform that cannot take a DXGI device manager at all, rather than
             //    handing it one anyway and hoping. MF_SA_D3D11_AWARE == TRUE is the documented
             //    precondition for MFT_MESSAGE_SET_D3D_MANAGER.
-            RequireD3D11Aware(_decoder);
+            RequireD3D11Aware(decoder);
 
             // 3. Device manager BEFORE the media types: the MFT works out its hardware
             //    configuration inside SetInputType and needs the manager already in hand. This is
             //    the ordering whose absence degrades silently to software decoding.
-            BindDeviceManager(_decoder, gpu);
-            ConfigureOutputStreamAllocation(_decoder);
+            BindDeviceManager(decoder, gpu);
+            ConfigureOutputStreamAllocation(decoder);
 
             // 4. Types last. A hardware decoder holding a manager but with no usable D3D11
             //    configuration answers MF_E_UNSUPPORTED_D3D_TYPE here.
-            ConfigureInputType(_decoder, width, height);
-            ConfigureNv12OutputType(_decoder);
+            ConfigureInputType(decoder, width, height);
+            ConfigureNv12OutputType(decoder);
 
-            _outputProvidesOwnSamples = OutputProvidesOwnSamples(_decoder);
+            bool ownSamples = OutputProvidesOwnSamples(decoder);
 
-            // Opened once and tested per frame (see EnsureDeviceStillValid). Opening it per frame
-            // would be its own leak; not opening it at all was the old behaviour, which left a lost
-            // device looking exactly like a stream that had simply gone quiet.
+            // Opened once and tested per frame (see EnsureDeviceStillValid).
             gpu.DeviceManager.OpenDeviceHandle(out deviceHandle);
-            _deviceHandle = deviceHandle;
 
-            if (_isAsynchronous) _events = _decoder.QueryInterface<IMFMediaEventGenerator>();
+            if (isAsynchronous) events = decoder.QueryInterface<IMFMediaEventGenerator>();
 
-            // Native values are MFT_MESSAGE_NOTIFY_BEGIN_STREAMING / MFT_MESSAGE_NOTIFY_START_OF_STREAM.
-            _decoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
-            _decoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
-
-            if (_isAsynchronous) _eventLoopTask = Task.Run(() => RunEventLoop(_cts.Token));
+            decoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+            decoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+            return (decoder, events, isAsynchronous, ownSamples, deviceHandle);
         }
         catch
         {
@@ -199,11 +243,63 @@ public sealed class H264HardwareDecoder : IDisposable
             {
                 try { gpu.DeviceManager.CloseDeviceHandle(deviceHandle); } catch (Exception) { }
             }
-            _events?.Dispose();
-            _decoder.Dispose();
+            events?.Dispose();
+            decoder.Dispose();
             MediaFactory.MFShutdown();
             throw;
         }
+    }
+
+    /// <summary>Windows' synchronous software H.264 decoder, deliberately WITHOUT a device manager:
+    /// on a machine whose GPU cannot decode H.264, handing it one only invites the same failure. It
+    /// decodes into system memory; <see cref="EmitSoftwareOutput"/> uploads each frame.</summary>
+    private static (IMFTransform, IMFMediaEventGenerator?, bool, bool, IntPtr) OpenSoftware(int width, int height)
+    {
+        MediaFactory.MFStartup().CheckError();
+        IMFTransform? decoder = null;
+        try
+        {
+            var inputType = new RegisterTypeInfo { GuidMajorType = MFMediaType_Video, GuidSubtype = MFVideoFormat_H264 };
+            decoder = MediaFoundationHelpers.ActivateFirstTransform(
+                MFT_CATEGORY_VIDEO_DECODER,
+                EnumFlag.EnumFlagSyncmft | EnumFlag.EnumFlagLocalmft | EnumFlag.EnumFlagSortandfilter,
+                inputType,
+                null);
+            MediaFoundationHelpers.UnlockAsyncIfSupported(decoder);
+            RequestLowLatency(decoder);
+            ConfigureInputType(decoder, width, height);
+            ConfigureNv12OutputType(decoder);
+            bool ownSamples = OutputProvidesOwnSamples(decoder);
+            decoder.ProcessMessage(TMessageType.MessageNotifyBeginStreaming, UIntPtr.Zero);
+            decoder.ProcessMessage(TMessageType.MessageNotifyStartOfStream, UIntPtr.Zero);
+            return (decoder, null, false, ownSamples, IntPtr.Zero);
+        }
+        catch
+        {
+            decoder?.Dispose();
+            MediaFactory.MFShutdown();
+            throw;
+        }
+    }
+
+    // Software path: the negotiated NV12 frame (decoders pad to whole macroblocks, e.g. 1920x1088)
+    // and its row pitch in the output buffer.
+    private int _softwareWidth, _softwareHeight, _softwareStride;
+
+    // MF_MT_DEFAULT_STRIDE and MF_E_TRANSFORM_STREAM_CHANGE.
+    private static readonly Guid MfMtDefaultStride = new("644b4e48-1e02-4516-b0eb-c01ca9d49ac6");
+    private const int MfETransformStreamChange = unchecked((int)0xC00D6D61);
+
+    private void ReadSoftwareOutputLayout()
+    {
+        using var type = _decoder.GetOutputCurrentType(OutputStreamId);
+        ulong size = type.GetUInt64(MF_MT_FRAME_SIZE);
+        _softwareWidth = (int)(size >> 32);
+        _softwareHeight = (int)(size & 0xFFFFFFFF);
+        int stride;
+        try { stride = Math.Abs(unchecked((int)type.GetUInt32(MfMtDefaultStride))); }
+        catch (Exception) { stride = 0; }
+        _softwareStride = stride >= _softwareWidth ? stride : _softwareWidth;
     }
 
     /// <summary>Feeds one complete Annex-B-framed access unit (one encoded frame's worth of NAL
@@ -357,6 +453,7 @@ public sealed class H264HardwareDecoder : IDisposable
     /// was speculative.</summary>
     private bool EmitOneOutput()
     {
+        if (UsesSoftwareDecoder) return EmitSoftwareOutput();
         var outputBuffer = new OutputDataBuffer { StreamID = OutputStreamId };
 
         if (!_outputProvidesOwnSamples)
@@ -404,6 +501,102 @@ public sealed class H264HardwareDecoder : IDisposable
         }
     }
 
+    /// <summary>Software path: one decoded NV12 frame out of the MFT (into a sample this class
+    /// allocates, as the software decoder does not provide its own), uploaded into a fresh D3D11
+    /// NV12 texture the presenter consumes exactly like a DXVA surface. A stream change (the decoder
+    /// learning the real frame size from the first SPS) re-reads the output layout and asks again.</summary>
+    private bool EmitSoftwareOutput()
+    {
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            IMFSample sample;
+            if (_outputProvidesOwnSamples) sample = null!;
+            else
+            {
+                var info = _decoder.GetOutputStreamInfo(OutputStreamId);
+                var buffer = info.Alignment > 0
+                    ? MediaFactory.MFCreateAlignedMemoryBuffer(info.Size, info.Alignment)
+                    : MediaFactory.MFCreateMemoryBuffer(info.Size);
+                sample = MediaFactory.MFCreateSample();
+                using (buffer) sample.AddBuffer(buffer);
+            }
+            var outputBuffer = new OutputDataBuffer { StreamID = OutputStreamId, Sample = sample };
+            var result = _decoder.ProcessOutput(ProcessOutputFlags.None, 1, ref outputBuffer, out _);
+            if (result.Code == MfETransformStreamChange)
+            {
+                outputBuffer.Sample?.Dispose();
+                ConfigureNv12OutputType(_decoder);
+                ReadSoftwareOutputLayout();
+                continue;
+            }
+            if (result.Failure)
+            {
+                outputBuffer.Sample?.Dispose();
+                return false;
+            }
+
+            IMFSample? owned = outputBuffer.Sample;
+            try
+            {
+                if (owned == null) return false;
+                ID3D11Texture2D texture;
+                using (var contiguous = owned.ConvertToContiguousBuffer())
+                {
+                    contiguous.Lock(out var data, out _, out var length);
+                    try { texture = UploadNv12(data, length); }
+                    finally { contiguous.Unlock(); }
+                }
+                var handler = FrameDecoded;
+                if (handler == null)
+                {
+                    texture.Dispose();
+                    return true;
+                }
+                var handed = owned;
+                owned = null;
+                handler(texture, 0, _softwareWidth, _softwareHeight, handed.SampleTime, handed);
+                return true;
+            }
+            finally
+            {
+                owned?.Dispose();
+            }
+        }
+        return false;
+    }
+
+    private ID3D11Texture2D UploadNv12(IntPtr data, int length)
+    {
+        int width = _softwareWidth, height = _softwareHeight;
+        // The decoder's buffer holds the Y plane (height rows) then the interleaved UV plane, at one
+        // pitch; take the pitch the buffer length implies when the type did not state one.
+        int pitch = _softwareStride;
+        if ((long)pitch * height * 3 / 2 > length) pitch = Math.Max(width, length * 2 / (height * 3));
+        var desc = new Texture2DDescription
+        {
+            Width = (uint)width,
+            Height = (uint)height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = Vortice.DXGI.Format.NV12,
+            SampleDescription = new Vortice.DXGI.SampleDescription(1, 0),
+            Usage = ResourceUsage.Default,
+            BindFlags = BindFlags.ShaderResource,
+            CPUAccessFlags = CpuAccessFlags.None,
+        };
+        var initial = new SubresourceData(data, (uint)pitch, (uint)(pitch * height));
+        try
+        {
+            return _gpu.Device.CreateTexture2D(desc, new[] { initial });
+        }
+        catch (Exception)
+        {
+            // Some drivers refuse a shader-resource NV12 texture; the video processor does not need it.
+            desc.BindFlags = BindFlags.None;
+            return _gpu.Device.CreateTexture2D(desc, new[] { initial });
+        }
+    }
+
     /// <summary>Checks that the DXGI device is still the one this decoder was built against, which
     /// the documented decode loop requires on every frame. A TDR, a driver update, or a remote
     /// desktop session transition replaces the device underneath a long-running Terminal; with no
@@ -417,6 +610,11 @@ public sealed class H264HardwareDecoder : IDisposable
     /// still sending gets picked up again by the existing pairing path.</summary>
     private void EnsureDeviceStillValid()
     {
+        if (UsesSoftwareDecoder)
+        {
+            if (_gpu.Device.DeviceRemovedReason.Failure) throw new DeviceLostException();
+            return;
+        }
         bool valid;
         try
         {

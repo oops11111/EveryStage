@@ -20,6 +20,8 @@
     <!-- The Caster's AAC encoder, for the encode -> decode round trip of the cast audio path. -->
     <Compile Include="../../Caster/EveryStage.Caster/Encode/AacAudioEncoder.cs" Link="Caster/AacAudioEncoder.cs" />
     <Compile Include="../../Caster/EveryStage.Caster/Encode/EncoderGuids.cs" Link="Caster/EncoderGuids.cs" />
+    <!-- The Caster's H.264 encoder, for the encode -> decode round trip of the cast video path. -->
+    <Compile Include="../../Caster/EveryStage.Caster/Encode/H264HardwareEncoder.cs" Link="Caster/H264HardwareEncoder.cs" />
     <!-- Lightweight Caster discovery client pieces, for an end-to-end pairing test against Terminal's DiscoveryService. -->
     <Compile Include="../../Caster/EveryStage.Caster/Discovery/DiscoveredTerminal.cs" Link="Caster/DiscoveredTerminal.cs" />
     <Compile Include="../../Caster/EveryStage.Caster/Discovery/PairedTerminal.cs" Link="Caster/PairedTerminal.cs" />

@@ -116,6 +116,7 @@ static async Task RunTests()
         DocumentTests.Run(directory);
         Console.WriteLine("PHASE: cast audio");
         CastAudioTests.Run();
+        CastVideoTests.Run();
     }
     finally { ThumbnailDiskCache.Shared = previousThumbnailCache; Directory.Delete(directory, true); }
 }
