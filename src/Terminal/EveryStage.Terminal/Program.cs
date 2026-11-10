@@ -484,6 +484,12 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                     bool answered = _discovery.RespondToPairing(next.RequestId, dialog.Accepted, dialog.TrustMode, dialog.AllowCast, dialog.AllowMonitor);
                     // The Terminal drops a request after DiscoveryService.PendingRequestTimeout while
                     // this dialog has no timeout of its own; an accept after that used to do nothing silently.
+                    if (answered && dialog.Accepted && _discovery.LastPairingSaveError is { } saveError)
+                        MessageBox.Show(_mainWindow,
+                            $"配对没有完成：终端机无法保存配对记录。\n\n{saveError}\n\n" +
+                            "通常是 %ProgramData%\\EveryStage\\secure 里的文件属于另一个账户或权限被改过。" +
+                            "请用管理员身份删除这个 secure 文件夹，重启终端机后在投屏器上重新配对。",
+                            "配对没有完成", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     if (!answered && dialog.Accepted)
                         MessageBox.Show(_mainWindow, $"来自 \"{next.DeviceName}\" 的配对请求已超时，未完成配对。请在投屏机上重新发起配对。",
                             "配对已超时", MessageBoxButtons.OK, MessageBoxIcon.Warning);

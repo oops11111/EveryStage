@@ -266,7 +266,7 @@ public sealed class MainWindow : GradientForm
         _musicBar.DragEnter += (_, e) => e.Effect = MusicDrawer.AudioPaths(e.Data).Count > 0 ? DragDropEffects.Copy : DragDropEffects.None;
         _musicBar.DragDrop += (_, e) => _musicDrawer.OpenAndAdd(MusicDrawer.AudioPaths(e.Data));
 
-        _devicesPanel = new DevicesPanel(pairedDevices, connectionLog, identity.DeviceName, stateMachine);
+        _devicesPanel = new DevicesPanel(pairedDevices, connectionLog, identity.DeviceName, stateMachine, identity.IsLoadDegraded);
         _devicesPanel.DeviceAccessRevoked += id => DeviceAccessRevoked?.Invoke(id);
         _activitiesPanel = new ActivitiesPanel(
             scenarioStore, scenarioRepository, library, _preview, _fileOpLog, stateMachine)

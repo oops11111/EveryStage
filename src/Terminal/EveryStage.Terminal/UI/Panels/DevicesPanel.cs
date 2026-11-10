@@ -34,7 +34,8 @@ public sealed class DevicesPanel : UserControl
     public Func<Guid, (string? Address, DateTimeOffset? LastSeen, bool Casting)>? Presence { get; set; }
 
     public DevicesPanel(PairedDeviceStore pairedDevices, DeviceConnectionLogger connectionLog,
-        string? localName = null, EveryStage.Terminal.StateMachine.OutputStateMachine? stateMachine = null)
+        string? localName = null, EveryStage.Terminal.StateMachine.OutputStateMachine? stateMachine = null,
+        bool identityUnreadable = false)
     {
         _pairedDevices = pairedDevices;
         _connectionLog = connectionLog;
@@ -98,12 +99,25 @@ public sealed class DevicesPanel : UserControl
             BackColor = Color.Transparent, Visible = false,
         }, UiForegroundRole.Muted);
 
+        // The pairing file or this device's identity exists but could not be read (usually: the files in
+        // %ProgramData%\EveryStage\secure belong to another account). Pairing cannot work this run, so
+        // say so here instead of letting every pairing fail without explanation.
+        var dataWarning = ModernUi.SetForegroundRole(new Label
+        {
+            Text = "⚠ 配对数据读不出来，新的配对无法保存" + (identityUnreadable ? "，本机这次用的是临时身份，投屏机认不出它" : "") + "。\r\n"
+                + "通常是 %ProgramData%\\EveryStage\\secure 里的文件属于另一个账户。请用管理员身份删除这个 secure 文件夹，重启终端机，再在投屏机上重新配对。",
+            Dock = DockStyle.Top, Height = 58, Padding = new Padding(0, 4, 0, 8),
+            BackColor = Color.Transparent,
+            Visible = pairedDevices.LoadFailed || identityUnreadable,
+        }, UiForegroundRole.Danger);
+
         // Dock order: the last Top control added sits highest, so the header goes in last.
         Controls.Add(_deviceRows);
         Controls.Add(_emptyState);
         Controls.Add(listHeader);
         Controls.Add(requestGap);
         Controls.Add(_requestCard);
+        Controls.Add(dataWarning);
         Controls.Add(header);
 
         // Presence (地址 / 最近投屏 / 投屏中) changes without the list changing: repaint the rows.

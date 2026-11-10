@@ -218,6 +218,12 @@ public sealed partial class MainForm : GradientForm
         ApplyThemeEverywhere();
         RefreshTerminalList();
         ShowSelectedTerminal();
+        // This machine's own pairing data cannot be read: say so before the operator tries to pair.
+        if (_identity.IsLoadDegraded || _pairedTerminals.LoadFailed)
+            ShowProblem(new Problem("配对数据读不出来",
+                "这台电脑读不出自己的配对数据" + (_identity.IsLoadDegraded ? "，这次用的是临时身份，终端机会把它当成新设备" : "") + "，新的配对无法保存。"
+                + "通常是 %ProgramData%\\EveryStage\\secure 里的文件属于另一个 Windows 账户。",
+                new[] { "用管理员身份删除 %ProgramData%\\EveryStage\\secure 文件夹。", "重启投屏器，然后重新配对。" }, null, CanRetry: false));
 
         // Every bound above is in 96-DPI pixels: declare the design DPI so the window scales once here.
         SuspendLayout();

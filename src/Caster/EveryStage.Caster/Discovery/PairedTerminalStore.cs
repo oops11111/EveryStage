@@ -38,6 +38,9 @@ public sealed class PairedTerminalStore
 
     public PairedTerminal? Find(Guid deviceId) => _terminals.FirstOrDefault(t => t.DeviceId == deviceId);
 
+    /// <summary>The pairing file exists but could not be read: nothing new can be saved this run.</summary>
+    public bool LoadFailed => _loadFailed;
+
     public void Upsert(PairedTerminal terminal)
     {
         // Guard mirrors Terminal's PairedDeviceStore: after a failed load (a transient lock the

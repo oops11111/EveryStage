@@ -27,6 +27,9 @@ public sealed class PairedDeviceStore
         _devices = Load();
     }
 
+    /// <summary>The pairing file exists but could not be read: nothing new can be saved this run.</summary>
+    public bool LoadFailed => _loadFailed;
+
     public PairedDevice? Find(Guid deviceId) => _devices.FirstOrDefault(d => d.DeviceId == deviceId);
 
     public IReadOnlyList<PairedDevice> All => _devices;

@@ -162,6 +162,10 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
     /// <summary>Called by the pairing confirmation UI after the operator compares the v2 six-digit
     /// verification code. Returns false (and does nothing) if <paramref name="requestId"/> is unknown or
     /// already expired/answered, so the UI can tell an operator whose answer came too late.</summary>
+    /// <summary>Why the last accepted pairing could not be kept (the pairing file could not be read or
+    /// written); null when it was saved. The Caster is told the same and pairs nothing.</summary>
+    public string? LastPairingSaveError { get; private set; }
+
     public bool RespondToPairing(string requestId, bool accept, TrustMode trustMode, bool allowCast, bool allowMonitor)
     {
         PendingRequest? pending;
@@ -172,12 +176,41 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
         using (pending)
         {
             if (accept && pending.Result == null) accept = false;
+            LastPairingSaveError = null;
+            string? reason = accept ? null : "declined_by_terminal";
+
+            // Save FIRST, answer second. This used to send 「已接受」 and only then save: when the save
+            // failed (the pairing file unreadable or not writable), the Caster stored a key the Terminal
+            // never kept, and every cast after that failed with 「请重新配对」 — which failed the same way.
+            if (accept && pending.Result != null)
+            {
+                try
+                {
+                    _pairedDevices.Upsert(new PairedDevice
+                    {
+                        DeviceId = pending.DeviceId,
+                        DeviceName = pending.DeviceName,
+                        TrustMode = trustMode,
+                        AllowCast = allowCast,
+                        AllowMonitor = allowMonitor,
+                        PairedAt = DateTimeOffset.Now,
+                        PairingKey = pending.Result.PairingKey,
+                        PairingKeyFormatVersion = PairingSecurity.CurrentKeyFormatVersion,
+                    });
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    accept = false;
+                    LastPairingSaveError = ex.Message;
+                    reason = $"终端机无法保存配对记录：{ex.Message}";
+                }
+            }
 
             var response = new DiscoveryProtocol.PairResponseMessage
             {
                 RequestId = requestId,
                 Accepted = accept,
-                Reason = accept ? null : "declined_by_terminal",
+                Reason = reason,
                 PairingKey = null,
                 PairingKeyFormatVersion = accept ? PairingSecurity.CurrentKeyFormatVersion : 0,
                 KeyConfirmation = accept ? pending.Result?.KeyConfirmation : null,
@@ -188,23 +221,12 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
 
             if (accept && pending.Result != null)
             {
-                _pairedDevices.Upsert(new PairedDevice
-                {
-                    DeviceId = pending.DeviceId,
-                    DeviceName = pending.DeviceName,
-                    TrustMode = trustMode,
-                    AllowCast = allowCast,
-                    AllowMonitor = allowMonitor,
-                    PairedAt = DateTimeOffset.Now,
-                    PairingKey = pending.Result.PairingKey,
-                    PairingKeyFormatVersion = response.PairingKeyFormatVersion,
-                });
                 _connectionLog.LogPaired(pending.DeviceId.ToString(), pending.DeviceName);
                 _connectionLog.LogConnected(pending.DeviceId.ToString());
             }
             else
             {
-                _connectionLog.LogDisconnected(pending.DeviceId.ToString(), "pairing_declined");
+                _connectionLog.LogDisconnected(pending.DeviceId.ToString(), LastPairingSaveError != null ? "pairing_save_failed" : "pairing_declined");
             }
         }
         return true;

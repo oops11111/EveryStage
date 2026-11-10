@@ -48,6 +48,11 @@ public sealed partial class MainForm
             }
             await PairThenCastAsync(terminal, outputIndex, monitorLabel);
         }
+        catch (Exception ex)
+        {
+            // Anything unexpected still ends on a page that says what happened, never on a silent stop.
+            if (!IsDisposed) ShowProblem(ProblemForStartFailure(ex.Message));
+        }
         finally
         {
             _starting = false;
@@ -99,6 +104,8 @@ public sealed partial class MainForm
                     "到终端机跟前，看屏幕上有没有配对确认弹窗，点「接受」后重试。",
                     "确认终端机开着，并且和这台电脑在同一个局域网。",
                 }, null)
+            : response.Reason?.StartsWith("终端机无法保存配对记录", StringComparison.Ordinal) == true
+            ? UnreadablePairingDataProblem("终端机", response.Reason)
             : new Problem("终端机拒绝了配对", string.IsNullOrWhiteSpace(response.Reason) ? "终端机上点了「拒绝」，或者终端机不允许这台电脑投屏。" : response.Reason!,
                 new[] { "重试，并在终端机上点「接受」。", "如果终端机设置了不接受投屏，请先在终端机的「设备」页里打开。" }, response.Reason));
     }
@@ -111,8 +118,17 @@ public sealed partial class MainForm
 
     private async Task BeginCastAsync(DiscoveredTerminal terminal, int outputIndex, string monitorLabel, string pairingKey, int keyFormatVersion, bool allowPairingRecovery = true)
     {
-        // The one point where a pairing is confirmed: remember it for next time's offline list.
-        _pairedTerminals.Upsert(new PairedTerminal(terminal.DeviceId, terminal.DeviceName, DateTimeOffset.Now, pairingKey, keyFormatVersion));
+        // The one point where a pairing is confirmed: remember it for next time's offline list. A
+        // failure here used to vanish (this runs from a fire-and-forget task) and the page just stopped.
+        try
+        {
+            _pairedTerminals.Upsert(new PairedTerminal(terminal.DeviceId, terminal.DeviceName, DateTimeOffset.Now, pairingKey, keyFormatVersion));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            ShowProblem(UnreadablePairingDataProblem("这台电脑", ex.Message));
+            return;
+        }
 
         ShowSelectedTerminal();
         _standbyView.SetBusy(true, "正在连接…");
@@ -165,6 +181,17 @@ public sealed partial class MainForm
         return new Problem("没能开始投屏", "开始投屏时出了问题。",
             new[] { "确认终端机开着、在同一个局域网后重试。", "仍不行的话，打开「诊断」检查这台电脑，并把诊断报告发给技术支持。" }, raw);
     }
+
+    /// <summary>The pairing file (or device identity) under %ProgramData%\EveryStage\secure exists but
+    /// cannot be read or written by the account running the app.</summary>
+    private static Problem UnreadablePairingDataProblem(string where, string? raw) => new(
+        "配对没能保存",
+        $"{where}读不出或写不进自己的配对数据，所以配对无法完成。通常是 %ProgramData%\\EveryStage\\secure 里的文件属于另一个 Windows 账户。",
+        new[]
+        {
+            $"在{where}上用管理员身份删除 %ProgramData%\\EveryStage\\secure 文件夹。",
+            "重启程序（终端机和投屏器都要），然后重新配对。",
+        }, raw);
 
     private void ShowProblem(Problem problem)
     {

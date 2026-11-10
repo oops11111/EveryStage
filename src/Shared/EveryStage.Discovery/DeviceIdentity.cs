@@ -35,6 +35,11 @@ public sealed class DeviceIdentity
 
     /// <param name="fileNameStem">Distinguishes Terminal's identity file from Caster's under the
     /// shared ProgramData\EveryStage\ folder, e.g. "terminal" -> terminal-identity.json.</param>
+    /// <summary>The identity file exists but could not be read: this run uses a throwaway identity, so
+    /// peers do not recognise this device.</summary>
+    [JsonIgnore]
+    public bool IsLoadDegraded => _loadDegraded;
+
     public static DeviceIdentity LoadOrCreate(string fileNameStem, string? pathOverride = null)
     {
         string path = pathOverride ?? SecureDataPaths.Resolve($"{fileNameStem}-identity.json");
