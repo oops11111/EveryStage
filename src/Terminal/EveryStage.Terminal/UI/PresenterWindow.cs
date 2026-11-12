@@ -31,7 +31,7 @@ internal sealed class PresenterWindow : Form
     private static readonly Color Live = Color.FromArgb(229, 72, 77);
     private static readonly Color Accent = Color.FromArgb(47, 124, 246);
 
-    private const int Pad = 20, Gap = 16, HeaderHeight = 72, FooterHeight = 76, CaptionHeight = 30;
+    private const int Pad = 20, Gap = 16, HeaderHeight = 72, FooterHeight = 76, CaptionHeight = 30, StripHeight = 118;
 
     private readonly Func<SlideShowSession?> _show;
     private readonly Func<PlaybackEngine?> _program;
@@ -66,6 +66,9 @@ internal sealed class PresenterWindow : Form
         Dock = DockStyle.Fill, ReadOnly = true, Multiline = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
         BackColor = Card, ForeColor = Ink, TabStop = false, WordWrap = true,
     };
+
+    // All pages: slide with the wheel or by dragging, click to put that page on the big screen.
+    private readonly SlideThumbnailStrip _strip = new(Back, Card, Line, Ink, Muted, Accent);
 
     // Footer.
     private readonly Label _keys = MakeLabel("← →  翻页　·　空格  下一步　·　F11  全屏　·　Ctrl + / −  备注字号", 9.5F, Muted, align: ContentAlignment.MiddleLeft);
@@ -121,8 +124,9 @@ internal sealed class PresenterWindow : Form
         {
             _elapsedCaption, _elapsed, _pause, _reset, _page, _step, _clockCaption, _clock,
             _currentCaption, _currentFrame, _nextCaption, _nextFrame, _notesCaption, _smaller, _larger, _notesFrame,
-            _keys, _previousButton, _nextButton, _fullScreen,
+            _strip, _keys, _previousButton, _nextButton, _fullScreen,
         });
+        _strip.SlideChosen += GoTo;
 
         _timer.Tick += (_, _) => RefreshShow();
         _timer.Start();
@@ -187,8 +191,12 @@ internal sealed class PresenterWindow : Form
         _fullScreen.Bounds = new Rectangle(width - pad - S(96), bigTop + (bigH - S(34)) / 2, S(96), S(34));
         _keys.Bounds = new Rectangle(pad, bigTop, Math.Max(0, _previousButton.Left - pad - gap), bigH);
 
+        // Thumbnail strip: full width, directly above the footer.
+        int stripTop = footerTop - S(StripHeight);
+        _strip.Bounds = new Rectangle(pad, stripTop + S(6), inner, S(StripHeight) - S(10));
+
         // Body: current slide ~62 %, next + notes the rest.
-        int bodyTop = header + S(6), bodyBottom = footerTop - S(4);
+        int bodyTop = header + S(6), bodyBottom = stripTop - S(2);
         int leftW = (inner - gap) * 62 / 100, rightW = inner - gap - leftW, rightX = pad + leftW + gap;
         _currentCaption.Bounds = new Rectangle(pad, bodyTop, leftW, S(CaptionHeight));
         int frameTop = bodyTop + S(CaptionHeight);
@@ -216,6 +224,8 @@ internal sealed class PresenterWindow : Form
         // Thin rules under the header and above the footer: the grid made visible.
         using var pen = new Pen(Line);
         int y1 = S(HeaderHeight) - S(2), y2 = ClientSize.Height - S(FooterHeight);
+        int y3 = y2 - S(StripHeight);
+        e.Graphics.DrawLine(pen, S(Pad), y3, ClientSize.Width - S(Pad), y3);
         e.Graphics.DrawLine(pen, S(Pad), y1, ClientSize.Width - S(Pad), y1);
         e.Graphics.DrawLine(pen, S(Pad), y2, ClientSize.Width - S(Pad), y2);
     }
@@ -235,6 +245,13 @@ internal sealed class PresenterWindow : Form
     private void UpdatePauseText() => _pause.Text = _stopwatch.IsRunning || _stopwatch.Elapsed == TimeSpan.Zero ? "暂停" : "继续";
 
     private void ToggleMaximize() => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+
+    /// <summary>A thumbnail was clicked: put that page on the big screen.</summary>
+    private void GoTo(int slide)
+    {
+        if (_program() is not { } program || _show() == null) return;
+        _ = program.SlideCommandAsync(s => s.GoToSlideAsync(slide), $"跳到第 {slide} 页", SlideMove.Jump);
+    }
 
     private void Step(int direction)
     {
@@ -277,6 +294,7 @@ internal sealed class PresenterWindow : Form
             if (show != null) _stopwatch.Start();
             UpdatePauseText();
             SetNext(null, show == null ? "" : "下一页");
+            _strip.Reset(show?.SlideCount ?? 0, show == null ? null : async n => await show.GetSlideImageAsync(n, 240));
             _notes.Text = show == null ? "大屏没有在放映演示文稿。放映开始后，这里显示当前页的备注。" : "";
         }
         RefreshClock();
@@ -294,6 +312,7 @@ internal sealed class PresenterWindow : Form
         var position = show.Position;
         _page.Text = $"第 {Math.Max(1, position.Slide)} / {show.SlideCount} 页";
         _step.Text = position.Clicks > 0 ? $"动画 {position.Click} / {position.Clicks}" : "本页没有动画";
+        _strip.Current = position.Slide;
         if (position.Slide >= 1 && position.Slide != _slide)
         {
             _slide = position.Slide;
@@ -339,6 +358,10 @@ internal sealed class PresenterWindow : Form
         _currentCaption.Text = "●  大屏正在显示";
         _currentCaption.ForeColor = Live;
         _currentFrame.BackColor = Live;
+        _strip.Reset(18, null);
+        for (int i = 1; i <= 18; i++)
+            _strip.SetImage(i, SampleSlide(320, $"第 {i} 页", i % 3 == 0 ? Color.FromArgb(70, 50, 100) : Color.FromArgb(40, 70, 110)));
+        _strip.Current = 6;
         _page.Text = "第 6 / 18 页";
         _step.Text = "动画 1 / 3";
         _previousButton.Enabled = _nextButton.Enabled = true;
