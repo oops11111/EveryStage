@@ -165,16 +165,19 @@ internal sealed class PresenterWindow : Form
         int pad = S(Pad), gap = S(Gap), width = ClientSize.Width, height = ClientSize.Height;
         int inner = width - pad * 2;
 
-        // Header: three equal columns.
-        int header = S(HeaderHeight), col = inner / 3, top = S(10);
-        _elapsedCaption.Bounds = new Rectangle(pad, top, col, S(20));
-        _elapsed.Bounds = new Rectangle(pad, top + S(20), S(190), S(40));
-        _pause.Bounds = new Rectangle(_elapsed.Right + S(8), top + S(26), S(60), S(30));
-        _reset.Bounds = new Rectangle(_pause.Right + S(6), top + S(26), S(60), S(30));
-        _page.Bounds = new Rectangle(pad + col, top + S(4), col, S(36));
-        _step.Bounds = new Rectangle(pad + col, top + S(40), col, S(22));
-        _clockCaption.Bounds = new Rectangle(pad + col * 2, top, inner - col * 2, S(20));
-        _clock.Bounds = new Rectangle(pad + col * 2, top + S(20), inner - col * 2, S(40));
+        // Header: timer left, page centred, clock right. The centre column is at most 300 wide and the
+        // sides share the rest equally, so the page number stays centred and the timer group (with its two
+        // buttons) still fits at the minimum window width.
+        int header = S(HeaderHeight), top = S(10);
+        int centre = Math.Min(inner / 3, S(300)), side = (inner - centre) / 2;
+        _elapsedCaption.Bounds = new Rectangle(pad, top, side, S(20));
+        _elapsed.Bounds = new Rectangle(pad, top + S(20), S(172), S(40));
+        _pause.Bounds = new Rectangle(_elapsed.Right + S(8), top + S(26), S(56), S(30));
+        _reset.Bounds = new Rectangle(_pause.Right + S(6), top + S(26), S(56), S(30));
+        _page.Bounds = new Rectangle(pad + side, top + S(4), centre, S(36));
+        _step.Bounds = new Rectangle(pad + side, top + S(40), centre, S(22));
+        _clockCaption.Bounds = new Rectangle(pad + side + centre, top, inner - side - centre, S(20));
+        _clock.Bounds = new Rectangle(pad + side + centre, top + S(20), inner - side - centre, S(40));
 
         // Footer.
         int footerTop = height - S(FooterHeight);
