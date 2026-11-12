@@ -80,13 +80,7 @@ internal sealed class SlideThumbnailStrip : Control
         {
             if (_current == value) return;
             _current = value;
-            if (value >= 1)
-            {
-                float left = Inset + (value - 1) * Item, right = left + ThumbWidth;
-                if (left < _offset + Inset) _offset = left - Inset - Item; // keep the previous one visible too
-                else if (right > _offset + Width - Inset) _offset = right - Width + Inset + Item;
-                _offset = Math.Clamp(_offset, 0, MaxOffset);
-            }
+            ScrollIntoView(value);
             Invalidate();
             _ = LoadVisibleAsync();
         }
@@ -167,7 +161,18 @@ internal sealed class SlideThumbnailStrip : Control
     {
         base.OnResize(e);
         _offset = Math.Clamp(_offset, 0, MaxOffset);
+        ScrollIntoView(_current); // a narrower window must not leave the page on air half cut off
         _ = LoadVisibleAsync();
+    }
+
+    private void ScrollIntoView(int slide)
+    {
+        if (slide < 1) return;
+        float left = Inset + (slide - 1) * Item, right = left + ThumbWidth;
+        if (left < _offset + Inset) _offset = left - Inset - Item; // keep the previous one visible too
+        else if (right > _offset + Width - Inset) _offset = right - Width + Inset + Item;
+        _offset = Math.Clamp(_offset, 0, MaxOffset);
+        Invalidate();
     }
 
     private async Task LoadVisibleAsync()

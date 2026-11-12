@@ -71,7 +71,7 @@ internal sealed class PresenterWindow : Form
     private readonly SlideThumbnailStrip _strip = new(Back, Card, Line, Ink, Muted, Accent);
 
     // Footer.
-    private readonly Label _keys = MakeLabel("← →  翻页　·　空格  下一步　·　F11  全屏　·　Ctrl + / −  备注字号", 9.5F, Muted, align: ContentAlignment.MiddleLeft);
+    private readonly Label _keys = MakeLabel("← →  翻页　·　空格  下一步　·　F11  全屏", 9.5F, Muted, align: ContentAlignment.MiddleLeft);
     private readonly Button _previousButton;
     private readonly Button _nextButton;
     private readonly Button _fullScreen;
@@ -207,7 +207,9 @@ internal sealed class PresenterWindow : Form
         _currentFrame.Padding = new Padding(S(3));
 
         _nextCaption.Bounds = new Rectangle(rightX, bodyTop, rightW, S(CaptionHeight));
-        int nextH = Math.Min(rightW * 9 / 16, (bodyBottom - frameTop) / 2);
+        // The next slide gives way before the notes do: the notes keep at least 140 px (they are what the
+        // speaker reads), the next slide takes what is left up to its natural 16:9 height.
+        int nextH = Math.Max(S(60), Math.Min(rightW * 9 / 16, bodyBottom - frameTop - gap - S(CaptionHeight) - S(2) - S(140)));
         int nextW = nextH * 16 / 9;
         _nextFrame.Bounds = new Rectangle(rightX + (rightW - nextW) / 2, frameTop, nextW, nextH);
         int notesTop = frameTop + nextH + gap;
@@ -276,6 +278,7 @@ internal sealed class PresenterWindow : Form
 
     private void RefreshClock()
     {
+        if (_sample) { _clock.Text = "14:32"; return; } // CI screenshot: fixed sample values
         var elapsed = _stopwatch.Elapsed;
         _elapsed.Text = $"{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}";
         _clock.Text = DateTime.Now.ToString("HH:mm");
