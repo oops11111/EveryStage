@@ -97,15 +97,15 @@ public sealed partial class FilesPanel
         {
             var (badgeText, badgeColor) = FileTypeBadge.For(media);
             if (ModernUi.Palette.IsHighContrast) badgeColor = SystemColors.WindowText;
-            DrawChip(g, badgeText, badgeFont, new Point(thumb.Left + 6, thumb.Bottom - 6 - 17), badgeColor, ModernUi.Palette.IsHighContrast ? SystemColors.Window : Color.White);
+            DrawChip(g, badgeText, badgeFont, new Point(thumb.Left + S(6), thumb.Bottom - S(6) - ChipHeight(badgeFont)), badgeColor, ModernUi.Palette.IsHighContrast ? SystemColors.Window : Color.White);
         }
-        if (onProgram) DrawChip(g, "大屏", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Palette.DangerFill, ModernUi.Palette.DangerFillForeground);
-        else if (inPreview) DrawChip(g, "预览", badgeFont, new Point(thumb.Left + 6, thumb.Top + 6), ModernUi.Palette.Preview, ModernUi.Palette.PreviewForeground);
+        if (onProgram) DrawChip(g, "大屏", badgeFont, new Point(thumb.Left + S(6), thumb.Top + S(6)), ModernUi.Palette.DangerFill, ModernUi.Palette.DangerFillForeground);
+        else if (inPreview) DrawChip(g, "预览", badgeFont, new Point(thumb.Left + S(6), thumb.Top + S(6)), ModernUi.Palette.Preview, ModernUi.Palette.PreviewForeground);
         if (item.Unavailable)
         {
             const string unavailable = "不可用";
-            int width = TextRenderer.MeasureText(unavailable, badgeFont, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
-            DrawChip(g, unavailable, badgeFont, new Point(thumb.Right - width - 6, thumb.Top + 6),
+            int width = TextRenderer.MeasureText(unavailable, badgeFont, Size.Empty, TextFormatFlags.NoPadding).Width + S(10);
+            DrawChip(g, unavailable, badgeFont, new Point(thumb.Right - width - S(6), thumb.Top + S(6)),
                 ModernUi.Palette.IsHighContrast ? SystemColors.Highlight : ModernUi.Palette.DangerFill,
                 ModernUi.Palette.IsHighContrast ? SystemColors.HighlightText : ModernUi.Palette.DangerFillForeground);
         }
@@ -116,8 +116,8 @@ public sealed partial class FilesPanel
             Color ink = ModernUi.Palette.IsHighContrast ? SystemColors.HighlightText : onProgram ? ModernUi.Palette.DangerFillForeground : ModernUi.Palette.PreviewForeground;
             if (progress.PageLabel is { } page)
             {
-                int width = TextRenderer.MeasureText(page, badgeFont, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
-                DrawChip(g, page, badgeFont, new Point(thumb.Right - width - 6, thumb.Bottom - 23), color, ink);
+                int width = TextRenderer.MeasureText(page, badgeFont, Size.Empty, TextFormatFlags.NoPadding).Width + S(10);
+                DrawChip(g, page, badgeFont, new Point(thumb.Right - width - S(6), thumb.Bottom - S(6) - ChipHeight(badgeFont)), color, ink);
             }
             if (progress.Fraction is { } fraction)
             {
@@ -145,11 +145,18 @@ public sealed partial class FilesPanel
         }
     }
 
+    /// <summary>Badge height from the font, not a fixed 17 px: the font scales with DPI, so a fixed
+    /// height cut the badge text off at 125–150 %.</summary>
+    private int S(int value) => LogicalToDeviceUnits(value);
+
+    private static int ChipHeight(Font font) => Math.Max(17, TextRenderer.MeasureText("大屏", font, Size.Empty, TextFormatFlags.NoPadding).Height + 5);
+
     private static void DrawChip(Graphics g, string text, Font font, Point topLeft, Color fill, Color fore)
     {
         var size = TextRenderer.MeasureText(text, font, Size.Empty, TextFormatFlags.NoPadding);
-        var chip = new Rectangle(topLeft.X, topLeft.Y, size.Width + 10, 17);
-        using (var path = RoundedCard(chip, 4))
+        int height = ChipHeight(font);
+        var chip = new Rectangle(topLeft.X, topLeft.Y, size.Width + height * 10 / 17, height);
+        using (var path = RoundedCard(chip, Math.Max(4, height / 4)))
         using (var brush = new SolidBrush(fill))
             g.FillPath(brush, path);
         TextRenderer.DrawText(g, text, font, chip, fore,

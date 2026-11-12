@@ -32,6 +32,27 @@ internal sealed class TransitionCurtain : Form
 
     protected override bool ShowWithoutActivation => true;
 
+    private static int _showing;
+
+    /// <summary>True while any curtain is on screen. ProgramMirror needs CAPTUREBLT (which makes the
+    /// mouse cursor flicker) only then: the curtain is the one layered window it must capture.</summary>
+    internal static bool AnyShowing => Volatile.Read(ref _showing) > 0;
+
+    private bool _counted;
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible && !_counted) { _counted = true; Interlocked.Increment(ref _showing); }
+        else if (!Visible && _counted) { _counted = false; Interlocked.Decrement(ref _showing); }
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        if (_counted) { _counted = false; Interlocked.Decrement(ref _showing); }
+        base.OnHandleDestroyed(e);
+    }
+
     protected override CreateParams CreateParams
     {
         get

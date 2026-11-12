@@ -1099,7 +1099,8 @@ public sealed class SettingsPanel : UserControl
             using var cardFill = new SolidBrush(Color.FromArgb(202, ModernUi.Surface));
             using var border = new Pen(selected ? ModernUi.Accent : ModernUi.Border, selected ? 2F : 1F);
             using var cardPath = new GraphicsPath();
-            int radius = 12;
+            int S(int v) => LogicalToDeviceUnits(v);
+            int radius = S(12);
             int diameter = radius * 2;
             cardPath.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
             cardPath.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
@@ -1110,7 +1111,9 @@ public sealed class SettingsPanel : UserControl
             g.FillPath(cardFill, cardPath);
             g.DrawPath(border, cardPath);
 
-            var preview = new Rectangle(10, 10, Width - 20, 57);
+            // Scaled with the card: at 125–150 % fixed pixels left the title row too short for its font.
+            int titleHeight = TextRenderer.MeasureText("跟随系统", Font).Height + S(4);
+            var preview = new Rectangle(S(10), S(10), Width - S(20), Math.Max(S(30), Height - S(10) - S(6) - titleHeight - S(10)));
             if ((AppTheme)_index == AppTheme.System)
             {
                 // 跟随系统: the light preview with its right half in dark, split on the diagonal.
@@ -1125,7 +1128,7 @@ public sealed class SettingsPanel : UserControl
             }
             else DrawThemePreview(g, preview, theme);
 
-            TextRenderer.DrawText(g, _title, Font, new Rectangle(10, 72, Width - 20, 20),
+            TextRenderer.DrawText(g, _title, Font, new Rectangle(S(10), preview.Bottom + S(6), Width - S(20), titleHeight),
                 ModernUi.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
         }
 

@@ -876,14 +876,21 @@ internal sealed class RoundedActionButton : Button
 
     private Font IconFont() => new("Segoe MDL2 Assets", Font.SizeInPoints + 1F);
 
-    protected override void OnPaintBackground(PaintEventArgs pevent) { }
+    // The corners outside the rounded shape show what is behind the button. This used to be an empty
+    // override: those pixels were never painted, and with double buffering they kept whatever the
+    // shared back buffer last held — stray fragments of other controls at the button's corners.
+    protected override void OnPaintBackground(PaintEventArgs pevent)
+    {
+        if (Parent != null) ButtonRenderer.DrawParentBackground(pevent.Graphics, ClientRectangle, this);
+        else using (var back = new SolidBrush(ModernUi.Background)) pevent.Graphics.FillRectangle(back, ClientRectangle);
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var bounds = ClientRectangle;
         bounds.Inflate(-1, -1);
-        using var path = Rounded(bounds, Math.Min(8, bounds.Height / 2));
+        using var path = Rounded(bounds, Math.Min(LogicalToDeviceUnits(8), bounds.Height / 2));
         // Disabled: fade the fill toward the surface and drop the accent/danger border, so a primary or
         // danger button that can't be used right now doesn't look exactly like one that can.
         var palette = ModernUi.PaletteFor(this);
@@ -900,10 +907,10 @@ internal sealed class RoundedActionButton : Button
         if (ShowDropDownArrow)
         {
             // Chevron at the right edge; the text stays left-aligned like the reference drop-down.
-            int cx = bounds.Right - 16, cy = bounds.Top + bounds.Height / 2;
+            int cx = bounds.Right - LogicalToDeviceUnits(16), cy = bounds.Top + bounds.Height / 2;
             using var chevron = new Pen(textColor, 1.6F) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round };
             e.Graphics.DrawLines(chevron, new[] { new PointF(cx - 5, cy - 2.5f), new PointF(cx, cy + 2.5f), new PointF(cx + 5, cy - 2.5f) });
-            textBounds = Rectangle.FromLTRB(bounds.Left + Padding.Left + 4, bounds.Top, bounds.Right - 28, bounds.Bottom);
+            textBounds = Rectangle.FromLTRB(bounds.Left + Padding.Left + LogicalToDeviceUnits(4), bounds.Top, bounds.Right - LogicalToDeviceUnits(28), bounds.Bottom);
             TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, textColor,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
@@ -929,7 +936,7 @@ internal sealed class RoundedActionButton : Button
         if (Focused && ShowFocusCues)
         {
             using var focus = new Pen(palette.IsHighContrast ? ForeColor : palette.Focus, 2) { DashStyle = DashStyle.Dot };
-            e.Graphics.DrawRectangle(focus, Rectangle.Inflate(bounds, -5, -5));
+            e.Graphics.DrawRectangle(focus, Rectangle.Inflate(bounds, -LogicalToDeviceUnits(5), -LogicalToDeviceUnits(5)));
         }
     }
 

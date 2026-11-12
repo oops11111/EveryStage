@@ -77,6 +77,8 @@ internal sealed class ProgramMirror : Control
     private void CaptureFrame()
     {
         if (!IsHandleCreated || Width < 8 || Height < 8 || !(Parent?.Visible ?? false)) return;
+        // A minimized window still counts as visible: nobody sees the mirror, so do not copy the screen.
+        if (FindForm() is { WindowState: FormWindowState.Minimized }) return;
         if (SourceBounds?.Invoke() is not { Width: > 0, Height: > 0 } source)
         {
             if (_frame != null) { _frame.Dispose(); _frame = null; Invalidate(); }
@@ -99,7 +101,11 @@ internal sealed class ProgramMirror : Control
             {
                 SetStretchBltMode(target, 4); // HALFTONE
                 SetBrushOrgEx(target, 0, 0, IntPtr.Zero);
-                StretchBlt(target, 0, 0, fit.Width, fit.Height, screen, source.X, source.Y, source.Width, source.Height, 0x00CC0020 | 0x40000000);
+                // SRCCOPY, plus CAPTUREBLT only while a transition curtain (a layered window) is up:
+                // CAPTUREBLT hides the mouse cursor for the duration of every copy, and at ~8 copies a
+                // second per mirror that showed as a flickering cursor on the operator's screen.
+                uint rop = 0x00CC0020 | (Display.TransitionCurtain.AnyShowing ? 0x40000000u : 0u);
+                StretchBlt(target, 0, 0, fit.Width, fit.Height, screen, source.X, source.Y, source.Width, source.Height, rop);
             }
             finally
             {
