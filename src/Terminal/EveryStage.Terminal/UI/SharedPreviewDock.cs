@@ -687,7 +687,7 @@ internal sealed class SharedPreviewDock : Panel
             var state = engine?.State ?? PlaybackChannelState.Idle;
 
             string name = _synced && source == ProgramSource.DeviceCast ? "设备来投"
-                : file == null ? "" : Path.GetFileName(file.SourcePath);
+                : file == null ? "" : Path.GetFileName(file.SourcePath) + (engine?.CurrentDecodeLabel is { } decode ? " · " + decode : "");
             string caption = _synced
                 ? (programLive ? "● 大屏 · " + name + (engine?.IsPaused == true ? " · 已暂停" : "") : "大屏未输出")
                 : state switch

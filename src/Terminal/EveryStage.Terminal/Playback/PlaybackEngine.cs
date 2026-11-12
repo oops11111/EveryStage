@@ -273,6 +273,14 @@ public sealed partial class PlaybackEngine : IDisposable
 
     /// <summary>Codec label / audio presence of the current video, for the Preview status line.</summary>
     public string? CurrentVideoCodec => _currentFile?.Kind == MediaKind.Video ? _videoController?.VideoCodec : null;
+
+    /// <summary>「硬解」 / 「软解」 for the video playing now (null for anything else, or before its first frame).</summary>
+    public string? CurrentDecodeLabel => _currentFile?.Kind != MediaKind.Video ? null : _videoController?.DecodePath switch
+    {
+        EveryStage.Rendering.Decode.VideoDecodePath.Hardware => "硬解",
+        EveryStage.Rendering.Decode.VideoDecodePath.Software => "软解",
+        _ => null,
+    };
     public bool CurrentVideoHasAudio => _currentFile?.Kind == MediaKind.Video && (_videoController?.HasAudio ?? false);
 
     /// <summary>Short note for the Preview heading: "仅显示首帧/首页" (animated GIF / multi-page TIFF), why a

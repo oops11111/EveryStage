@@ -49,6 +49,10 @@ public sealed class PlaybackLogger
         _writer.Write("audio_output_lost", new { mediaFileId, reason });
 
     /// <summary>The machine could not decode a video in real time; frames were dropped.</summary>
+    /// <summary>Which decoder a video ended up on: hardware (GPU / DXVA) or software (CPU).</summary>
+    public void LogVideoDecoder(Guid mediaFileId, string path, string? codec) =>
+        _writer.Write("video_decoder", new { mediaFileId, path, codec });
+
     public void LogDecodeTooSlow(Guid mediaFileId, string detail) =>
         _writer.Write("video_decode_too_slow", new { mediaFileId, detail });
 

@@ -7,6 +7,10 @@ namespace EveryStage.Rendering.Decode;
 /// <summary>The decoder's own texture-array slot for one video frame. No copy has happened yet —
 /// the caller (SwapChainPresenter) consumes ArraySlice directly as a video-processor input.
 /// <paramref name="Sample"/> keeps the slot reserved: <see cref="Release"/> once the frame is presented.</summary>
+/// <summary>How a video file is being decoded: by the GPU (DXVA; frames arrive in GPU memory) or by a
+/// software decoder (frames arrive in system memory and are uploaded). Unknown until the first frame.</summary>
+public enum VideoDecodePath { Unknown, Hardware, Software }
+
 public readonly record struct DecodedVideoFrame(ID3D11Texture2D Texture, int ArraySlice, int Width, int Height, long TimestampTicks, IMFSample? Sample = null)
 {
     /// <summary>Releases the texture reference and returns the slot to the decoder's pool.</summary>
@@ -69,8 +73,15 @@ public sealed class VideoDecodeSource : IDisposable
     /// the file simply has no audio stream.</summary>
     public string? AudioUnavailableReason { get; private set; }
 
+    /// <summary>Hardware once a frame came back as a GPU (DXVA) surface; Software when the decoder
+    /// handed back system memory (no hardware decoder for this codec on this machine).</summary>
+    public VideoDecodePath DecodePath { get; private set; }
+
+    private readonly D3D11Device _gpu;
+
     public VideoDecodeSource(string filePathOrUrl, D3D11Device gpu)
     {
+        _gpu = gpu;
         MediaFactory.MFStartup().CheckError();
 
         // MFStartup() above already succeeded; if anything below throws, no instance exists for the
@@ -302,12 +313,22 @@ public sealed class VideoDecodeSource : IDisposable
             }
             catch (Exception ex)
             {
-                // System-memory frames: this codec only has a software decoder on this machine (MPEG-4
-                // Part 2 / Xvid, Motion JPEG, …). The zero-copy pipeline needs GPU (DXVA) frames; say so
-                // rather than surfacing "no such interface" (audit C-31).
-                throw new MediaOpenException(MediaFailureStage.Decode,
-                    $"视频编码 {VideoCodec} 在本机只能软件解码，当前播放链路需要显卡硬件解码，请转码为 H.264 后播放", ex, VideoCodec, AudioCodec);
+                // System-memory frames: no hardware decoder for this codec on this machine (a PC without
+                // DXVA, or MPEG-4 Part 2 / Xvid, Motion JPEG …). This used to stop playback with 「只能
+                // 软件解码」 (audit C-31); the frame is now uploaded to the GPU and played (more CPU).
+                try
+                {
+                    var uploaded = UploadSystemMemoryFrame(buffer);
+                    DecodePath = VideoDecodePath.Software;
+                    return new DecodedVideoFrame(uploaded, 0, VideoWidth, VideoHeight, timestamp, sample);
+                }
+                catch (Exception uploadFailure)
+                {
+                    throw new MediaOpenException(MediaFailureStage.Decode,
+                        $"视频编码 {VideoCodec} 在本机只能软件解码，软件解码的画面也没能显示：{uploadFailure.Message}。请转码为 H.264 后播放", ex, VideoCodec, AudioCodec);
+                }
             }
+            DecodePath = VideoDecodePath.Hardware;
             using (dxgiBuffer)
             {
                 var texture = new ID3D11Texture2D(dxgiBuffer.GetResource(typeof(ID3D11Texture2D).GUID));
@@ -322,6 +343,45 @@ public sealed class VideoDecodeSource : IDisposable
         {
             sample.Dispose();
             throw;
+        }
+    }
+
+    // MF_MT_DEFAULT_STRIDE.
+    private static readonly Guid MfMtDefaultStride = new("644b4e48-1e02-4516-b0eb-c01ca9d49ac6");
+    private static readonly Guid MfMtFrameSize = new("1652c33d-d6b2-4012-b834-72030849a37d");
+
+    /// <summary>Copies one software-decoded NV12 frame (Y plane, then interleaved UV, one pitch) into a
+    /// new D3D11 texture the presenter consumes like a DXVA surface.</summary>
+    private ID3D11Texture2D UploadSystemMemoryFrame(IMFMediaBuffer buffer)
+    {
+        using var type = _reader.GetCurrentMediaType(SourceReaderIndex.FirstVideoStream);
+        ulong size = type.GetUInt64(MfMtFrameSize);
+        int width = (int)(size >> 32), height = (int)(size & 0xFFFFFFFF);
+        int stride;
+        try { stride = Math.Abs(unchecked((int)type.GetUInt32(MfMtDefaultStride))); }
+        catch (Exception) { stride = 0; }
+        if (stride < width) stride = width;
+        buffer.Lock(out var data, out _, out var length);
+        try
+        {
+            if ((long)stride * height * 3 / 2 > length) stride = Math.Max(width, length * 2 / (height * 3));
+            var desc = new Texture2DDescription
+            {
+                Width = (uint)width, Height = (uint)height, MipLevels = 1, ArraySize = 1,
+                Format = Vortice.DXGI.Format.NV12, SampleDescription = new Vortice.DXGI.SampleDescription(1, 0),
+                Usage = ResourceUsage.Default, BindFlags = BindFlags.ShaderResource, CPUAccessFlags = CpuAccessFlags.None,
+            };
+            var initial = new SubresourceData(data, (uint)stride, (uint)(stride * height));
+            try { return _gpu.Device.CreateTexture2D(desc, new[] { initial }); }
+            catch (Exception)
+            {
+                desc.BindFlags = BindFlags.None; // some drivers refuse shader-resource NV12; the video processor does not need it
+                return _gpu.Device.CreateTexture2D(desc, new[] { initial });
+            }
+        }
+        finally
+        {
+            buffer.Unlock();
         }
     }
 

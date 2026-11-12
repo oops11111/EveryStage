@@ -104,6 +104,9 @@ public sealed partial class PlaybackEngine
         var file = _currentFile;
         int generation = _videoController?.PlaybackGeneration ?? 0;
         if (file == null) return;
+        // Which decoder this video really uses, once per playback (the log is how a venue PC is checked).
+        if (_videoController is { } video)
+            _playbackLogger.LogVideoDecoder(file.Id, video.DecodePath == EveryStage.Rendering.Decode.VideoDecodePath.Hardware ? "hardware" : "software", video.VideoCodec);
         // Raised from VideoContentController's background playback thread — marshal to the UI
         // thread before touching timers/overlay state.
         _output.Post(new Action(() => { if (generation == _videoController?.PlaybackGeneration) HandleCompletion(file); }));

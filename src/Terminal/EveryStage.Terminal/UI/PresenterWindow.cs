@@ -76,6 +76,8 @@ internal sealed class PresenterWindow : Form
     private readonly Button _nextButton;
     private readonly Button _fullScreen;
 
+    private static readonly string[] KeyHints = { "← →  翻页　·　空格  下一步　·　F11  全屏", "← → 翻页 · 空格 下一步", "← → 翻页", "" };
+
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 250 };
     private readonly Stopwatch _stopwatch = new();
     private SlideShowSession? _shown;
@@ -190,6 +192,12 @@ internal sealed class PresenterWindow : Form
         _nextButton.Bounds = new Rectangle(width / 2 + gap / 2, bigTop, bigW, bigH);
         _fullScreen.Bounds = new Rectangle(width - pad - S(96), bigTop + (bigH - S(34)) / 2, S(96), S(34));
         _keys.Bounds = new Rectangle(pad, bigTop, Math.Max(0, _previousButton.Left - pad - gap), bigH);
+        // One line, always: the full hint where it fits, a shorter one where it does not, none below that.
+        foreach (string hint in KeyHints)
+        {
+            _keys.Text = hint;
+            if (hint.Length == 0 || TextRenderer.MeasureText(hint, _keys.Font).Width <= _keys.Width) break;
+        }
 
         // Thumbnail strip: full width, directly above the footer.
         int stripTop = footerTop - S(StripHeight);

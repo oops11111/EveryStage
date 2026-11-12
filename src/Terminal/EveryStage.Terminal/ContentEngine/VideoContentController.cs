@@ -105,6 +105,7 @@ public sealed class VideoContentController : IDisposable
     public bool IsPaused => _paused;
     public bool HasAudio => _source?.HasAudio ?? false;
     public string? VideoCodec => _source?.VideoCodec;
+    public EveryStage.Rendering.Decode.VideoDecodePath DecodePath => _source?.DecodePath ?? EveryStage.Rendering.Decode.VideoDecodePath.Unknown;
     public string? AudioCodec => _source?.AudioCodec;
     public string? AudioUnavailableReason => _audioNote ?? _source?.AudioUnavailableReason;
 
