@@ -1,33 +1,85 @@
+using System.Diagnostics;
+using System.Drawing.Drawing2D;
 using EveryStage.Terminal.Documents;
 using EveryStage.Terminal.Playback;
 
 namespace EveryStage.Terminal.UI;
 
 /// <summary>
-/// 演讲者视图 for the presentation running on the big screen, laid out like a presentation program's own
-/// presenter view: the current slide large on the left (a live copy of the big screen), the next slide,
-/// the notes (A− / A+ change their size), the elapsed time and the page count on the right, and page
-/// buttons. An ordinary window: it can be resized, maximized (or moved to another screen) and closed;
-/// it follows whichever show is on air and says so when there is none.
+/// 演讲者视图 for the presentation running on the big screen. One fixed grid, everything aligned to it:
+///
+///   ┌ 已用时间 00:12:34 [暂停][归零] ───── 第 6 / 18 页 · 动画 1/3 ───── 现在 14:32 ┐
+///   │ ● 大屏正在显示                        │ 下一页 · 第 7 页                    │
+///   │ ┌──────────────────────────────────┐ │ ┌─────────────────────────────┐    │
+///   │ │   current slide (live copy of     │ │ │        next slide           │    │
+///   │ │   the big screen, red frame)      │ │ └─────────────────────────────┘    │
+///   │ │                                   │ │ 备注                     [A−][A+]  │
+///   │ └──────────────────────────────────┘ │ ┌ scrolling notes ────────────┐    │
+///   └ ← → 翻页 · 空格 下一步 ──── [◀ 上一步] [下一步 ▶] ──────────── [⤢ 全屏] ┘
+///
+/// Dark and fixed (it is read in a dim hall); resizable and maximizable like a presentation program's own
+/// presenter view; follows whichever show is on air and says so when there is none.
 /// </summary>
 internal sealed class PresenterWindow : Form
 {
+    // Fixed palette: this window is not themed — it is read from a distance in a dark room.
+    private static readonly Color Back = Color.FromArgb(11, 16, 23);
+    private static readonly Color Card = Color.FromArgb(20, 28, 38);
+    private static readonly Color Line = Color.FromArgb(34, 48, 63);
+    private static readonly Color Ink = Color.FromArgb(236, 241, 247);
+    private static readonly Color Muted = Color.FromArgb(143, 163, 184);
+    private static readonly Color Live = Color.FromArgb(229, 72, 77);
+    private static readonly Color Accent = Color.FromArgb(47, 124, 246);
+
+    private const int Pad = 20, Gap = 16, HeaderHeight = 72, FooterHeight = 76, CaptionHeight = 30;
+
     private readonly Func<SlideShowSession?> _show;
     private readonly Func<PlaybackEngine?> _program;
+
+    // Header.
+    private readonly Label _elapsedCaption = MakeLabel("已用时间", 9.5F, Muted);
+    private readonly Label _elapsed = new() { ForeColor = Ink, BackColor = Color.Transparent, Font = new Font("Consolas", 26F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, Text = "00:00:00" };
+    private readonly Button _pause;
+    private readonly Button _reset;
+    private readonly Label _page = MakeLabel("", 20F, Ink, semibold: true, ContentAlignment.MiddleCenter);
+    private readonly Label _step = MakeLabel("", 10F, Muted, align: ContentAlignment.MiddleCenter);
+    private readonly Label _clockCaption = MakeLabel("现在", 9.5F, Muted, align: ContentAlignment.TopRight);
+    private readonly Label _clock = new() { ForeColor = Muted, BackColor = Color.Transparent, Font = new Font("Consolas", 22F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleRight };
+
+    // Current slide (left).
+    private readonly Label _currentCaption = MakeLabel("", 10.5F, Ink, semibold: true);
+    private readonly Panel _currentFrame = new() { BackColor = Line, Padding = new Padding(3) };
     private readonly ProgramMirror _current = new() { Dock = DockStyle.Fill };
-    private readonly PictureBox _next = new() { SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
-    private readonly Label _nextCaption = new() { ForeColor = Color.FromArgb(150, 165, 185), Text = "下一页", AutoEllipsis = true };
-    private readonly Label _notes = new() { ForeColor = Color.FromArgb(235, 240, 246), AutoEllipsis = false };
-    private readonly Label _clock = new() { ForeColor = Color.White, Font = new Font("Consolas", 26F, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft };
-    private readonly Label _page = new() { ForeColor = Color.FromArgb(200, 210, 222), Font = new Font(ModernUi.UiFont, 12F), TextAlign = ContentAlignment.MiddleRight };
-    private readonly Panel _side = new() { Dock = DockStyle.Right, BackColor = Color.FromArgb(14, 20, 28), Padding = new Padding(16) };
-    private readonly Panel _bottom = new() { Dock = DockStyle.Bottom, BackColor = Color.FromArgb(14, 20, 28), Height = 56 };
+    private readonly PictureBox _currentStill = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black, Visible = false };
+
+    // Next slide and notes (right).
+    private readonly Label _nextCaption = MakeLabel("下一页", 10.5F, Ink, semibold: true);
+    private readonly Panel _nextFrame = new() { BackColor = Line, Padding = new Padding(1) };
+    private readonly PictureBox _next = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.Black };
+    private readonly Label _nextEmpty = MakeLabel("", 11F, Muted, align: ContentAlignment.MiddleCenter);
+    private readonly Label _notesCaption = MakeLabel("备注", 10.5F, Ink, semibold: true);
+    private readonly Button _smaller;
+    private readonly Button _larger;
+    private readonly Panel _notesFrame = new() { BackColor = Card, Padding = new Padding(14, 10, 6, 10) };
+    private readonly TextBox _notes = new()
+    {
+        Dock = DockStyle.Fill, ReadOnly = true, Multiline = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
+        BackColor = Card, ForeColor = Ink, TabStop = false, WordWrap = true,
+    };
+
+    // Footer.
+    private readonly Label _keys = MakeLabel("← →  翻页　·　空格  下一步　·　F11  全屏　·　Ctrl + / −  备注字号", 9.5F, Muted, align: ContentAlignment.MiddleLeft);
+    private readonly Button _previousButton;
+    private readonly Button _nextButton;
+    private readonly Button _fullScreen;
+
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 250 };
+    private readonly Stopwatch _stopwatch = new();
     private SlideShowSession? _shown;
-    private DateTime _started;
     private int _slide = -1;
     private int _version;
     private float _notesSize = 16F;
+    private bool _sample;
 
     public PresenterWindow(Func<SlideShowSession?> show, Func<Rectangle?> programBounds, Func<PlaybackEngine?> program)
     {
@@ -39,81 +91,130 @@ internal sealed class PresenterWindow : Form
         MaximizeBox = true;
         MinimizeBox = true;
         ShowInTaskbar = true;
-        MinimumSize = new Size(720, 420);
+        MinimumSize = new Size(960, 600);
         Size = new Size(1280, 760);
-        BackColor = Color.FromArgb(8, 12, 18);
-        ForeColor = Color.White;
+        BackColor = Back;
+        ForeColor = Ink;
         Font = new Font(ModernUi.UiFont, 10F);
         KeyPreview = true;
+        DoubleBuffered = true;
+
         _current.SourceBounds = programBounds;
         _current.IdleText = "大屏没有在放映演示文稿";
-
-        var currentHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 16, 8, 8), BackColor = BackColor };
-        currentHost.Controls.Add(_current);
+        _currentFrame.Controls.Add(_currentStill);
+        _currentFrame.Controls.Add(_current);
+        _nextFrame.Controls.Add(_next);
+        _next.Controls.Add(_nextEmpty);
+        _nextEmpty.Dock = DockStyle.Fill;
         _notes.Font = new Font(ModernUi.UiFont, _notesSize);
+        _notesFrame.Controls.Add(_notes);
 
-        var smaller = Button("A−", "备注字号变小", () => SetNotesSize(_notesSize - 2));
-        var larger = Button("A+", "备注字号变大", () => SetNotesSize(_notesSize + 2));
-        var previous = Button("◀ 上一步", "上一个动画 / 上一页（←）", () => Step(-1));
-        var nextStep = Button("下一步 ▶", "下一个动画 / 下一页（→ / 空格）", () => Step(1));
-        var reset = Button("计时归零", "重新开始计时", () => _started = DateTime.Now);
-        var maximize = Button("⤢ 最大化", "最大化 / 还原（F11）", ToggleMaximize);
-        foreach (var button in new[] { previous, nextStep, reset, smaller, larger, maximize }) _bottom.Controls.Add(button);
-        _bottom.Resize += (_, _) => LayoutBottom(previous, nextStep, reset, smaller, larger, maximize);
+        _pause = SmallButton("暂停", "暂停 / 继续计时", TogglePause);
+        _reset = SmallButton("归零", "计时从 0 重新开始", () => { _stopwatch.Reset(); if (_shown != null || _sample) _stopwatch.Start(); UpdatePauseText(); RefreshClock(); });
+        _smaller = SmallButton("A−", "备注字号变小（Ctrl −）", () => SetNotesSize(_notesSize - 2));
+        _larger = SmallButton("A+", "备注字号变大（Ctrl +）", () => SetNotesSize(_notesSize + 2));
+        _previousButton = BigButton("◀  上一步", "上一个动画 / 上一页（←）", () => Step(-1), primary: false);
+        _nextButton = BigButton("下一步  ▶", "下一个动画 / 下一页（→ 或 空格）", () => Step(1), primary: true);
+        _fullScreen = SmallButton("⤢ 全屏", "全屏 / 还原（F11）", ToggleMaximize);
 
-        _side.Controls.AddRange(new Control[] { _clock, _page, _nextCaption, _next, _notes });
-        _side.Resize += (_, _) => LayoutSide();
-        Controls.Add(currentHost);
-        Controls.Add(_side);
-        Controls.Add(_bottom);
-        Resize += (_, _) => _side.Width = Math.Max(300, ClientSize.Width * 36 / 100);
+        Controls.AddRange(new Control[]
+        {
+            _elapsedCaption, _elapsed, _pause, _reset, _page, _step, _clockCaption, _clock,
+            _currentCaption, _currentFrame, _nextCaption, _nextFrame, _notesCaption, _smaller, _larger, _notesFrame,
+            _keys, _previousButton, _nextButton, _fullScreen,
+        });
+
         _timer.Tick += (_, _) => RefreshShow();
         _timer.Start();
-        _started = DateTime.Now;
         RefreshShow();
     }
 
-    // Opens by itself when a show goes on air: do not take the keyboard away from the operator's window.
-    protected override bool ShowWithoutActivation => true;
-
-    private Button Button(string text, string tip, Action onClick)
+    private static Label MakeLabel(string text, float size, Color color, bool semibold = false, ContentAlignment align = ContentAlignment.MiddleLeft) => new()
     {
-        var button = new RoundedActionButton { Text = text, Height = 36, Width = 104 };
-        ModernUi.StyleButton(button);
+        Text = text,
+        ForeColor = color,
+        BackColor = Color.Transparent,
+        Font = new Font(semibold ? ModernUi.UiFontSemibold : ModernUi.UiFont, size),
+        TextAlign = align,
+        AutoEllipsis = true,
+        UseMnemonic = false,
+    };
+
+    private PresenterButton SmallButton(string text, string tip, Action onClick)
+    {
+        var button = new PresenterButton { Text = text, Font = new Font(ModernUi.UiFont, 9.5F) };
         button.Click += (_, _) => onClick();
         new ToolTip().SetToolTip(button, tip);
         return button;
     }
 
-    private void LayoutBottom(params Control[] buttons)
+    private PresenterButton BigButton(string text, string tip, Action onClick, bool primary)
     {
-        int x = 16, y = (_bottom.Height - 36) / 2;
-        buttons[0].Location = new Point(x, y);
-        buttons[1].Location = new Point(x + 112, y);
-        buttons[2].Location = new Point(x + 224, y);
-        int right = _bottom.ClientSize.Width - 16;
-        for (int i = buttons.Length - 1; i >= 3; i--)
-        {
-            int width = i == buttons.Length - 1 ? 104 : 52;
-            buttons[i].Width = width;
-            right -= width;
-            buttons[i].Location = new Point(right, y);
-            right -= 8;
-        }
+        var button = new PresenterButton { Text = text, Primary = primary, Font = new Font(ModernUi.UiFontSemibold, 12F) };
+        button.Click += (_, _) => onClick();
+        new ToolTip().SetToolTip(button, tip);
+        return button;
     }
 
-    private void LayoutSide()
+    private int S(int value) => LogicalToDeviceUnits(value);
+
+    protected override void OnLayout(LayoutEventArgs levent)
     {
-        int w = _side.ClientSize.Width - 32, x = 16, y = 16;
-        _clock.Bounds = new Rectangle(x, y, w / 2, 44);
-        _page.Bounds = new Rectangle(x + w / 2, y, w - w / 2, 44);
-        y += 52;
-        int nextHeight = w * 9 / 16;
-        _next.Bounds = new Rectangle(x, y, w, nextHeight);
-        y += nextHeight + 4;
-        _nextCaption.Bounds = new Rectangle(x, y, w, 22);
-        y += 30;
-        _notes.Bounds = new Rectangle(x, y, w, Math.Max(40, _side.ClientSize.Height - y - 16));
+        base.OnLayout(levent);
+        if (_pause == null) return; // base constructor lays out before the fields exist
+        int pad = S(Pad), gap = S(Gap), width = ClientSize.Width, height = ClientSize.Height;
+        int inner = width - pad * 2;
+
+        // Header: three equal columns.
+        int header = S(HeaderHeight), col = inner / 3, top = S(10);
+        _elapsedCaption.Bounds = new Rectangle(pad, top, col, S(20));
+        _elapsed.Bounds = new Rectangle(pad, top + S(20), S(190), S(40));
+        _pause.Bounds = new Rectangle(_elapsed.Right + S(8), top + S(26), S(60), S(30));
+        _reset.Bounds = new Rectangle(_pause.Right + S(6), top + S(26), S(60), S(30));
+        _page.Bounds = new Rectangle(pad + col, top + S(4), col, S(36));
+        _step.Bounds = new Rectangle(pad + col, top + S(40), col, S(22));
+        _clockCaption.Bounds = new Rectangle(pad + col * 2, top, inner - col * 2, S(20));
+        _clock.Bounds = new Rectangle(pad + col * 2, top + S(20), inner - col * 2, S(40));
+
+        // Footer.
+        int footerTop = height - S(FooterHeight);
+        int bigW = S(190), bigH = S(50), bigTop = footerTop + (S(FooterHeight) - bigH) / 2;
+        _previousButton.Bounds = new Rectangle(width / 2 - gap / 2 - bigW, bigTop, bigW, bigH);
+        _nextButton.Bounds = new Rectangle(width / 2 + gap / 2, bigTop, bigW, bigH);
+        _fullScreen.Bounds = new Rectangle(width - pad - S(96), bigTop + (bigH - S(34)) / 2, S(96), S(34));
+        _keys.Bounds = new Rectangle(pad, bigTop, Math.Max(0, _previousButton.Left - pad - gap), bigH);
+
+        // Body: current slide ~62 %, next + notes the rest.
+        int bodyTop = header + S(6), bodyBottom = footerTop - S(4);
+        int leftW = (inner - gap) * 62 / 100, rightW = inner - gap - leftW, rightX = pad + leftW + gap;
+        _currentCaption.Bounds = new Rectangle(pad, bodyTop, leftW, S(CaptionHeight));
+        int frameTop = bodyTop + S(CaptionHeight);
+        int availableH = Math.Max(S(60), bodyBottom - frameTop);
+        // 16:9, as large as fits, top-aligned so the captions line up.
+        int frameW = Math.Min(leftW, availableH * 16 / 9), frameH = frameW * 9 / 16;
+        _currentFrame.Bounds = new Rectangle(pad + (leftW - frameW) / 2, frameTop, frameW, frameH);
+        _currentFrame.Padding = new Padding(S(3));
+
+        _nextCaption.Bounds = new Rectangle(rightX, bodyTop, rightW, S(CaptionHeight));
+        int nextH = Math.Min(rightW * 9 / 16, (bodyBottom - frameTop) / 2);
+        int nextW = nextH * 16 / 9;
+        _nextFrame.Bounds = new Rectangle(rightX + (rightW - nextW) / 2, frameTop, nextW, nextH);
+        int notesTop = frameTop + nextH + gap;
+        _notesCaption.Bounds = new Rectangle(rightX, notesTop, rightW - S(80), S(CaptionHeight));
+        _larger.Bounds = new Rectangle(rightX + rightW - S(36), notesTop, S(36), S(28));
+        _smaller.Bounds = new Rectangle(_larger.Left - S(6) - S(36), notesTop, S(36), S(28));
+        int notesFrameTop = notesTop + S(CaptionHeight) + S(2);
+        _notesFrame.Bounds = new Rectangle(rightX, notesFrameTop, rightW, Math.Max(S(40), bodyBottom - notesFrameTop));
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        // Thin rules under the header and above the footer: the grid made visible.
+        using var pen = new Pen(Line);
+        int y1 = S(HeaderHeight) - S(2), y2 = ClientSize.Height - S(FooterHeight);
+        e.Graphics.DrawLine(pen, S(Pad), y1, ClientSize.Width - S(Pad), y1);
+        e.Graphics.DrawLine(pen, S(Pad), y2, ClientSize.Width - S(Pad), y2);
     }
 
     private void SetNotesSize(float size)
@@ -121,6 +222,14 @@ internal sealed class PresenterWindow : Form
         _notesSize = Math.Clamp(size, 10F, 48F);
         _notes.Font = new Font(ModernUi.UiFont, _notesSize);
     }
+
+    private void TogglePause()
+    {
+        if (_stopwatch.IsRunning) _stopwatch.Stop(); else _stopwatch.Start();
+        UpdatePauseText();
+    }
+
+    private void UpdatePauseText() => _pause.Text = _stopwatch.IsRunning || _stopwatch.Elapsed == TimeSpan.Zero ? "暂停" : "继续";
 
     private void ToggleMaximize() => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
 
@@ -135,8 +244,9 @@ internal sealed class PresenterWindow : Form
     {
         switch (keyData)
         {
-            case Keys.Right or Keys.Down or Keys.PageDown or Keys.Space: Step(1); return true;
-            case Keys.Left or Keys.Up or Keys.PageUp: Step(-1); return true;
+            // Up/Down are left to the notes box (scrolling long notes); Page keys and arrows turn pages.
+            case Keys.Right or Keys.PageDown or Keys.Space: Step(1); return true;
+            case Keys.Left or Keys.PageUp: Step(-1); return true;
             case Keys.F11: ToggleMaximize(); return true;
             case Keys.Control | Keys.Oemplus: SetNotesSize(_notesSize + 2); return true;
             case Keys.Control | Keys.OemMinus: SetNotesSize(_notesSize - 2); return true;
@@ -144,23 +254,43 @@ internal sealed class PresenterWindow : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
+    private void RefreshClock()
+    {
+        var elapsed = _stopwatch.Elapsed;
+        _elapsed.Text = $"{(int)elapsed.TotalHours:D2}:{elapsed.Minutes:D2}:{elapsed.Seconds:D2}";
+        _clock.Text = DateTime.Now.ToString("HH:mm");
+    }
+
     private void RefreshShow()
     {
+        if (_sample) { RefreshClock(); return; }
         var show = _show();
-        var elapsed = DateTime.Now - _started;
-        _clock.Text = $"{(int)elapsed.TotalMinutes:D2}:{elapsed.Seconds:D2}";
         if (!ReferenceEquals(show, _shown))
         {
             ++_version;
             _shown = show;
             _slide = -1;
-            _started = DateTime.Now;
+            _stopwatch.Reset();
+            if (show != null) _stopwatch.Start();
+            UpdatePauseText();
             SetNext(null, show == null ? "" : "下一页");
-            _notes.Text = show == null ? "大屏没有在放映演示文稿。放映开始后这里显示备注和下一页。" : "";
+            _notes.Text = show == null ? "大屏没有在放映演示文稿。放映开始后，这里显示当前页的备注。" : "";
         }
-        if (show == null) { _page.Text = ""; return; }
+        RefreshClock();
+        bool live = show != null;
+        _currentCaption.Text = live ? "●  大屏正在显示" : "大屏没有在放映";
+        _currentCaption.ForeColor = live ? Live : Muted;
+        _currentFrame.BackColor = live ? Live : Line;
+        _previousButton.Enabled = _nextButton.Enabled = live;
+        if (show == null)
+        {
+            _page.Text = "—";
+            _step.Text = "";
+            return;
+        }
         var position = show.Position;
-        _page.Text = $"第 {Math.Max(1, position.Slide)} / {show.SlideCount} 页" + (position.Clicks > 0 ? $" · 动画 {position.Click}/{position.Clicks}" : "");
+        _page.Text = $"第 {Math.Max(1, position.Slide)} / {show.SlideCount} 页";
+        _step.Text = position.Clicks > 0 ? $"动画 {position.Click} / {position.Clicks}" : "本页没有动画";
         if (position.Slide >= 1 && position.Slide != _slide)
         {
             _slide = position.Slide;
@@ -176,8 +306,10 @@ internal sealed class PresenterWindow : Form
         if (slide < show.SlideCount)
             try { next = await show.GetSlideImageAsync(slide + 1, 960); } catch (Exception) { }
         if (IsDisposed || version != _version) { next?.Dispose(); return; }
-        _notes.Text = string.IsNullOrWhiteSpace(notes) ? "（这一页没有备注）" : notes.Trim();
-        SetNext(next, slide < show.SlideCount ? $"下一页 · 第 {slide + 1} 页" : "已是最后一页");
+        _notes.Text = string.IsNullOrWhiteSpace(notes) ? "（这一页没有备注）" : notes.Trim().Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+        _notes.SelectionStart = 0;
+        _notes.ScrollToCaret();
+        SetNext(next, slide < show.SlideCount ? $"下一页 · 第 {slide + 1} 页" : "下一页");
     }
 
     private void SetNext(Bitmap? image, string caption)
@@ -186,6 +318,58 @@ internal sealed class PresenterWindow : Form
         _next.Image = image;
         old?.Dispose();
         _nextCaption.Text = caption;
+        _nextEmpty.Text = image != null ? "" : _shown == null && !_sample ? "" : _slide >= 1 && _shown != null && _slide >= _shown.SlideCount ? "已是最后一页" : "";
+        _nextEmpty.Visible = image == null && _nextEmpty.Text.Length > 0;
+    }
+
+    /// <summary>CI screenshot only: fills the window with a made-up slide pair and notes, since the
+    /// real content needs a running presentation program.</summary>
+    internal void ShowSampleForScreenshot()
+    {
+        _sample = true;
+        _current.Visible = false;
+        _currentStill.Visible = true;
+        _currentStill.Image = SampleSlide(1600, "第 6 页 · 年度回顾", Color.FromArgb(40, 70, 110));
+        _next.Image = SampleSlide(960, "第 7 页 · 明年计划", Color.FromArgb(70, 50, 100));
+        _nextCaption.Text = "下一页 · 第 7 页";
+        _nextEmpty.Visible = false;
+        _currentCaption.Text = "●  大屏正在显示";
+        _currentCaption.ForeColor = Live;
+        _currentFrame.BackColor = Live;
+        _page.Text = "第 6 / 18 页";
+        _step.Text = "动画 1 / 3";
+        _previousButton.Enabled = _nextButton.Enabled = true;
+        _notes.Text = "先停顿两秒，等掌声落下。" + Environment.NewLine + Environment.NewLine
+            + "1. 三项核心指标：用户数、留存、营收。" + Environment.NewLine
+            + "2. 强调第二季度的转折，点名感谢运营团队。" + Environment.NewLine
+            + "3. 点下一步出现对比图，再讲同比增长。";
+        _stopwatch.Restart();
+        UpdatePauseText();
+        RefreshClock();
+        _elapsed.Text = "00:12:34";
+        PerformLayout();
+        Invalidate(true);
+    }
+
+    private static Bitmap SampleSlide(int width, string title, Color tint)
+    {
+        int height = width * 9 / 16;
+        var bitmap = new Bitmap(width, height);
+        using var g = Graphics.FromImage(bitmap);
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        using (var back = new LinearGradientBrush(new Rectangle(0, 0, width, height), Color.FromArgb(245, 247, 250), Color.FromArgb(222, 230, 240), 90F))
+            g.FillRectangle(back, 0, 0, width, height);
+        using (var band = new SolidBrush(tint)) g.FillRectangle(band, 0, 0, width, height / 7);
+        using var titleFont = new Font(ModernUi.UiFontSemibold, width / 32F, GraphicsUnit.Pixel);
+        using var ink = new SolidBrush(Color.FromArgb(30, 40, 52));
+        g.DrawString(title, titleFont, ink, width / 14F, height / 4.5F);
+        using var bar = new SolidBrush(tint);
+        for (int i = 0; i < 4; i++)
+        {
+            int h = height / 6 + i * height / 12;
+            g.FillRectangle(bar, width / 14 + i * width / 7, height * 5 / 6 - h, width / 10, h);
+        }
+        return bitmap;
     }
 
     protected override void Dispose(bool disposing)
@@ -195,7 +379,51 @@ internal sealed class PresenterWindow : Form
             _timer.Dispose();
             _next.Image?.Dispose();
             _next.Image = null;
+            _currentStill.Image?.Dispose();
+            _currentStill.Image = null;
         }
         base.Dispose(disposing);
+    }
+
+    /// <summary>Flat rounded button in the window's fixed palette; the primary one is filled blue.</summary>
+    private sealed class PresenterButton : Button
+    {
+        public bool Primary { get; set; }
+        private bool _hot;
+
+        public PresenterButton()
+        {
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            Cursor = Cursors.Hand;
+            UseMnemonic = false;
+            TabStop = false; // keyboard input belongs to page turning
+        }
+
+        protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hot = true; Invalidate(); }
+        protected override void OnMouseLeave(EventArgs e) { base.OnMouseLeave(e); _hot = false; Invalidate(); }
+        protected override void OnEnabledChanged(EventArgs e) { base.OnEnabledChanged(e); Invalidate(); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var back = new SolidBrush(Back)) g.FillRectangle(back, ClientRectangle);
+            Color fill = !Enabled ? Card : Primary ? (_hot ? Color.FromArgb(76, 145, 255) : Accent) : (_hot ? Color.FromArgb(30, 41, 55) : Card);
+            Color ink = !Enabled ? Color.FromArgb(90, 104, 120) : Primary ? Color.White : Ink;
+            float r = LogicalToDeviceUnits(8);
+            using var path = new GraphicsPath();
+            var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
+            path.AddArc(rect.Left, rect.Top, r * 2, r * 2, 180, 90);
+            path.AddArc(rect.Right - r * 2, rect.Top, r * 2, r * 2, 270, 90);
+            path.AddArc(rect.Right - r * 2, rect.Bottom - r * 2, r * 2, r * 2, 0, 90);
+            path.AddArc(rect.Left, rect.Bottom - r * 2, r * 2, r * 2, 90, 90);
+            path.CloseFigure();
+            using (var brush = new SolidBrush(fill)) g.FillPath(brush, path);
+            if (!Primary) using (var pen = new Pen(Line)) g.DrawPath(pen, path);
+            TextRenderer.DrawText(g, Text, Font, ClientRectangle, ink,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+        }
     }
 }

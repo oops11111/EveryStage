@@ -1041,6 +1041,7 @@ internal static class DocumentTests
         Require(activityHost.ProgressFor(progressFile) == null, "Stopped playback retained activity row progress.");
         Console.WriteLine("PASS: file and activity progress track real PDF pages, item identity and stop");
         CaptureMainWindow(window, dir);
+        CapturePresenterWindow();
         var savedProbe = ThemeManager.HighContrastProbe;
         try
         {
@@ -1185,6 +1186,41 @@ internal static class DocumentTests
     /// <summary>Renders every page in each theme at a large and a small window size into
     /// artifacts/screenshots (uploaded by CI) — the layout review for the UI redesign — and checks that
     /// the 监看 column fits its controls at both sizes.</summary>
+    /// <summary>The 演讲者视图 with sample content (a real one needs a running presentation program), at
+    /// its default size and at its minimum, saved for layout review; also checks that nothing in the
+    /// grid overlaps or leaves the window.</summary>
+    private static void CapturePresenterWindow()
+    {
+        string output = Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots");
+        Directory.CreateDirectory(output);
+        using var presenter = new PresenterWindow(() => null, () => null, () => null)
+        {
+            StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ShowInTaskbar = false,
+        };
+        presenter.Show();
+        Pump(150);
+        presenter.ShowSampleForScreenshot();
+        foreach (var size in new[] { new Size(1280, 760), new Size(960, 600) })
+        {
+            presenter.Size = size;
+            presenter.PerformLayout();
+            Pump(150);
+            var client = presenter.ClientRectangle;
+            var visible = presenter.Controls.Cast<Control>().Where(c => c.Visible).ToList();
+            foreach (var control in visible)
+                if (!client.Contains(control.Bounds))
+                    throw new InvalidOperationException($"Presenter view at {size.Width}x{size.Height}: {control.GetType().Name} \"{control.Text}\" {control.Bounds} leaves the window {client}.");
+            for (int i = 0; i < visible.Count; i++)
+                for (int j = i + 1; j < visible.Count; j++)
+                    if (visible[i].Bounds.IntersectsWith(visible[j].Bounds))
+                        throw new InvalidOperationException($"Presenter view at {size.Width}x{size.Height}: \"{visible[i].Text}\" {visible[i].Bounds} overlaps \"{visible[j].Text}\" {visible[j].Bounds}.");
+            using var shot = new Bitmap(presenter.Width, presenter.Height);
+            presenter.DrawToBitmap(shot, new Rectangle(Point.Empty, presenter.Size));
+            shot.Save(Path.Combine(output, $"presenter-view-{size.Width}x{size.Height}.png"), ImageFormat.Png);
+        }
+        Console.WriteLine("PASS: 演讲者视图 lays out without overlaps at 1280x760 and 960x600 (screenshots saved)");
+    }
+
     private static void CaptureMainWindow(MainWindow window, string dir)
     {
         string output = Path.Combine(Environment.CurrentDirectory, "artifacts", "screenshots");
