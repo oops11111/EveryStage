@@ -89,6 +89,10 @@ internal sealed class SharedPreviewDock : Panel
     private bool _deviceOnProgram;
     private DocumentControlBar? _documentBar;
     private DocumentProgramSync? _documentSync;
+    // Which window the document bar sits under (0 = top, 1 = bottom), and which engine its
+    // DocumentChanged subscription is on — both follow the operator's window (see RefreshDocumentBar).
+    private int _documentBarWindow;
+    private PlaybackEngine? _documentBarPreview;
     // 演讲者视图 is never part of this column: it is its own window that opens when a presentation goes on
     // air on the big screen (once per show; closing it keeps it closed until the next show, or reopen it
     // from the status row's right-click menu) and closes when the show ends.
@@ -307,6 +311,11 @@ internal sealed class SharedPreviewDock : Panel
         int deviceHeight = _deviceConnected ? Math.Max(S(SourceCardHeight), w * 9 / 16) : 0;
         int documentHeight = _documentBarShown ? button + S(6) : 0;
         int windowChrome = MonitorWindow.ChromeHeight(S);
+        // FL-03: the (_runControls != null ...) term below is normally 0 now — the 流程 page's
+        // run controls live at the bottom of that page itself, and MainWindow no longer lends
+        // them to this column. The term stays because SetRunControls is still API (the
+        // self-tests embed their own controls through it) and the formula must stay correct
+        // for them; in production the monitors get the full height back.
         int fixedHeight = button + gap                                   // status row
             + windowChrome * 2 + gap                                     // captions + transports
             + documentHeight
@@ -314,7 +323,13 @@ internal sealed class SharedPreviewDock : Panel
             + (deviceHeight > 0 ? deviceHeight + gap : 0)
             + (_runControls != null ? _runControls.Height + gap : 0);
         int fullMonitor = (w - S(4)) * 9 / 16 + S(4);
-        int monitorsTotal = Math.Clamp(area.Height - fixedHeight, S(48), fullMonitor * 2);
+        // FL-04: the floor is 2×120 logical px (one 120 px minimum per window) — the old 48
+        // crushed each window to 24 px in a short column, which reads as broken. When the column
+        // is shorter than fixedHeight + floor, the windows keep their minimum and the bottom
+        // items clip (existing behaviour — the footer already hides itself when it doesn't fit);
+        // the dock deliberately does not scroll, so this hand-rolled OnLayout never has to
+        // chase a scroll offset.
+        int monitorsTotal = Math.Clamp(area.Height - fixedHeight, S(240), fullMonitor * 2);
         int first = Math.Min(fullMonitor, monitorsTotal / 2), second = Math.Min(fullMonitor, monitorsTotal - first);
 
         int y = area.Top;
@@ -325,7 +340,7 @@ internal sealed class SharedPreviewDock : Panel
         y += button + gap;
 
         y = _windows[0].Layout(x, y, w, first, S);
-        if (_documentBar != null && _documentBarShown)
+        if (_documentBar != null && _documentBarShown && _documentBarWindow == 0)
         {
             _documentBar.Bounds = new Rectangle(x, y, w, button);
             y += button + S(6);
@@ -338,6 +353,11 @@ internal sealed class SharedPreviewDock : Panel
         y += S(36) + gap;
 
         y = _windows[1].Layout(x, y, w, second, S);
+        if (_documentBar != null && _documentBarShown && _documentBarWindow == 1)
+        {
+            _documentBar.Bounds = new Rectangle(x, y, w, button);
+            y += button + S(6);
+        }
         y += gap;
 
         _deviceCard.Card.Visible = deviceHeight > 0;
@@ -402,8 +422,9 @@ internal sealed class SharedPreviewDock : Panel
         RefreshNow();
     }
 
-    /// <summary>Adds the document control row (PDF / Word / presentation controls and Program sync) under
-    /// the top window.</summary>
+    /// <summary>Adds the document control row (PDF / Word / presentation controls and Program sync).
+    /// It sits under the window the operator is driving — see <see cref="RefreshDocumentBar"/> —
+    /// never two bars, one per window.</summary>
     public void BindDocumentSync(DocumentProgramSync sync)
     {
         _documentSync = sync;
@@ -411,20 +432,42 @@ internal sealed class SharedPreviewDock : Panel
         _documentBar.StopProgramRequested += () => StopProgramRequested?.Invoke();
         _documentBar.Changed += RefreshNow;
         Controls.Add(_documentBar);
-        sync.Preview.DocumentChanged += RefreshNow;
+        _documentBarPreview = sync.Preview;
+        _documentBarPreview.DocumentChanged += RefreshNow;
         RefreshNow();
     }
 
     private void RefreshDocumentBar()
     {
-        if (_documentBar == null) return;
+        if (_documentBar == null || _documentSync == null) return;
+        // The bar follows the operator's window: the active window when it shows a document, else
+        // the other window when it does — the active window wins, a document in the other window
+        // is second. (Both windows are previews; the bar is one row, and the sync's Preview
+        // channel is re-pointed at the same engine so page turns and "更新大屏" follow it too.)
+        // Runs on the 200 ms refresh tick, so a window switch or a document opening moves the bar
+        // within one tick; the DocumentChanged subscription moves with the sync for immediacy.
+        var active = EngineOf(_activeWindow);
+        var other = EngineOf(1 - _activeWindow);
+        var target = HasDocument(active) ? active : HasDocument(other) ? other : active;
+        if (target != null && !ReferenceEquals(target, _documentSync.Preview))
+        {
+            if (_documentBarPreview != null) _documentBarPreview.DocumentChanged -= RefreshNow;
+            _documentSync.SetPreview(target);
+            _documentBarPreview = target;
+            target.DocumentChanged += RefreshNow;
+        }
+        int window = target != null && ReferenceEquals(target, other) ? 1 - _activeWindow : _activeWindow;
         _documentBar.RefreshState();
         bool show = _documentBar.HasDocument;
-        if (show == _documentBarShown) return;
+        if (show == _documentBarShown && window == _documentBarWindow) return;
         _documentBarShown = show;
+        _documentBarWindow = window;
         _documentBar.Visible = show;
         PerformLayout();
     }
+
+    private static bool HasDocument(PlaybackEngine? engine) =>
+        engine?.Document is { Mode: not (DocumentPlaybackMode.None or DocumentPlaybackMode.Cover) };
 
     private EveryStage.Terminal.Documents.SlideShowSession? CurrentShow =>
         _program?.DocumentMode == DocumentPlaybackMode.NativeShow ? _program.OfficeSession as EveryStage.Terminal.Documents.SlideShowSession : null;
@@ -729,6 +772,17 @@ internal sealed class SharedPreviewDock : Panel
                 Surface.SetOverlayCard(_error);
             }
             else Surface.SetOverlayCard(null);
+
+            // FL-05: a stopped engine clears its frame (PlaybackEngine.Stop → SetFrame(null)) but
+            // the branded idle splash is only re-mounted on the Idle state-change event — and a
+            // Take has already moved the engine to Idle, so SetState's dedup guard swallows the
+            // event at Stop() time and the splash never comes back. This Refresh runs on the
+            // 200 ms timer, so re-mount it here whenever the window is idle, unsynced and
+            // frameless; the CurrentFrame check keeps it a one-shot (ShowIdleSplash sets the
+            // frame, so the next tick skips it) instead of repainting every tick.
+            if (!_synced && (Engine is null || Engine.State == PlaybackChannelState.Idle)
+                && Surface.ContentSurface.CurrentFrame == null)
+                _dock.ShowIdleSplash(this);
         }
 
         public void RefreshTheme(UiPalette palette)

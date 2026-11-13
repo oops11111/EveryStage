@@ -201,7 +201,13 @@ public sealed class MainWindow : GradientForm
         _previewDock.FileDropped += (window, file, path) =>
         {
             var dropped = file ?? (path != null && FileLibraryStore.InferKind(path) is { } kind ? new MediaFile { SourcePath = path, Kind = kind } : null);
-            if (dropped != null) PlayInWindow(dropped, window);
+            if (dropped == null) return;
+            // Dropping on the window that follows the big screen quietly un-mirrors it
+            // (UseForLocalPlayback, inside PlayInWindow) — say so, so the operator is not
+            // surprised when the big screen stops being mirrored in this window.
+            if (_previewDock.ProgramWindow == window)
+                _toastStack?.Show("已在该窗预览，大屏不再镜像此窗。", ToastSeverity.Info);
+            PlayInWindow(dropped, window);
         };
         _previewDock.AttachProgram(playback);
         _previewDock.TakeRequested += style => TakePreviewToProgram(style);
@@ -232,7 +238,10 @@ public sealed class MainWindow : GradientForm
         _filesPanel.FilePlayRequested += file => PlayInWindow(file);
         _filesPanel.FileClicked += OnFileClicked;
         _filesPanel.TakeRequested += TakeFileToProgram;
-        _filesPanel.PlaybackStopRequested += () => _preview.Stop();
+        // The library's "停止预览" stops both preview engines — the two windows are the same,
+        // and this matches StopProgramOutput's "both windows stop" rule. (The FL-05 fallback
+        // re-mounts the idle splash in both windows afterwards.)
+        _filesPanel.PlaybackStopRequested += () => { _preview.Stop(); _preview2.Stop(); };
         _filesPanel.StopProgramRequested += StopProgramOutput;
         _filesPanel.IsProgramLive = () => _stateMachine.State == OutputState.Active;
         _filesPanel.ProgramFile = () => _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
@@ -501,7 +510,10 @@ public sealed class MainWindow : GradientForm
         if (_panelPalettes.TryGetValue(panel, out var themedWith)) ThemeManager.Reapply(panel, themedWith);
         _panelPalettes[panel] = ModernUi.Palette;
 
-        _previewDock.SetRunControls(panel == _activitiesPanel ? _activitiesPanel.RunControls : null);
+        // FL-03: the 流程 page's 「下一项」 controls live at the bottom of that page itself now,
+        // so the monitor column no longer borrows them (and the monitors keep their full height).
+        // SharedPreviewDock.SetRunControls stays as API — the self-tests use it — it just has
+        // no production caller any more.
         if (panel == _filesPanel) _filesPanel.Refresh_();
         else if (panel == _devicesPanel) _devicesPanel.Refresh_();
         else if (panel == _activitiesPanel) _activitiesPanel.RefreshTree();
@@ -591,24 +603,34 @@ public sealed class MainWindow : GradientForm
         if (!_settingsStore.Current.ClickTakesToAir) CastFile(file);
     }
 
-    /// <summary>Pause Preview right after something went on air (see <see cref="TakeFileToProgram"/>).</summary>
+    /// <summary>Pause Preview right after something went on air (see <see cref="TakeFileToProgram"/>).
+    /// Pauses the active window's engine — the two windows are the same, and the active one is the
+    /// preview the operator is driving. If it has nothing pausable, nothing is paused: the other
+    /// window's local playback is unrelated content and is left alone.
+    /// NOTE: currently uncalled — the dual-monitor rework (two identical windows) dropped the three
+    /// PausePreview() calls that used to follow TakeSnapshot, and the take paths now rely on
+    /// SyncWindowToProgram stopping the following window's engine instead. The method is kept
+    /// (re-pointed, not deleted) so the pause-after-take behaviour can come back on the right
+    /// window; do not re-add the calls without re-checking which window holds the taken file,
+    /// because SyncWindowToProgram flips the active window to the other one.</summary>
     private void PausePreview()
     {
-        if (_preview.State is not PlaybackChannelState.Loading)
+        var engine = WindowEngine(_previewDock.ActiveWindow);
+        if (engine.State is not PlaybackChannelState.Loading)
         {
-            if (_preview.CanPause && !_preview.IsPaused) _preview.Pause();
+            if (engine.CanPause && !engine.IsPaused) engine.Pause();
             return;
         }
         // Still loading: pause as soon as it starts — unless Preview has moved on to something else.
-        var file = _preview.CurrentFile;
+        var file = engine.CurrentFile;
         void OnState(PlaybackChannelState state)
         {
             if (InvokeRequired) { BeginInvoke(() => OnState(state)); return; }
             if (state == PlaybackChannelState.Loading) return;
-            _preview.StateChanged -= OnState;
-            if (state == PlaybackChannelState.Playing && ReferenceEquals(_preview.CurrentFile, file) && _preview.CanPause) _preview.Pause();
+            engine.StateChanged -= OnState;
+            if (state == PlaybackChannelState.Playing && ReferenceEquals(engine.CurrentFile, file) && engine.CanPause) engine.Pause();
         }
-        _preview.StateChanged += OnState;
+        engine.StateChanged += OnState;
     }
 
     /// <summary>流程 「下一项 ▶」 / double-click / space: put this item on the big screen, continuing the
@@ -730,7 +752,7 @@ public sealed class MainWindow : GradientForm
         return _playback.RequestPlay(snapshot);
     }
 
-    /// <summary>"停止输出": take the extended display off air. Preview keeps its content and position.</summary>
+    /// <summary>"停止输出": take the extended display off air. Both preview windows stop as well.</summary>
     /// <summary>急停 from outside the window (HTTP 外控): the same as 「■ 停止输出」.</summary>
     internal void EmergencyStop() => StopProgramOutput();
 
@@ -739,6 +761,7 @@ public sealed class MainWindow : GradientForm
         _stateMachine.Disconnect();
         _playback?.Stop();
         _preview.Stop();
+        _preview2.Stop();
         _music.Stop();
         _liveSection = null;
     }

@@ -16,7 +16,9 @@ namespace EveryStage.Terminal.Playback;
 /// </summary>
 public sealed class DocumentProgramSync
 {
-    private readonly PlaybackEngine _preview;
+    // Not readonly: the two monitor windows are the same, and the "Preview" channel is whichever
+    // window the operator is driving — the document bar follows it (see SetPreview).
+    private PlaybackEngine _preview;
     private readonly Func<PlaybackEngine?> _program;
 
     public DocumentProgramSync(PlaybackEngine preview, Func<PlaybackEngine?> program)
@@ -27,6 +29,18 @@ public sealed class DocumentProgramSync
     }
 
     public PlaybackEngine Preview => _preview;
+
+    /// <summary>Re-points the "Preview" channel at another window's engine. Moves the
+    /// <see cref="PlaybackEngine.PdfViewMovedByUser"/> subscription so page turns keep syncing
+    /// from the new engine; everything else reads <see cref="Preview"/>, so it follows.</summary>
+    public void SetPreview(PlaybackEngine preview)
+    {
+        if (ReferenceEquals(_preview, preview)) return;
+        _preview.PdfViewMovedByUser -= OnPreviewMoved;
+        _preview = preview;
+        _preview.PdfViewMovedByUser += OnPreviewMoved;
+    }
+
     public PlaybackEngine? Program => _program();
 
     /// <summary>The engine the document control bar acts on: Program while it runs the native slide show of

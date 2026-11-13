@@ -28,8 +28,38 @@ public sealed partial class ActivitiesPanel
     // With no selection the panel stays visible and shows a placeholder line rather than
     // collapsing away: a docked panel appearing/disappearing would keep reflowing the activity
     // list's width, and a constant "属性" home teaches operators where properties live.
+    //
+    // FL-01a/FL-02 (2026-11-14): two presentation fixes on this same panel. A successful
+    // commit shows a「✓ 已保存」line under the kind label for 2 s (the Apply* methods now
+    // return whether they actually saved, so a no-change commit shows nothing — nothing was
+    // saved); and the visible surface is a content-height card inside the full-height docked
+    // strip (see UpdateDetailCardHeight), so the lower half of the strip no longer reads as
+    // a tall empty slab. Neither changes what is saved or how — only what the operator sees.
 
     private readonly Panel _detailPanel = new();
+
+    /// <summary>FL-02: the visible card inside <see cref="_detailPanel"/> — the panel itself
+    /// stays a full-height docked strip (so the rows keep their 300 px), but only this card
+    /// is painted as a surface; below it the strip shows the page background, so the dead
+    /// blank that used to fill the lower half is gone. Its height follows the content
+    /// (see <see cref="UpdateDetailCardHeight"/>).</summary>
+    private readonly Panel _detailCard = new();
+
+    /// <summary>FL-02: the scrolling body inside the card (was a BuildDetailPanel local).</summary>
+    private readonly FlowLayoutPanel _detailBody = new();
+
+    /// <summary>FL-01a: the 「✓ 已保存」 line shown after a successful detail-panel commit,
+    /// hidden again after 2 s (see <see cref="_detailSavedTimer"/>) or when the selection
+    /// changes / the next edit begins.</summary>
+    private readonly Label _detailSavedLabel = new();
+
+    /// <summary>FL-01a: hides the saved hint after 2 s. A WinForms timer, not a sleep — the
+    /// UI never blocks while the hint is up. Same pattern as the header's _saveFeedbackTimer.</summary>
+    private readonly System.Windows.Forms.Timer _detailSavedTimer = new() { Interval = 2000 };
+
+    /// <summary>FL-01b: explains why the stay-duration editors are disabled for Office
+    /// documents (no auto-advance timer, so the value would never take effect).</summary>
+    private readonly Label _detailStayNote = new();
 
     /// <summary>AP-11: the one visible trace of the detail panel while it is auto-hidden on a
     /// narrow window — a small 「属性」 button at the right end of the column-heading strip.
@@ -102,16 +132,26 @@ public sealed partial class ActivitiesPanel
     {
         _detailPanel.Dock = DockStyle.Right;
         _detailPanel.Width = LogicalToDeviceUnits(300); // P-03: DPI-scaled like every other width here
-        _detailPanel.BackColor = ModernUi.Surface;
-        _detailPanel.Padding = new Padding(12, 10, 12, 10);
+        // FL-02: the strip itself keeps the page background — the visible surface is the card
+        // below, so the half of the strip the content doesn't reach blends into the page
+        // instead of showing as a tall empty Surface slab.
+        ModernUi.SetBackgroundRole(_detailPanel, UiBackgroundRole.Background);
+        _detailPanel.Padding = new Padding(0);
+
+        // FL-02: the card that actually looks like the panel — Surface, padded, top-docked
+        // inside the strip, its height set by UpdateDetailCardHeight (content height, capped).
+        _detailCard.Dock = DockStyle.Top;
+        ModernUi.SetBackgroundRole(_detailCard, UiBackgroundRole.Surface);
+        _detailCard.Padding = new Padding(12, 10, 12, 10);
         // AP-11: while the panel floats as a forced overlay it needs an edge against the rows
         // it covers — the docked form gets that edge from the layout itself, so the line is
-        // only drawn in the forced state.
-        _detailPanel.Paint += (_, e) =>
+        // only drawn in the forced state. (The line lives on the card now: the card IS the
+        // visible surface in both states.)
+        _detailCard.Paint += (_, e) =>
         {
             if (!_detailPanelForced) return;
             using var pen = new Pen(ModernUi.Border);
-            e.Graphics.DrawLine(pen, 0, 0, 0, _detailPanel.Height - 1);
+            e.Graphics.DrawLine(pen, 0, 0, 0, _detailCard.Height - 1);
         };
 
         _detailTitle.Dock = DockStyle.Top;
@@ -125,14 +165,21 @@ public sealed partial class ActivitiesPanel
         _detailKindLabel.Font = new Font(ModernUi.UiFont, 9F);
         ModernUi.SetForegroundRole(_detailKindLabel, UiForegroundRole.Muted);
 
-        var body = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            AutoScroll = true,
-            BackColor = Color.Transparent,
-        };
+        // FL-01a: the saved hint, docked between the kind line and the body; hidden it takes
+        // no space at all, shown it adds one 20 px line and the card grows with it.
+        _detailSavedLabel.Dock = DockStyle.Top;
+        _detailSavedLabel.Height = 20;
+        _detailSavedLabel.Font = new Font(ModernUi.UiFont, 9F);
+        _detailSavedLabel.Text = "✓ 已保存";
+        _detailSavedLabel.Visible = false;
+        ModernUi.SetForegroundRole(_detailSavedLabel, UiForegroundRole.Success);
+        _detailSavedTimer.Tick += (_, _) => HideDetailSavedHint();
+
+        _detailBody.Dock = DockStyle.Fill;
+        _detailBody.FlowDirection = FlowDirection.TopDown;
+        _detailBody.WrapContents = false;
+        _detailBody.AutoScroll = true;
+        _detailBody.BackColor = Color.Transparent;
 
         _detailPlaceholder.Text = "选中一个文件查看并修改它的播放属性";
         _detailPlaceholder.AutoSize = false;
@@ -198,9 +245,19 @@ public sealed partial class ActivitiesPanel
         ConfigureSeconds(_detailStaySeconds, 1, 3600);
         _detailStaySeconds.Leave += (_, _) => CommitDetailStayDuration();
         _detailStaySeconds.KeyDown += OnDetailSecondsKeyDown;
+        _detailStaySeconds.Enter += (_, _) => HideDetailSavedHint(); // FL-01a: editing begins — clear the old hint
+        // FL-01b: shown (group visible, editors disabled) for Office documents instead of
+        // hiding the whole group — the value exists in the store but the engine never acts on
+        // it, and hiding it made operators read that as "the panel does nothing".
+        _detailStayNote.Text = "Office 文档不支持自动翻页，停留时长不生效。";
+        _detailStayNote.AutoSize = false;
+        _detailStayNote.Width = 256;
+        _detailStayNote.Height = 30;
+        ModernUi.SetForegroundRole(_detailStayNote, UiForegroundRole.Muted);
         ConfigureGroup(_detailStayGroup);
         _detailStayGroup.Controls.Add(_detailStayCheck);
         _detailStayGroup.Controls.Add(SecondsRow(_detailStaySeconds));
+        _detailStayGroup.Controls.Add(_detailStayNote);
 
         // --- 淡入淡出 (same checkbox+seconds shape and caveat as FadeDialog) ---
         _detailFadeCheck.Text = "为此文件启用淡入淡出（音量随渐变）";
@@ -213,6 +270,7 @@ public sealed partial class ActivitiesPanel
         ConfigureSeconds(_detailFadeSeconds, 1, 60);
         _detailFadeSeconds.Leave += (_, _) => CommitDetailFade();
         _detailFadeSeconds.KeyDown += OnDetailSecondsKeyDown;
+        _detailFadeSeconds.Enter += (_, _) => HideDetailSavedHint(); // FL-01a: editing begins — clear the old hint
         // Short form of FadeDialog's Danger note — same fact (fade-out rests on an unverified
         // duration query), compressed to fit a sidebar line or two.
         _detailFadeNote.Text = "⚠ 淡出依赖尚未真机验证的时长查询，对某些文件可能不生效；淡入总是可靠的。";
@@ -258,18 +316,20 @@ public sealed partial class ActivitiesPanel
         ConfigureGroup(_detailDocumentGroup);
         _detailDocumentGroup.Controls.Add(_detailDocumentButton);
 
-        body.Controls.AddRange(new Control[]
+        _detailBody.Controls.AddRange(new Control[]
         {
             _detailPlaceholder,
             _detailActivityPlayModeGroup, _detailFilePlayModeGroup, _detailCompletionGroup,
             _detailManualSkipGroup, _detailStayGroup, _detailFadeGroup, _detailAudioGroup,
             _detailDocumentGroup,
         });
-        // Dock order inside the panel: Fill body added first, Top title/kind last, so the title
-        // owns the top strip and the body fills what remains below it.
-        _detailPanel.Controls.Add(body);
-        _detailPanel.Controls.Add(_detailKindLabel);
-        _detailPanel.Controls.Add(_detailTitle);
+        // Dock order inside the card: Fill body added first, Top title/kind/saved-hint last,
+        // so the title owns the top strip and the body fills what remains below it.
+        _detailCard.Controls.Add(_detailBody);
+        _detailCard.Controls.Add(_detailKindLabel);
+        _detailCard.Controls.Add(_detailSavedLabel);
+        _detailCard.Controls.Add(_detailTitle);
+        _detailPanel.Controls.Add(_detailCard);
 
         // AP-11: the narrow-window entry point. It belongs to no docked strip — the
         // column-heading strip is a constructor local in ActivitiesPanel.cs — so it is added
@@ -322,17 +382,21 @@ public sealed partial class ActivitiesPanel
     ///   control undocked and pinned over the rows' right edge (editors untouched, so nothing
     ///   about editing differs), toggle still shown so it can close it again.
     /// Forced ends by clicking the toggle again, by Esc inside the panel (see BuildDetailPanel),
-    /// or by the window widening back into the docked state, which is checked first below.</summary>
+    /// or by the window widening back into the docked state, which is checked first below.
+    /// FL-02: in both states the panel is only as tall as its content (see
+    /// <see cref="UpdateDetailCardHeight"/>) — the docked form keeps its full-height strip
+    /// for layout, but only the card is painted, and the forced overlay is sized to the card
+    /// instead of the old full-height slab.</summary>
     private void UpdateDetailPanelVisibility()
     {
         bool fits = ClientSize.Width - _detailPanel.Width >= LogicalToDeviceUnits(340);
         if (_detailPanelForced && fits) SetDetailPanelForced(false); // widened: back to docked
+        UpdateDetailCardHeight();
         if (_detailPanelForced)
         {
             int width = Math.Min(_detailPanel.Width, ClientSize.Width);
             _detailPanel.Bounds = new Rectangle(
-                ClientSize.Width - width, _activityRows.Top, width,
-                Math.Max(0, ClientSize.Height - _activityRows.Top));
+                ClientSize.Width - width, _activityRows.Top, width, _detailCard.Height);
             _detailPanel.Visible = true;
             _detailPanel.BringToFront();
         }
@@ -342,6 +406,62 @@ public sealed partial class ActivitiesPanel
         }
         _detailToggleButton.Visible = _detailPanelForced || !fits;
         if (_detailToggleButton.Visible) PositionDetailToggleButton();
+    }
+
+    /// <summary>FL-02: sizes the visible card to its content. The height is the title/kind/
+    /// saved-hint chrome plus the body's laid-out content height, capped at 70% of the page
+    /// height (a 900-high window caps at ~630 logical px, about the 640 the FL-02 review
+    /// named); beyond the cap the body scrolls internally (it is a FlowLayoutPanel with
+    /// AutoScroll) instead of the page growing a scrollbar. The docked strip keeps its full
+    /// height — only the card shrinks — so the rows' width never changes; the forced overlay
+    /// (which has no strip to hide behind) is resized to the card here too.</summary>
+    private void UpdateDetailCardHeight()
+    {
+        int cap = Math.Max(LogicalToDeviceUnits(200), ClientSize.Height * 70 / 100);
+        int chrome = _detailTitle.Height
+            + (_detailKindLabel.Visible ? _detailKindLabel.Height : 0)
+            + (_detailSavedLabel.Visible ? _detailSavedLabel.Height : 0)
+            + _detailCard.Padding.Vertical;
+        int bodyHeight = Math.Min(MeasureDetailBodyContentHeight(), Math.Max(0, cap - chrome));
+        _detailCard.Height = chrome + bodyHeight;
+        if (_detailPanelForced) _detailPanel.Height = _detailCard.Height;
+    }
+
+    /// <summary>FL-02: the body's content height — the bottom edge of its lowest visible
+    /// child after a layout pass, so margin collapsing (or not) never has to be guessed at.</summary>
+    private int MeasureDetailBodyContentHeight()
+    {
+        _detailBody.PerformLayout();
+        int bottom = 0;
+        foreach (Control child in _detailBody.Controls)
+        {
+            if (!child.Visible) continue;
+            bottom = Math.Max(bottom, child.Bottom + child.Margin.Bottom);
+        }
+        return bottom;
+    }
+
+    /// <summary>FL-01a: shows the 「✓ 已保存」 hint after a successful commit and arms the
+    /// 2 s timer that hides it again. Called only when the Apply* actually saved — a
+    /// no-change commit shows nothing, because nothing was saved.</summary>
+    private void ShowDetailSavedHint()
+    {
+        _detailSavedLabel.Visible = true;
+        _detailSavedTimer.Stop();
+        _detailSavedTimer.Start();
+        UpdateDetailCardHeight();
+    }
+
+    /// <summary>FL-01a: clears the saved hint (selection change, next edit beginning, timer
+    /// expiry). A no-op when it is already hidden, so RefreshFileDetails can call it
+    /// unconditionally. Stops the timer first even on a disposed panel, so a form closed
+    /// inside the 2 s window never fires back into disposed controls.</summary>
+    private void HideDetailSavedHint()
+    {
+        _detailSavedTimer.Stop();
+        if (IsDisposed || !_detailSavedLabel.Visible) return;
+        _detailSavedLabel.Visible = false;
+        UpdateDetailCardHeight();
     }
 
     /// <summary>AP-11: enters/leaves the forced-overlay state. Forcing undocks the panel;
@@ -448,6 +568,7 @@ public sealed partial class ActivitiesPanel
     /// AfterSelect.</summary>
     private void RefreshFileDetails()
     {
+        HideDetailSavedHint(); // FL-01a: selection changed — clear the old hint.
         var (scenario, activity, file) = GetSelection();
         _detailScenario = scenario;
         _detailActivity = activity;
@@ -468,7 +589,12 @@ public sealed partial class ActivitiesPanel
             _detailFilePlayModeGroup.Visible = hasFile;
             _detailCompletionGroup.Visible = hasFile;
             _detailManualSkipGroup.Visible = hasFile;
-            _detailStayGroup.Visible = file != null && IsStayDurationApplicable(file);
+            bool stayApplicable = file != null && IsStayDurationApplicable(file);
+            // FL-01b: Office documents keep the group (disabled, with the note) instead of
+            // having it hidden; video/audio keep the old hidden behaviour.
+            bool isOfficeDocument = file != null && file.Kind == MediaKind.Document && !stayApplicable;
+            _detailStayGroup.Visible = stayApplicable || isOfficeDocument;
+            _detailStayNote.Visible = isOfficeDocument;
             _detailFadeGroup.Visible = file != null && file.Kind is MediaKind.Video or MediaKind.Audio;
             _detailAudioGroup.Visible = file != null && file.Kind == MediaKind.Audio;
             _detailDocumentGroup.Visible = file != null && file.Kind == MediaKind.Document;
@@ -482,10 +608,11 @@ public sealed partial class ActivitiesPanel
             _detailAllowManualSkipCheck.Checked = file.AllowManualSkip;
 
             _detailStayCheck.Checked = file.StayDuration.HasValue;
+            _detailStayCheck.Enabled = stayApplicable; // FL-01b: Office docs show the stored value but can't edit it
             // Same preselect defaults the dialogs use when the nullable value is unset
             // (StayDurationDialog: 10 s, FadeDialog: 3 s), clamped to each box's own range.
             _detailStaySeconds.Value = Math.Clamp((decimal)(file.StayDuration ?? TimeSpan.FromSeconds(10)).TotalSeconds, 1m, 3600m);
-            _detailStaySeconds.Enabled = file.StayDuration.HasValue;
+            _detailStaySeconds.Enabled = stayApplicable && file.StayDuration.HasValue;
 
             _detailFadeCheck.Checked = file.VolumeFollowsFade;
             _detailFadeSeconds.Value = Math.Clamp((decimal)(file.FadeDuration ?? TimeSpan.FromSeconds(3)).TotalSeconds, 1m, 60m);
@@ -498,6 +625,9 @@ public sealed partial class ActivitiesPanel
         finally
         {
             _detailSyncing = false;
+            // FL-02: group visibility changed the content height — here, not after the
+            // try/finally, so the file == null early return above doesn't skip it.
+            UpdateDetailCardHeight();
         }
     }
 
@@ -517,14 +647,17 @@ public sealed partial class ActivitiesPanel
     private void CommitDetailActivityPlayMode()
     {
         if (_detailSyncing || _detailScenario is not { } scenario || _detailActivity is not { } activity) return;
+        HideDetailSavedHint(); // FL-01a: the next edit begins — clear the old hint.
         if (_detailActivityPlayModeCombo.SelectedItem is not DetailItem<PlayMode> item) return;
-        ApplyActivityPlayMode(scenario, activity, item.Value);
+        bool saved = ApplyActivityPlayMode(scenario, activity, item.Value);
         RefreshFileDetails();
+        if (saved) ShowDetailSavedHint();
     }
 
     private void CommitDetailPlayMode()
     {
         if (_detailSyncing || _detailFile is not { } file) return;
+        HideDetailSavedHint(); // FL-01a
         _detailPlayModeCombo.Enabled = _detailPlayModeOverrideCheck.Checked;
         PlayMode? value = null;
         if (_detailPlayModeOverrideCheck.Checked)
@@ -532,47 +665,68 @@ public sealed partial class ActivitiesPanel
             if (_detailPlayModeCombo.SelectedItem is not DetailItem<PlayMode> item) return;
             value = item.Value;
         }
-        ApplyPlayModeOverride(file, value);
+        bool saved = ApplyPlayModeOverride(file, value);
         RefreshFileDetails();
+        if (saved) ShowDetailSavedHint();
     }
 
     private void CommitDetailCompletionAction()
     {
         if (_detailSyncing || _detailFile is not { } file) return;
+        HideDetailSavedHint(); // FL-01a
         if (_detailCompletionCombo.SelectedItem is not DetailItem<CompletionAction> item) return;
-        ApplyCompletionAction(file, item.Value);
+        bool saved = ApplyCompletionAction(file, item.Value);
         RefreshFileDetails();
+        if (saved) ShowDetailSavedHint();
     }
 
     private void CommitDetailAllowManualSkip()
     {
         if (_detailSyncing || _detailFile is not { } file) return;
-        ApplyAllowManualSkip(file, _detailAllowManualSkipCheck.Checked);
+        HideDetailSavedHint(); // FL-01a
+        bool saved = ApplyAllowManualSkip(file, _detailAllowManualSkipCheck.Checked);
         RefreshFileDetails();
+        if (saved) ShowDetailSavedHint();
     }
 
     private void CommitDetailStayDuration()
     {
         if (_detailSyncing || _detailFile is not { } file) return;
-        ApplyStayDuration(file, _detailStayCheck.Checked ? TimeSpan.FromSeconds((double)_detailStaySeconds.Value) : null);
+        HideDetailSavedHint(); // FL-01a
+        bool saved = ApplyStayDuration(file, _detailStayCheck.Checked ? TimeSpan.FromSeconds((double)_detailStaySeconds.Value) : null);
         RefreshFileDetails();
+        if (saved) ShowDetailSavedHint();
     }
 
     private void CommitDetailFade()
     {
         if (_detailSyncing || _detailFile is not { } file) return;
-        ApplyFade(file, _detailFadeCheck.Checked,
+        HideDetailSavedHint(); // FL-01a
+        bool saved = ApplyFade(file, _detailFadeCheck.Checked,
             _detailFadeCheck.Checked ? TimeSpan.FromSeconds((double)_detailFadeSeconds.Value) : null);
         RefreshFileDetails();
+        if (saved) ShowDetailSavedHint();
     }
 
     private void CommitDetailAudioProperties()
     {
         if (_detailSyncing || _detailFile is not { } file) return;
+        HideDetailSavedHint(); // FL-01a
         _detailBgAudioCaveat.Visible = _detailBgAudioCheck.Checked;
-        if (_detailAudioVisualCombo.SelectedItem is not DetailItem<AudioVisual> item) return;
-        ApplyAudioProperties(file, _detailBgAudioCheck.Checked, item.Value);
+        // FL-01c: never silently drop the commit when the visual combo has no selection.
+        // That only happens when the stored value is corrupted out of the enum (the fill
+        // always selects a valid stored value); fall back to the stored value when it is
+        // valid, else to the first visual — and RefreshFileDetails below re-fills both
+        // controls from what was actually saved, so the panel can no longer display a
+        // checkbox state that never reached the store.
+        AudioVisual visual;
+        if (_detailAudioVisualCombo.SelectedItem is DetailItem<AudioVisual> item) visual = item.Value;
+        else if (Enum.IsDefined(file.BackgroundAudioVisual)) visual = file.BackgroundAudioVisual;
+        else if (_detailAudioVisualCombo.Items[0] is DetailItem<AudioVisual> first) visual = first.Value;
+        else visual = AudioVisual.Waveform; // unreachable: the combo always carries its three items
+        bool saved = ApplyAudioProperties(file, _detailBgAudioCheck.Checked, visual);
         RefreshFileDetails();
+        if (saved) ShowDetailSavedHint();
     }
 
     /// <summary>Enter in a seconds box commits it (and is swallowed, so it doesn't also beep or
