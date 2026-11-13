@@ -329,7 +329,12 @@ internal sealed class SharedPreviewDock : Panel
         // items clip (existing behaviour — the footer already hides itself when it doesn't fit);
         // the dock deliberately does not scroll, so this hand-rolled OnLayout never has to
         // chase a scroll offset.
-        int monitorsTotal = Math.Clamp(area.Height - fixedHeight, S(240), fullMonitor * 2);
+        // The floor must never exceed the cap: in a narrow window fullMonitor * 2 can be
+        // smaller than S(240) (the CI self-test window is one such case — 196), and
+        // Math.Clamp throws when min > max. Cap the floor at the cap; a short column
+        // then just clips the bottom items, as FL-04 intends.
+        int monitorFloor = Math.Min(S(240), fullMonitor * 2);
+        int monitorsTotal = Math.Clamp(area.Height - fixedHeight, monitorFloor, fullMonitor * 2);
         int first = Math.Min(fullMonitor, monitorsTotal / 2), second = Math.Min(fullMonitor, monitorsTotal - first);
 
         int y = area.Top;
