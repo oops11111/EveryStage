@@ -407,8 +407,12 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             BackColor = Color.Transparent, Visible = false,
         }, UiForegroundRole.Muted);
 
-        // --- 下一项 run controls (FL-03: docked at the bottom of this page, list width only) ---
-        _runControls = new Panel { BackColor = Color.Transparent, Height = 128, Dock = DockStyle.Bottom };
+        // --- 下一项 run controls (FL-03: docked at the bottom of this page, list width only).
+        // The strip is monitor chrome, so it keeps the monitor's dark palette in every theme
+        // (see MonitorChromePanel): its text is light, and a light page background behind it
+        // would make the next-item name unreadable. ---
+        _runControls = new MonitorChromePanel { Height = 128, Dock = DockStyle.Bottom };
+        ModernUi.SetBackgroundRole(_runControls, UiBackgroundRole.Background);
         var nextCaption = new Badge("下一项");
         _nextName = ModernUi.SetForegroundRole(new Label { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9.5F) }, UiForegroundRole.Text);
         _runNextButton = ActionButton("下一项  ▶", GoNext, primary: true, height: 52);
