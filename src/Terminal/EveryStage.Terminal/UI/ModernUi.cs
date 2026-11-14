@@ -6,6 +6,12 @@ namespace EveryStage.Terminal.UI;
 internal enum UiForegroundRole { Text, Muted, Accent, Warning, Success, Danger }
 internal enum UiBackgroundRole { Transparent, Background, Rail, Surface, SurfaceRaised, ContentRaised, Accent, Warning, Danger, MediaBlack }
 
+/// <summary>Marks a panel as monitor chrome: everything inside it keeps the monitor's fixed
+/// dark palette, wherever the panel itself is docked. (FL-03 moved the run-controls strip out
+/// of the monitor column; its dark identity moved with it — the strip's text is light, so its
+/// background must stay dark too.)</summary>
+internal sealed class MonitorChromePanel : Panel { }
+
 internal static class ModernUi
 {
     private sealed class ForegroundRole { public UiForegroundRole Value; }
@@ -100,7 +106,7 @@ internal static class ModernUi
     internal static UiPalette PaletteFor(Control control)
     {
         for (Control? current = control; current != null; current = current.Parent)
-            if (current is SharedPreviewDock) return UiPalette.For(EveryStage.Terminal.Data.AppTheme.Dark);
+            if (current is SharedPreviewDock or MonitorChromePanel) return UiPalette.For(EveryStage.Terminal.Data.AppTheme.Dark);
         return _palette;
     }
     internal static EveryStage.Terminal.Data.AppTheme CurrentTheme => _currentTheme;

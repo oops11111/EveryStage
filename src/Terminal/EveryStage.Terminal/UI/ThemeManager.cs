@@ -121,6 +121,9 @@ public static class ThemeManager
             palette = UiPalette.For(AppTheme.Dark);
             dock.AppliedPalette = palette;
         }
+        // FL-03: the run-controls strip is monitor chrome even though it now sits at the bottom
+        // of the flow page — its whole subtree keeps the fixed dark palette, like the dock's.
+        if (control is MonitorChromePanel) palette = UiPalette.For(AppTheme.Dark);
         if (!ModernUi.ApplyForegroundRole(control, palette))
             control.ForeColor = MapForeground(control.ForeColor, palette, previous);
         if (control is GlassPanel glassPanel)

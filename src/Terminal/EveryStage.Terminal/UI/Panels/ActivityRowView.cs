@@ -25,6 +25,10 @@ internal interface IActivityRowHost
     PreShowProblem? PreShowProblemOf(MediaFile file);
     (FilesPanel.CardProgress Progress, bool OnProgram)? ProgressFor(MediaFile file);
     void RowNodeClicked(TreeNode node);
+    /// <summary>Selects the node without running it — the ⋮⋮ drag-grip press uses this: grabbing
+    /// a row must not put the item on air in 「单击即上屏」 mode. Default is a no-op so hosts
+    /// that only paint (the self-test stub) need no implementation.</summary>
+    void RowNodeSelected(TreeNode node) { }
     void RowNodeDoubleClicked(TreeNode node);
     void RowContextMenu(TreeNode node, Control source, Point location);
     void ToggleCollapsed(Activity activity);
@@ -167,8 +171,12 @@ internal sealed class ActivityRowView : Control
         {
             _dragFrom = index;
             _dragStart = e.Location;
+            // FL-06: a press on the ⋮⋮ grip only selects — starting a drag (or just clicking
+            // the grip) must not put the item on air in 「单击即上屏」 mode. A plain left press
+            // elsewhere still airs on press, so the click-to-air feel is unchanged there.
+            _host.RowNodeSelected(node);
         }
-        if (e.Button == MouseButtons.Left) _host.RowNodeClicked(node);
+        else if (e.Button == MouseButtons.Left) _host.RowNodeClicked(node);
         else if (e.Button == MouseButtons.Right) _host.RowContextMenu(node, this, e.Location);
     }
 

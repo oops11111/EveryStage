@@ -162,13 +162,15 @@ public sealed partial class ActivitiesPanel
     bool IActivityRowHost.IsSelected(TreeNode node) => ReferenceEquals(_tree.SelectedNode, node);
     bool IActivityRowHost.IsMultiSelected(TreeNode node) => _multiSelectedFileNodes.Contains(node);
     void IActivityRowHost.RowNodeClicked(TreeNode node) => OnCardNodeClick(node);
+    void IActivityRowHost.RowNodeSelected(TreeNode node) => SelectCardNode(node);
     void IActivityRowHost.RowNodeDoubleClicked(TreeNode node) => OnCardNodeDoubleClick(node);
 
     void IActivityRowHost.RowContextMenu(TreeNode node, Control source, Point location)
     {
         // Right-clicking one file of an existing Ctrl+click multi-selection keeps that selection, so
         // 统一设置属性... is reachable from the context menu as well as from 编辑 ▾.
-        if (!_multiSelectedFileNodes.Contains(node)) OnCardNodeClick(node);
+        // FL-06: select only — opening the menu must not put the item on air in 「单击即上屏」 mode.
+        if (!_multiSelectedFileNodes.Contains(node)) SelectCardNode(node);
         ShowEditMenu(source, location);
     }
 

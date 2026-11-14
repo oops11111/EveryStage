@@ -38,10 +38,12 @@ public sealed partial class ActivitiesPanel
     /// editor (ActivitiesPanel.Details.cs). The per-file 播放方式... menu dialog that also
     /// ended here was retired in AP-10 （属性双轨收敛）; the panel and (with its own loop)
     /// 统一设置属性 remain, and sharing this tail keeps them from drifting apart on how this
-    /// property is saved or logged.</summary>
-    private void ApplyPlayModeOverride(MediaFile file, PlayMode? newPlayMode)
+    /// property is saved or logged. Returns true when a change was applied and saved — the
+    /// detail panel's ✓ 已保存 hint keys off this; the other Apply* methods share the
+    /// convention (false = no actual change, or TrySave failed).</summary>
+    private bool ApplyPlayModeOverride(MediaFile file, PlayMode? newPlayMode)
     {
-        if (newPlayMode == file.PlayModeOverride) return; // no actual change.
+        if (newPlayMode == file.PlayModeOverride) return false; // no actual change.
 
         // LogPlaybackPropertyChanged, not LogActivityModified — this is the first real caller
         // this method has ever had (see this project's README "已知风险"): a per-file property
@@ -50,20 +52,22 @@ public sealed partial class ActivitiesPanel
         string? oldValue = file.PlayModeOverride?.ToString();
         string? newValue = newPlayMode?.ToString();
         file.PlayModeOverride = newPlayMode;
-        if (!TrySave()) return;
+        if (!TrySave()) return false;
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.PlayModeOverride), oldValue, newValue);
+        return true;
     }
 
     /// <summary>Applies a new <see cref="Activity.DefaultPlayMode"/> — same reasoning as
     /// <see cref="ApplyPlayModeOverride"/>; called by the 详情面板's 环节播放方式 editor.
     /// No-ops on no actual change.</summary>
-    private void ApplyActivityPlayMode(Scenario scenario, Activity activity, PlayMode newPlayMode)
+    private bool ApplyActivityPlayMode(Scenario scenario, Activity activity, PlayMode newPlayMode)
     {
-        if (newPlayMode == activity.DefaultPlayMode) return; // no actual change — nothing to log/save.
+        if (newPlayMode == activity.DefaultPlayMode) return false; // no actual change — nothing to log/save.
 
         activity.DefaultPlayMode = newPlayMode;
-        if (!TrySave()) return;
+        if (!TrySave()) return false;
         _fileOpLog.LogActivityModified(scenario.Id, activity.Id, activity.Name);
+        return true;
     }
 
     /// <summary>Applies a new <see cref="MediaFile.IsBackgroundAudio"/>/
@@ -72,10 +76,10 @@ public sealed partial class ActivitiesPanel
     /// <see cref="ApplyPlayModeOverride"/> for the reasoning. Refreshes the tree because
     /// <see cref="MediaFile.IsBackgroundAudio"/> changes the file node's own text
     /// (<see cref="BuildFileNodeText"/>).</summary>
-    private void ApplyAudioProperties(MediaFile file, bool isBackgroundAudio, AudioVisual backgroundAudioVisual)
+    private bool ApplyAudioProperties(MediaFile file, bool isBackgroundAudio, AudioVisual backgroundAudioVisual)
     {
         if (isBackgroundAudio == file.IsBackgroundAudio && backgroundAudioVisual == file.BackgroundAudioVisual)
-            return; // no actual change — nothing to log/save.
+            return false; // no actual change — nothing to log/save.
 
         // Two separate LogPlaybackPropertyChanged calls rather than one combined entry — same
         // per-property granularity the other Apply* methods use, so the log can show exactly which
@@ -92,12 +96,13 @@ public sealed partial class ActivitiesPanel
                 file.BackgroundAudioVisual.ToString(), backgroundAudioVisual.ToString());
             file.BackgroundAudioVisual = backgroundAudioVisual;
         }
-        if (!TrySave()) return;
+        if (!TrySave()) return false;
         // Unlike the other Apply* methods (none of which change anything the tree actually
         // displays), IsBackgroundAudio now affects the file
         // node's own text (see BuildFileNodeText) — without this, toggling the checkbox wouldn't be
         // visible here until some unrelated action happened to trigger a full RefreshTree.
         RefreshTree();
+        return true;
     }
 
     /// <summary>Applies a new <see cref="MediaFile.VolumeFollowsFade"/>/
@@ -105,10 +110,10 @@ public sealed partial class ActivitiesPanel
     /// (ActivitiesPanel.Details.cs; the 淡入淡出... menu dialog was retired in AP-10); see
     /// <see cref="ApplyPlayModeOverride"/> for
     /// the reasoning. No tree refresh: neither field appears in the node's text.</summary>
-    private void ApplyFade(MediaFile file, bool volumeFollowsFade, TimeSpan? fadeDuration)
+    private bool ApplyFade(MediaFile file, bool volumeFollowsFade, TimeSpan? fadeDuration)
     {
         if (volumeFollowsFade == file.VolumeFollowsFade && fadeDuration == file.FadeDuration)
-            return; // no actual change — nothing to log/save.
+            return false; // no actual change — nothing to log/save.
 
         // Two separate LogPlaybackPropertyChanged calls, same per-property granularity
         // ApplyAudioProperties already uses for its own two-field apply.
@@ -124,7 +129,8 @@ public sealed partial class ActivitiesPanel
                 file.FadeDuration?.ToString(), fadeDuration?.ToString());
             file.FadeDuration = fadeDuration;
         }
-        if (!TrySave()) return;
+        if (!TrySave()) return false;
+        return true;
     }
 
     /// <summary>"文档播放设置": PDF reading mode / page range / zoom, Word editor, presentation mode.
@@ -152,9 +158,9 @@ public sealed partial class ActivitiesPanel
     /// <summary>Applies a new <see cref="MediaFile.StayDuration"/> — the 详情面板's apply path
     /// (ActivitiesPanel.Details.cs; the 停留时长... menu dialog was retired in AP-10); see
     /// <see cref="ApplyPlayModeOverride"/> for the reasoning.</summary>
-    private void ApplyStayDuration(MediaFile file, TimeSpan? newStayDuration)
+    private bool ApplyStayDuration(MediaFile file, TimeSpan? newStayDuration)
     {
-        if (newStayDuration == file.StayDuration) return; // no actual change — nothing to log/save.
+        if (newStayDuration == file.StayDuration) return false; // no actual change — nothing to log/save.
 
         // LogPlaybackPropertyChanged, same per-property granularity the other Apply* methods
         // use — same established convention as ApplyPlayModeOverride's own
@@ -164,22 +170,24 @@ public sealed partial class ActivitiesPanel
         string? oldValue = file.StayDuration?.ToString();
         string? newValue = newStayDuration?.ToString();
         file.StayDuration = newStayDuration;
-        if (!TrySave()) return;
+        if (!TrySave()) return false;
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.StayDuration), oldValue, newValue);
+        return true;
     }
 
     /// <summary>Applies a new <see cref="MediaFile.OnCompletion"/> — the 详情面板's apply path
     /// (ActivitiesPanel.Details.cs; the 完成后动作... menu dialog was retired in AP-10); see
     /// <see cref="ApplyPlayModeOverride"/> for the reasoning.</summary>
-    private void ApplyCompletionAction(MediaFile file, CompletionAction newCompletionAction)
+    private bool ApplyCompletionAction(MediaFile file, CompletionAction newCompletionAction)
     {
-        if (newCompletionAction == file.OnCompletion) return; // no actual change — nothing to log/save.
+        if (newCompletionAction == file.OnCompletion) return false; // no actual change — nothing to log/save.
 
         string oldValue = file.OnCompletion.ToString();
         string newValue = newCompletionAction.ToString();
         file.OnCompletion = newCompletionAction;
-        if (!TrySave()) return;
+        if (!TrySave()) return false;
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.OnCompletion), oldValue, newValue);
+        return true;
     }
 
     /// <summary>Applies a new <see cref="MediaFile.AllowManualSkip"/>. Unlike the other Apply*
@@ -190,15 +198,16 @@ public sealed partial class ActivitiesPanel
     /// <see cref="FileOperationLogger.LogPlaybackPropertyChanged"/> with
     /// <c>nameof(MediaFile.AllowManualSkip)</c>, matching <see cref="OnEditBatchProperties"/>'s
     /// own log entry for this property).</summary>
-    private void ApplyAllowManualSkip(MediaFile file, bool allowManualSkip)
+    private bool ApplyAllowManualSkip(MediaFile file, bool allowManualSkip)
     {
-        if (allowManualSkip == file.AllowManualSkip) return; // no actual change — nothing to log/save.
+        if (allowManualSkip == file.AllowManualSkip) return false; // no actual change — nothing to log/save.
 
         string oldValue = file.AllowManualSkip.ToString();
         string newValue = allowManualSkip.ToString();
         file.AllowManualSkip = allowManualSkip;
-        if (!TrySave()) return;
+        if (!TrySave()) return false;
         _fileOpLog.LogPlaybackPropertyChanged(file.Id, nameof(MediaFile.AllowManualSkip), oldValue, newValue);
+        return true;
     }
 
     private void OnRemoveFile()

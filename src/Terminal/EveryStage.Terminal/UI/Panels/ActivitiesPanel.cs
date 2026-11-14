@@ -99,7 +99,9 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     /// <summary>The background-music playlists, for the per-section music cue.</summary>
     public Func<IReadOnlyList<Playlist>>? Playlists { get; set; }
 
-    // 「下一项」 run controls: shown in MainWindow's 监看 column while this page is visible.
+    // 「下一项」 run controls (FL-03): docked at the bottom of this page's list area — they used
+    // to be borrowed by MainWindow into the 监看 column, which also stole ~130 px from the two
+    // monitor windows there. They hide with this page now, no separate plug/unplug.
     private readonly Panel _runControls;
     private readonly Label _nextName;
     private readonly RoundedActionButton _runNextButton;
@@ -121,9 +123,6 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
 
     /// <summary>Run this item now: MainWindow puts it on the big screen (or in Preview without one).</summary>
     public event Action<Activity, int>? RunRequested;
-
-    /// <summary>「下一项 ▶」 and friends, for MainWindow's 监看 column.</summary>
-    public Control RunControls => _runControls;
 
     /// <summary>Row thumbnails, keyed by kind + source path, built off the UI thread by
     /// <see cref="FilesPanel.BuildThumbnail"/> (the same readers and fallback tiles the 文件 page uses).</summary>
@@ -408,8 +407,12 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             BackColor = Color.Transparent, Visible = false,
         }, UiForegroundRole.Muted);
 
-        // --- 下一项 run controls (hosted by MainWindow's 监看 column) ---
-        _runControls = new Panel { BackColor = Color.Transparent, Height = 128 };
+        // --- 下一项 run controls (FL-03: docked at the bottom of this page, list width only).
+        // The strip is monitor chrome, so it keeps the monitor's dark palette in every theme
+        // (see MonitorChromePanel): its text is light, and a light page background behind it
+        // would make the next-item name unreadable. ---
+        _runControls = new MonitorChromePanel { Height = 128, Dock = DockStyle.Bottom };
+        ModernUi.SetBackgroundRole(_runControls, UiBackgroundRole.Background);
         var nextCaption = new Badge("下一项");
         _nextName = ModernUi.SetForegroundRole(new Label { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9.5F) }, UiForegroundRole.Text);
         _runNextButton = ActionButton("下一项  ▶", GoNext, primary: true, height: 52);
@@ -471,7 +474,11 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         // _detailPanel is added right after _activityRows so that, in the reverse order docking
         // runs in, its Right dock is processed before the list's Fill — it claims the right edge
         // first and _activityRows fills what remains (see ActivitiesPanel.Details.cs).
+        // FL-03: _runControls sits between them, so its Bottom dock is processed after the
+        // detail panel's Right dock — it claims the bottom of the list area only, not the full
+        // page width under the detail panel.
         Controls.Add(_activityRows);
+        Controls.Add(_runControls);
         Controls.Add(_detailPanel);
         Controls.Add(_emptyState);
         Controls.Add(_tree);
@@ -599,7 +606,10 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     /// <summary>设置 「单击即上屏」: a plain click on an item runs it (as a double-click does otherwise).</summary>
     public Func<bool>? ClickTakesToAir { get; set; }
 
-    private void OnCardNodeClick(TreeNode node)
+    /// <summary>Selects the node (and drives the Shift/Ctrl multi-selection) without running it —
+    /// the right-click menu path and the drag-grip press use this (FL-06): opening a menu or
+    /// starting a drag must not put the item on air in 「单击即上屏」 mode.</summary>
+    private void SelectCardNode(TreeNode node)
     {
         _tree.SelectedNode = node;
         var modifiers = Control.ModifierKeys;
@@ -619,10 +629,15 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             if (node.Tag is MediaFile clickedFile) _multiSelectAnchorFile = clickedFile;
             ClearMultiSelection();
             UpdateButtonStates();
-            if (node.Tag is MediaFile && modifiers == Keys.None && ClickTakesToAir?.Invoke() == true)
-                OnNodeDoubleClick(this, new TreeNodeMouseClickEventArgs(node, MouseButtons.Left, 1, 0, 0));
         }
         RefreshCardStyles();
+    }
+
+    private void OnCardNodeClick(TreeNode node)
+    {
+        SelectCardNode(node);
+        if (node.Tag is MediaFile && Control.ModifierKeys == Keys.None && ClickTakesToAir?.Invoke() == true)
+            OnNodeDoubleClick(this, new TreeNodeMouseClickEventArgs(node, MouseButtons.Left, 1, 0, 0));
     }
 
     private void OnCardNodeDoubleClick(TreeNode node)
