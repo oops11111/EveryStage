@@ -998,6 +998,9 @@ internal sealed class ToggleSwitch : Control
         base.OnClick(e);
     }
 
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
         if (e.KeyCode is Keys.Space or Keys.Enter)
@@ -1026,6 +1029,12 @@ internal sealed class ToggleSwitch : Control
         int x = Checked ? track.Right - d - 3 : track.Left + 3;
         using var knob = new SolidBrush(Color.White);
         e.Graphics.FillEllipse(knob, x, track.Top + 3, d, d);
+        if (Focused && ShowFocusCues)
+        {
+            var palette = ModernUi.PaletteFor(this);
+            using var focus = new Pen(palette.IsHighContrast ? ForeColor : palette.Focus, 2) { DashStyle = DashStyle.Dot };
+            e.Graphics.DrawRectangle(focus, Rectangle.Inflate(ClientRectangle, -2, -2));
+        }
     }
 
     private static GraphicsPath Rounded(Rectangle r, int radius)
@@ -1091,12 +1100,50 @@ internal sealed class NavItem : Control
         Cursor = Cursors.Hand;
         Font = new Font(ModernUi.UiFont, 11.5F);
         SetStyle(ControlStyles.SupportsTransparentBackColor | ControlStyles.OptimizedDoubleBuffer
-            | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
+            | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.ResizeRedraw
+            | ControlStyles.Selectable, true);
         BackColor = Color.Transparent;
+        TabStop = true;
+        AccessibleName = text;
+        AccessibleRole = AccessibleRole.PushButton;
     }
 
     protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (e.KeyCode is Keys.Enter or Keys.Space)
+        {
+            OnClick(EventArgs.Empty);
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+        if (e.KeyCode is Keys.Up or Keys.Down)
+        {
+            var siblings = Parent?.Controls.OfType<NavItem>().OrderBy(c => c.Top).ToList();
+            if (siblings != null)
+            {
+                int i = siblings.IndexOf(this) + (e.KeyCode == Keys.Down ? 1 : -1);
+                if (i >= 0 && i < siblings.Count) siblings[i].Focus();
+            }
+            e.Handled = true;
+            return;
+        }
+        base.OnKeyDown(e);
+    }
+
+    /// <summary>The dotted focus ring, in the same style as <see cref="RoundedActionButton"/>.</summary>
+    private void DrawFocusRing(Graphics g, Rectangle rect)
+    {
+        if (!Focused || !ShowFocusCues) return;
+        var palette = ModernUi.PaletteFor(this);
+        using var focus = new Pen(palette.IsHighContrast ? ForeColor : palette.Focus, 2) { DashStyle = DashStyle.Dot };
+        g.DrawRectangle(focus, Rectangle.Inflate(rect, -3, -3));
+    }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -1133,6 +1180,7 @@ internal sealed class NavItem : Control
             rect.Right - iconRect.Right - LogicalToDeviceUnits(12), rect.Height);
         TextRenderer.DrawText(g, _label, Font, textRect, fg,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        DrawFocusRing(g, rect);
     }
 
     private void PaintRail(Graphics g, Rectangle rect)
@@ -1153,6 +1201,7 @@ internal sealed class NavItem : Control
         VectorIcons.Draw(g, _icon, new Rectangle(rect.Left + (rect.Width - iconSize) / 2, top, iconSize, iconSize), fg);
         TextRenderer.DrawText(g, _label, Font, new Rectangle(rect.Left, top + iconSize + LogicalToDeviceUnits(3), rect.Width, textHeight), fg,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+        DrawFocusRing(g, rect);
     }
 
     private static GraphicsPath RoundedRect(Rectangle r, int radius)

@@ -73,6 +73,7 @@ internal sealed class SharedPreviewDock : Panel
 
     private readonly OutputStateMachine _stateMachine;
     private readonly Label _status;
+    private readonly RoundedActionButton _presenterButton;
     private readonly RoundedActionButton _stopOutputButton;
     private readonly RoundedActionButton _collapseButton;
     private readonly MonitorWindow[] _windows;
@@ -95,7 +96,7 @@ internal sealed class SharedPreviewDock : Panel
     private PlaybackEngine? _documentBarPreview;
     // 演讲者视图 is never part of this column: it is its own window that opens when a presentation goes on
     // air on the big screen (once per show; closing it keeps it closed until the next show, or reopen it
-    // from the status row's right-click menu) and closes when the show ends.
+    // from the status row's 演讲者视图 button or right-click menu) and closes when the show ends.
     private PresenterWindow? _presenterWindow;
     private object? _presenterShow;
     private bool _documentBarShown;
@@ -157,6 +158,10 @@ internal sealed class SharedPreviewDock : Panel
         _stopOutputButton = TextButton("■ 停止输出", "停止扩展屏上的输出（急停 F12）");
         ModernUi.StyleButton(_stopOutputButton, danger: true);
         _stopOutputButton.AccessibleName = "停止输出（急停 F12）";
+        _presenterButton = TextButton("演讲者视图", "打开演讲者视图（需有正在放映的演示文稿）");
+        _presenterButton.Font = new Font(ModernUi.UiFont, 8.5F);
+        _presenterButton.AccessibleName = "打开演讲者视图";
+        _presenterButton.Click += (_, _) => OpenPresenterView();
         _collapseButton = TextButton("收起 ›", "收起监看栏，文件区占满整个宽度");
         _collapseButton.Font = new Font(ModernUi.UiFont, 8.5F);
         _collapseButton.Click += (_, _) => CollapseRequested?.Invoke();
@@ -184,7 +189,7 @@ internal sealed class SharedPreviewDock : Panel
         statusMenu.Opening += (_, _) => presenterItem.Enabled = CurrentShow != null;
         _status.ContextMenuStrip = statusMenu;
 
-        Controls.AddRange(new Control[] { _status, _stopOutputButton, _collapseButton, _takeButton, _fadeButton, _swapButton, _deviceCard.Card });
+        Controls.AddRange(new Control[] { _status, _presenterButton, _stopOutputButton, _collapseButton, _takeButton, _fadeButton, _swapButton, _deviceCard.Card });
         foreach (var window in _windows) window.AddTo(this);
 
         _takeButton.Click += (_, _) => TakeRequested?.Invoke(TransitionStyle.Cut);
@@ -338,10 +343,15 @@ internal sealed class SharedPreviewDock : Panel
         int first = Math.Min(fullMonitor, monitorsTotal / 2), second = Math.Min(fullMonitor, monitorsTotal - first);
 
         int y = area.Top;
-        int collapseWidth = S(64), stopWidth = S(96);
+        int collapseWidth = S(64), stopWidth = S(96), presenterWidth = S(76);
         _collapseButton.Bounds = new Rectangle(area.Right - collapseWidth, y, collapseWidth, button);
         _stopOutputButton.Bounds = new Rectangle(_collapseButton.Left - S(6) - stopWidth, y, stopWidth, button);
-        _status.Bounds = new Rectangle(x, y, Math.Max(1, _stopOutputButton.Left - S(8) - x), button);
+        // The status text keeps at least 56 px; below that the presenter button gives way (the
+        // status row's right-click menu still opens the view) instead of squeezing the status
+        // down to an ellipsis.
+        _presenterButton.Visible = _stopOutputButton.Left - S(6) - presenterWidth - S(8) - x >= S(56);
+        _presenterButton.Bounds = new Rectangle(_stopOutputButton.Left - S(6) - presenterWidth, y, presenterWidth, button);
+        _status.Bounds = new Rectangle(x, y, Math.Max(1, (_presenterButton.Visible ? _presenterButton.Left : _stopOutputButton.Left) - S(8) - x), button);
         y += button + gap;
 
         y = _windows[0].Layout(x, y, w, first, S);
@@ -526,6 +536,7 @@ internal sealed class SharedPreviewDock : Panel
         };
         SetTextRole(_status, statusText, statusRole);
         _stopOutputButton.Enabled = programLive;
+        _presenterButton.Enabled = show != null;
 
         foreach (var window in _windows) window.Refresh(palette, _program, programLive, source, window.Index == _activeWindow);
 
@@ -630,7 +641,7 @@ internal sealed class SharedPreviewDock : Panel
             _playPause = dock.IconButton("", "播放 / 暂停");
             _stop = dock.IconButton("", "停止");
             _next = dock.IconButton("", "下一项 / 下一页");
-            _progress = new MediaTrack();
+            _progress = new MediaTrack { AccessibleName = "播放进度" };
             _time = ModernUi.SetForegroundRole(new Label { Text = "--:-- / --:--", Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleRight }, UiForegroundRole.Muted);
             _error = new ErrorCard();
             _error.Retry += () => Engine?.RetryCurrentFile();
@@ -769,7 +780,8 @@ internal sealed class SharedPreviewDock : Panel
             bool timeline = controllable && engine?.CanSeek == true;
             SetText(_time, timeline ? $"{Format(position)} / {(duration is { } d ? Format(d) : "--:--")}" : "--:-- / --:--", null);
             _progress.Enabled = timeline && duration.HasValue;
-            if (!_progress.IsDragging) _progress.Value = timeline && duration is { Ticks: > 0 } dd ? (float)(position.Ticks / (double)dd.Ticks) : 0f;
+            _progress.KeyStep = duration is { Ticks: > 0 } dd ? (float)(TimeSpan.FromSeconds(5).Ticks / (double)dd.Ticks) : 0.05f;
+            if (!_progress.IsDragging) _progress.Value = timeline && duration is { Ticks: > 0 } dd2 ? (float)(position.Ticks / (double)dd2.Ticks) : 0f;
 
             if (!_synced && Engine?.State == PlaybackChannelState.Failed && Engine.LastError is { } error)
             {
@@ -985,6 +997,10 @@ internal sealed class MediaTrack : Control
     public event Action<float>? ValueCommitted;
     public event Action<float>? ValueChanging;
 
+    /// <summary>One keyboard step as a fraction of the range: call sites set it to 5 s of the
+    /// current media (progress tracks); the default 5 % suits volume tracks.</summary>
+    public float KeyStep { get; set; } = 0.05f;
+
     public float Value
     {
         get => _value;
@@ -993,10 +1009,42 @@ internal sealed class MediaTrack : Control
 
     public MediaTrack()
     {
-        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor | ControlStyles.ResizeRedraw, true);
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
         BackColor = Color.Transparent;
         Cursor = Cursors.Hand;
         Height = 24;
+        TabStop = true;
+        AccessibleRole = AccessibleRole.Slider;
+    }
+
+    protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+    protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
+    protected override bool IsInputKey(Keys keyData) =>
+        keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End || base.IsInputKey(keyData);
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (!Enabled) { base.OnKeyDown(e); return; }
+        float? next = e.KeyCode switch
+        {
+            Keys.Left or Keys.Down => Value - KeyStep,
+            Keys.Right or Keys.Up => Value + KeyStep,
+            Keys.Home => 0f,
+            Keys.End => 1f,
+            _ => null,
+        };
+        if (next is { } target)
+        {
+            // A key press is a complete gesture (like a mouse click): preview then commit.
+            Value = target;
+            ValueChanging?.Invoke(Value);
+            ValueCommitted?.Invoke(Value);
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+        base.OnKeyDown(e);
     }
 
     private float FractionAt(int x) => Math.Clamp((x - 6) / (float)Math.Max(1, Width - 12), 0f, 1f);
@@ -1042,6 +1090,11 @@ internal sealed class MediaTrack : Control
         using (var fg = new SolidBrush(palette.Accent)) g.FillRectangle(fg, track.X, track.Y, filled, track.Height);
         using var knob = new SolidBrush(palette.IsHighContrast ? SystemColors.HighlightText : Color.White);
         g.FillEllipse(knob, track.X + filled - 6, cy - 6, 12, 12);
+        if (Focused && ShowFocusCues)
+        {
+            using var focus = new Pen(palette.IsHighContrast ? ForeColor : palette.Focus, 1) { DashStyle = DashStyle.Dot };
+            g.DrawRectangle(focus, Rectangle.Inflate(track, 2, 6));
+        }
     }
 }
 
@@ -1105,6 +1158,11 @@ internal sealed class Badge : Control
 /// Presenter information while the big screen runs a native slide show: elapsed show time, slide and
 /// animation position, the next slide's picture and the current slide's speaker notes. The picture and
 /// notes are fetched from the show's application when the slide changes.
+///
+/// U1-17: no product code instantiates this class — the presenter strip inside the monitor column
+/// was retired when the standalone PresenterWindow arrived, and this panel is only exercised by
+/// the Windows self-tests. It stays (with this note) as the R22 reservation for a docked presenter
+/// strip; deleting it would break the tests that construct it.
 /// </summary>
 internal sealed class PresenterStrip : Panel
 {

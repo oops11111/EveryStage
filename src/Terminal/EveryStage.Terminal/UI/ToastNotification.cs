@@ -12,8 +12,10 @@ public sealed record ToastAction(string Label, Action Callback);
 
 /// <summary>
 /// One row in <see cref="ToastStack"/> (第二十一轮: the right column, 3 s, at most 3): a severity-coloured
-/// accent bar, the message (two lines, ellipsis), an "×" and any action buttons in one compact row.
+/// accent bar, the message (one line, ellipsis), an "×" and any action buttons in one compact row.
 /// The size is given by the stack (column width × one fixed slot), never by the message length.
+/// Severity is never colour alone: Warning/Critical carry a text prefix ("注意 · "/"严重 · ");
+/// Info, the default, carries none.
 /// </summary>
 public sealed class ToastNotification : Panel
 {
@@ -53,15 +55,22 @@ public sealed class ToastNotification : Panel
             Bounds = new Rectangle(0, 0, S(3), height),
         }, severity switch { ToastSeverity.Critical => UiBackgroundRole.Danger, ToastSeverity.Info => UiBackgroundRole.Accent, _ => UiBackgroundRole.Warning });
 
-        var closeButton = ModernUi.SetForegroundRole(new Label
+        // A real button, not a label: the close control is reachable by Tab and operable
+        // with Enter/Space, and a screen reader announces it.
+        var closeButton = new Button
         {
             Text = "×",
             Font = font,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Bounds = new Rectangle(width - S(16), 0, S(16), height),
+            FlatStyle = FlatStyle.Flat,
+            Bounds = new Rectangle(width - S(20), 0, S(20), height),
             Cursor = Cursors.Hand,
             AccessibleName = "关闭通知",
-        }, UiForegroundRole.Muted);
+        };
+        closeButton.FlatAppearance.BorderSize = 0;
+        closeButton.BackColor = Color.Transparent;
+        closeButton.FlatAppearance.MouseOverBackColor = Color.Transparent;
+        closeButton.FlatAppearance.MouseDownBackColor = Color.Transparent;
+        ModernUi.SetForegroundRole(closeButton, UiForegroundRole.Muted);
         closeButton.Click += (_, _) => Dismiss();
         Controls.Add(closeButton);
 
@@ -95,7 +104,8 @@ public sealed class ToastNotification : Panel
         }
         _messageLabel = ModernUi.SetForegroundRole(new Label
         {
-            Text = message.Replace("\r", " ").Replace("\n", " · "),
+            Text = (severity switch { ToastSeverity.Critical => "严重 · ", ToastSeverity.Warning => "注意 · ", _ => "" })
+                + message.Replace("\r", " ").Replace("\n", " · "),
             AutoEllipsis = true,
             Font = font,
             TextAlign = ContentAlignment.MiddleLeft,

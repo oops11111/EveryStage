@@ -65,7 +65,7 @@ public sealed partial class MainForm
     {
         _pairingCts?.Dispose();
         var cts = _pairingCts = new CancellationTokenSource();
-        _pairingView.Begin(terminal.DeviceName);
+        _pairingView.Begin(terminal.DeviceName, TerminalDiscoveryClient.PairingRequestTimeout);
         ShowView(_pairingView);
         DiscoveryProtocol.PairResponseMessage? response;
         try

@@ -20,6 +20,7 @@ internal sealed class SlideThumbnailStrip : Control
     private int _version;
     private bool _loading;
     private int _hover = -1;
+    private int _keyboardSlide;
     private Point _downAt;
     private float _downOffset;
     private bool _pressed, _dragging;
@@ -34,9 +35,10 @@ internal sealed class SlideThumbnailStrip : Control
             | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
         Font = new Font(ModernUi.UiFont, 9F);
         Cursor = Cursors.Hand;
-        TabStop = false;
+        TabStop = true;
         AccessibleRole = AccessibleRole.List;
         AccessibleName = "页面缩略图";
+        AccessibleDescription = "方向键选择页面，回车跳到该页";
     }
 
     private int S(int value) => LogicalToDeviceUnits(value);
@@ -57,6 +59,7 @@ internal sealed class SlideThumbnailStrip : Control
         _count = Math.Max(0, count);
         _loader = loader;
         _current = 0;
+        _keyboardSlide = 0;
         _offset = 0;
         _hover = -1;
         Invalidate();
@@ -103,6 +106,53 @@ internal sealed class SlideThumbnailStrip : Control
         _offset = next;
         Invalidate();
         _ = LoadVisibleAsync();
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        _keyboardSlide = _current >= 1 ? _current : 1;
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
+        Invalidate();
+    }
+
+    protected override bool IsInputKey(Keys keyData) =>
+        keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Space or Keys.Enter
+            || base.IsInputKey(keyData);
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        if (_count == 0) { base.OnKeyDown(e); return; }
+        int? next = e.KeyCode switch
+        {
+            Keys.Left or Keys.Up => Math.Max(1, _keyboardSlide - 1),
+            Keys.Right or Keys.Down => Math.Min(_count, _keyboardSlide + 1),
+            Keys.Home => 1,
+            Keys.End => _count,
+            _ => null,
+        };
+        if (next is { } slide)
+        {
+            _keyboardSlide = slide;
+            ScrollIntoView(slide);
+            Invalidate();
+            _ = LoadVisibleAsync();
+            e.Handled = true;
+            return;
+        }
+        if (e.KeyCode is Keys.Space or Keys.Enter && _keyboardSlide >= 1 && _keyboardSlide <= _count)
+        {
+            SlideChosen?.Invoke(_keyboardSlide);
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+        base.OnKeyDown(e);
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
@@ -243,6 +293,13 @@ internal sealed class SlideThumbnailStrip : Control
             var label = new Rectangle(rect.X, rect.Bottom + S(2), rect.Width, S(18));
             TextRenderer.DrawText(g, current ? $"● {slide}  正在放映" : slide.ToString(), Font, label, current ? _accent : _muted,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.NoPrefix);
+        }
+        // The keyboard-selected thumb (distinct from the one on air): a dotted accent frame.
+        if (Focused && ShowFocusCues && _keyboardSlide >= 1 && _keyboardSlide <= _count)
+        {
+            var focusRect = new Rectangle((int)(Inset + (_keyboardSlide - 1) * Item - _offset), Inset, ThumbWidth, ThumbHeight);
+            using var focus = new Pen(_accent, S(2)) { DashStyle = DashStyle.Dot };
+            g.DrawRectangle(focus, focusRect);
         }
         // Edge fades: there is more to slide to on that side.
         int fade = S(28);

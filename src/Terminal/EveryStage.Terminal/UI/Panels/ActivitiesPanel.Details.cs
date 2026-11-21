@@ -153,6 +153,7 @@ public sealed partial class ActivitiesPanel
             using var pen = new Pen(ModernUi.Border);
             e.Graphics.DrawLine(pen, 0, 0, 0, _detailCard.Height - 1);
         };
+        _detailCard.Resize += (_, _) => LayoutDetailGroups();
 
         _detailTitle.Dock = DockStyle.Top;
         _detailTitle.Height = 24;
@@ -417,6 +418,7 @@ public sealed partial class ActivitiesPanel
     /// (which has no strip to hide behind) is resized to the card here too.</summary>
     private void UpdateDetailCardHeight()
     {
+        LayoutDetailGroups(); // widths + wrapped note heights first: the measurement below reads them
         int cap = Math.Max(LogicalToDeviceUnits(200), ClientSize.Height * 70 / 100);
         int chrome = _detailTitle.Height
             + (_detailKindLabel.Visible ? _detailKindLabel.Height : 0)
@@ -425,6 +427,35 @@ public sealed partial class ActivitiesPanel
         int bodyHeight = Math.Min(MeasureDetailBodyContentHeight(), Math.Max(0, cap - chrome));
         _detailCard.Height = chrome + bodyHeight;
         if (_detailPanelForced) _detailPanel.Height = _detailCard.Height;
+    }
+
+    /// <summary>U1-11: the groups and the note labels follow the card's width instead of the
+    /// fixed 256 px they were built with — at high DPI the panel is wider than 256 and the
+    /// notes wrapped at the wrong width (or clipped). The notes wrap to their measured
+    /// height (AutoSize + MaximumSize), so the group's AutoSize height follows the text.
+    /// Called from <see cref="UpdateDetailCardHeight"/> (before it measures) and from the
+    /// card's Resize; a no-op when the card has no width yet (BuildDetailPanel time).</summary>
+    private void LayoutDetailGroups()
+    {
+        int contentWidth = _detailCard.ClientSize.Width - _detailCard.Padding.Horizontal;
+        if (contentWidth <= 0) return;
+        foreach (var group in new[]
+        {
+            _detailActivityPlayModeGroup, _detailFilePlayModeGroup, _detailCompletionGroup,
+            _detailManualSkipGroup, _detailStayGroup, _detailFadeGroup, _detailAudioGroup,
+            _detailDocumentGroup,
+        })
+            group.Width = contentWidth;
+        LayoutDetailNote(_detailStayNote, contentWidth);
+        LayoutDetailNote(_detailFadeNote, contentWidth);
+        LayoutDetailNote(_detailBgAudioCaveat, contentWidth);
+        LayoutDetailNote(_detailPlaceholder, contentWidth);
+    }
+
+    private static void LayoutDetailNote(Label note, int width)
+    {
+        note.MaximumSize = new Size(width, 0);
+        note.AutoSize = true;
     }
 
     /// <summary>FL-02: the body's content height — the bottom edge of its lowest visible

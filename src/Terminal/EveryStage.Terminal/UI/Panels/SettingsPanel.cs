@@ -830,6 +830,7 @@ public sealed class SettingsPanel : UserControl
         private readonly Label _title;
         private readonly Label _description;
         private readonly Control[] _controls;
+        private readonly int[] _naturalWidths;
 
         public SettingRow(string title, string description, string? effect, UiForegroundRole effectRole, Control[] controls)
         {
@@ -841,6 +842,7 @@ public sealed class SettingsPanel : UserControl
             if (effect != null)
                 Controls.Add(ModernUi.SetForegroundRole(new Label { Text = "● " + effect, AutoSize = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8F), Tag = "effect" }, effectRole));
             _controls = controls;
+            _naturalWidths = controls.Select(c => c.Width).ToArray();
             Controls.AddRange(controls);
             Height = 64;
         }
@@ -849,16 +851,43 @@ public sealed class SettingsPanel : UserControl
 
         public void FitToWidth(int width)
         {
-            int gap = S(8), right = width;
+            int gap = S(8);
+            // Restore the natural widths first: a previous stacked pass may have shrunk a
+            // combo, and the decision below must measure the unshrunk row.
+            for (int i = 0; i < _controls.Length; i++)
+                if (_controls[i].Width != _naturalWidths[i]) _controls[i].Width = _naturalWidths[i];
             int controlsWidth = _controls.Sum(c => c.Width + gap);
-            int textWidth = Math.Max(S(160), width - controlsWidth - S(24));
+            // U1-10: when the controls don't leave room for the minimum description text, the
+            // row stacks — description full-width on top, controls on their own line under it
+            // (combos shrink to fit) — instead of the controls covering the description. The
+            // 420 px floor and the page's horizontal-scroll fallback are untouched.
+            bool stacked = controlsWidth + S(24) + S(160) > width;
+            int textWidth = stacked ? width : Math.Max(S(160), width - controlsWidth - S(24));
             _title.Location = new Point(0, S(12));
             if (Controls.Cast<Control>().FirstOrDefault(c => Equals(c.Tag, "effect")) is { } tag)
                 tag.Location = new Point(_title.Right + S(8), S(14));
             int descriptionHeight = TextRenderer.MeasureText(_description.Text, _description.Font, new Size(textWidth, 0), TextFormatFlags.WordBreak).Height;
             _description.Bounds = new Rectangle(0, _title.Bottom + S(2), textWidth, descriptionHeight);
+            if (stacked)
+            {
+                int y = _description.Bottom + S(8);
+                int fixedWidth = 0;
+                foreach (var control in _controls) if (control is not ComboBox) fixedWidth += control.Width + gap;
+                int combos = _controls.Count(c => c is ComboBox);
+                int comboWidth = combos > 0 ? Math.Max(S(80), (width - fixedWidth) / combos) : 0;
+                int x = 0, rowHeight = 0;
+                foreach (var control in _controls)
+                {
+                    if (control is ComboBox) control.Width = comboWidth;
+                    control.Location = new Point(x, y);
+                    x += control.Width + gap;
+                    rowHeight = Math.Max(rowHeight, control.Height);
+                }
+                Height = y + rowHeight + S(12);
+                return;
+            }
             Height = Math.Max(S(64), _description.Bottom + S(12));
-            int cy = Height / 2;
+            int right = width, cy = Height / 2;
             for (int i = _controls.Length - 1; i >= 0; i--)
             {
                 var control = _controls[i];
@@ -1079,14 +1108,47 @@ public sealed class SettingsPanel : UserControl
             _select = select;
             Cursor = Cursors.Hand;
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
-                ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor, true);
+                ControlStyles.OptimizedDoubleBuffer | ControlStyles.SupportsTransparentBackColor |
+                ControlStyles.Selectable, true);
             BackColor = Color.Transparent;
+            TabStop = true;
+            AccessibleName = title;
+            AccessibleRole = AccessibleRole.RadioButton;
         }
 
         protected override void OnClick(EventArgs e)
         {
             base.OnClick(e);
             _select(_index);
+        }
+
+        protected override void OnGotFocus(EventArgs e) { base.OnGotFocus(e); Invalidate(); }
+        protected override void OnLostFocus(EventArgs e) { base.OnLostFocus(e); Invalidate(); }
+
+        protected override bool IsInputKey(Keys keyData) =>
+            keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Space or Keys.Enter || base.IsInputKey(keyData);
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode is Keys.Space or Keys.Enter)
+            {
+                _select(_index);
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+                return;
+            }
+            if (e.KeyCode is Keys.Left or Keys.Right or Keys.Up or Keys.Down)
+            {
+                var siblings = Parent?.Controls.OfType<ThemePreviewCard>().ToList();
+                if (siblings != null)
+                {
+                    int i = siblings.IndexOf(this) + (e.KeyCode is Keys.Right or Keys.Down ? 1 : -1);
+                    if (i >= 0 && i < siblings.Count) siblings[i].Focus();
+                }
+                e.Handled = true;
+                return;
+            }
+            base.OnKeyDown(e);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -1130,6 +1192,13 @@ public sealed class SettingsPanel : UserControl
 
             TextRenderer.DrawText(g, _title, Font, new Rectangle(S(10), preview.Bottom + S(6), Width - S(20), titleHeight),
                 ModernUi.Text, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            AccessibleName = selected ? _title + "，已选中" : _title;
+            if (Focused && ShowFocusCues)
+            {
+                var palette = ModernUi.PaletteFor(this);
+                using var focus = new Pen(palette.IsHighContrast ? ForeColor : palette.Focus, 2) { DashStyle = DashStyle.Dot };
+                g.DrawRectangle(focus, Rectangle.Inflate(ClientRectangle, -S(4), -S(4)));
+            }
         }
 
         private static void DrawThemePreview(Graphics g, Rectangle preview, UiPalette theme)

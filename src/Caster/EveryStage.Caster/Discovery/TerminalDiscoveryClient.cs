@@ -112,6 +112,10 @@ public sealed class TerminalDiscoveryClient : IDisposable
     // in sync by hand with DiscoveryService.PendingRequestTimeout if either one ever changes.
     private static readonly TimeSpan DefaultPairingRequestTimeout = TimeSpan.FromMinutes(2) + TimeSpan.FromSeconds(15);
 
+    /// <summary>How long a pairing request is given (see <see cref="DefaultPairingRequestTimeout"/>):
+    /// the pairing page counts down from it.</summary>
+    internal static TimeSpan PairingRequestTimeout => DefaultPairingRequestTimeout;
+
     /// <summary>Sends a pairing request and awaits the Terminal's response. Returns null on timeout
     /// (no distinction from "declined" at the caller level today — see this project's README on why).
     /// The default timeout deliberately matches (with margin) how long the Terminal itself is

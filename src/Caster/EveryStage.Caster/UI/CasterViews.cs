@@ -67,6 +67,7 @@ internal sealed class StandbyView : CasterView
     private readonly ThemedLabel _hint = NewLabel("", TextRole.Muted, 9.5F);
     private readonly ThemedLabel _privacy = NewLabel("投送的是整块屏幕。画面经设备认证但不加密，请只在受信任的局域网中使用。", TextRole.Muted, 9F, align: ContentAlignment.MiddleLeft);
     private readonly ActionButton _start = NewButton("开始投屏", ButtonKind.Primary, ButtonGlyph.Cast, 11F);
+    private readonly Panel _scroll = new() { AutoScroll = true };
     private bool _busy;
     private bool _canStart;
 
@@ -77,7 +78,10 @@ internal sealed class StandbyView : CasterView
     public StandbyView()
     {
         _monitorCard.Controls.AddRange(new Control[] { _monitorTitle, _tiles, _audio });
-        Controls.AddRange(new Control[] { _name, _status, _removePairing, _monitorCard, _hint, _privacy, _start });
+        // The monitor card and the hint scroll (DiagnosticsView's _scroll pattern); the name,
+        // status and start row stay fixed so the button can never be covered by the content.
+        _scroll.Controls.AddRange(new Control[] { _monitorCard, _hint });
+        Controls.AddRange(new Control[] { _name, _status, _removePairing, _scroll, _privacy, _start });
         _start.Click += (_, _) => StartClicked?.Invoke();
         _removePairing.Click += (_, _) => RemovePairingClicked?.Invoke();
         _audio.CheckedChanged += (_, _) => AudioChanged?.Invoke(_audio.Checked);
@@ -137,6 +141,7 @@ internal sealed class StandbyView : CasterView
 
     public override void OnThemeChanged()
     {
+        _scroll.BackColor = ModernUi.Palette.Background;
         _tiles.BackColor = ModernUi.Palette.Surface;
         _audio.BackColor = ModernUi.Palette.Surface;
         _audio.ForeColor = ModernUi.Palette.Text;
@@ -152,7 +157,12 @@ internal sealed class StandbyView : CasterView
         _status.Bounds = new Rectangle(pad, y, w, S(22));
         y += S(34);
 
-        int inner = w - S(32), tileW = S(210), tileH = S(48), gap = S(8);
+        int buttonW = S(156), buttonH = S(46), bottom = ClientSize.Height - S(24) - buttonH;
+        _scroll.Bounds = new Rectangle(0, y, ClientSize.Width, Math.Max(S(40), bottom - y));
+        int sw = _scroll.ClientSize.Width - pad * 2;
+        var offset = _scroll.AutoScrollPosition;
+
+        int inner = sw - S(32), tileW = S(210), tileH = S(48), gap = S(8);
         int perRow = Math.Max(1, (inner + gap) / (tileW + gap));
         int rows = Math.Max(1, (_tiles.Controls.Count + perRow - 1) / perRow);
         foreach (Control tile in _tiles.Controls)
@@ -165,11 +175,10 @@ internal sealed class StandbyView : CasterView
         _tiles.Bounds = new Rectangle(S(16), S(42), inner, tilesH);
         _audio.Bounds = new Rectangle(S(16), S(42) + tilesH, inner, S(28));
         int cardH = S(42) + tilesH + S(28) + S(12);
-        _monitorCard.Bounds = new Rectangle(pad, y, w, cardH);
-        y += cardH + S(12);
-        _hint.Bounds = new Rectangle(pad, y, w, S(44));
+        _monitorCard.Bounds = new Rectangle(pad + offset.X, offset.Y, sw, cardH);
+        _hint.Bounds = new Rectangle(pad + offset.X, offset.Y + cardH + S(12), sw, S(44));
+        _scroll.AutoScrollMinSize = new Size(0, cardH + S(12) + S(44));
 
-        int buttonW = S(156), buttonH = S(46), bottom = ClientSize.Height - S(24) - buttonH;
         _start.Bounds = new Rectangle(ClientSize.Width - pad - buttonW, bottom, buttonW, buttonH);
         _privacy.Bounds = new Rectangle(pad, bottom, Math.Max(S(40), w - buttonW - S(16)), buttonH);
     }
@@ -185,6 +194,9 @@ internal sealed class PairingView : CasterView
         TextRole.Text, 10.5F, align: ContentAlignment.TopCenter);
     private readonly ThemedLabel _waiting = NewLabel("正在向终端机发送配对请求…", TextRole.Warning, 10F, align: ContentAlignment.MiddleCenter);
     private readonly ActionButton _cancel = NewButton("取消", ButtonKind.Secondary);
+    private readonly System.Windows.Forms.Timer _countdown = new() { Interval = 1000 };
+    private TimeSpan _remaining;
+    private string _waitingBase = "";
 
     public event Action? CancelClicked;
 
@@ -192,19 +204,56 @@ internal sealed class PairingView : CasterView
     {
         Controls.AddRange(new Control[] { _title, _code, _instructions, _waiting, _cancel });
         _cancel.Click += (_, _) => CancelClicked?.Invoke();
+        _countdown.Tick += (_, _) => TickCountdown();
+        Disposed += (_, _) => _countdown.Dispose();
     }
 
-    public void Begin(string terminalName)
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        // The countdown only runs while the page is showing; hiding the view (cancel, success,
+        // problem page) stops it, and showing it again restarts from the current remainder.
+        if (!Visible) _countdown.Stop();
+        else if (_remaining > TimeSpan.Zero) _countdown.Start();
+    }
+
+    public void Begin(string terminalName, TimeSpan timeout)
     {
         _title.Text = $"首次投到「{terminalName}」，需要在终端机上确认";
         _code.Text = "--- ---";
-        _waiting.Text = "正在向终端机发送配对请求…";
+        _remaining = timeout;
+        _waitingBase = "正在向终端机发送配对请求…";
+        UpdateWaitingText();
+        _countdown.Start();
     }
 
     public void SetCode(string code)
     {
         _code.Text = code.Length == 6 ? code.Insert(3, " ") : code;
-        _waiting.Text = "等待终端机确认";
+        _waitingBase = "等待终端机确认";
+        UpdateWaitingText();
+    }
+
+    private void TickCountdown()
+    {
+        _remaining -= TimeSpan.FromSeconds(1);
+        if (_remaining <= TimeSpan.Zero)
+        {
+            // The request call's own timeout ends the attempt (problem page); the countdown
+            // just stops counting rather than closing anything itself.
+            _remaining = TimeSpan.Zero;
+            _countdown.Stop();
+            _waiting.Text = _waitingBase;
+            return;
+        }
+        UpdateWaitingText();
+    }
+
+    private void UpdateWaitingText()
+    {
+        _waiting.Text = _remaining > TimeSpan.Zero
+            ? $"{_waitingBase} · 还剩 {(int)_remaining.TotalMinutes}:{_remaining.Seconds:D2}"
+            : _waitingBase;
     }
 
     protected override void OnLayout(LayoutEventArgs e)

@@ -78,6 +78,20 @@ public sealed class DiscoveryService : IDeviceCastTransport, IDisposable
     public (IPAddress Address, DateTimeOffset At)? LastSighting(Guid deviceId) =>
         _sightings.TryGetValue(deviceId, out var sighting) ? sighting : null;
 
+    /// <summary>The moment the pending request <paramref name="requestId"/> stops being
+    /// answerable — its <see cref="PendingRequest.ReceivedAt"/> plus
+    /// <see cref="PendingRequestTimeout"/> — or null once it has already been pruned. The
+    /// pairing confirmation dialog counts down to it and closes itself at expiry.</summary>
+    internal DateTimeOffset? PairingDeadline(string requestId)
+    {
+        lock (_pendingGate)
+        {
+            return _pendingRequests.TryGetValue(requestId, out var pending)
+                ? pending.ReceivedAt + PendingRequestTimeout
+                : null;
+        }
+    }
+
     /// <summary>The paired device whose cast is live right now, if any.</summary>
     public Guid? ActiveCasterDeviceId => _activeCasterDeviceId;
     private string? _activeCasterKey;

@@ -362,7 +362,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _tray.MainWindowRequested += ActivateMainWindow;
 
         if (_settingsStore.ReadOnlyNewerSchema)
-            _mainWindow.ShowStartupProblem("设置文件来自更新版本的 EveryStage：本版本以默认设置只读运行，不会覆盖它（已另存 settings.json.newer）。请安装新版本后再修改设置。");
+            _mainWindow.ShowStartupProblem("设置来自更新版本：本版本只读运行，不覆盖原设置（已另存 settings.json.newer）。请安装新版本后再修改设置。");
 
         // Files in %ProgramData%\EveryStage owned by another account (or by an elevated first run) make
         // every later save fail with "access denied". Say so now, not at the operator's first import.
@@ -370,7 +370,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         {
             _crashLogger.LogUnhandledException("TerminalApplicationContext.DataDirectoryPermission",
                 new UnauthorizedAccessException($"Cannot write {unwritable}"));
-            _mainWindow.ShowStartupProblem("无法修改数据文件，导入、方案和设置都将无法保存。\n" + EveryStage.Terminal.Data.DataDirectory.PermissionHint);
+            _mainWindow.ShowStartupProblem("数据文件无法修改：导入、方案和设置都将无法保存。\n" + EveryStage.Terminal.Data.DataDirectory.PermissionHint);
             _tray.ShowNotification("EveryStage 数据目录无法写入", "导入和保存会失败。请重新运行 EveryStage 安装程序修复权限。");
         }
 
@@ -478,22 +478,22 @@ internal sealed class TerminalApplicationContext : ApplicationContext
                 while (_pairingQueue.TryDequeue(out var next))
                 {
                     _mainWindow.ShowPairingRequest(next);
-                    using var dialog = new PairingConfirmationDialog(next);
+                    using var dialog = new PairingConfirmationDialog(next, _discovery.PairingDeadline(next.RequestId));
                     if (_overlay != null) OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, _overlay.Monitor);
                     else OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, null);
                     // A hidden or minimized owner would hide the request with it: show it unowned then.
                     if (_mainWindow.Visible && _mainWindow.WindowState != FormWindowState.Minimized) dialog.ShowDialog(_mainWindow);
                     else dialog.ShowDialog();
                     bool answered = _discovery.RespondToPairing(next.RequestId, dialog.Accepted, dialog.TrustMode, dialog.AllowCast, dialog.AllowMonitor);
-                    // The Terminal drops a request after DiscoveryService.PendingRequestTimeout while
-                    // this dialog has no timeout of its own; an accept after that used to do nothing silently.
+                    // The dialog counts down to the request's expiry and closes itself there; an
+                    // accept after that (or an expiry with no answer) used to do nothing silently.
                     if (answered && dialog.Accepted && _discovery.LastPairingSaveError is { } saveError)
                         MessageBox.Show(_mainWindow,
                             $"配对没有完成：终端机无法保存配对记录。\n\n{saveError}\n\n" +
                             "通常是 %ProgramData%\\EveryStage\\secure 里的文件属于另一个账户或权限被改过。" +
                             "请用管理员身份删除这个 secure 文件夹，重启终端机后在投屏器上重新配对。",
                             "配对没有完成", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    if (!answered && dialog.Accepted)
+                    if (!answered && (dialog.Accepted || dialog.Expired))
                         MessageBox.Show(_mainWindow, $"来自 \"{next.DeviceName}\" 的配对请求已超时，未完成配对。请在投屏机上重新发起配对。",
                             "配对已超时", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     _mainWindow.ClearPairingRequest(next.RequestId);
@@ -645,7 +645,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             _crashLogger.LogUnhandledException("VideoSurface.DeviceRemoved", new InvalidOperationException($"GPU device removed: {reason}"));
             if (_stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.DeviceCast) _stateMachine.Disconnect();
             _playback?.Stop();
-            _mainWindow.ShowStartupProblem($"显卡设备已丢失（{reason}），大屏已切为黑场。请检查显卡驱动或连接后重新启动 EveryStage。");
+            _mainWindow.ShowStartupProblem($"显卡设备已丢失（{reason}），大屏已切黑场。请检查显卡驱动或连接后重启。");
         }, null);
     }
 
@@ -657,7 +657,7 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         if (_httpControl == null) return;
         if (!settings.HttpControlEnabled) { _httpControl.Stop(); return; }
         if (!_httpControl.Running && !_httpControl.Start() && _httpControl.LastError is { } error)
-            _mainWindow.ShowStartupProblem("HTTP 外控未能启动：" + error);
+            _mainWindow.ShowStartupProblem("HTTP 外控启动失败：" + error);
     }
 
     /// <summary>GET /status for HTTP 外控 (runs on the UI thread).</summary>

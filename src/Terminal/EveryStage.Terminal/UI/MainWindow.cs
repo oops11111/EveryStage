@@ -68,7 +68,6 @@ public sealed class MainWindow : GradientForm
     private bool _firstRunGuideShown;
     /// <summary>自检里打开的主窗口不能弹模态引导框（没人点，测试会卡住）。</summary>
     internal bool FirstRunGuideEnabled { get; init; } = true;
-    private readonly System.Windows.Forms.Timer _declinedMessageTimer;
     private readonly FilesPanel _filesPanel;
     private readonly DevicesPanel _devicesPanel;
     private readonly ActivitiesPanel _activitiesPanel;
@@ -79,8 +78,13 @@ public sealed class MainWindow : GradientForm
     /// a switch (or the saved theme at startup) from this palette.</summary>
     private readonly Dictionary<Control, UiPalette> _panelPalettes = new();
 
-    /// <summary>A problem found at startup that the operator must fix (stays until dismissed).</summary>
-    internal void ShowStartupProblem(string message) => _toastStack.Show(message, ToastSeverity.Critical);
+    /// <summary>A problem found at startup that the operator must fix. The toast carries a
+    /// dismiss action, so it lives 10 s (see <see cref="ToastStack"/>) instead of vanishing
+    /// after 3 s, and the operator can close it at once. No "open settings" action: none of
+    /// the four call sites has an in-app destination (the settings one wants a newer version
+    /// installed).</summary>
+    internal void ShowStartupProblem(string message) =>
+        _toastStack.Show(message, ToastSeverity.Critical, new ToastAction("知道了", () => { }));
 
     public void ShowPairingRequest(PairingRequest request) => _devicesPanel.ShowPairingRequest(request);
 
@@ -302,7 +306,8 @@ public sealed class MainWindow : GradientForm
         hotkeysButton.Click += (_, _) => { using var dialog = new HotkeyListDialog(_settingsStore.Current); dialog.ShowDialog(this); };
 
         var titleBar = new AppTitleBar(this, "终端机");
-        // 大屏 status and 「停止输出」 live at the top of the 监看 column (not in the title bar).
+        titleBar.AddStatus(_statusLabel); // U1-01: the output status sits in the title bar
+        // 「停止输出」 lives at the top of the 监看 column (see SharedPreviewDock).
         _emergencyStop = new RoundedActionButton
         {
             Text = "■ 停止输出", AccessibleName = "停止输出（急停 F12）", Width = 140,
@@ -336,18 +341,8 @@ public sealed class MainWindow : GradientForm
         if (_playback != null) _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
 
         // See PlaybackEngine.PlaybackDeclinedByCastSwitch's own doc comment (README risk #9): a
-        // "点文件" click while the cast switch is off used to be a completely silent no-op — this
-        // briefly overwrites _statusLabel (visible on every page, since it lives in the title bar)
-        // with an acknowledgment, then reverts to the
-        // normal state text after a few seconds. One-shot timer per declined click rather than a
-        // running one: Interval is reset and the timer restarted on every new decline, so several
-        // rapid declined clicks just keep extending the same message instead of racing each other.
-        _declinedMessageTimer = new System.Windows.Forms.Timer { Interval = 3000 };
-        _declinedMessageTimer.Tick += (_, _) =>
-        {
-            _declinedMessageTimer.Stop();
-            UpdateStatusLabel();
-        };
+        // "点文件" click while the cast switch is off used to be a completely silent no-op —
+        // OnPlaybackDeclinedByCastSwitch below answers it with a toast instead.
         if (_playback != null) _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
         if (_playback != null) _playback.FileStarted += OnProgramFileStarted;
         if (_playback != null) _playback.StateChanged += OnProgramPlaybackStateChanged;
@@ -946,7 +941,6 @@ public sealed class MainWindow : GradientForm
                 _playback.FileStarted -= OnProgramFileStarted;
                 _playback.StateChanged -= OnProgramPlaybackStateChanged;
             }
-            _declinedMessageTimer.Dispose();
             // Preview engine first (it joins its playback threads), then the surface it presents through.
             _preview.Dispose();
             _previewVideoSurface?.Dispose();
