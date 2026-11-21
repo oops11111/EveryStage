@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Drawing.Drawing2D;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Logging;
@@ -77,15 +78,19 @@ public sealed partial class FilesPanel : UserControl
     private readonly MediaGrid _grid;
     // Managed keyed images are reliable for owner-drawn Tile items even when the native
     // LargeImageList is intentionally not assigned.
-    private readonly Dictionary<string, Image> _thumbnailByFileId = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string?> _visibleThumbnailKeys = new(StringComparer.OrdinalIgnoreCase);
+    // Thumbnail state is touched from both the UI thread (viewport pruning, painting, dispose) and
+    // pool-thread continuations of the thumbnail passes (LoadThumbnailsAsync awaits Task.Run / the
+    // shared disk-cache scheduler). Plain Dictionary enumeration then throws "Collection was
+    // modified" — concurrent collections make every access safe without locking the paint path.
+    private readonly ConcurrentDictionary<string, Image> _thumbnailByFileId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string?> _visibleThumbnailKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Windows.Forms.Timer _visibleFileCheckTimer = new() { Interval = 3000 };
     private bool _visibleFileCheckRunning;
     private CancellationTokenSource? _thumbnailLoad;
     private CancellationToken _thumbnailPassToken; // token of the thumbnail pass already running (or done)
     private bool _thumbnailPassRunning;
-    private readonly Dictionary<string, Image> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Queue<string> _thumbnailCacheOrder = new();
+    private readonly ConcurrentDictionary<string, Image> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentQueue<string> _thumbnailCacheOrder = new();
     private const int ThumbnailCacheCapacity = 128;
     private ToolStripMenuItem _removeMenuItem = null!;
     private ToolStripMenuItem _addToActivityMenuItem = null!;

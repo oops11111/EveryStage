@@ -13,9 +13,10 @@ public sealed partial class FilesPanel
         var visibleIds = _grid.VisibleItems().Select(item => item.File.Id.ToString()).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (string key in _thumbnailByFileId.Keys.Where(key => !visibleIds.Contains(key)).ToArray())
         {
-            _thumbnailByFileId[key].Dispose();
-            _thumbnailByFileId.Remove(key);
-            _visibleThumbnailKeys.Remove(key);
+            // Remove-then-dispose: a thumbnail pass on a pool thread may add the same key back right
+            // after; disposing a removed image nobody can fetch anymore is the safe order.
+            if (_thumbnailByFileId.TryRemove(key, out var removed)) removed.Dispose();
+            _visibleThumbnailKeys.TryRemove(key, out _);
         }
         if (IsHandleCreated) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
     }
@@ -41,8 +42,8 @@ public sealed partial class FilesPanel
                 string id = entry.Item.File.Id.ToString();
                 if (!visible.Contains(entry.Item) || !_visibleThumbnailKeys.TryGetValue(id, out var current)
                     || current != entry.PreviousKey || current == entry.CurrentKey) continue;
-                if (_thumbnailByFileId.Remove(id, out var old)) old.Dispose();
-                _visibleThumbnailKeys.Remove(id);
+                if (_thumbnailByFileId.TryRemove(id, out var old)) old.Dispose();
+                _visibleThumbnailKeys.TryRemove(id, out _);
                 changed = true;
             }
             if (changed)
@@ -99,11 +100,12 @@ public sealed partial class FilesPanel
                         {
                             while (_thumbnailCache.Count >= ThumbnailCacheCapacity && _thumbnailCacheOrder.TryDequeue(out var oldest))
                             {
-                                _thumbnailCache.Remove(oldest, out var evicted);
+                                _thumbnailCache.TryRemove(oldest, out var evicted);
                                 evicted?.Dispose();
                             }
-                            _thumbnailCache.Add(cacheKey, (Image)thumbnail.Clone());
-                            _thumbnailCacheOrder.Enqueue(cacheKey);
+                            var cached = (Image)thumbnail.Clone();
+                            if (_thumbnailCache.TryAdd(cacheKey, cached)) _thumbnailCacheOrder.Enqueue(cacheKey);
+                            else cached.Dispose();
                         }
                         string key = file.Id.ToString();
                         var visibleItem = _grid.VisibleItems().FirstOrDefault(item => item.File.Id == file.Id);
@@ -112,8 +114,9 @@ public sealed partial class FilesPanel
                             visibleItem.Unavailable = cacheKey == null;
                             visibleItem.Meta = meta;
                             visibleItem.ToolTip = toolTip;
-                            _thumbnailByFileId.Add(key, (Image)thumbnail.Clone());
-                            _visibleThumbnailKeys[key] = cacheKey;
+                            var image = (Image)thumbnail.Clone();
+                            if (_thumbnailByFileId.TryAdd(key, image)) _visibleThumbnailKeys[key] = cacheKey;
+                            else image.Dispose();
                         }
                         _grid.Invalidate();
                     }

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -91,7 +92,7 @@ internal static class DocumentTests
         form.Show();
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var grid = (MediaGrid)typeof(FilesPanel).GetField("_grid", flags)!.GetValue(panel)!;
-        var loaded = (Dictionary<string, Image>)typeof(FilesPanel).GetField("_thumbnailByFileId", flags)!.GetValue(panel)!;
+        var loaded = (ConcurrentDictionary<string, Image>)typeof(FilesPanel).GetField("_thumbnailByFileId", flags)!.GetValue(panel)!;
         Require(WaitFor(() => grid.VisibleItems().Count > 0 && grid.VisibleItems().All(item => loaded.ContainsKey(item.File.Id.ToString())), 5000),
             "Visible thumbnails did not load.");
         var missingItem = grid.Items[0];
