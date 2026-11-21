@@ -105,12 +105,23 @@ public sealed partial class MainForm
             : session.HasAudio ? (session.AudioError != null ? "出错" : "正常")
             : "不可用";
 
+        // The warning line mirrors the details text's drop lines: shown only while a drop
+        // counter is non-zero, one line, same wording.
+        var warningParts = new List<string>();
+        if (networkDrops > 0 || session.AudioChunksDroppedForBackpressure > 0)
+            warningParts.Add($"网络发送跟不上丢弃：视频 {networkDrops} 个，声音 {session.AudioChunksDroppedForBackpressure} 个");
+        if (encoderDrops > 0)
+            warningParts.Add($"编码跟不上采集丢弃 {encoderDrops} 帧");
+
         _castBar.UpdateState(new CastBarState(
             elapsedText, health, healthText,
             string.IsNullOrEmpty(_castMonitorLabel) ? $"{session.Width}×{session.Height}" : _castMonitorLabel,
             latency, sound,
             session.EncoderTuningSummary.Contains("encoder=software", StringComparison.Ordinal),
-            BuildTechnicalDetails()));
+            BuildTechnicalDetails(),
+            $"{session.SelectedBitrateBps / 1_000_000} Mbps",
+            session.IsTerminalAlive ? $"已解码 {session.TerminalFramesDecoded} 帧" : "等待终端回报",
+            string.Join("；", warningParts)));
     }
 
     /// <summary>The full technical picture of the running cast, for the bar's details and the

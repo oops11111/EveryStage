@@ -73,7 +73,8 @@ public sealed partial class MainForm
             {
                 bar.Show();
                 bar.UpdateState(new CastBarState("12:34", CastHealth.Good, "流畅", "主屏 2560×1440", "约 80 ms", "正常", SoftwareEncoding: true,
-                    "分辨率 2560×1440 · 码率档位 12 Mbps\n已采集 22140 帧 · 已发送 22140 个访问单元 / 1180 MB\n编码器：encoder=software cbr=ok bitrate=ok lowlatency=ok gop=ok bframes=ok"));
+                    "分辨率 2560×1440 · 码率档位 12 Mbps\n已采集 22140 帧 · 已发送 22140 个访问单元 / 1180 MB\n编码器：encoder=software cbr=ok bitrate=ok lowlatency=ok gop=ok bframes=ok",
+                    "12 Mbps", "已解码 22140 帧", ""));
                 Pump();
                 Save(bar, Path.Combine(directory, $"{prefix}-3-castbar.png"));
                 bar.ExpandForScreenshot();

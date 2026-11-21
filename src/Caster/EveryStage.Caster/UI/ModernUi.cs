@@ -18,7 +18,8 @@ internal sealed record CasterPalette(
     Color WarningSurface, Color WarningBorder, Color WarningText,
     Color DangerSurface, Color DangerBorder,
     Color SuccessSurface, Color SuccessBorder,
-    Color BarBackground, Color BarText, Color BarMuted)
+    Color BarBackground, Color BarText, Color BarMuted,
+    Color DisabledFill)
 {
     public static readonly CasterPalette Light = new(
         IsDark: false,
@@ -33,22 +34,30 @@ internal sealed record CasterPalette(
         WarningSurface: Color.FromArgb(255, 248, 229), WarningBorder: Color.FromArgb(240, 214, 145), WarningText: Color.FromArgb(110, 74, 0),
         DangerSurface: Color.FromArgb(255, 241, 240), DangerBorder: Color.FromArgb(243, 184, 180),
         SuccessSurface: Color.FromArgb(234, 247, 238), SuccessBorder: Color.FromArgb(166, 218, 182),
-        BarBackground: Color.FromArgb(27, 31, 36), BarText: Color.White, BarMuted: Color.FromArgb(201, 209, 217));
+        BarBackground: Color.FromArgb(27, 31, 36), BarText: Color.White, BarMuted: Color.FromArgb(201, 209, 217),
+        DisabledFill: Color.FromArgb(208, 215, 222));
 
+    /// <summary>The Tech palette (Terminal's UiPalette.Tech): the shared token names carry the exact
+    /// Tech values, and the Caster-only tokens are derived from those anchors — Sidebar is Tech's
+    /// Rail, SurfaceHover is Tech's SurfaceRaised, the notice tints are the signal colour mixed over
+    /// Surface (14% fill / 45% border), hover/soft variants are the signal mixed toward white or over
+    /// Background, Faint is Muted darkened 35% toward Background, and the bar is Background darkened
+    /// 25% toward black. One family, no second hand-picked palette (C-01).</summary>
     public static readonly CasterPalette Dark = new(
         IsDark: true,
-        Background: Color.FromArgb(15, 23, 34), Sidebar: Color.FromArgb(11, 18, 27),
-        Surface: Color.FromArgb(23, 34, 49), SurfaceHover: Color.FromArgb(30, 44, 62),
-        Border: Color.FromArgb(38, 52, 69), ControlBorder: Color.FromArgb(52, 70, 92),
-        Text: Color.FromArgb(238, 243, 249), Muted: Color.FromArgb(159, 178, 200), Faint: Color.FromArgb(110, 128, 150),
-        Accent: Color.FromArgb(47, 124, 246), AccentHover: Color.FromArgb(76, 145, 255), AccentText: Color.White,
-        AccentSoft: Color.FromArgb(24, 45, 74),
-        Danger: Color.FromArgb(198, 47, 56), DangerHover: Color.FromArgb(222, 64, 73),
-        Success: Color.FromArgb(95, 224, 160), Warning: Color.FromArgb(255, 198, 92), DangerText: Color.FromArgb(255, 160, 166),
-        WarningSurface: Color.FromArgb(42, 34, 16), WarningBorder: Color.FromArgb(107, 84, 32), WarningText: Color.FromArgb(240, 220, 174),
-        DangerSurface: Color.FromArgb(42, 18, 21), DangerBorder: Color.FromArgb(122, 42, 49),
-        SuccessSurface: Color.FromArgb(15, 42, 31), SuccessBorder: Color.FromArgb(31, 107, 72),
-        BarBackground: Color.FromArgb(6, 10, 16), BarText: Color.White, BarMuted: Color.FromArgb(170, 186, 206));
+        Background: Color.FromArgb(5, 16, 30), Sidebar: Color.FromArgb(7, 29, 48),
+        Surface: Color.FromArgb(10, 38, 61), SurfaceHover: Color.FromArgb(13, 48, 75),
+        Border: Color.FromArgb(25, 82, 112), ControlBorder: Color.FromArgb(25, 82, 112),
+        Text: Color.FromArgb(220, 244, 255), Muted: Color.FromArgb(125, 177, 202), Faint: Color.FromArgb(83, 121, 142),
+        Accent: Color.FromArgb(0, 190, 255), AccentHover: Color.FromArgb(38, 200, 255), AccentText: Color.White,
+        AccentSoft: Color.FromArgb(4, 60, 86),
+        Danger: Color.FromArgb(230, 73, 94), DangerHover: Color.FromArgb(233, 95, 113),
+        Success: Color.FromArgb(35, 219, 164), Warning: Color.FromArgb(255, 196, 61), DangerText: Color.FromArgb(239, 137, 150),
+        WarningSurface: Color.FromArgb(44, 60, 61), WarningBorder: Color.FromArgb(120, 109, 61), WarningText: Color.FromArgb(255, 211, 110),
+        DangerSurface: Color.FromArgb(41, 43, 66), DangerBorder: Color.FromArgb(109, 54, 76),
+        SuccessSurface: Color.FromArgb(14, 63, 75), SuccessBorder: Color.FromArgb(21, 119, 107),
+        BarBackground: Color.FromArgb(4, 12, 22), BarText: Color.White, BarMuted: Color.FromArgb(154, 197, 218),
+        DisabledFill: Color.FromArgb(44, 58, 76));
 }
 
 /// <summary>Text colour role of a <see cref="ThemedLabel"/>.</summary>
@@ -300,7 +309,7 @@ internal sealed class ActionButton : Button
         };
         if (!Enabled)
         {
-            if (Kind is ButtonKind.Primary or ButtonKind.Danger) fill = p.IsDark ? Color.FromArgb(44, 58, 76) : Color.FromArgb(208, 215, 222);
+            if (Kind is ButtonKind.Primary or ButtonKind.Danger) fill = p.DisabledFill;
             ink = p.Faint;
         }
         var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);

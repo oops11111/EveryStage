@@ -5,10 +5,13 @@ namespace EveryStage.Caster.UI;
 
 internal enum CastHealth { Connecting, Good, Congested, Waiting }
 
-/// <summary>Everything the bar shows, refreshed twice a second by MainForm.</summary>
+/// <summary>Everything the bar shows, refreshed twice a second by MainForm. Screen/Latency/Sound/
+/// Bitrate/Confirmed are the always-visible metrics row (C-03); Warning is the one backpressure
+/// line, non-empty only while a drop counter is non-zero (the existing "non-zero only" rule).</summary>
 internal sealed record CastBarState(
     string Elapsed, CastHealth Health, string HealthText,
-    string Screen, string Latency, string Sound, bool SoftwareEncoding, string Details);
+    string Screen, string Latency, string Sound, bool SoftwareEncoding, string Details,
+    string Bitrate, string Confirmed, string Warning);
 
 /// <summary>
 /// While casting, the main window steps aside and only this bar stays on screen: which terminal, how
@@ -27,13 +30,16 @@ internal sealed class CastBar : Form
     private const uint WdaExcludeFromCapture = 0x11;
 
     private const int BarHeight = 48, BarWidth = 560, DetailsHeight = 236;
+    private const int MetricsHeight = 46, WarningHeight = 22;
 
     private readonly string _terminalName;
     private readonly BarButton _expand = new() { Glyph = ButtonGlyph.ChevronDown, AccessibleName = "展开详情" };
     private readonly BarButton _stop = new() { Text = "停止", Glyph = ButtonGlyph.Stop, Danger = true, AccessibleName = "停止投屏" };
     private readonly Panel _detailsPanel = new() { Visible = false };
-    private readonly ThemedLabel _screenTitle = Small("屏幕"), _latencyTitle = Small("延迟"), _soundTitle = Small("声音");
-    private readonly ThemedLabel _screen = Value(), _latency = Value(), _sound = Value();
+    private readonly Panel _metricsPanel = new();
+    private readonly ThemedLabel _latencyTitle = Small("延迟"), _resolutionTitle = Small("分辨率 · 码率"), _confirmedTitle = Small("终端确认"), _soundTitle = Small("声音");
+    private readonly ThemedLabel _latency = Value(), _resolution = Value(), _confirmed = Value(), _sound = Value();
+    private readonly ThemedLabel _warning = new ThemedLabel { Font = new Font(ModernUi.UiFont, 9F), Visible = false }.With(TextRole.Warning);
     private readonly ThemedLabel _software = new ThemedLabel { Font = new Font(ModernUi.UiFont, 9F), Visible = false, Text = "这台电脑没有显卡编码器，正在用软件编码，CPU 占用会高一些。" }.With(TextRole.Warning);
     private readonly TextBox _details = new() { ReadOnly = true, Multiline = true, BorderStyle = BorderStyle.None, ScrollBars = ScrollBars.Vertical, Font = new Font(ModernUi.UiFont, 8.5F) };
     private readonly ThemedLabel _note = new ThemedLabel { Font = new Font(ModernUi.UiFont, 8.5F) }.With(TextRole.Muted);
@@ -58,10 +64,11 @@ internal sealed class CastBar : Form
         AutoScaleDimensions = new SizeF(96F, 96F);
         Font = new Font(ModernUi.UiFont, 10F);
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
-        ClientSize = new Size(BarWidth, BarHeight);
+        ClientSize = new Size(BarWidth, BarHeight + MetricsHeight);
 
-        _detailsPanel.Controls.AddRange(new Control[] { _screenTitle, _latencyTitle, _soundTitle, _screen, _latency, _sound, _software, _details, _note });
-        Controls.AddRange(new Control[] { _expand, _stop, _detailsPanel });
+        _metricsPanel.Controls.AddRange(new Control[] { _latencyTitle, _resolutionTitle, _confirmedTitle, _soundTitle, _latency, _resolution, _confirmed, _sound, _warning });
+        _detailsPanel.Controls.AddRange(new Control[] { _software, _details, _note });
+        Controls.AddRange(new Control[] { _expand, _stop, _metricsPanel, _detailsPanel });
         _expand.Click += (_, _) => SetExpanded(!_detailsPanel.Visible);
         _stop.Click += (_, _) => RequestStop();
         MouseDown += Drag;
@@ -95,12 +102,25 @@ internal sealed class CastBar : Form
     {
         var p = ModernUi.Palette;
         BackColor = p.BarBackground;
+        _metricsPanel.BackColor = p.BarBackground;
         _detailsPanel.BackColor = p.Surface;
         _details.BackColor = p.Surface;
         _details.ForeColor = p.Muted;
+        ModernUi.ApplyTheme(_metricsPanel);
         ModernUi.ApplyTheme(_detailsPanel);
         _detailsPanel.BackColor = p.Surface;
         Invalidate(true);
+    }
+
+    /// <summary>Collapsed height: title row + the always-visible metrics row (+ the warning line
+    /// while a drop counter is non-zero).</summary>
+    private int MetricsPanelHeight => LogicalToDeviceUnits(MetricsHeight + (_warning.Visible ? WarningHeight : 0));
+
+    private void UpdateBarSize()
+    {
+        ClientSize = new Size(LogicalToDeviceUnits(BarWidth),
+            LogicalToDeviceUnits(BarHeight) + MetricsPanelHeight + (_detailsPanel.Visible ? LogicalToDeviceUnits(DetailsHeight) : 0));
+        Invalidate();
     }
 
     public void UpdateState(CastBarState state)
@@ -108,9 +128,18 @@ internal sealed class CastBar : Form
         bool textChanged = _state == null || _state.Elapsed != state.Elapsed || _state.HealthText != state.HealthText || _state.Health != state.Health;
         _state = state;
         if (textChanged) Invalidate(new Rectangle(0, 0, Width, LogicalToDeviceUnits(BarHeight)));
-        _screen.Text = state.Screen;
         _latency.Text = state.Latency;
+        _resolution.Text = string.IsNullOrEmpty(state.Bitrate) ? state.Screen : $"{state.Screen} · {state.Bitrate}";
+        _confirmed.Text = state.Confirmed;
         _sound.Text = state.Sound;
+        if (_warning.Text != state.Warning) _warning.Text = state.Warning;
+        bool showWarning = state.Warning.Length > 0;
+        if (_warning.Visible != showWarning)
+        {
+            _warning.Visible = showWarning;
+            UpdateBarSize();
+            PerformLayout();
+        }
         if (_software.Visible != state.SoftwareEncoding)
         {
             _software.Visible = state.SoftwareEncoding;
@@ -133,8 +162,7 @@ internal sealed class CastBar : Form
         _expand.Glyph = expanded ? ButtonGlyph.ChevronUp : ButtonGlyph.ChevronDown;
         _expand.AccessibleName = expanded ? "收起详情" : "展开详情";
         if (expanded && _state != null) _details.Text = _state.Details;
-        ClientSize = new Size(LogicalToDeviceUnits(BarWidth), LogicalToDeviceUnits(expanded ? BarHeight + DetailsHeight : BarHeight));
-        Invalidate();
+        UpdateBarSize();
     }
 
     private void RequestStop()
@@ -178,15 +206,22 @@ internal sealed class CastBar : Form
         int bar = s(BarHeight);
         _stop.Bounds = new Rectangle(ClientSize.Width - s(8) - s(80), (bar - s(34)) / 2, s(80), s(34));
         _expand.Bounds = new Rectangle(_stop.Left - s(6) - s(34), (bar - s(34)) / 2, s(34), s(34));
-        _detailsPanel.Bounds = new Rectangle(0, bar, ClientSize.Width, Math.Max(0, ClientSize.Height - bar));
-        int w = _detailsPanel.Width - s(32), col = w / 3, y = s(12);
-        _screenTitle.Bounds = new Rectangle(s(16), y, col, s(18));
-        _latencyTitle.Bounds = new Rectangle(s(16) + col, y, col, s(18));
-        _soundTitle.Bounds = new Rectangle(s(16) + col * 2, y, col, s(18));
-        _screen.Bounds = new Rectangle(s(16), y + s(18), col - s(8), s(22));
-        _latency.Bounds = new Rectangle(s(16) + col, y + s(18), col - s(8), s(22));
-        _sound.Bounds = new Rectangle(s(16) + col * 2, y + s(18), col - s(8), s(22));
-        y += s(48);
+        int metricsH = MetricsPanelHeight;
+        _metricsPanel.Bounds = new Rectangle(0, bar, ClientSize.Width, metricsH);
+        _detailsPanel.Bounds = new Rectangle(0, bar + metricsH, ClientSize.Width, Math.Max(0, ClientSize.Height - bar - metricsH));
+        // The metrics row: four equal cells, small Muted labels over semibold values.
+        int pad = s(16), gap = s(8);
+        int col = (ClientSize.Width - pad * 2 + gap) / 4;
+        var titles = new[] { _latencyTitle, _resolutionTitle, _confirmedTitle, _soundTitle };
+        var values = new[] { _latency, _resolution, _confirmed, _sound };
+        for (int i = 0; i < 4; i++)
+        {
+            int x = pad + i * col;
+            titles[i].Bounds = new Rectangle(x, s(6), col - gap, s(16));
+            values[i].Bounds = new Rectangle(x, s(24), col - gap, s(20));
+        }
+        if (_warning.Visible) _warning.Bounds = new Rectangle(pad, s(46), ClientSize.Width - pad * 2, s(20));
+        int w = _detailsPanel.Width - s(32), y = s(12);
         if (_software.Visible)
         {
             _software.Bounds = new Rectangle(s(16), y, w, s(20));
@@ -210,12 +245,7 @@ internal sealed class CastBar : Form
         var health = state?.Health ?? CastHealth.Connecting;
         // The dot reports health, not a live/recording indicator: it must agree with the pill
         // below (green = good, amber = degraded/connecting).
-        Color dot = health switch
-        {
-            CastHealth.Good => Color.FromArgb(77, 200, 120),
-            CastHealth.Congested => Color.FromArgb(255, 198, 92),
-            _ => Color.FromArgb(255, 198, 92),
-        };
+        Color dot = health == CastHealth.Good ? p.Success : p.Warning;
         int x = s(18);
         using (var dotBrush = new SolidBrush(dot)) g.FillEllipse(dotBrush, x, (bar - s(10)) / 2, s(10), s(10));
         x += s(20);
@@ -237,12 +267,9 @@ internal sealed class CastBar : Form
         TextRenderer.DrawText(g, elapsed, timeFont, new Rectangle(x, 0, timeW, bar), p.BarMuted, flags);
         x += timeW + s(10);
 
-        (Color pillBack, Color pillInk) = health switch
-        {
-            CastHealth.Good => (Color.FromArgb(31, 74, 51), Color.FromArgb(126, 226, 168)),
-            CastHealth.Congested => (Color.FromArgb(74, 58, 20), Color.FromArgb(255, 210, 120)),
-            _ => (Color.FromArgb(58, 52, 30), Color.FromArgb(255, 210, 120)),
-        };
+        (Color pillBack, Color pillInk) = health == CastHealth.Good
+            ? (p.SuccessSurface, p.Success)
+            : (p.WarningSurface, p.WarningText);
         var pillRect = new Rectangle(x, (bar - s(22)) / 2, Math.Min(pillW, Math.Max(0, limit - x)), s(22));
         if (pillRect.Width > s(20))
         {
@@ -280,7 +307,7 @@ internal sealed class CastBar : Form
             using (var back = new SolidBrush(p.BarBackground)) g.FillRectangle(back, ClientRectangle);
             var rect = new RectangleF(0.5f, 0.5f, Width - 1.5f, Height - 1.5f);
             using var path = ModernUi.Rounded(rect, Height / 2f);
-            Color fill = Danger ? (_hot ? p.DangerHover : p.Danger) : (_hot ? Color.FromArgb(52, 60, 72) : p.BarBackground);
+            Color fill = Danger ? (_hot ? p.DangerHover : p.Danger) : (_hot ? p.SurfaceHover : p.BarBackground);
             using (var brush = new SolidBrush(fill)) g.FillPath(brush, path);
             if (Focused && ShowFocusCues)
             {
