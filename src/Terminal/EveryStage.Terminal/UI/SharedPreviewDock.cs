@@ -508,6 +508,17 @@ internal sealed class SharedPreviewDock : Panel
         _presenterWindow.Show(owner);
     }
 
+    /// <summary>Extra stop condition supplied by the host (background music playing): the dock's own
+    /// engines and the program state don't cover it.</summary>
+    internal Func<bool>? AdditionalStopCondition { get; set; }
+
+    /// <summary>Whether stopping output is meaningful right now — the single rule shared by the
+    /// title-bar stop button and this column's stop button (U1-06): the program is live, a monitor
+    /// window is playing or loading, or the host reports another stoppable source.</summary>
+    internal bool StopAvailable => _stateMachine.State == OutputState.Active
+        || _windows.Any(w => w.Engine is { State: not PlaybackChannelState.Idle })
+        || (AdditionalStopCondition?.Invoke() ?? false);
+
     private void RefreshNow()
     {
         if (IsDisposed) return;
@@ -535,7 +546,7 @@ internal sealed class SharedPreviewDock : Panel
             _ => (_stateMachine.CastSwitchOn ? "○ 大屏待机" : "○ 大屏待机 · 投屏开关已关闭", _stateMachine.CastSwitchOn ? UiForegroundRole.Muted : UiForegroundRole.Warning),
         };
         SetTextRole(_status, statusText, statusRole);
-        _stopOutputButton.Enabled = programLive;
+        _stopOutputButton.Enabled = StopAvailable;
         _presenterButton.Enabled = show != null;
 
         foreach (var window in _windows) window.Refresh(palette, _program, programLive, source, window.Index == _activeWindow);

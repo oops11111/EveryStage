@@ -263,6 +263,7 @@ public sealed class MainWindow : GradientForm
             ShouldDuck = () => _stateMachine.State == OutputState.Active && _playback is { State: PlaybackChannelState.Playing, Muted: false } program
                 && (program.CurrentVideoHasAudio || program.CurrentFile?.Kind == MediaKind.Audio),
         };
+        _previewDock.AdditionalStopCondition = () => _music.IsPlaying;
         _musicBar = new MusicBar(_music) { Dock = DockStyle.Bottom };
         _musicDrawer = new MusicDrawer(_music, _library) { Dock = DockStyle.Bottom };
         _musicBar.PlaylistsRequested += _musicDrawer.Toggle;
@@ -306,8 +307,8 @@ public sealed class MainWindow : GradientForm
         hotkeysButton.Click += (_, _) => { using var dialog = new HotkeyListDialog(_settingsStore.Current); dialog.ShowDialog(this); };
 
         var titleBar = new AppTitleBar(this, "终端机");
-        titleBar.AddStatus(_statusLabel); // U1-01: the output status sits in the title bar
-        // 「停止输出」 lives at the top of the 监看 column (see SharedPreviewDock).
+        // Two stop buttons share one rule (SharedPreviewDock.StopAvailable): this one in the title
+        // bar, reachable from every page, and the dock's own button beside the monitors (U1-06).
         _emergencyStop = new RoundedActionButton
         {
             Text = "■ 停止输出", AccessibleName = "停止输出（急停 F12）", Width = 140,
@@ -315,6 +316,8 @@ public sealed class MainWindow : GradientForm
         };
         ModernUi.StyleButton(_emergencyStop, primary: true, danger: true);
         _emergencyStop.Click += (_, _) => StopProgramOutput();
+        titleBar.AddAction(_emergencyStop);
+        titleBar.AddStatus(_statusLabel); // U1-01: the output status sits in the title bar
 
         // WinForms docks the back-most control first: the title bar takes the full top edge, then the
         // rail and the monitor column their sides, and the page area (front-most) fills the rest.
@@ -460,7 +463,7 @@ public sealed class MainWindow : GradientForm
         _monitorColumn.Width = LogicalToDeviceUnits(_monitorCollapsed ? 36 : 360);
         _monitorColumn.Padding = _monitorCollapsed ? new Padding(LogicalToDeviceUnits(4), LogicalToDeviceUnits(10), LogicalToDeviceUnits(4), 0) : Padding.Empty;
         _expandMonitorButton.Height = LogicalToDeviceUnits(30);
-        if (_emergencyStop != null) _emergencyStop.Width = LogicalToDeviceUnits(140);
+        if (_emergencyStop != null) _emergencyStop.Width = Math.Max(LogicalToDeviceUnits(72), _emergencyStop.PreferredContentWidth());
         if (_toastStack != null) PlaceToastStack();
     }
 
@@ -837,7 +840,7 @@ public sealed class MainWindow : GradientForm
     private void UpdateStatusLabel()
     {
         bool active = _stateMachine.State == OutputState.Active;
-        _emergencyStop.Enabled = active || _preview.State != PlaybackChannelState.Idle || _music.IsPlaying;
+        _emergencyStop.Enabled = _previewDock.StopAvailable;
         var (message, role) =
             active && (_playback == null || _stateMachine.Source == ProgramSource.DeviceCast) ? ("● 大屏输出中 · 设备来投", UiForegroundRole.Danger)
             : active ? ("● 大屏输出中", UiForegroundRole.Danger)
