@@ -45,7 +45,8 @@ public sealed class DevicesPanel : UserControl
         // --- 页头：设备 · 本机：名称 · ● 可被局域网发现 …… 投屏开关 ---
         var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.Transparent };
         var title = ModernUi.SetForegroundRole(new Label { Text = "设备", AutoSize = true, Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent }, UiForegroundRole.Text);
-        var local = ModernUi.SetForegroundRole(new Label { Text = localName == null ? "" : $"本机：{localName}", AutoSize = true, BackColor = Color.Transparent }, UiForegroundRole.Muted);
+        var local = ModernUi.SetForegroundRole(new Label { Text = localName == null ? "" : $"本机：{localName}", AutoSize = false, AutoEllipsis = true, BackColor = Color.Transparent }, UiForegroundRole.Muted);
+        if (local.Text.Length > 0) new ToolTip().SetToolTip(local, local.Text);
         var discoverable = ModernUi.SetForegroundRole(new Label { Text = "● 可被局域网发现", AutoSize = true, BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 9F) }, UiForegroundRole.Success);
         header.Controls.AddRange(new Control[] { title, local, discoverable });
         // 刷新: the Terminal does not search for Casters — Casters find it by its periodic broadcast. This
@@ -81,8 +82,6 @@ public sealed class DevicesPanel : UserControl
         {
             int cy = (header.ClientSize.Height - 6) / 2;
             title.Location = new Point(0, cy - title.Height / 2);
-            local.Location = new Point(title.Right + 16, cy - local.Height / 2 + 2);
-            discoverable.Location = new Point(local.Right + 12, cy - discoverable.Height / 2 + 2);
             int right = header.ClientSize.Width;
             if (_castSwitch != null && switchLabel != null)
             {
@@ -90,6 +89,14 @@ public sealed class DevicesPanel : UserControl
                 switchLabel.Location = new Point(_castSwitch.Left - 8 - switchLabel.Width, cy - switchLabel.Height / 2);
                 right = switchLabel.Left - 20;
             }
+            // The local name gets what is left after reserving the refresh button and the
+            // discoverable note; past its maximum it ellipsizes (the full name is the tooltip).
+            int discoverableWidth = discoverable.PreferredSize.Width;
+            int localMax = right - LogicalToDeviceUnits(76) - LogicalToDeviceUnits(12) - discoverableWidth - LogicalToDeviceUnits(12) - (title.Right + 16);
+            int localWidth = Math.Max(LogicalToDeviceUnits(40), Math.Min(local.PreferredSize.Width, Math.Max(LogicalToDeviceUnits(40), localMax)));
+            local.Size = new Size(localWidth, TextRenderer.MeasureText(local.Text, local.Font).Height);
+            local.Location = new Point(title.Right + 16, cy - local.Height / 2 + 2);
+            discoverable.Location = new Point(local.Right + 12, cy - discoverable.Height / 2 + 2);
             // Narrow page: the button shrinks to its icon first, then the 「可被局域网发现」 note gives way.
             bool wide = right - LogicalToDeviceUnits(76) >= discoverable.Right + LogicalToDeviceUnits(12);
             refresh.Text = wide ? "↻ 刷新" : "↻";
@@ -457,7 +464,9 @@ public sealed class DevicesPanel : UserControl
                 Rectangle.FromLTRB(textLeft, cy - S(24), textRight, cy - S(2)), ModernUi.Text,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
 
-            // Only 「允许投放」 is shown (信任 / 监看 are not offered).
+            // The status line shows the stored permission values: 「允许投放」 is the only one
+            // the permission dialog offers to change; 信任 / 监看 keep whatever was stored
+            // (the dialog passes them through), so the tags show them rather than nothing.
             bool trusted = _device.AllowCast;
             int x = textLeft, lineTop = cy + S(2), lineHeight = S(22);
             var dot = new Rectangle(x, lineTop + (lineHeight - S(8)) / 2, S(8), S(8));
@@ -469,7 +478,7 @@ public sealed class DevicesPanel : UserControl
                 trusted ? ModernUi.Success : ModernUi.Warning, TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
             x += trustWidth + S(8);
 
-            foreach (var (text, on) in Array.Empty<(string, bool)>())
+            foreach (var (text, on) in new[] { ("信任", _device.TrustMode == TrustMode.Trusted), ("允许监看", _device.AllowMonitor) })
             {
                 string label = on ? text : "不" + text;
                 int tagWidth = TextRenderer.MeasureText(label, TagFont).Width + S(14);

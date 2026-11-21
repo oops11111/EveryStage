@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Drawing.Drawing2D;
 using EveryStage.Terminal.Data;
 using EveryStage.Terminal.Logging;
@@ -33,11 +34,11 @@ namespace EveryStage.Terminal.UI.Panels;
 /// conflicting existing values across the selection) that this round didn't attempt; see this
 /// project's README "尚未开始".
 ///
-/// PLANNING.md §8.2's audio "横向播放条" (播放/进度/音量/循环) exists as the「音频播放区」card below
-/// the grid (<see cref="_audioBar"/>, an <see cref="AudioPlayerBar"/>), matching the design and
+/// PLANNING.md §8.2's audio "横向播放条" (播放/进度/音量/循环) exists as the「音频播放区」card docked
+/// under the header (<see cref="_audioBar"/>, an <see cref="AudioPlayerBar"/>), matching the design and
 /// always shown — it binds to the track picked in its「文件名 ▾」selector (a newly started track
 /// takes over; otherwise the first audio file), and shows an「导入音频」placeholder when there is none. Audio files stay out of the
-/// "全部" grid. See <see cref="RefreshAudioBar"/> for how it is rebound and
+/// "全部" grid; audio that reached the library by another path shows on the 「音频」 tab. See <see cref="RefreshAudioBar"/> for how it is rebound and
 /// <see cref="OnAddAudioToActivityTrack"/> for its「＋ 加入活动音轨」button (adds a copy to an activity
 /// as background audio).
 ///
@@ -77,15 +78,19 @@ public sealed partial class FilesPanel : UserControl
     private readonly MediaGrid _grid;
     // Managed keyed images are reliable for owner-drawn Tile items even when the native
     // LargeImageList is intentionally not assigned.
-    private readonly Dictionary<string, Image> _thumbnailByFileId = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string?> _visibleThumbnailKeys = new(StringComparer.OrdinalIgnoreCase);
+    // Thumbnail state is touched from both the UI thread (viewport pruning, painting, dispose) and
+    // pool-thread continuations of the thumbnail passes (LoadThumbnailsAsync awaits Task.Run / the
+    // shared disk-cache scheduler). Plain Dictionary enumeration then throws "Collection was
+    // modified" — concurrent collections make every access safe without locking the paint path.
+    private readonly ConcurrentDictionary<string, Image> _thumbnailByFileId = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string?> _visibleThumbnailKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Windows.Forms.Timer _visibleFileCheckTimer = new() { Interval = 3000 };
     private bool _visibleFileCheckRunning;
     private CancellationTokenSource? _thumbnailLoad;
     private CancellationToken _thumbnailPassToken; // token of the thumbnail pass already running (or done)
     private bool _thumbnailPassRunning;
-    private readonly Dictionary<string, Image> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Queue<string> _thumbnailCacheOrder = new();
+    private readonly ConcurrentDictionary<string, Image> _thumbnailCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentQueue<string> _thumbnailCacheOrder = new();
     private const int ThumbnailCacheCapacity = 128;
     private ToolStripMenuItem _removeMenuItem = null!;
     private ToolStripMenuItem _addToActivityMenuItem = null!;
@@ -188,9 +193,11 @@ public sealed partial class FilesPanel : UserControl
             Font = new Font(ModernUi.UiFontSemibold, 15F), BackColor = Color.Transparent,
         }, UiForegroundRole.Text);
         _countLabel = ModernUi.SetForegroundRole(new Label { AutoSize = true, Font = new Font(ModernUi.UiFont, 9.5F), BackColor = Color.Transparent }, UiForegroundRole.Muted);
-        // No 音频 tab: audio belongs to the background music (歌单), never to the library.
-        MediaKind?[] filters = { null, MediaKind.Image, MediaKind.Video, MediaKind.Document };
-        var filterTabs = new SegmentedFilter(new[] { "全部", "图片", "视频", "文档" }) { Height = 34 };
+        // The 音频 tab shows audio files that reached the library by another path — import and
+        // drop route audio to the background-music playlists, never here, but older data and
+        // other paths can still put audio in the library, and it needs a visible entry.
+        MediaKind?[] filters = { null, MediaKind.Image, MediaKind.Video, MediaKind.Document, MediaKind.Audio };
+        var filterTabs = new SegmentedFilter(new[] { "全部", "图片", "视频", "文档", "音频" }) { Height = 34 };
         filterTabs.SelectedIndexChanged += (_, _) =>
         {
             _activeFilter = filters[filterTabs.SelectedIndex];
@@ -214,7 +221,19 @@ public sealed partial class FilesPanel : UserControl
         ModernUi.StyleButton(importButton, primary: true);
         importButton.Click += (_, _) => ImportViaDialog();
 
-        header.Controls.AddRange(new Control[] { pageTitle, _countLabel, filterTabs, _searchBox, sizeTabs, importButton });
+        // The output-status chip: fixed width for the longer of its two states, so a state
+        // change never re-lays the header out (LayoutHeader below places it by that width).
+        _outputStatusChip = new PillButton
+        {
+            Text = "○  待机", AutoSize = false, Height = 38,
+            Font = new Font(ModernUi.UiFont, 10F),
+            Margin = new Padding(4, 1, 8, 0), Enabled = false,
+        };
+        _outputStatusChip.Text = "◉  输出中";
+        _outputStatusChip.Width = _outputStatusChip.GetPreferredSize(Size.Empty).Width;
+        _outputStatusChip.Text = "○  待机";
+
+        header.Controls.AddRange(new Control[] { pageTitle, _countLabel, _outputStatusChip, filterTabs, _searchBox, sizeTabs, importButton });
         header.Resize += (_, _) => LayoutHeader();
         void LayoutHeader()
         {
@@ -225,13 +244,14 @@ public sealed partial class FilesPanel : UserControl
             int fullFilter = Math.Min(filterTabs.MaximumWidth, 5 * 58);
             // Narrow pages give up, in order: the count, the wide filter segments, the card-size
             // buttons, and finally search width (never below 90px) — controls never overlap.
+            // The output-status chip is not given up: it is the page's live output state.
             for (int step = 0; ; step++)
             {
                 bool showCount = step < 1, wideFilter = step < 2, showSize = step < 3;
                 filterTabs.Compact = !wideFilter;
                 int filterWidth = wideFilter ? fullFilter : filterTabs.MinimumWidth;
                 int right = w - importButton.Width - (showSize ? gap + sizeTabs.MinimumWidth : 0);
-                int left = pageTitle.Right + gap + (showCount ? _countLabel.PreferredWidth + gap : 0);
+                int left = pageTitle.Right + gap + (showCount ? _countLabel.PreferredWidth + gap : 0) + _outputStatusChip.Width + gap;
                 int searchRoom = right - gap - (left + filterWidth + gap);
                 if (searchRoom < 160 && step < 3) continue;
 
@@ -240,6 +260,7 @@ public sealed partial class FilesPanel : UserControl
                 importButton.Location = new Point(w - importButton.Width, cy - importButton.Height / 2);
                 sizeTabs.Bounds = new Rectangle(importButton.Left - gap - sizeTabs.MinimumWidth, cy - sizeTabs.Height / 2, sizeTabs.MinimumWidth, sizeTabs.Height);
                 _countLabel.Location = new Point(pageTitle.Right + gap, cy - _countLabel.Height / 2 + 2);
+                _outputStatusChip.Location = new Point(pageTitle.Right + gap + (showCount ? _countLabel.PreferredWidth + gap : 0), cy - _outputStatusChip.Height / 2);
                 filterTabs.Bounds = new Rectangle(left, cy - filterTabs.Height / 2, filterWidth, filterTabs.Height);
                 int searchWidth = Math.Clamp(searchRoom, 90, 240);
                 _searchBox.Bounds = new Rectangle(right - gap - searchWidth, cy - _searchBox.Height / 2, searchWidth, _searchBox.Height);
@@ -247,12 +268,6 @@ public sealed partial class FilesPanel : UserControl
             }
             foreach (Control c in header.Controls) c.Invalidate();
         }
-
-        _outputStatusChip = new PillButton
-        {
-            Text = "○  待机", AutoSize = true, Height = 38, Visible = false,
-            Margin = new Padding(4, 1, 8, 0), Enabled = false,
-        };
 
         // The card grid: our own layout (columns re-flow with the card size and the width), selection,
         // ⋯ / right-click menus and drag-to-reorder — see MediaGrid.
@@ -325,11 +340,11 @@ public sealed partial class FilesPanel : UserControl
 
         // Control.Controls.Add order determines Dock z-order for same-DockStyle siblings: the LAST
         // one added claims its edge first. The grid (Fill) goes first so it takes whatever is left;
-        // the header claims the top, the audio card and its gap the bottom.
+        // the audio bar is added before the header so the header wins the top edge and the bar
+        // docks in the strip just under it.
         Controls.Add(_grid);
+        Controls.Add(_audioBar);
         Controls.Add(header);
-        // No audio card here any more: background music has its own bar and playlists (MainWindow);
-        // audio files are reachable through the 音频 filter and join playlists from their menu.
 
         _emptyStateLabel = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(new Label
         {
@@ -618,8 +633,9 @@ public sealed partial class FilesPanel : UserControl
 
         // Audio has its own persistent horizontal player area; keep it out of the visual-media
         // thumbnail grid so the "全部" view does not duplicate audio as generic file cards.
+        // The 音频 tab is the one view that shows it.
         string search = _searchBox.Text.Trim();
-        foreach (var file in _library.Files.Where(f => f.Kind != MediaKind.Audio
+        foreach (var file in _library.Files.Where(f => (_activeFilter == MediaKind.Audio || f.Kind != MediaKind.Audio)
                      && (_activeFilter == null || f.Kind == _activeFilter)
                      && (search.Length == 0 || Path.GetFileName(f.SourcePath).Contains(search, StringComparison.OrdinalIgnoreCase))))
         {
@@ -632,7 +648,8 @@ public sealed partial class FilesPanel : UserControl
         RefreshAudioBar();
         HighlightCurrentFile();
         _emptyStateLabel.Text = search.Length > 0 ? $"没有名称包含“{search}”的文件"
-            : _library.Files.All(f => f.Kind == MediaKind.Audio) ? "文件库还是空的\n\n点击“＋ 导入”或将文件拖到这里（音频会进入下方的背景音乐歌单）"
+            : _library.Files.Count == 0 ? "文件库还是空的\n\n点击“＋ 导入”或将文件拖到这里（音频会进入下方的背景音乐歌单）"
+            : _library.Files.All(f => f.Kind == MediaKind.Audio) ? "文件库里只有音频文件\n\n点「音频」筛选查看；新导入的音频会进入背景音乐歌单"
             : "这一类还没有文件";
         _emptyStateLabel.Visible = _grid.Items.Count == 0;
         PositionEmptyState();

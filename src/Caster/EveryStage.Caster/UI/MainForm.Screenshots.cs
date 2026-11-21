@@ -49,7 +49,7 @@ public sealed partial class MainForm
             ShowSelectedTerminal();
             Save(this, Path.Combine(directory, $"{prefix}-1-standby.png"));
 
-            _pairingView.Begin("二楼培训室");
+            _pairingView.Begin("二楼培训室", TerminalDiscoveryClient.PairingRequestTimeout);
             _pairingView.SetCode("481207");
             ShowView(_pairingView);
             Save(this, Path.Combine(directory, $"{prefix}-2-pairing.png"));

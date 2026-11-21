@@ -257,11 +257,20 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
             else checkButton.Width = 100;
             // The search box is the cluster's leftmost element: whatever room the buttons
             // (at their possibly-narrowed widths) left over is where it lands, and the
-            // scenario combo's clamp below measures from its left edge.
-            right -= _searchBox.Width;
+            // scenario combo's clamp below measures from its left edge. The box degrades in
+            // tiers as the page narrows — full width, compact, hidden — mirroring the file
+            // library header's give-up order, and its left edge never goes below comboLeft:
+            // at the narrowest widths the combo and the count keep their room instead.
+            int middle = right - comboLeft;
+            int searchRoom = middle - gap - 60 - gap - _activityCount.PreferredWidth;
+            int searchWidth = searchRoom >= 140 ? 140 : searchRoom >= 90 ? 90 : 0;
+            _searchBox.Visible = searchWidth > 0;
+            _searchBox.Width = searchWidth;
+            right -= searchWidth;
             _searchBox.Location = new Point(right, cy - _searchBox.Height / 2);
-            right -= gap;
+            if (searchWidth > 0) right -= gap;
             _scenarioCombo.Width = Math.Clamp(right - comboLeft - _activityCount.PreferredWidth - 2 * gap, Math.Min(120, Math.Max(60, right - comboLeft - gap)), 240);
+            if (comboLeft + _scenarioCombo.Width > right) _scenarioCombo.Width = Math.Max(0, right - comboLeft);
             _scenarioCombo.Location = new Point(comboLeft, cy - _scenarioCombo.Height / 2);
             _activityCount.Location = new Point(_scenarioCombo.Right + gap, cy - _activityCount.Height / 2);
             _activityCount.Visible = _activityCount.Right <= right;

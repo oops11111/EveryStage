@@ -11,22 +11,32 @@ namespace EveryStage.Terminal.UI;
 public sealed class PairingConfirmationDialog : Form
 {
     private readonly CheckBox _allowCastCheckbox;
+    private readonly System.Windows.Forms.Timer? _countdown;
+    private readonly DateTimeOffset? _expiresAt;
 
     public bool Accepted { get; private set; }
+
+    /// <summary>True when the dialog closed itself at the request's expiry, without the
+    /// operator answering — the caller reports a timeout rather than a silent decline.</summary>
+    public bool Expired { get; private set; }
     public bool AllowCast => _allowCastCheckbox.Checked;
     // 监看 and 信任设备 are not offered (product decision: 只留「允许投放」; nothing implements them, and
     // trust never puts a device straight on the big screen). New pairings store the safe values.
     public bool AllowMonitor => false;
     public TrustMode TrustMode => TrustMode.RequireManualConfirmation;
 
-    public PairingConfirmationDialog(PairingRequest request)
+    /// <param name="expiresAt">When the request stops being answerable (see
+    /// <see cref="DiscoveryService.PairingDeadline"/>): the dialog counts down to it and closes
+    /// itself at expiry. Null keeps the old layout with no countdown.</param>
+    public PairingConfirmationDialog(PairingRequest request, DateTimeOffset? expiresAt = null)
     {
+        _expiresAt = expiresAt;
         Text = "投屏设备配对请求";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         StartPosition = FormStartPosition.Manual;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(380, 232);
+        ClientSize = new Size(380, 256);
         TopMost = true;
         // Its own task-bar button: with the Terminal in the tray (or the Caster on the same PC in front),
         // an owned dialog without one was easy to miss, and an unanswered request expires after 2 minutes.
@@ -62,20 +72,57 @@ public sealed class PairingConfirmationDialog : Form
         _allowCastCheckbox = new CheckBox
         {
             Text = "允许被投放（该设备可以向本终端机投屏）",
-            Bounds = new Rectangle(12, 166, 356, 24),
+            Bounds = new Rectangle(12, 190, 356, 24),
         };
-        var acceptButton = new Button { Text = "接受", Bounds = new Rectangle(180, 198, 88, 28), DialogResult = DialogResult.OK };
-        var declineButton = new Button { Text = "拒绝", Bounds = new Rectangle(280, 198, 88, 28), DialogResult = DialogResult.Cancel };
+        var countdownLabel = new Label
+        {
+            Text = "",
+            Bounds = new Rectangle(12, 166, 356, 20),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Visible = expiresAt.HasValue,
+        };
+        ModernUi.SetForegroundRole(countdownLabel, UiForegroundRole.Warning);
+        var acceptButton = new Button { Text = "接受", Bounds = new Rectangle(180, 222, 88, 28), DialogResult = DialogResult.OK };
+        var declineButton = new Button { Text = "拒绝", Bounds = new Rectangle(280, 222, 88, 28), DialogResult = DialogResult.Cancel };
 
         AcceptButton = acceptButton;
         CancelButton = declineButton;
 
         Controls.AddRange(new Control[]
         {
-            codeLabel, codeHint, infoLabel, _allowCastCheckbox, acceptButton, declineButton,
+            codeLabel, codeHint, infoLabel, countdownLabel, _allowCastCheckbox, acceptButton, declineButton,
         });
         ModernUi.StyleDialog(this);
 
         FormClosed += (_, _) => Accepted = DialogResult == DialogResult.OK;
+        Disposed += (_, _) => _countdown?.Dispose();
+
+        if (expiresAt is { } deadline)
+        {
+            UpdateCountdown(countdownLabel, deadline);
+            _countdown = new System.Windows.Forms.Timer { Interval = 1000 };
+            _countdown.Tick += (_, _) =>
+            {
+                // The operator has already answered: the form is closing, leave the result alone.
+                if (DialogResult != DialogResult.None) { _countdown.Stop(); return; }
+                if (DateTimeOffset.Now >= deadline)
+                {
+                    _countdown.Stop();
+                    Expired = true;
+                    DialogResult = DialogResult.Cancel;
+                    Close();
+                    return;
+                }
+                UpdateCountdown(countdownLabel, deadline);
+            };
+            _countdown.Start();
+        }
+    }
+
+    private static void UpdateCountdown(Label label, DateTimeOffset deadline)
+    {
+        var remaining = deadline - DateTimeOffset.Now;
+        if (remaining < TimeSpan.Zero) remaining = TimeSpan.Zero;
+        label.Text = $"还剩 {(int)remaining.TotalMinutes}:{remaining.Seconds:D2}，超时未确认将自动关闭";
     }
 }

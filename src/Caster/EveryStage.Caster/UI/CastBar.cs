@@ -36,7 +36,7 @@ internal sealed class CastBar : Form
     private readonly ThemedLabel _screen = Value(), _latency = Value(), _sound = Value();
     private readonly ThemedLabel _software = new ThemedLabel { Font = new Font(ModernUi.UiFont, 9F), Visible = false, Text = "这台电脑没有显卡编码器，正在用软件编码，CPU 占用会高一些。" }.With(TextRole.Warning);
     private readonly TextBox _details = new() { ReadOnly = true, Multiline = true, BorderStyle = BorderStyle.None, ScrollBars = ScrollBars.Vertical, Font = new Font(ModernUi.UiFont, 8.5F) };
-    private readonly ThemedLabel _note = new ThemedLabel { Font = new Font(ModernUi.UiFont, 8.5F) }.With(TextRole.Faint);
+    private readonly ThemedLabel _note = new ThemedLabel { Font = new Font(ModernUi.UiFont, 8.5F) }.With(TextRole.Muted);
     private CastBarState? _state;
     private bool _stopping;
 
@@ -208,9 +208,11 @@ internal sealed class CastBar : Form
 
         var state = _state;
         var health = state?.Health ?? CastHealth.Connecting;
+        // The dot reports health, not a live/recording indicator: it must agree with the pill
+        // below (green = good, amber = degraded/connecting).
         Color dot = health switch
         {
-            CastHealth.Good => Color.FromArgb(255, 77, 85),
+            CastHealth.Good => Color.FromArgb(77, 200, 120),
             CastHealth.Congested => Color.FromArgb(255, 198, 92),
             _ => Color.FromArgb(255, 198, 92),
         };

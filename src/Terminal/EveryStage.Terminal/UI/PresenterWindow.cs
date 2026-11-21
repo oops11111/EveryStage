@@ -15,7 +15,7 @@ namespace EveryStage.Terminal.UI;
 ///   │ │   the big screen, red frame)      │ │ └─────────────────────────────┘    │
 ///   │ │                                   │ │ 备注                     [A−][A+]  │
 ///   │ └──────────────────────────────────┘ │ ┌ scrolling notes ────────────┐    │
-///   └ ← → 翻页 · 空格 下一步 ──── [◀ 上一步] [下一步 ▶] ──────────── [⤢ 全屏] ┘
+///   └ ← → 翻页 · 空格 下一步 ──── [◀ 上一步] [下一步 ▶] ──────────── [⤢ 最大化] ┘
 ///
 /// Dark and fixed (it is read in a dim hall); resizable and maximizable like a presentation program's own
 /// presenter view; follows whichever show is on air and says so when there is none.
@@ -64,19 +64,19 @@ internal sealed class PresenterWindow : Form
     private readonly TextBox _notes = new()
     {
         Dock = DockStyle.Fill, ReadOnly = true, Multiline = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
-        BackColor = Card, ForeColor = Ink, TabStop = false, WordWrap = true,
+        BackColor = Card, ForeColor = Ink, TabStop = true, WordWrap = true,
     };
 
     // All pages: slide with the wheel or by dragging, click to put that page on the big screen.
     private readonly SlideThumbnailStrip _strip = new(Back, Card, Line, Ink, Muted, Accent);
 
     // Footer.
-    private readonly Label _keys = MakeLabel("← →  翻页　·　空格  下一步　·　F11  全屏", 9.5F, Muted, align: ContentAlignment.MiddleLeft);
+    private readonly Label _keys = MakeLabel("← →  翻页　·　空格  下一步　·　P  暂停　·　F11  最大化", 9.5F, Muted, align: ContentAlignment.MiddleLeft);
     private readonly Button _previousButton;
     private readonly Button _nextButton;
     private readonly Button _fullScreen;
 
-    private static readonly string[] KeyHints = { "← →  翻页　·　空格  下一步　·　F11  全屏", "← → 翻页 · 空格 下一步", "← → 翻页", "" };
+    private static readonly string[] KeyHints = { "← →  翻页　·　空格  下一步　·　P  暂停　·　F11  最大化", "← → 翻页 · 空格 下一步 · P 暂停", "← → 翻页 · 空格 下一步", "" };
 
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 250 };
     private readonly Stopwatch _stopwatch = new();
@@ -114,13 +114,13 @@ internal sealed class PresenterWindow : Form
         _notes.Font = new Font(ModernUi.UiFont, _notesSize);
         _notesFrame.Controls.Add(_notes);
 
-        _pause = SmallButton("暂停", "暂停 / 继续计时", TogglePause);
-        _reset = SmallButton("归零", "计时从 0 重新开始", () => { _stopwatch.Reset(); if (_shown != null || _sample) _stopwatch.Start(); UpdatePauseText(); RefreshClock(); });
+        _pause = SmallButton("暂停", "暂停 / 继续计时（P）", TogglePause);
+        _reset = SmallButton("归零", "计时从 0 重新开始（R）", ResetTimer);
         _smaller = SmallButton("A−", "备注字号变小（Ctrl −）", () => SetNotesSize(_notesSize - 2));
         _larger = SmallButton("A+", "备注字号变大（Ctrl +）", () => SetNotesSize(_notesSize + 2));
         _previousButton = BigButton("◀  上一步", "上一个动画 / 上一页（←）", () => Step(-1), primary: false);
         _nextButton = BigButton("下一步  ▶", "下一个动画 / 下一页（→ 或 空格）", () => Step(1), primary: true);
-        _fullScreen = SmallButton("⤢ 全屏", "全屏 / 还原（F11）", ToggleMaximize);
+        _fullScreen = SmallButton("⤢ 最大化", "最大化 / 还原（F11）", ToggleMaximize);
 
         Controls.AddRange(new Control[]
         {
@@ -252,6 +252,14 @@ internal sealed class PresenterWindow : Form
         UpdatePauseText();
     }
 
+    private void ResetTimer()
+    {
+        _stopwatch.Reset();
+        if (_shown != null || _sample) _stopwatch.Start();
+        UpdatePauseText();
+        RefreshClock();
+    }
+
     private void UpdatePauseText() => _pause.Text = _stopwatch.IsRunning || _stopwatch.Elapsed == TimeSpan.Zero ? "暂停" : "继续";
 
     private void ToggleMaximize() => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
@@ -272,12 +280,22 @@ internal sealed class PresenterWindow : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        // The thumbnail strip owns its keys while it has focus: arrows move its selection,
+        // Space/Enter jump to the selected page — the form-level page turning below must
+        // not steal them.
+        if (_strip.Focused && keyData is Keys.Left or Keys.Right or Keys.Space or Keys.Enter)
+            return base.ProcessCmdKey(ref msg, keyData);
+        // Space on a focused button clicks the button (standard behaviour); everywhere else
+        // it steps the show.
+        if (keyData == Keys.Space && ActiveControl is Button) return base.ProcessCmdKey(ref msg, keyData);
         switch (keyData)
         {
             // Up/Down are left to the notes box (scrolling long notes); Page keys and arrows turn pages.
             case Keys.Right or Keys.PageDown or Keys.Space: Step(1); return true;
             case Keys.Left or Keys.PageUp: Step(-1); return true;
             case Keys.F11: ToggleMaximize(); return true;
+            case Keys.P: TogglePause(); return true;
+            case Keys.R: ResetTimer(); return true;
             case Keys.Control | Keys.Oemplus: SetNotesSize(_notesSize + 2); return true;
             case Keys.Control | Keys.OemMinus: SetNotesSize(_notesSize - 2); return true;
         }
@@ -435,7 +453,7 @@ internal sealed class PresenterWindow : Form
             FlatAppearance.BorderSize = 0;
             Cursor = Cursors.Hand;
             UseMnemonic = false;
-            TabStop = false; // keyboard input belongs to page turning
+            TabStop = true;
         }
 
         protected override void OnMouseEnter(EventArgs e) { base.OnMouseEnter(e); _hot = true; Invalidate(); }
@@ -461,6 +479,11 @@ internal sealed class PresenterWindow : Form
             if (!Primary) using (var pen = new Pen(Line)) g.DrawPath(pen, path);
             TextRenderer.DrawText(g, Text, Font, ClientRectangle, ink,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+            if (Focused && ShowFocusCues)
+            {
+                using var focus = new Pen(Accent, 2) { DashStyle = DashStyle.Dot };
+                g.DrawRectangle(focus, Rectangle.Inflate(ClientRectangle, -3, -3));
+            }
         }
     }
 }

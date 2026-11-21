@@ -55,10 +55,10 @@ internal sealed class MusicBar : Panel
         ModernUi.StyleButton(_playPause, primary: true);
         _playPause.Font = new Font(IconFont, 10F);
         _next = IconButton("", "下一首");
-        _progress = new MediaTrack();
+        _progress = new MediaTrack { AccessibleName = "背景音乐播放进度" };
         _time = ModernUi.SetForegroundRole(new Label { BackColor = Color.Transparent, Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft }, UiForegroundRole.Muted);
         _volumeIcon = ModernUi.SetForegroundRole(new Label { Text = "", Font = new Font(IconFont, 10F), BackColor = Color.Transparent, TextAlign = ContentAlignment.MiddleCenter }, UiForegroundRole.Muted);
-        _volume = new MediaTrack { Value = music.Volume };
+        _volume = new MediaTrack { Value = music.Volume, AccessibleName = "背景音乐音量" };
         _fadeOut = TextButton("淡出", "3 秒内淡出后停止");
         _playlists = TextButton("歌单 ▴", "展开歌单");
         Controls.AddRange(new Control[] { _title, _subtitle, _previous, _playPause, _next, _progress, _time, _volumeIcon, _volume, _fadeOut, _playlists });
@@ -199,6 +199,7 @@ internal sealed class MusicBar : Panel
         var duration = _music.Duration;
         var position = _music.Position;
         _progress.Enabled = duration.HasValue;
+        _progress.KeyStep = duration is { Ticks: > 0 } d2 ? (float)(TimeSpan.FromSeconds(5).Ticks / (double)d2.Ticks) : 0.05f;
         if (!_progress.IsDragging) _progress.Value = duration is { Ticks: > 0 } d ? (float)(position.Ticks / (double)d.Ticks) : 0f;
         Set(_time, _music.IsPlaying ? $"{Format(position)} / {(duration is { } total ? Format(total) : "--:--")}" : "--:-- / --:--", null);
         if (!_volume.IsDragging) _volume.Value = _music.Volume;
