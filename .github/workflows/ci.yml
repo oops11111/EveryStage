@@ -196,11 +196,13 @@ jobs:
           path: artifacts/installer-input
       - name: Download fixed user baseline without execution
         uses: actions/github-script@v8
+        env:
+          BASELINE_DOWNLOAD_TOKEN: ${{ github.token }}
         with:
           script: |
             const fs = require('fs');
             const response = await fetch('https://api.github.com/repos/oops11111/EveryStage/actions/artifacts/14736098352/zip', {
-              headers: {Authorization: `Bearer ${github.token}`, Accept: 'application/vnd.github+json'}
+              headers: {Authorization: `Bearer ${process.env.BASELINE_DOWNLOAD_TOKEN}`, Accept: 'application/vnd.github+json'}
             });
             if (!response.ok) throw new Error(`Baseline download ${response.status}`);
             fs.writeFileSync('artifacts/baseline.zip', Buffer.from(await response.arrayBuffer()));

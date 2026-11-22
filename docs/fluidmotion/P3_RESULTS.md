@@ -7,3 +7,7 @@ The build job preserves all prior checks, produces the component once, and uploa
 `pipeline-tested-manifest.json` is conditional on smoke success and explicitly pending primary review/postmerge acceptance. P4 final external acceptance must bind the selected postmerge source and exact same tested bytes. Package-internal candidate metadata remains a truthful build-time state; no artifact is rewritten or publicly published.
 
 CI failure evidence is always uploaded. Installed UI samples are qualitative ordinary actions, not precise duration or guaranteed in-flight reversal; P2 actual-control continuity proof remains separate. WM_CLOSE is never used as successful Terminal shutdown. Unavailable tray/interactive desktop, failed normal exit or identity/hash mismatch stops the job without force kill or alternate shutdown path.
+
+## CI attempt1: baseline download stopped before installation
+
+Push run45001799932/job137146130843 built successfully but baseline download returned HTTP401 at2026-11-22T08:19:28Z. No installer ran. The downloader incorrectly referenced `github.token` as a JavaScript Octokit property; this is not the workflow expression context. The scoped step environment now carries the existing workflow token to `process.env.BASELINE_DOWNLOAD_TOKEN`, without logging it or changing permissions, source, hashes or installation steps. Original failed run/logs remain authoritative; the concurrent original PR run was not cancelled.
