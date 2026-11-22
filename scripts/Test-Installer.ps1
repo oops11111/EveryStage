@@ -25,6 +25,40 @@ function Canonical-ExistingPath([string]$path) {
  return $buffer.ToString()
 }
 
+$script:ShortcutSequence=0
+function Capture-Shortcut([string]$shortcut,[string]$phase) {
+ $script:ShortcutSequence++
+ $folder=Join-Path $OutputDirectory ("shortcut-evidence/{0:D2}-{1}" -f $script:ShortcutSequence,$phase)
+ New-Item -ItemType Directory -Path $folder -Force|Out-Null
+ $native=(Get-Item -LiteralPath $shortcut).FullName.Replace('/','\')
+ $bytes=[IO.File]::ReadAllBytes($native)
+ $copy=Join-Path $folder ([IO.Path]::GetFileName($native))
+ [IO.File]::WriteAllBytes($copy,$bytes)
+ $hash=(Get-FileHash -LiteralPath $native).Hash.ToLowerInvariant()
+ if((Get-FileHash -LiteralPath $copy).Hash.ToLowerInvariant() -ne $hash){throw 'Shortcut evidence copy mismatch'}
+ $record=@{phase=$phase;path=$native;copy=$copy;bytes=$bytes.Length;sha256=$hash}
+ if($bytes.Length -ge 28){$record.header_size=[BitConverter]::ToUInt32($bytes,0);$record.link_flags=[BitConverter]::ToUInt32($bytes,20);$record.file_attributes=[BitConverter]::ToUInt32($bytes,24)}
+ $shell=New-Object -ComObject WScript.Shell
+ try {
+  $link=$shell.CreateShortcut($native)
+  $record.pwsh7=@{apartment=[Threading.Thread]::CurrentThread.ApartmentState.ToString();shell=$PSVersionTable.PSVersion.ToString();target=$link.TargetPath;arguments=$link.Arguments;working_directory=$link.WorkingDirectory;icon=$link.IconLocation}
+ } finally {[Runtime.InteropServices.Marshal]::ReleaseComObject($shell)|Out-Null}
+ try {
+  $independent=& powershell.exe -NoProfile -STA -File "$PSScriptRoot/Read-InstallerShortcut.ps1" -LiteralPath $native
+  $record.winps5_exit=$LASTEXITCODE
+  $record.winps5=($independent -join "`n")|ConvertFrom-Json
+ } catch {$record.winps5_error=$_.Exception.ToString()}
+ $record|ConvertTo-Json -Depth 10|Set-Content -Encoding utf8 (Join-Path $folder 'metadata.json')
+ return $record
+}
+function Capture-ProductShortcuts([string]$phase) {
+ foreach($root in @("$env:ProgramData/Microsoft/Windows/Start Menu/Programs/EveryStage","$env:PUBLIC/Desktop")) {
+  foreach($name in @('EveryStage 终端机.lnk','EveryStage 投屏机.lnk')) {
+   $file=Join-Path $root $name
+   if(Test-Path -LiteralPath $file){Capture-Shortcut $file $phase|Out-Null}
+  }
+ }
+}
 function No-Processes {
  $processes=@(Get-Process -ErrorAction Stop|Where-Object ProcessName -in @('EveryStage.Terminal','EveryStage.Caster'))
  if($processes.Count){throw 'EveryStage process still running; refusing installer broad-kill path'}
@@ -62,10 +96,11 @@ function Verify-Installation($selection) {
   foreach($shortcut in @("$env:ProgramData/Microsoft/Windows/Start Menu/Programs/EveryStage/$link","$env:PUBLIC/Desktop/$link")) {
    if((Test-Path $shortcut) -ne $selected){throw 'Component shortcut mismatch'}
    if($selected) {
+    $captured=Capture-Shortcut $shortcut 'upgraded-or-selected'
     $shell=New-Object -ComObject WScript.Shell
     $shortcutRecord=@{link=(Get-Item -LiteralPath $shortcut).FullName;expected="$path\EveryStage.$component.exe"}
     try {
-     # WScript.Shell expects a native absolute .lnk path; forward slash paths can create an empty shortcut object.
+     # Canonicalize existing paths and retain raw values; the empty-target cause is not yet established.
      $nativeLink=$shortcutRecord.link.Replace('/','\')
      $shortcutRecord.raw_target=$shell.CreateShortcut($nativeLink).TargetPath
      $shortcutRecord.resolved_expected=Canonical-ExistingPath $shortcutRecord.expected
@@ -150,14 +185,18 @@ try {
  $setup=Join-Path $InputDirectory $receipt.installer
  Run-Setup $baseline.FullName '/S'
  if(!(Test-Path "$install/Terminal") -or (Test-Path "$install/Caster")){throw 'Baseline default Terminal selection mismatch'}
+ Capture-ProductShortcuts 'baseline-before-upgrade'
  New-Item -ItemType Directory -Force "$data/logs"|Out-Null
  Set-Content "$install/Terminal/p3-stale-file.txt" 'owned stale upgrade file'
  Set-Content "$data/p3-sentinel.txt" 'owned upgrade sentinel'
  Set-Content "$data/logs/p3-sentinel.log" 'owned retained log'
+ $sentinelHash=(Get-FileHash "$data/p3-sentinel.txt").Hash
+ $logSentinelHash=(Get-FileHash "$data/logs/p3-sentinel.log").Hash
  Run-Setup $setup '/S'
+ Capture-ProductShortcuts 'upgraded-before-assertions'
  Verify-Installation 'Terminal'
  if(Test-Path "$install/Terminal/p3-stale-file.txt"){throw 'Upgrade retained stale program file'}
- if(!(Test-Path "$data/p3-sentinel.txt")){throw 'Upgrade lost data'}
+ if((Get-FileHash "$data/p3-sentinel.txt").Hash -ne $sentinelHash){throw 'Upgrade changed sentinel bytes'}
  if((Get-Item "$install/Terminal/EveryStage.Terminal.exe").VersionInfo.FileVersion -ne '0.9.2.0'){throw 'Installed version mismatch'}
  $terminal=Start-Process "$install/Terminal/EveryStage.Terminal.exe" -PassThru
  try {
@@ -185,7 +224,7 @@ try {
  $native=Get-FileHash "$install/Terminal/fluidmotion.dll" -Algorithm SHA256
  if($native.Hash.ToLowerInvariant() -ne $expected[0].sha256){throw 'Installed native package mismatch'}
  Uninstall $false
- if(!(Test-Path "$data/p3-sentinel.txt")){throw 'Default uninstall did not retain data'}
+ if((Get-FileHash "$data/p3-sentinel.txt").Hash -ne $sentinelHash){throw 'Default uninstall changed sentinel bytes'}
  foreach($selection in @('Terminal','Caster','Both')) {
   Run-Setup $setup "/S /COMPONENTS=$selection"
   $hasTerminal=Test-Path "$install/Terminal/EveryStage.Terminal.exe"
@@ -195,7 +234,7 @@ try {
   $result.cases+=@{selection=$selection;terminal=$hasTerminal;caster=$hasCaster}
   Uninstall ($selection -eq 'Both')
  }
- if((Test-Path "$data/p3-sentinel.txt") -or !(Test-Path "$data/logs/p3-sentinel.log")){throw 'Delete-data/log retention mismatch'}
+ if((Test-Path "$data/p3-sentinel.txt") -or (Get-FileHash "$data/logs/p3-sentinel.log").Hash -ne $logSentinelHash){throw 'Delete-data/log retention byte mismatch'}
  No-Processes
  $invalid=Start-Process $setup -ArgumentList '/S /COMPONENTS=Invalid' -WindowStyle Hidden -PassThru
  $invalid.WaitForExit()
