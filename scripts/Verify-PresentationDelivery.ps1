@@ -17,7 +17,10 @@ function Safe([string]$relative) {
  }
  return $full
 }
-function Read([string]$relative) {Get-Content -LiteralPath (Safe $relative) -Raw -Encoding UTF8|ConvertFrom-Json}
+function Read([string]$relative) {
+ $value=Get-Content -LiteralPath (Safe $relative) -Raw -Encoding UTF8|ConvertFrom-Json
+ foreach($item in $value){Write-Output $item}
+}
 function Verify-Tree([string]$directory) {
  $base=Safe $directory
  $sums=Join-Path $base 'SHA256SUMS'
