@@ -42,7 +42,8 @@
     {
       "file": "verify-first.stderr.txt",
       "original_sha256": "0fbce4ca245dfa8f2327b6a30be64a074e8dd3ae3e0b8a28ea43900d0575dc2f",
-      "published_sha256": "a3f6a6c11d3f25a8d4d14e41ac9ef01a57059a0ed8d18cae4c50697d98fb4a86"
+      "published_sha256": "ef26367f20ff993a3aaf00c1935326a6714068d9b245343fa52fffeec8d5f0f9"
     }
-  ]
+  ],
+  "publication": "UTF8/LF/workspace placeholders; trailing whitespace trimmed only in published failure stderr; original retained unchanged"
 }
