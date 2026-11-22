@@ -1,12 +1,12 @@
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
 . "$PSScriptRoot/Delivery-Version.ps1"
-$version=Get-DeliveryVersion "$repo/Directory.Build.props"
+$deliveryVersion=Get-DeliveryVersion "$repo/Directory.Build.props"
 $out=Join-Path $repo 'artifacts/installer-input'
 if(Test-Path $out){throw 'Installer input directory must be fresh'}
 New-Item -ItemType Directory $out|Out-Null
 $state=Get-Content "$repo/artifacts/fluidmotion/component-state.json" -Raw|ConvertFrom-Json
-$setup=Get-Item "$repo/artifacts/installer/EveryStage-Setup-$($version.app_version)-win-x64.exe"
+$setup=Get-Item "$repo/artifacts/installer/EveryStage-Setup-$($deliveryVersion.app_version)-win-x64.exe"
 $package=Get-Item (Join-Path $repo $state.package_relative)
 if(!$package.Exists){throw 'Exact consumed package missing'}
 if((Get-FileHash $package.FullName).Hash.ToLowerInvariant() -ne $state.package_sha256){throw 'Consumed package drift'}
@@ -82,5 +82,6 @@ foreach($component in @('Terminal','Caster')) {
  $base=Join-Path $repo "artifacts/installer/publish/$component"
  $published[$component]=@(Get-ChildItem $base -File -Recurse|ForEach-Object {@{path=[IO.Path]::GetRelativePath($base,$_.FullName).Replace('\','/');sha256=(Get-FileHash $_.FullName).Hash.ToLowerInvariant()}})
 }
-$receipt=@{app_version=$version.app_version;assembly_file_version=$version.assembly_file_version;version_props_sha256=$version.version_props_sha256;published=$published;source=@{checkout_commit=(& git rev-parse HEAD);event_commit=$env:GITHUB_SHA;pull_request_head=$env:PR_HEAD_SHA};installer=$setup.Name;package=$package.Name;package_members=$state.package_members;files=$files;status='build input only; not installation acceptance'}
+$receipt=@{app_version=$deliveryVersion.app_version;assembly_file_version=$deliveryVersion.assembly_file_version;version_props_sha256=$deliveryVersion.version_props_sha256;published=$published;source=@{checkout_commit=(& git rev-parse HEAD);event_commit=$env:GITHUB_SHA;pull_request_head=$env:PR_HEAD_SHA};installer=$setup.Name;package=$package.Name;package_members=$state.package_members;files=$files;status='build input only; not installation acceptance'}
+$null=Assert-DeliveryVersion $receipt "$repo/Directory.Build.props"
 $receipt|ConvertTo-Json -Depth 24|Set-Content -Encoding utf8 "$out/build-input.json"

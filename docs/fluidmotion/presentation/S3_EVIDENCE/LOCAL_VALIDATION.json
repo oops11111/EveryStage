@@ -45,9 +45,16 @@
     "scripts/Test-DeliveryVersion.ps1": "5dc711f3b09ca39035cd7b87b6e14f58ecbc795046fb5022d9e97de68bc36306",
     "scripts/Verify-PresentationDelivery.ps1": "1a4038c2a0b00e72fb3f4d065288a81eca4ce0f7db1269053431db7db79642b7",
     "scripts/Test-DeliveryVerifier.ps1": "7fce364789051dd8684423b1f13388daea389ba8408d4da3d5c339c68e1ac824",
-    "scripts/Prepare-InstallerInput.ps1": "77087f2dacc859f42fc81f9aa6f60a52305d9cd9fc37105d71aa84c19817ced2",
+    "scripts/Prepare-InstallerInput.ps1": "c063542bbfbdb09a86b1417903b42dff01fefcb6ebc5998db02bd0dc334d4b67",
     "scripts/Test-Installer.ps1": "0672d41235d7baaea5e680e53f97916eef8027d835d846d14a787a597559a6d6",
     "scripts/Seal-InternalDelivery.ps1": "740f20dd9ad8db50afd700ced3bc02a31526a1a7692fa3c607c3f18af6016156",
     ".github/workflows/ci.yml": "4b1c738fc9285652b845ec922cf2104fcaac1f989e5f370ce64a50d8395974e1"
+  },
+  "ci_failure": {
+    "run": 45023406385,
+    "job": 137212422390,
+    "decoded_connector_log_sha256": "b7697e9112b5f1c4d7ea12da74995248bfdc35add4d8a0502e553d92af060f6b",
+    "original_retained": "artifacts\\s3-ci-45023406385-job137212422390.decoded.log",
+    "state": "build success; pre-install immutable app_version guard rejected; no installer invoked"
   }
 }
