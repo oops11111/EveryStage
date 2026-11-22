@@ -23,6 +23,12 @@ function Get-ExistingFileSha256([string]$path) {
  try {return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}
  finally {$stream.Dispose();$algorithm.Dispose()}
 }
+function Test-NotificationOverflowMetadata($metadata,[bool]$notificationAncestry) {
+ return $notificationAncestry -and [string]::Equals($metadata.name,'Show Hidden Icons',[StringComparison]::OrdinalIgnoreCase) -and $metadata.class_name -ceq 'SystemTray.NormalButton' -and $metadata.automation_id -ceq 'SystemTrayIcon' -and $metadata.control_type -ceq 'ControlType.Button' -and $metadata.enabled -and !$metadata.offscreen
+}
+function Test-NotificationIconMetadata($metadata,[bool]$notificationAncestry) {
+ return $notificationAncestry -and $metadata.name -cmatch '^EveryStage 终端机 - (待机中|扩展屏输出中) / 开关: (开|关)$' -and $metadata.enabled -and !$metadata.offscreen
+}
 function Find-Name($root,$name) {
  $condition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,$name)
  return $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
@@ -138,7 +144,6 @@ try {
 Dismiss-OwnedFirstRunGuide ($Action -eq 'Exercise')
 if ($Action -eq 'Exit') {
  # Match only the exact dynamic NotifyIcon tooltip from TrayIconController, never a running-app taskbar button.
- $tooltipPattern='^EveryStage 终端机 - (待机中|扩展屏输出中) / 开关: (开|关)$'
  function Notification-Ancestry($element) {
   $ancestors=@();$current=$element
   for($depth=0;$depth -lt 16 -and $current;$depth++) {
@@ -168,8 +173,8 @@ if ($Action -eq 'Exit') {
     $ancestry=@(Notification-Ancestry $item)
     $inArea=In-NotificationArea $ancestry
     $observations+=@{attempt=$attempt;element=Element-Metadata $item;notification_ancestry=$inArea;ancestors=$ancestry}
-    if($item.Current.Name -cmatch $tooltipPattern -and $inArea -and $item.Current.IsEnabled -and !$item.Current.IsOffscreen){$eligibleIcons+=,$item}
-    if($item.Current.Name -ceq 'Show hidden icons' -and $item.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $inArea -and $item.Current.IsEnabled -and !$item.Current.IsOffscreen){$eligibleOverflow+=,$item}
+    if(Test-NotificationIconMetadata (Element-Metadata $item) $inArea){$eligibleIcons+=,$item}
+    if(Test-NotificationOverflowMetadata (Element-Metadata $item) $inArea){$eligibleOverflow+=,$item}
    }
   }
   # Persist notification-area observations before any interaction, including an absent-icon outcome.

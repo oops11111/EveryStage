@@ -1,0 +1,36 @@
+{
+  "source_artifact": 14748878288,
+  "source_archive_sha256": "93af9e6a2c20e0d9dd3074f1afeef69a242d53c043757acfc9580255e301f3ea",
+  "overflow": {
+    "native_hwnd": 0,
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "SystemTrayIcon",
+    "control_type": "ControlType.Button",
+    "class_name": "SystemTray.NormalButton",
+    "name": "Show Hidden Icons",
+    "bounds": {
+      "left": 790,
+      "width": 32,
+      "top": 720,
+      "height": 48
+    },
+    "pid": 5720
+  },
+  "notification_ancestry": true,
+  "wrong_taskbar": {
+    "control_type": "ControlType.Button",
+    "name": "EveryStage 终端机 - 1 running window",
+    "native_hwnd": 0,
+    "pid": 808,
+    "offscreen": false,
+    "bounds": {
+      "left": 688,
+      "width": 44,
+      "top": 720,
+      "height": 48
+    },
+    "enabled": true
+  },
+  "wrong_taskbar_source_artifact": 14748486760
+}
