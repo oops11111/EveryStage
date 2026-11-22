@@ -197,7 +197,10 @@ internal sealed class DocumentControlBar : Panel
             AddButton("更新大屏", "把预览的当前位置 / 最新画面送到大屏", _sync.UpdateProgram,
                 () => _sync.ProgramShowsSameDocument && (!_sync.LiveSync || _sync.Frozen));
             if (status.Format == DocumentFormat.Word)
-                AddButton("停止投屏", "停止大屏输出（预览与编辑器保留）", () => StopProgramRequested?.Invoke(), () => ProgramLive);
+                // OP-08: the old tooltip promised the preview/editor would be kept — the
+                // button is wired to the full StopProgramOutput (both windows stop), so the
+                // copy now says exactly that. Behaviour deliberately unchanged.
+                AddButton("停止投屏", "停止全部输出", () => StopProgramRequested?.Invoke(), () => ProgramLive);
         }
         Controls.Add(_more);
         ResumeLayout(true);

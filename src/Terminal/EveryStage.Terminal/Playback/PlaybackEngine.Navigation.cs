@@ -16,36 +16,41 @@ public sealed partial class PlaybackEngine
     /// <see cref="_currentActivity"/>/<see cref="_currentFileIndex"/> — a direct click starts (or
     /// leaves alone) the overlay track exactly like passing over one during <see cref="TryAdvance"/>
     /// does, but doesn't search further for a "real" slot to display, since a direct click is a
-    /// one-off action, not a queue walk.</summary>
-    public void RequestPlay(Activity activity, int fileIndex, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
+    /// one-off action, not a queue walk. Returns false when the file was intercepted or the
+    /// index was out of range, or when <see cref="PlayFile"/> was declined by the cast switch —
+    /// true is "accepted for loading", never "playing" (see the snapshot overload's doc).</summary>
+    public bool RequestPlay(Activity activity, int fileIndex, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
     {
-        if (fileIndex < 0 || fileIndex >= activity.Files.Count) return;
+        if (fileIndex < 0 || fileIndex >= activity.Files.Count) return false;
         var file = activity.Files[fileIndex];
         if (file.IsBackgroundAudio && Channel == PlaybackChannel.Program)
         {
+            BackgroundAudioTakeIntercepted?.Invoke(file);
             StartOrUpdateBackgroundAudio(file);
-            return;
+            return false;
         }
         _currentActivity = activity;
         _currentFileIndex = fileIndex;
-        PlayFile(file, trigger);
+        return PlayFile(file, trigger);
     }
 
     /// <summary>"点文件" with no activity context (e.g. directly from a future 文件 panel). With no
     /// activity list to advance through, <see cref="CompletionAction.NextItem"/> degrades to
     /// holding on the last frame — nothing in PLANNING.md defines "next" without an activity. Same
     /// background-audio interception as the other overload — a library entry can carry
-    /// <see cref="MediaFile.IsBackgroundAudio"/> just as well as an activity's copy of it.</summary>
-    public void RequestPlay(MediaFile file, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
+    /// <see cref="MediaFile.IsBackgroundAudio"/> just as well as an activity's copy of it. Same
+    /// return contract as the activity overload.</summary>
+    public bool RequestPlay(MediaFile file, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
     {
         if (file.IsBackgroundAudio && Channel == PlaybackChannel.Program)
         {
+            BackgroundAudioTakeIntercepted?.Invoke(file);
             StartOrUpdateBackgroundAudio(file);
-            return;
+            return false;
         }
         _currentActivity = null;
         _currentFileIndex = -1;
-        PlayFile(file, trigger);
+        return PlayFile(file, trigger);
     }
 
     /// <summary>Floating-preview-window "下一项" (PLANNING.md §8.3) — except when the current file

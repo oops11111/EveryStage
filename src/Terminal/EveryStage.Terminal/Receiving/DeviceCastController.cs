@@ -16,6 +16,16 @@ internal sealed class DeviceCastController : IDisposable
     private static readonly TimeSpan CastTimeout = TimeSpan.FromSeconds(10);
     private const int MaxConsecutiveDecodeErrorsBeforeDisconnect = 90;
 
+    /// <summary>OP-27: no new decoded frame for this long while a device holds Program counts as
+    /// a stalled signal — shown long before the 10 s <see cref="CastTimeout"/> ends the session.
+    /// (Whether the frozen frame then persists or the session drops is a real-machine question;
+    /// the indicator itself is the fix here.)</summary>
+    private static readonly TimeSpan SignalStallAfter = TimeSpan.FromSeconds(2);
+
+    private long _lastFramesDecoded;
+    private DateTime _lastFrameAt = DateTime.UtcNow;
+    private bool _everDecodedFrame;
+
     private readonly MainWindow _mainWindow;
     private readonly IDeviceCastTransport _transport;
     private readonly DeviceConnectionLogger _connectionLog;
@@ -35,6 +45,12 @@ internal sealed class DeviceCastController : IDisposable
     private bool _onProgram;
     private PlaybackEngine.Snapshot? _restoreSnapshot;
     private bool _restoreIdle;
+
+    /// <summary>True while a restore attempt's outcome is still unconfirmed (OP-10): the restore
+    /// point must survive <see cref="Stop"/> until the restored file genuinely reaches Playing/
+    /// Paused, is superseded by a newer take, or is explicitly discarded (operator stop). While
+    /// true, <see cref="Stop"/> preserves the point instead of discarding it.</summary>
+    private bool _restoreAwaitingConfirmation;
 
     public DeviceCastController(
         MainWindow mainWindow,
@@ -143,6 +159,11 @@ internal sealed class DeviceCastController : IDisposable
         _deviceId = info.DeviceId;
         _deviceName = info.DeviceName;
         _casterEndPoint = info.CasterEndPoint;
+        // Fresh stall sampling for this session (OP-27): the previous session's frame count
+        // must not make a new session look stalled before its first frame.
+        _lastFramesDecoded = _receiver.FramesDecoded;
+        _lastFrameAt = DateTime.UtcNow;
+        _everDecodedFrame = false;
         _connectionLog.LogConnected(info.DeviceId.ToString());
         SessionStarted?.Invoke();
         if (sameDeviceWasOnProgram)
@@ -170,6 +191,7 @@ internal sealed class DeviceCastController : IDisposable
 
         _restoreSnapshot = _playback()?.CaptureSnapshot();
         _restoreIdle = _restoreSnapshot == null;
+        _restoreAwaitingConfirmation = false; // a fresh capture replaces any pending point
         _playback()?.StopForDeviceCast();
         AttachToProgram(programSurface, overlay);
         _mainWindow.UpdateDeviceCast(_deviceName, connected: true, onProgram: true);
@@ -187,6 +209,7 @@ internal sealed class DeviceCastController : IDisposable
         {
             _restoreSnapshot = null;
             _restoreIdle = false;
+            _restoreAwaitingConfirmation = false;
         }
         _mainWindow.UpdateDeviceCast(_deviceName, connected: _receiver != null, onProgram: false);
     }
@@ -200,10 +223,31 @@ internal sealed class DeviceCastController : IDisposable
     public void CheckLiveness()
     {
         if (_receiver == null) return;
+        SampleFrameProgress();
         if (DateTime.UtcNow - _receiver.LastPacketReceivedAt < CastTimeout) return;
         RestoreProgram();
         Stop("caster_silent_" + (int)CastTimeout.TotalSeconds + "s");
     }
+
+    /// <summary>Samples the decoded-frame counter (OP-27): the 1 s liveness tick is the only
+    /// regular heartbeat this controller has, so the "last new frame" time is refreshed here.
+    /// A session that never decoded a frame is not "stalled" — it is still starting up.</summary>
+    private void SampleFrameProgress()
+    {
+        if (_receiver == null) return;
+        long decoded = _receiver.FramesDecoded;
+        if (decoded == _lastFramesDecoded) return;
+        _lastFramesDecoded = decoded;
+        _lastFrameAt = DateTime.UtcNow;
+        if (decoded > 0) _everDecodedFrame = true;
+    }
+
+    /// <summary>True when a device holds Program but no new frame has been decoded for over
+    /// <see cref="SignalStallAfter"/> — the picture on air is frozen, whatever the 10 s
+    /// session timeout has yet to decide. Read from the liveness tick, after
+    /// <see cref="CheckLiveness"/> has sampled the frame counter.</summary>
+    public bool IsSignalStalled => _receiver != null && _onProgram && _everDecodedFrame
+        && DateTime.UtcNow - _lastFrameAt >= SignalStallAfter;
 
     public void CheckDecodeHealth()
     {
@@ -255,7 +299,11 @@ internal sealed class DeviceCastController : IDisposable
 
     public void Stop(string reason)
     {
-        DropFromProgram(discardRestorePoint: true);
+        // A restore whose outcome is unconfirmed keeps its point through a session end (OP-10):
+        // the point is the operator's only way back to the pre-cast content, and a failed restore
+        // must not silently eat it. An operator stop discards it via OnOutputStateChanged(Idle)'s
+        // own DropFromProgram(discardRestorePoint: true) in Program.cs, which runs before this.
+        DropFromProgram(discardRestorePoint: !_restoreAwaitingConfirmation);
         if (_receiver != null)
         {
             _connectionLog.LogDisconnected(_deviceId.ToString(), "cast_ended: " + reason);
@@ -297,15 +345,89 @@ internal sealed class DeviceCastController : IDisposable
         DropFromProgram(discardRestorePoint: false);
         if (_restoreSnapshot is { } snapshot)
         {
-            if (_playback()?.RequestPlay(snapshot, PlaybackTrigger.DeviceRestore) == true && snapshot.Paused)
-                _playback()?.Pause();
+            var playback = _playback();
+            if (playback != null && playback.RequestPlay(snapshot, PlaybackTrigger.DeviceRestore))
+            {
+                // The point is kept until the restore genuinely succeeds (OP-10): RequestPlay's
+                // bool is only "accepted for loading", and a load that then fails used to consume
+                // the point and leave a black overlay claimed live. The paused state needs no
+                // explicit Pause() here — the engine arms it inside RequestPlay (OP-01).
+                _restoreAwaitingConfirmation = true;
+                ArmRestoreConfirmation(playback, snapshot);
+            }
         }
         else if (_restoreIdle)
         {
             _stateMachine.Disconnect();
+            _restoreSnapshot = null;
+            _restoreIdle = false;
         }
-        _restoreSnapshot = null;
-        _restoreIdle = false;
+        // NOTE: no unconditional clear of _restoreSnapshot here anymore — it survives until the
+        // confirmation handler clears it on success, a newer TakeToProgram replaces it, or an
+        // explicit discard (operator stop / Stop with no pending confirmation) drops it.
+    }
+
+    /// <summary>Watches the restore attempt's outcome (OP-10). Success (Playing/Paused with the
+    /// snapshot's file current) clears the point; a newer take superseding it clears the point
+    /// too; a stop detaches without touching the point (the stop path owns the discard decision).
+    /// A failure keeps the point and offers a retry that replays the same snapshot — the
+    /// generic abnormal-interruption toast fires as well, but it says nothing about the restore
+    /// point, so this one names it.</summary>
+    private void ArmRestoreConfirmation(PlaybackEngine playback, PlaybackEngine.Snapshot snapshot)
+    {
+        void OnState(PlaybackChannelState state)
+        {
+            if (_mainWindow.InvokeRequired)
+            {
+                _mainWindow.BeginInvoke(new Action<PlaybackChannelState>(OnState), state);
+                return;
+            }
+            if (!ReferenceEquals(playback.CurrentFile, snapshot.File))
+            {
+                if (state == PlaybackChannelState.Idle) { playback.StateChanged -= OnState; return; }
+                // Superseded by a newer take: the point belongs to the old content.
+                _restoreSnapshot = null;
+                _restoreIdle = false;
+                _restoreAwaitingConfirmation = false;
+                playback.StateChanged -= OnState;
+                return;
+            }
+            if (state == PlaybackChannelState.Loading) return;
+            if (state == PlaybackChannelState.Failed)
+            {
+                _mainWindow.ShowToast(
+                    $"恢复失败：{Path.GetFileName(snapshot.File.SourcePath)}，已保留恢复点，可重试恢复。",
+                    ToastSeverity.Warning,
+                    new ToastAction("重试恢复", RetryRestore));
+                return; // stays armed: a retry replays this same snapshot
+            }
+            if (state is PlaybackChannelState.Playing or PlaybackChannelState.Paused)
+            {
+                _restoreSnapshot = null;
+                _restoreIdle = false;
+                _restoreAwaitingConfirmation = false;
+                playback.StateChanged -= OnState;
+            }
+        }
+        playback.StateChanged += OnState;
+        // A load that already reached its terminal state synchronously (a static document, a
+        // synchronous open failure) fires no further transition — confirm against the state as
+        // it stands right now, or the point would linger until the next take.
+        OnState(playback.State);
+    }
+
+    private void RetryRestore()
+    {
+        if (_onProgram || _restoreSnapshot is not { } snapshot) return;
+        var playback = _playback();
+        if (playback == null) return;
+        // An attempt already loading this snapshot needs no second one.
+        if (playback.State == PlaybackChannelState.Loading && ReferenceEquals(playback.CurrentFile, snapshot.File)) return;
+        // No re-arm: the confirmation handler from the original attempt stays attached across
+        // a failure and observes this replay's outcome. Re-arming here would stack a second
+        // handler and a second failure toast on the next failure. A decline (cast switch off)
+        // fires the cast-switch toast instead.
+        playback.RequestPlay(snapshot, PlaybackTrigger.DeviceRestore);
     }
 
     public void Dispose() => Stop("terminal_exit");

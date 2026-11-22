@@ -27,7 +27,7 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestFilesHeaderNarrow(directory); TestActivityThumbnailAvailability(directory); TestPresenterContentOrdering(); TestDocumentOutputDisposal(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestFilesHeaderNarrow(directory); TestActivityThumbnailAvailability(directory); TestPresenterContentOrdering(); TestDocumentOutputDisposal(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); TestProgramFailureStatus(directory); TestFocusIsInTextBox(); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -885,6 +885,73 @@ internal static class DocumentTests
         }
         Require(externalOpens == 0, "A document path launched an external application.");
         TestMainWindowStarts(directory);
+    }
+
+    /// <summary>OP-04/OP-09/OP-27/OP-29: the title-bar status names a failed or stalled Program
+    /// instead of claiming the big screen is live, shows the collapsed-column device indicator,
+    /// and clears the recorded failure when output stops. The window has no Program engine
+    /// attached (as in the GPU-loss case, where the state machine claims Active while the
+    /// engine is gone), so only the failure/stall/collapsed states are pinned here — the
+    /// live text with a real engine is covered by the Program feedback tests.</summary>
+    private static void TestProgramFailureStatus(string directory)
+    {
+        string dir = Path.Combine(directory, "programfailure");
+        Directory.CreateDirectory(dir);
+        var outputState = new OutputStateMachine();
+        using var window = new MainWindow(outputState, null, new FileLibraryStore(Path.Combine(dir, "library.json")),
+            new EveryStage.Terminal.Devices.PairedDeviceStore(Path.Combine(dir, "paired.json")), new ScenarioStore(),
+            new ScenarioRepository(Path.Combine(dir, "scenarios.json")), new SettingsStore(Path.Combine(dir, "settings.json")),
+            EveryStage.Discovery.DeviceIdentity.LoadOrCreate("selftest", Path.Combine(dir, "identity.json")),
+            new EveryStage.Terminal.Logging.DeviceConnectionLogger(dir), new MusicLibraryStore(Path.Combine(dir, "music.json")),
+            new EveryStage.Terminal.Logging.FileOperationLogger(dir))
+        { Opacity = 0, ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), FirstRunGuideEnabled = false };
+        window.Show();
+        Pump(400);
+        var statusLabel = (Label)typeof(MainWindow).GetField("_statusLabel", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
+        Require(statusLabel.Text == "○ 未连接扩展屏 · 仅本地预览", $"Idle status is wrong before any output (got '{statusLabel.Text}').");
+        Require(outputState.RequestLocalFilePlayback(), "Could not drive the output state machine to Active/LocalMedia.");
+        window.ReportProgramFailure();
+        Require(statusLabel.Text == "● 大屏播放失败", $"Recorded program failure did not reach the title bar (got '{statusLabel.Text}').");
+        window.SetDeviceSignalStalled(true);
+        Require(statusLabel.Text == "● 大屏播放失败 · 信号中断", $"Stalled device signal did not reach the title bar (got '{statusLabel.Text}').");
+        window.SetDeviceSignalStalled(false);
+        Require(statusLabel.Text == "● 大屏播放失败", $"Cleared stall kept its title-bar suffix (got '{statusLabel.Text}').");
+        typeof(MainWindow).GetField("_deviceInPreview", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.SetValue(window, true);
+        typeof(MainWindow).GetMethod("SetMonitorCollapsed", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(window, new object[] { true });
+        Require(statusLabel.Text == "● 大屏播放失败 · 1 台设备在预览", $"Collapsed-column device indicator did not reach the title bar (got '{statusLabel.Text}').");
+        outputState.Disconnect();
+        Pump(100);
+        Require(statusLabel.Text == "○ 未连接扩展屏 · 仅本地预览", $"Recorded program failure stuck after output stopped (got '{statusLabel.Text}').");
+        Console.WriteLine("PASS: title bar names a failed/stalled Program, shows the collapsed device indicator, and clears on stop");
+    }
+
+    /// <summary>OP-20: the ONE typing判定 must recognise every control whose keys type into a
+    /// value — including an editable ComboBox, whose inner edit window holds the native focus
+    /// (so ComboBox.Focused is false while the operator is typing in it), and a NumericUpDown.
+    /// A non-editable DropDownList combo and a plain button are not typing.</summary>
+    private static void TestFocusIsInTextBox()
+    {
+        using var form = new Form { ShowInTaskbar = false, Opacity = 0, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
+        using var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDown, Width = 160 };
+        using var listCombo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+        using var numeric = new NumericUpDown { Width = 120 };
+        using var button = new Button { Text = "x" };
+        form.Controls.AddRange(new Control[] { combo, listCombo, numeric, button });
+        form.Show();
+        Pump(200);
+        combo.Focus();
+        Require(WaitFor(() => combo.ContainsFocus, 1000), "Editable combo box did not take focus.");
+        Require(MainWindow.FocusIsInTextBox(form), "Typing in an editable combo box was not recognised as typing.");
+        numeric.Focus();
+        Require(WaitFor(() => numeric.ContainsFocus, 1000), "NumericUpDown did not take focus.");
+        Require(MainWindow.FocusIsInTextBox(form), "Typing in a NumericUpDown was not recognised as typing.");
+        listCombo.Focus();
+        Require(WaitFor(() => listCombo.ContainsFocus, 1000), "DropDownList combo box did not take focus.");
+        Require(!MainWindow.FocusIsInTextBox(form), "A non-editable combo box was treated as typing.");
+        button.Focus();
+        Require(WaitFor(() => button.ContainsFocus, 1000), "Button did not take focus.");
+        Require(!MainWindow.FocusIsInTextBox(form), "A focused button was treated as typing.");
+        Console.WriteLine("PASS: typing is recognised in an editable combo box and a NumericUpDown, and nowhere else");
     }
 
     /// <summary>The real main window (preview dock, document control row, side bar) constructs, shows,

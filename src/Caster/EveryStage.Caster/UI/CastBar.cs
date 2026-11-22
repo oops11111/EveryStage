@@ -3,11 +3,13 @@ using System.Runtime.InteropServices;
 
 namespace EveryStage.Caster.UI;
 
-internal enum CastHealth { Connecting, Good, Congested, Waiting }
+internal enum CastHealth { Connecting, Good, Congested, Waiting, Failed }
 
 /// <summary>Everything the bar shows, refreshed twice a second by MainForm. Screen/Latency/Sound/
 /// Bitrate/Confirmed are the always-visible metrics row (C-03); Warning is the one backpressure
-/// line, non-empty only while a drop counter is non-zero (the existing "non-zero only" rule).</summary>
+/// line, non-empty only while a drop counter is non-zero or the terminal has gone silent
+/// (OP-14: the silence prompt names the 停止 action). Failed is the red state: the terminal
+/// has not reported for over 5 s and the cast may not be reaching it at all.</summary>
 internal sealed record CastBarState(
     string Elapsed, CastHealth Health, string HealthText,
     string Screen, string Latency, string Sound, bool SoftwareEncoding, string Details,
@@ -244,8 +246,13 @@ internal sealed class CastBar : Form
         var state = _state;
         var health = state?.Health ?? CastHealth.Connecting;
         // The dot reports health, not a live/recording indicator: it must agree with the pill
-        // below (green = good, amber = degraded/connecting).
-        Color dot = health == CastHealth.Good ? p.Success : p.Warning;
+        // below (green = good, amber = degraded/connecting, red = the terminal is not responding).
+        Color dot = health switch
+        {
+            CastHealth.Good => p.Success,
+            CastHealth.Failed => p.Danger,
+            _ => p.Warning,
+        };
         int x = s(18);
         using (var dotBrush = new SolidBrush(dot)) g.FillEllipse(dotBrush, x, (bar - s(10)) / 2, s(10), s(10));
         x += s(20);
@@ -267,9 +274,12 @@ internal sealed class CastBar : Form
         TextRenderer.DrawText(g, elapsed, timeFont, new Rectangle(x, 0, timeW, bar), p.BarMuted, flags);
         x += timeW + s(10);
 
-        (Color pillBack, Color pillInk) = health == CastHealth.Good
-            ? (p.SuccessSurface, p.Success)
-            : (p.WarningSurface, p.WarningText);
+        (Color pillBack, Color pillInk) = health switch
+        {
+            CastHealth.Good => (p.SuccessSurface, p.Success),
+            CastHealth.Failed => (p.DangerSurface, p.DangerText),
+            _ => (p.WarningSurface, p.WarningText),
+        };
         var pillRect = new Rectangle(x, (bar - s(22)) / 2, Math.Min(pillW, Math.Max(0, limit - x)), s(22));
         if (pillRect.Width > s(20))
         {

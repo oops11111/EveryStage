@@ -650,7 +650,10 @@ public sealed class SettingsPanel : UserControl
             var button = buttons[action];
             if (!Hotkeys.IsAssignable(keys))
             {
-                NotifyHotkeyProblem($"{Hotkeys.Format(keys)} 不能用作热键（Tab、Space、Delete、退格和单独的修饰键保留给系统与编辑）。", "热键", MessageBoxIcon.Information);
+                // OP-21: this list must stay exactly IsAssignable's exclusion set — Space is
+                // NOT in it (Space is the default pause key; binding it hits the conflict
+                // branch below, which names the occupant). The old copy listed Space here.
+                NotifyHotkeyProblem($"{Hotkeys.Format(keys)} 不能用作热键（Tab、Delete、退格、菜单键和单独的修饰键保留给系统与编辑）。", "热键", MessageBoxIcon.Information);
                 return;
             }
             var current = _settingsStore.Current;

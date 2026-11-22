@@ -35,6 +35,7 @@ internal sealed class PresenterWindow : Form
 
     private readonly Func<SlideShowSession?> _show;
     private readonly Func<PlaybackEngine?> _program;
+    private readonly Action<string>? _notify;
 
     // Header.
     private readonly Label _elapsedCaption = MakeLabel("已用时间", 9.5F, Muted);
@@ -86,10 +87,15 @@ internal sealed class PresenterWindow : Form
     private float _notesSize = 16F;
     private bool _sample;
 
-    public PresenterWindow(Func<SlideShowSession?> show, Func<Rectangle?> programBounds, Func<PlaybackEngine?> program)
+    /// <param name="notify">Called with a short message when a thumbnail click is refused
+    /// (the clicked page is already on air — OP-23); the host shows it as a toast. Optional so
+    /// the window stays constructible in tests without a host.</param>
+    public PresenterWindow(Func<SlideShowSession?> show, Func<Rectangle?> programBounds, Func<PlaybackEngine?> program,
+        Action<string>? notify = null)
     {
         _show = show;
         _program = program;
+        _notify = notify;
         Text = "演讲者视图";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -264,10 +270,19 @@ internal sealed class PresenterWindow : Form
 
     private void ToggleMaximize() => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
 
-    /// <summary>A thumbnail was clicked: put that page on the big screen.</summary>
+    /// <summary>A thumbnail was clicked: put that page on the big screen — unless it is the
+    /// page already on air (OP-23): re-jumping it would restart its animations in front of the
+    /// audience, so the click is refused with a toast instead. Compared against the show's live
+    /// position, not <see cref="PlaybackEngine.BrowsedSlide"/> — the latter is the presenter's
+    /// preview-browse position, and clicking a browsed page is exactly how it goes to air.</summary>
     private void GoTo(int slide)
     {
-        if (_program() is not { } program || _show() == null) return;
+        if (_program() is not { } program || _show() is not { } show) return;
+        if (show.Position.Slide == slide && slide > 0)
+        {
+            _notify?.Invoke("这一页已在播出");
+            return;
+        }
         _ = program.SlideCommandAsync(s => s.GoToSlideAsync(slide), $"跳到第 {slide} 页", SlideMove.Jump);
     }
 

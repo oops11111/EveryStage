@@ -71,6 +71,10 @@ public sealed class PairingConfirmationDialog : Form
 
         _allowCastCheckbox = new CheckBox
         {
+            // OP-11: checked by default — accepting the request is the operator agreeing this
+            // device may cast; leaving it unchecked would pair a device that cannot cast and
+            // say nothing about why its casts are refused.
+            Checked = true,
             Text = "允许被投放（该设备可以向本终端机投屏）",
             Bounds = new Rectangle(12, 190, 356, 24),
         };

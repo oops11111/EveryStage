@@ -118,7 +118,17 @@ public sealed partial class MainForm : GradientForm
         _terminalListBox.DrawItem += DrawTerminalRow;
         _terminalListBox.SelectedIndexChanged += (_, _) => { if (!_refreshingList) OnTerminalSelected(); };
         _diagnosticsButton = new ActionButton { Text = "诊断", Kind = ButtonKind.Ghost, Glyph = ButtonGlyph.Gear, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(ModernUi.UiFont, 9.5F) };
-        _diagnosticsButton.Click += (_, _) => ShowView(_diagnosticsView!);
+        _diagnosticsButton.Click += (_, _) =>
+        {
+            // OP-36: diagnostics must not silently abandon a pairing wait behind its page —
+            // entry is blocked until the pairing resolves or is cancelled.
+            if (_pairingWaiting)
+            {
+                MessageBox.Show(this, "正在等终端机确认配对。先完成配对或点「取消」，再打开诊断。", "配对进行中", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            ShowView(_diagnosticsView!);
+        };
         _themeButton = new ActionButton { Kind = ButtonKind.Ghost, Glyph = ButtonGlyph.Theme, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(ModernUi.UiFont, 9.5F) };
         _themeButton.Click += (_, _) => CycleTheme();
         UpdateThemeButton();
@@ -134,10 +144,23 @@ public sealed partial class MainForm : GradientForm
         _standbyView.StartClicked += () => _ = StartCastAsync();
         _standbyView.RemovePairingClicked += OnRemovePairingClick;
         _standbyView.IncludeAudio = _settings.IncludeAudio;
-        _standbyView.AudioChanged += include => { _settings.IncludeAudio = include; _settings.Save(); };
+        _standbyView.AudioChanged += include => { _settings.IncludeAudio = include; SaveSettingsOrWarn(); };
         _pairingView.CancelClicked += CancelPairing;
         _problemView.BackClicked += ShowSelectedTerminal;
-        _problemView.RetryClicked += () => { if (_retry is { } retry) _ = retry(); else ShowSelectedTerminal(); };
+        _problemView.RetryClicked += () =>
+        {
+            // OP-35: a retry re-runs the start, which silently returns when the terminal is
+            // offline — so check first, and send the operator back to standby with the reason
+            // instead of a dead button.
+            if (_retry is not { } retry) { ShowSelectedTerminal(); return; }
+            if (SelectedEntry is not { Live: not null })
+            {
+                MessageBox.Show(this, "终端已离线。确认它开着、和这台电脑在同一个局域网后，再重新选择它开始投屏。", "终端已离线", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                ShowSelectedTerminal();
+                return;
+            }
+            _ = retry();
+        };
 
         _captureSelfTestButton = SelfTestButton("屏幕捕获自检", OnCaptureSelfTestClick);
         _captureStatsLabel = SelfTestLabel();
@@ -257,6 +280,13 @@ public sealed partial class MainForm : GradientForm
     private void ShowView(CasterView view)
     {
         if (_currentView == view) return;
+        // OP-36: leaving the pairing page abandons the pairing — the terminal side only stops
+        // waiting when the request is cancelled, so a silent navigation would leave the
+        // operator's accept/decline dangling against a Caster that has moved on. (The
+        // diagnostics button blocks this navigation outright in its own handler; every other
+        // path cancels here. Completion paths clear _pairingWaiting first, so they are
+        // unaffected.)
+        if (_currentView == _pairingView && _pairingWaiting) _pairingCts?.Cancel();
         view.Visible = true;
         view.BringToFront();
         if (_currentView != null) _currentView.Visible = false;
@@ -299,6 +329,15 @@ public sealed partial class MainForm : GradientForm
 
     // ---- theme ----
 
+    /// <summary>OP-37: a preference that could not be written must be said out loud — otherwise
+    /// the choice silently reverts next launch and looks like the app forgot it. (The Caster has
+    /// no toast stack; MessageBox is its notice precedent.)</summary>
+    private void SaveSettingsOrWarn()
+    {
+        if (_settings.Save()) return;
+        MessageBox.Show(this, "偏好未能保存，下次启动将恢复旧值。", "保存偏好", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
     private void CycleTheme()
     {
         _settings.Theme = _settings.Theme switch
@@ -307,7 +346,7 @@ public sealed partial class MainForm : GradientForm
             CasterTheme.Light => CasterTheme.Dark,
             _ => CasterTheme.System,
         };
-        _settings.Save();
+        SaveSettingsOrWarn();
         ModernUi.SetTheme(_settings.Theme);
         UpdateThemeButton();
         ApplyThemeEverywhere();

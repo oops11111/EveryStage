@@ -9,6 +9,10 @@ public sealed partial class MainForm
     private Func<Task>? _retry;
     private bool _starting;
     private CancellationTokenSource? _pairingCts;
+    /// <summary>OP-36: a pairing request is out waiting for the terminal's answer. Leaving the
+    /// pairing page while this is set cancels the pairing (see <see cref="ShowView"/>); the
+    /// diagnostics button blocks entry outright while it is set.</summary>
+    private bool _pairingWaiting;
 
     /// <summary>开始投屏 on the selected terminal: straight to casting when it is already paired,
     /// otherwise through the pairing page first. Every failure lands on the problem page with a
@@ -19,6 +23,7 @@ public sealed partial class MainForm
         var terminal = entry.Live!;
         int outputIndex = _standbyView.SelectedOutputIndex;
         string monitorLabel = _standbyView.SelectedMonitorLabel;
+        string? monitorDevice = _standbyView.SelectedMonitorDevice;
         _retry = async () =>
         {
             ShowSelectedTerminal();
@@ -43,10 +48,10 @@ public sealed partial class MainForm
             var existing = _pairedTerminals.Find(terminal.DeviceId);
             if (existing != null && PairingSecurity.IsSupportedKey(existing.PairingKey, existing.PairingKeyFormatVersion))
             {
-                await BeginCastAsync(terminal, outputIndex, monitorLabel, existing.PairingKey!, existing.PairingKeyFormatVersion);
+                await BeginCastAsync(terminal, outputIndex, monitorLabel, monitorDevice, existing.PairingKey!, existing.PairingKeyFormatVersion);
                 return;
             }
-            await PairThenCastAsync(terminal, outputIndex, monitorLabel);
+            await PairThenCastAsync(terminal, outputIndex, monitorLabel, monitorDevice);
         }
         catch (Exception ex)
         {
@@ -61,13 +66,14 @@ public sealed partial class MainForm
         }
     }
 
-    private async Task PairThenCastAsync(DiscoveredTerminal terminal, int outputIndex, string monitorLabel)
+    private async Task PairThenCastAsync(DiscoveredTerminal terminal, int outputIndex, string monitorLabel, string? monitorDevice)
     {
         _pairingCts?.Dispose();
         var cts = _pairingCts = new CancellationTokenSource();
         _pairingView.Begin(terminal.DeviceName, TerminalDiscoveryClient.PairingRequestTimeout);
         ShowView(_pairingView);
         DiscoveryProtocol.PairResponseMessage? response;
+        _pairingWaiting = true;
         try
         {
             response = await _discoveryClient.RequestPairingAsync(terminal, _identity, code =>
@@ -79,6 +85,10 @@ public sealed partial class MainForm
         catch (OperationCanceledException)
         {
             response = null;
+        }
+        finally
+        {
+            _pairingWaiting = false;
         }
         if (IsDisposed || Disposing) return;
         if (cts.IsCancellationRequested)
@@ -94,7 +104,7 @@ public sealed partial class MainForm
                     new[] { "把终端机和投屏器都更新到最新版本后，重新配对。" }, null));
                 return;
             }
-            await BeginCastAsync(terminal, outputIndex, monitorLabel, response.PairingKey!, response.PairingKeyFormatVersion, allowPairingRecovery: false);
+            await BeginCastAsync(terminal, outputIndex, monitorLabel, monitorDevice, response.PairingKey!, response.PairingKeyFormatVersion, allowPairingRecovery: false);
             return;
         }
         ShowProblem(response == null
@@ -116,7 +126,7 @@ public sealed partial class MainForm
         ShowSelectedTerminal();
     }
 
-    private async Task BeginCastAsync(DiscoveredTerminal terminal, int outputIndex, string monitorLabel, string pairingKey, int keyFormatVersion, bool allowPairingRecovery = true)
+    private async Task BeginCastAsync(DiscoveredTerminal terminal, int outputIndex, string monitorLabel, string? monitorDevice, string pairingKey, int keyFormatVersion, bool allowPairingRecovery = true)
     {
         // The one point where a pairing is confirmed: remember it for next time's offline list. A
         // failure here used to vanish (this runs from a fire-and-forget task) and the page just stopped.
@@ -134,12 +144,41 @@ public sealed partial class MainForm
         _standbyView.SetBusy(true, "正在连接…");
         try
         {
+            // OP-32: the output index and label were captured before pairing, and a display can
+            // be unplugged while the operator waits at the terminal. Re-resolve by device name
+            // through the same DXGI enumeration the monitor tiles come from (output indices
+            // shift when a display goes away, so the old index may now point at a different
+            // screen). If the named display is gone, fall back to the primary and say so.
+            int resolvedIndex = outputIndex;
+            string resolvedLabel = monitorLabel;
+            if (monitorDevice != null)
+            {
+                IReadOnlyList<EveryStage.Caster.Capture.ScreenCaptureSource.MonitorCaptureOption>? outputs = null;
+                try
+                {
+                    using var gpu = new EveryStage.Rendering.D3D11Device();
+                    outputs = EveryStage.Caster.Capture.ScreenCaptureSource.EnumerateOutputs(gpu);
+                }
+                catch (Exception) { } // keep the captured index; the cast start will say why if it is bad
+                if (outputs != null)
+                {
+                    var match = outputs.FirstOrDefault(o => o.DeviceName == monitorDevice);
+                    if (match.DeviceName != null) resolvedIndex = match.OutputIndex;
+                    else
+                    {
+                        var primary = outputs.FirstOrDefault(o => o.Bounds.X == 0 && o.Bounds.Y == 0);
+                        resolvedIndex = primary.DeviceName != null ? primary.OutputIndex : 0;
+                        resolvedLabel = "";
+                        MessageBox.Show(this, $"所选显示器已断开，已改选 {primary.DeviceName ?? "默认屏幕"}。", "显示器已断开", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                }
+            }
             _liveCastSession?.Dispose();
-            _liveCastSession = new LiveCastSession(_discoveryClient, _identity, terminal, outputIndex) { IncludeAudio = _settings.IncludeAudio };
+            _liveCastSession = new LiveCastSession(_discoveryClient, _identity, terminal, resolvedIndex) { IncludeAudio = _settings.IncludeAudio };
             await _liveCastSession.StartAsync();
             if (IsDisposed || Disposing) return;
             if (_liveCastSession.LastError is { } startError) throw new InvalidOperationException(startError);
-            EnterCastingMode(terminal, monitorLabel);
+            EnterCastingMode(terminal, resolvedLabel);
         }
         catch (Exception ex)
         {
@@ -152,7 +191,7 @@ public sealed partial class MainForm
                 // The terminal no longer knows this pairing (it was removed there): pair afresh once.
                 _pairedTerminals.Remove(terminal.DeviceId);
                 RefreshTerminalList();
-                await PairThenCastAsync(terminal, outputIndex, monitorLabel);
+                await PairThenCastAsync(terminal, outputIndex, monitorLabel, monitorDevice);
                 return;
             }
             ShowProblem(ProblemForStartFailure(ex.Message));

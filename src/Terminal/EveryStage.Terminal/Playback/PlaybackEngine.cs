@@ -136,6 +136,14 @@ public sealed partial class PlaybackEngine : IDisposable
     /// exist yet — this is only ever a brief "确认收到点击" signal, not a substitute for one.</summary>
     public event Action<MediaFile>? PlaybackDeclinedByCastSwitch;
 
+    /// <summary>Raised when a direct <see cref="RequestPlay"/> for a background-audio file is
+    /// intercepted on the Program channel: the file starts (or keeps) the overlay track and never
+    /// reaches the screen. Only the direct RequestPlay overloads raise this — queue walking
+    /// (<see cref="TryAdvance"/>) passes over background-audio slots silently by design, so the
+    /// operator is told exactly when their own Take was reinterpreted, never for every slot an
+    /// auto-advance steps over.</summary>
+    public event Action<MediaFile>? BackgroundAudioTakeIntercepted;
+
     /// <summary>Raised right before local playback actually touches the shared
     /// <see cref="VideoSurface"/> (i.e. after the cast-switch check passes, immediately before
     /// showing the overlay's image/video surface) — <c>TerminalApplicationContext</c> (Program.cs)
@@ -335,19 +343,26 @@ public sealed partial class PlaybackEngine : IDisposable
                 : _documentMode == DocumentPlaybackMode.StaticSlides && _pdfView != null ? _pdfView.CurrentPage : null);
 
     /// <summary>Starts <paramref name="snapshot"/>'s content on this channel at its position (Take).
-    /// Returns false if this channel refused it (Program with output disabled).</summary>
+    /// Returns true only when the content was actually accepted for loading: false when the
+    /// cast switch declined it, when a background-audio file was intercepted on the Program
+    /// channel (see <see cref="BackgroundAudioTakeIntercepted"/>), or when the snapshot's
+    /// activity index was out of range. Callers must NOT treat a true return as "the file is
+    /// playing" — the load is asynchronous and can still fail; <see cref="StateChanged"/> is the
+    /// signal for that. A snapshot captured while paused (<see cref="Snapshot.Paused"/>) is
+    /// honoured: the fresh play starts paused (OP-01) via <see cref="ArmPauseOnStart"/>.</summary>
     public bool RequestPlay(Snapshot snapshot, PlaybackTrigger trigger = PlaybackTrigger.CastSwitch)
     {
         _pendingStartPosition = snapshot.Position;
         _pendingPdfState = snapshot.PdfState;
         _pendingSlide = snapshot.Slide;
+        bool accepted;
         try
         {
             if (snapshot.Activity != null && snapshot.FileIndex >= 0 && snapshot.FileIndex < snapshot.Activity.Files.Count
                 && ReferenceEquals(snapshot.Activity.Files[snapshot.FileIndex], snapshot.File))
-                RequestPlay(snapshot.Activity, snapshot.FileIndex, trigger);
+                accepted = RequestPlay(snapshot.Activity, snapshot.FileIndex, trigger);
             else
-                RequestPlay(snapshot.File, trigger);
+                accepted = RequestPlay(snapshot.File, trigger);
         }
         finally
         {
@@ -355,7 +370,55 @@ public sealed partial class PlaybackEngine : IDisposable
             _pendingPdfState = null;
             _pendingSlide = null;
         }
-        return ReferenceEquals(_currentFile, snapshot.File);
+        // PlayFile assigns _currentFile before returning true and returns false for every
+        // refusal, so the bool alone is the truth — the old ReferenceEquals check lied for
+        // background-audio interceptions and for loads that failed after assignment.
+        if (accepted && snapshot.Paused) ArmPauseOnStart(snapshot.File);
+        return accepted;
+    }
+
+    /// <summary>Take/Swap/restore of a snapshot captured while paused (OP-01): the fresh play
+    /// starts paused instead of playing. The pause is applied when the load first reaches
+    /// Playing — via a one-shot <see cref="StateChanged"/> handler plus a deferred
+    /// <see cref="IPlaybackOutput.Post"/> — so the stay/auto timers the load arms first are the
+    /// ones <see cref="Pause"/> freezes, and so a load that fails or is superseded disarms
+    /// itself without pausing anything. Never poke <see cref="IsPaused"/> early: the load paths
+    /// read it to decide their initial state.</summary>
+    private void ArmPauseOnStart(MediaFile file)
+    {
+        int version = _contentLoadVersion;
+        if (State == PlaybackChannelState.Playing && ReferenceEquals(_currentFile, file))
+        {
+            PauseOnStartDeferred(file, version);
+            return;
+        }
+        void OnState(PlaybackChannelState state)
+        {
+            if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile))
+            {
+                StateChanged -= OnState;
+                return;
+            }
+            if (state == PlaybackChannelState.Loading) return;
+            StateChanged -= OnState;
+            if (state != PlaybackChannelState.Playing) return;
+            PauseOnStartDeferred(file, version);
+        }
+        StateChanged += OnState;
+    }
+
+    private void PauseOnStartDeferred(MediaFile file, int version)
+    {
+        try
+        {
+            _output.Post(() =>
+            {
+                if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile)
+                    || State != PlaybackChannelState.Playing) return;
+                Pause();
+            });
+        }
+        catch (InvalidOperationException) { } // the output was closed while the load finished
     }
 
     // Start offset for the next PlayFile — set only for the duration of a Take.
@@ -536,7 +599,12 @@ public sealed partial class PlaybackEngine : IDisposable
         }
     }
 
-    private void PlayFile(MediaFile file, PlaybackTrigger trigger)
+    /// <summary>Loads <paramref name="file"/> on this channel. Returns false only when the
+    /// cast-switch gate declined the play (Program channel, switch off) — every other path
+    /// assigns <see cref="_currentFile"/> and starts the asynchronous load, so a true return
+    /// says "accepted", never "playing": a load can still fail, and that surfaces through
+    /// <see cref="StateChanged"/> (Failed) and <see cref="PlaybackAbnormallyInterrupted"/>.</summary>
+    private bool PlayFile(MediaFile file, PlaybackTrigger trigger)
     {
         ++_contentLoadVersion;
         _waitingAudioOutput = null;
@@ -565,7 +633,7 @@ public sealed partial class PlaybackEngine : IDisposable
                 : _stateMachine!.RequestLocalFilePlayback()))
         {
             PlaybackDeclinedByCastSwitch?.Invoke(file);
-            return;
+            return false;
         }
 
         // Program only: the picture is about to change — the transition layer freezes what is on the
@@ -659,6 +727,7 @@ public sealed partial class PlaybackEngine : IDisposable
 
         FileStarted?.Invoke(file);
         PrefetchNext();
+        return true;
     }
 
     /// <summary>Opens a video file off the UI thread (audit P-16), mirroring

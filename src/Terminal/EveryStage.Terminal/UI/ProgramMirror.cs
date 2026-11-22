@@ -45,6 +45,15 @@ internal sealed class ProgramMirror : Control
     }
     private string _idleText = "大屏未输出";
 
+    /// <summary>Program output failed (OP-26): the stale captured frame is hidden behind a
+    /// failure notice instead of being shown as if it were still live.</summary>
+    public bool Failed
+    {
+        get => _failed;
+        set { if (_failed != value) { _failed = value; Invalidate(); } }
+    }
+    private bool _failed;
+
     public ProgramMirror()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
@@ -129,7 +138,14 @@ internal sealed class ProgramMirror : Control
         var g = e.Graphics;
         g.Clear(Color.Black);
         var area = PictureArea();
-        if (_frame != null)
+        if (_failed)
+        {
+            // A failed Program must not keep showing its last good frame as if live (OP-26).
+            using var font = new Font(ModernUi.UiFontSemibold, 11F);
+            TextRenderer.DrawText(g, "● 播出失败", font, area, Color.FromArgb(232, 40, 52),
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine);
+        }
+        else if (_frame != null)
         {
             var fit = Fit(_frame.Size, area);
             g.DrawImageUnscaled(_frame, fit.Location);

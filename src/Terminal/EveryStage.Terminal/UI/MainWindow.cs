@@ -61,7 +61,23 @@ public sealed class MainWindow : GradientForm
     private readonly Label _statusLabel;
     private readonly RoundedActionButton _emergencyStop;
     private readonly EmergencyStopHotkey _emergencyHotkey;
+    /// <summary>A device is connected but held in the preview window only (not on Program). When
+    /// the monitor column is collapsed the device card is invisible, so the title-bar status
+    /// carries the fact instead (OP-29) — the column's expand button is the way back to it.</summary>
+    private bool _deviceInPreview;
+
+    /// <summary>No new decoded frame for over ~2 s while a device holds Program (OP-27).</summary>
+    private bool _deviceSignalStalled;
+
     private MediaFile? _lastOnAirFile;
+
+    /// <summary>Program output failed but the state machine still claims Active (OP-04/OP-09):
+    /// a decode failure leaves the engine Failed, and a GPU device-removed leaves it stopped —
+    /// in both cases the title-bar label must say "failed", not keep claiming the output is
+    /// live. Set by <see cref="OnProgramPlaybackStateChanged"/> (Failed) and by
+    /// <see cref="ReportProgramFailure"/> (GPU loss); cleared by <see cref="UpdateStatusLabel"/>
+    /// whenever the machine is Idle or the engine is playing/paused again.</summary>
+    private bool _programFailure;
     private bool _deviceFeedbackLive;
     /// <summary>首启引导只弹一次（见 <see cref="ShowFirstRunGuideIfEmpty"/>）；窗口靠托盘反复隐藏/显示，
     /// 不能每次显示都弹。</summary>
@@ -83,8 +99,11 @@ public sealed class MainWindow : GradientForm
     /// after 3 s, and the operator can close it at once. No "open settings" action: none of
     /// the four call sites has an in-app destination (the settings one wants a newer version
     /// installed).</summary>
-    internal void ShowStartupProblem(string message) =>
-        _toastStack.Show(message, ToastSeverity.Critical, new ToastAction("知道了", () => { }));
+    internal void ShowStartupProblem(string message, params ToastAction[] actions)
+    {
+        var all = new List<ToastAction>(actions) { new ToastAction("知道了", () => { }) };
+        _toastStack.Show(message, ToastSeverity.Critical, all.ToArray());
+    }
 
     public void ShowPairingRequest(PairingRequest request) => _devicesPanel.ShowPairingRequest(request);
 
@@ -202,6 +221,12 @@ public sealed class MainWindow : GradientForm
         _preview2 = new PlaybackEngine(PlaybackChannel.Preview, _previewDock.SecondSurface, _preview2VideoSurface,
             settingsStore, scenarioStore, stateMachine: null);
         _previewDock.BindSecondPreview(_preview2);
+        // The title-bar stop button shares the dock's StopAvailable rule (OP-04): a preview-only
+        // play or a music start makes stopping meaningful even while the state machine is Idle,
+        // so the preview engines and the music channel must refresh the same label/button too —
+        // not just state-machine transitions.
+        _preview.StateChanged += OnPreviewEngineStateChanged;
+        _preview2.StateChanged += OnPreviewEngineStateChanged;
         _previewDock.FileDropped += (window, file, path) =>
         {
             var dropped = file ?? (path != null && FileLibraryStore.InferKind(path) is { } kind ? new MediaFile { SourcePath = path, Kind = kind } : null);
@@ -219,6 +244,7 @@ public sealed class MainWindow : GradientForm
         _previewDock.StopProgramRequested += StopProgramOutput;
         _previewDock.DeviceTakeRequested += () => DeviceTakeRequested?.Invoke();
         _previewDock.DeviceRevertRequested += () => DeviceRevertRequested?.Invoke();
+        _previewDock.ViewProgramRequested += ViewProgramFromDeviceCard;
         _previewDock.DeviceVideoHostResized += (w, h) => DeviceVideoHostResized?.Invoke(w, h);
         _previewDock.RemoveFromLibraryRequested += RemoveFailedPreviewFileFromLibrary;
         // PDF / Word / presentation controls and Preview → Program document sync (实时同步 / 冻结 / 更新大屏).
@@ -264,6 +290,7 @@ public sealed class MainWindow : GradientForm
                 && (program.CurrentVideoHasAudio || program.CurrentFile?.Kind == MediaKind.Audio),
         };
         _previewDock.AdditionalStopCondition = () => _music.IsPlaying;
+        _music.Changed += OnMusicChanged; // music start/stop changes StopAvailable (OP-04)
         _musicBar = new MusicBar(_music) { Dock = DockStyle.Bottom };
         _musicDrawer = new MusicDrawer(_music, _library) { Dock = DockStyle.Bottom };
         _musicBar.PlaylistsRequested += _musicDrawer.Toggle;
@@ -347,6 +374,11 @@ public sealed class MainWindow : GradientForm
         // "点文件" click while the cast switch is off used to be a completely silent no-op —
         // OnPlaybackDeclinedByCastSwitch below answers it with a toast instead.
         if (_playback != null) _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
+        // A direct Take of a background-audio file is reinterpreted (overlay track, no screen
+        // change — OP-05): the interception is only visible via this toast, same pattern as the
+        // cast-switch decline above. The queue-walk skip itself needs no toast: the flow-page
+        // row text already marks these files ("[背景音频叠加播放…]").
+        if (_playback != null) _playback.BackgroundAudioTakeIntercepted += OnBackgroundAudioTakeIntercepted;
         if (_playback != null) _playback.FileStarted += OnProgramFileStarted;
         if (_playback != null) _playback.StateChanged += OnProgramPlaybackStateChanged;
 
@@ -422,12 +454,14 @@ public sealed class MainWindow : GradientForm
         {
             _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
             _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
+            _playback.BackgroundAudioTakeIntercepted -= OnBackgroundAudioTakeIntercepted;
             _playback.FileStarted -= OnProgramFileStarted;
             _playback.StateChanged -= OnProgramPlaybackStateChanged;
         }
         _playback = playback;
         _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
         _playback.PlaybackDeclinedByCastSwitch += OnPlaybackDeclinedByCastSwitch;
+        _playback.BackgroundAudioTakeIntercepted += OnBackgroundAudioTakeIntercepted;
         _playback.FileStarted += OnProgramFileStarted;
         _playback.StateChanged += OnProgramPlaybackStateChanged;
         // Files/Activities/audio bar operate the Preview engine; only the dock needs to know Program.
@@ -435,9 +469,34 @@ public sealed class MainWindow : GradientForm
         UpdateStatusLabel();
     }
 
+    /// <summary>OP-06 "查看大屏": sync a window to the device-held Program for read-only viewing.
+    /// The window's own playback stops if it had any — the operator asked for the mirror, and
+    /// the toast says what was given up. Never touches Program itself: the device keeps it.</summary>
+    private void ViewProgramFromDeviceCard()
+    {
+        if (_previewDock.ProgramWindow != null) return;
+        int window = _previewDock.FreeWindow(forLocalPlayback: false);
+        var engine = WindowEngine(window);
+        bool stopped = engine.State is not PlaybackChannelState.Idle;
+        _previewDock.SyncWindowToProgram(window);
+        if (stopped)
+            _toastStack.Show("本地预览已停，该窗口开始跟随大屏（只看，不抢占）。", ToastSeverity.Info);
+    }
+
     public void UpdateDeviceCast(string? deviceName, bool connected, bool onProgram)
     {
         _previewDock.UpdateDeviceCast(deviceName, connected, onProgram);
+        _deviceInPreview = connected && !onProgram;
+        if (!connected) SetDeviceSignalStalled(false);
+        // OP-06: a device taking Program with a window standing idle gets its PGM mirror at
+        // once — an idle window loses nothing by following. Busy windows are left alone; the
+        // device card's "查看大屏" summons the mirror explicitly instead.
+        if (onProgram && _previewDock.ProgramWindow == null)
+        {
+            int free = _previewDock.FreeWindow(forLocalPlayback: false);
+            if (WindowEngine(free).State == PlaybackChannelState.Idle) _previewDock.SyncWindowToProgram(free);
+        }
+        UpdateStatusLabel(); // the collapsed-column indicator (OP-29) depends on this
         if (connected && onProgram && !_deviceFeedbackLive)
         {
             _previewDock.FlashProgram(true);
@@ -445,6 +504,22 @@ public sealed class MainWindow : GradientForm
         }
         _deviceFeedbackLive = connected && onProgram;
     }
+
+    /// <summary>OP-27: no new decoded frame for over ~2 s while a device holds Program. Set from
+    /// the cast liveness tick; drives the device card's "信号中断" and the title-bar suffix.</summary>
+    internal void SetDeviceSignalStalled(bool stalled)
+    {
+        if (_deviceSignalStalled == stalled) return;
+        _deviceSignalStalled = stalled;
+        _previewDock.SetDeviceSignalStalled(stalled);
+        UpdateStatusLabel();
+    }
+
+    /// <summary>Shows a toast on the monitor column's stack, for collaborators that own no
+    /// toast surface of their own (the device-cast controller's restore retry, the presenter
+    /// window's on-air guard). Must be called on the UI thread.</summary>
+    internal void ShowToast(string message, ToastSeverity severity, params ToastAction[] actions) =>
+        _toastStack.Show(message, severity, actions);
 
     /// <summary>Starts the playlist marked 「启动后自动播放」 (called once by the application at startup).</summary>
     public void StartBackgroundMusic() => _music.AutoPlayOnStartup();
@@ -490,6 +565,7 @@ public sealed class MainWindow : GradientForm
         _previewDock.Visible = !collapsed;
         _expandMonitorButton.Visible = collapsed;
         ApplyFrameMetrics();
+        UpdateStatusLabel(); // the collapsed-column device indicator (OP-29) depends on this
     }
 
     /// <summary>The 1px divider between the rail / monitor column and the page area.</summary>
@@ -593,8 +669,12 @@ public sealed class MainWindow : GradientForm
     }
 
     /// <summary>Double-click / Enter on a file (B1: straight to the big screen): Program plays it from
-    /// the start; Preview shows the same file and is paused in the same step, so the operator never
-    /// hears or watches it twice. Only the dock's 「投到大屏」 continues from the Preview position.</summary>
+    /// the start, and the window that follows the big screen keeps following it (or the first free
+    /// window starts to — see <see cref="CastFile"/>). Nothing is paused: the old "pause Preview
+    /// in the same step" behaviour died with the <see cref="PausePreview"/> calls (OP-24), and the
+    /// operator avoids hearing/watching it twice only because the following window's own playback
+    /// is stopped by the sync, not by a pause. Only the dock's 「投到大屏」 continues from the
+    /// Preview position.</summary>
     private void TakeFileToProgram(MediaFile file)
     {
         // Double-click: the 投屏 key unless 设置 made it the single click (then the click already cast it).
@@ -602,15 +682,14 @@ public sealed class MainWindow : GradientForm
     }
 
     /// <summary>Pause Preview right after something went on air (see <see cref="TakeFileToProgram"/>).
-    /// Pauses the active window's engine — the two windows are the same, and the active one is the
-    /// preview the operator is driving. If it has nothing pausable, nothing is paused: the other
-    /// window's local playback is unrelated content and is left alone.
-    /// NOTE: currently uncalled — the dual-monitor rework (two identical windows) dropped the three
-    /// PausePreview() calls that used to follow TakeSnapshot, and the take paths now rely on
-    /// SyncWindowToProgram stopping the following window's engine instead. The method is kept
-    /// (re-pointed, not deleted) so the pause-after-take behaviour can come back on the right
-    /// window; do not re-add the calls without re-checking which window holds the taken file,
-    /// because SyncWindowToProgram flips the active window to the other one.</summary>
+    /// CURRENTLY UNCALLED (OP-24): the dual-monitor rework dropped the three calls that used to
+    /// follow TakeSnapshot, and the take paths now rely on SyncWindowToProgram stopping the
+    /// following window's engine instead — no preview is paused after a take today. The method
+    /// is kept (re-pointed, not deleted) so the pause-after-take behaviour can come back on the
+    /// right window if that is ever decided; do not re-add the calls without re-checking which
+    /// window holds the taken file, because SyncWindowToProgram flips the active window to the
+    /// other one. Pauses the active window's engine; if it has nothing pausable, nothing is
+    /// paused: the other window's local playback is unrelated content and is left alone.</summary>
     private void PausePreview()
     {
         var engine = WindowEngine(_previewDock.ActiveWindow);
@@ -668,6 +747,7 @@ public sealed class MainWindow : GradientForm
         if (InvokeRequired) { BeginInvoke(() => OnProgramPlaybackStateChanged(state)); return; }
         if (state is PlaybackChannelState.Loading or PlaybackChannelState.Idle or PlaybackChannelState.Failed)
             _lastOnAirFile = null;
+        UpdateStatusLabel(); // a failure must flip the title-bar label the moment it happens (OP-04)
         NotifyProgramReady();
     }
 
@@ -682,15 +762,39 @@ public sealed class MainWindow : GradientForm
         _toastStack.Show($"已上屏：{Path.GetFileName(file.SourcePath)}", ToastSeverity.Info);
     }
 
-    /// <summary>"投到屏幕" in the dock: continue the Preview content (file, activity position and play
-    /// position) on Program, then hold Preview on that frame/position so it can be re-taken.</summary>
+    /// <summary>"投到大屏" in the dock: continue the Preview content (file, activity position and play
+    /// position) on Program. The taken-from window then FOLLOWS the big screen — its own playback
+    /// is stopped by the sync and it shows the Program mirror (OP-24: it does not "hold Preview
+    /// on that frame"; re-taking from it is refused by the Take guard). The other window keeps
+    /// whatever it was playing.</summary>
     /// <param name="style">切换 / 淡入淡出 from the dock; null (Ctrl+Enter) uses the item's or 设置's transition.</param>
     private void TakePreviewToProgram(TransitionStyle? style = null)
     {
         int window = _previewDock.ActiveWindow;
         var engine = WindowEngine(window);
-        if (_previewDock.ProgramWindow == window || engine.State is PlaybackChannelState.Loading or PlaybackChannelState.Failed
-            || engine.CaptureSnapshot() is not { } snapshot)
+        // Four distinct refusals, four distinct messages (OP-18): the old single toast
+        // ("本地窗口里没有可以投到大屏的内容") lied for three of them — a window following the
+        // big screen, one still loading, and one that failed are not "no content".
+        if (_previewDock.ProgramWindow == window)
+        {
+            _toastStack.Show("这个窗口正在跟随大屏，内容已在大屏上。", ToastSeverity.Warning);
+            return;
+        }
+        if (engine.State == PlaybackChannelState.Loading)
+        {
+            _toastStack.Show("本地窗口正在加载，请稍候再投。", ToastSeverity.Warning);
+            return;
+        }
+        if (engine.State == PlaybackChannelState.Failed)
+        {
+            // OP-18: name the failure, not just the state — the engine keeps the reason.
+            string reason = engine.LastError?.Message is { Length: > 0 } message
+                ? $"加载失败：{message}，请先重试或换一个文件。"
+                : "本地窗口播放失败，请先重试或换一个文件。";
+            _toastStack.Show(reason, ToastSeverity.Warning);
+            return;
+        }
+        if (engine.CaptureSnapshot() is not { } snapshot)
         {
             _toastStack.Show("本地窗口里没有可以投到大屏的内容。", ToastSeverity.Warning);
             return;
@@ -701,8 +805,10 @@ public sealed class MainWindow : GradientForm
         else if (_playback != null) _playback.PendingTransition = null;
     }
 
-    /// <summary>「⇄ 对调」: PVW goes on air with a fade and what was on air comes back into PVW at its
-    /// position, paused — so pressing it again swaps back.</summary>
+    /// <summary>「⇄ 对调」: the active window's content goes on air with a fade, and what was
+    /// on air comes back into the window that followed the big screen, forced paused (OP-01)
+    /// — it does NOT keep playing, so pressing it again swaps back. With nothing on air
+    /// there is nothing to swap back: the Take still happens and a toast says so (OP-28).</summary>
     private void SwapPreviewAndProgram()
     {
         var onAir = _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
@@ -724,7 +830,18 @@ public sealed class MainWindow : GradientForm
         }
         _previewDock.SyncWindowToProgram(window);
         // What was on air comes back, paused, into the window that followed the big screen.
-        if (onAir == null || programWindow is not { } back) return;
+        // The button greys out when there is nothing on air (OP-28), but if Swap is invoked
+        // anyway, say plainly that this was a Take, not a swap — never silently degenerate.
+        if (onAir == null)
+        {
+            _toastStack.Show("大屏上没有可换回的内容，这次只投不换。", ToastSeverity.Warning);
+            return;
+        }
+        if (programWindow is not { } back)
+        {
+            _toastStack.Show("没有跟随大屏的窗口，换回的内容无处可放。", ToastSeverity.Warning);
+            return;
+        }
         _previewDock.UseForLocalPlayback(back);
         WindowEngine(back).RequestPlay(onAir.Value with { Paused = true }, PlaybackTrigger.ManualSkip);
     }
@@ -746,6 +863,17 @@ public sealed class MainWindow : GradientForm
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
                 return false;
             _stateMachine.SetCastSwitch(true);
+        }
+        // Re-taking the file already on air would silently restart it from its start position
+        // (OP-16): refuse with a toast. A failed or still-loading file is NOT refused — the
+        // operator may be retrying it. A paused on-air file is refused too: resuming it is
+        // Space's job, and a Take would restart it.
+        if (_stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
+            && _playback.State is PlaybackChannelState.Playing or PlaybackChannelState.Paused
+            && ReferenceEquals(_playback.CurrentFile, snapshot.File))
+        {
+            _toastStack.Show("已在播出", ToastSeverity.Warning);
+            return false;
         }
         return _playback.RequestPlay(snapshot);
     }
@@ -786,10 +914,16 @@ public sealed class MainWindow : GradientForm
             else StopProgramOutput();
             return true;
         }
-        bool typing = FocusedControl() is TextBoxBase or ComboBox { DropDownStyle: not ComboBoxStyle.DropDownList } or NumericUpDown;
-        bool plainOrArrow = (keyData & Keys.Modifiers) is Keys.None or Keys.Shift
-            || (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End;
-        if (!(typing && plainOrArrow))
+        // One typing判定 for every hotkey below (OP-20): FocusIsInTextBox walks the real focus
+        // chain, including text boxes nested in plain wrappers. An editing key while typing
+        // belongs to the control: plain/shift keys, any arrow/home/end navigation, and Enter in
+        // any modifier combination (Ctrl+Enter is a text-editing key in a multiline box, not a
+        // Take — it used to fire Take from inside the search box).
+        bool typing = FocusIsInTextBox(this);
+        bool editingKey = (keyData & Keys.Modifiers) is Keys.None or Keys.Shift
+            || (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End
+            || (keyData & Keys.KeyCode) == Keys.Enter;
+        if (!(typing && editingKey))
         {
             if (keyData == settings.HotkeyFor(HotkeyAction.Take)) { TakePreviewToProgram(); return true; }
             if (keyData == settings.HotkeyFor(HotkeyAction.PauseProgram)) { TogglePlayPause(); return true; }
@@ -797,33 +931,37 @@ public sealed class MainWindow : GradientForm
             if (keyData == settings.HotkeyFor(HotkeyAction.PreviousItem)) { _activitiesPanel.RunPrevious(); return true; }
         }
         return base.ProcessCmdKey(ref msg, keyData);
-
-        Control? FocusedControl()
-        {
-            Control? active = ActiveControl;
-            while (active is ContainerControl { ActiveControl: { } inner }) active = inner;
-            return active;
-        }
     }
 
-    /// <summary>Whether keyboard focus is inside a text box under <paramref name="root"/> — the
-    /// focused control itself, or a text box nested in a plain wrapper control. The second case
-    /// matters: <see cref="FocusedControl"/> above stops at a non-container wrapper (the Files
-    /// search box is a plain <c>Control</c> holding an inner <c>TextBox</c>), so a plain
-    /// <c>is TextBoxBase</c> check on it would miss the search box entirely. Walks the
-    /// <c>ContainsFocus</c> chain instead, which follows real focus through any nesting.</summary>
+    /// <summary>Whether keyboard focus is inside a text-editing control under
+    /// <paramref name="root"/> — the focused control itself, or an editing control nested in a
+    /// plain wrapper control. The second case matters: the Files search box is a plain
+    /// <c>Control</c> holding an inner <c>TextBox</c>, so an <c>ActiveControl</c> walk that stops
+    /// at a non-container wrapper would miss it entirely. Walks the <c>ContainsFocus</c> chain
+    /// instead, which follows real focus through any nesting. This is the ONE typing判定 for
+    /// every hotkey dispatch in this window (OP-20): the emergency-stop key and the four
+    /// action hotkeys below all consult it, never a second focus walk. "Text-editing" here
+    /// means <c>TextBoxBase</c>, an editable <c>ComboBox</c>, or a <c>NumericUpDown</c> — the
+    /// three controls whose keys type into a value.</summary>
     internal static bool FocusIsInTextBox(Control root)
     {
-        for (Control? current = root; current != null;)
+        // Descend to the deepest control holding focus, then judge THAT control: Focused
+        // itself is wrong here — a ComboBox's inner edit window holds the native focus, so
+        // ComboBox.Focused is false while the operator is typing in it, and the edit is not a
+        // WinForms child to descend into. ContainsFocus follows native child windows, so the
+        // walk still lands on the ComboBox. (A NumericUpDown's inner edit IS a child TextBox,
+        // so it lands on the edit and matches TextBoxBase.)
+        Control current = root;
+        while (true)
         {
-            if (current is TextBoxBase && current.Focused) return true;
             Control? next = null;
             foreach (Control child in current.Controls)
                 if (child.ContainsFocus) { next = child; break; }
-            if (next == null) return false;
+            if (next == null) break;
             current = next;
         }
-        return false;
+        return current is TextBoxBase
+            or ComboBox { DropDownStyle: not ComboBoxStyle.DropDownList } or NumericUpDown;
     }
 
     /// <summary>播放 / 暂停 (Space): the big screen while local media is on air (same as 「暂停大屏」),
@@ -832,7 +970,14 @@ public sealed class MainWindow : GradientForm
     {
         var engine = _playback != null && _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
             ? _playback : WindowEngine(_previewDock.ActiveWindow);
-        if (engine.CurrentFile == null) return;
+        if (engine.CurrentFile == null)
+        {
+            // Space with a device cast on air and nothing in the preview window used to do
+            // nothing at all (OP-19): say that pausing lives on the device side.
+            if (_stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.DeviceCast)
+                _toastStack.Show("设备投屏中，暂停请在设备端操作。", ToastSeverity.Warning);
+            return;
+        }
         if (engine.IsPaused || engine.IsCompleted) engine.Resume();
         else if (engine.CanPause) engine.Pause();
     }
@@ -867,24 +1012,63 @@ public sealed class MainWindow : GradientForm
         _toastStack.Show(message, ToastSeverity.Warning);
     }
 
+    /// <summary>The single refresh for the title-bar output status and BOTH stop buttons'
+    /// availability (OP-04): the label here and the dock column's stop button both read the
+    /// same <see cref="SharedPreviewDock.StopAvailable"/> rule, and this method runs on every
+    /// output-state transition — state-machine changes, Program engine state changes, preview
+    /// engine changes, and music start/stop — so the collapsed-column stop button (the title
+    /// bar's) can never disagree with the column's own. A distinct failure state is shown while
+    /// the machine claims Active but the Program content has failed or been lost.</summary>
     private void UpdateStatusLabel()
     {
+        if (InvokeRequired) { BeginInvoke(UpdateStatusLabel); return; }
         bool active = _stateMachine.State == OutputState.Active;
+        if (!active || _playback?.State is PlaybackChannelState.Playing or PlaybackChannelState.Paused)
+            _programFailure = false;
+        bool failed = _programFailure
+            || (active && _stateMachine.Source == ProgramSource.LocalMedia && _playback?.State == PlaybackChannelState.Failed);
         _emergencyStop.Enabled = _previewDock.StopAvailable;
         var (message, role) =
-            active && (_playback == null || _stateMachine.Source == ProgramSource.DeviceCast) ? ("● 大屏输出中 · 设备来投", UiForegroundRole.Danger)
+            failed ? ("● 大屏播放失败", UiForegroundRole.Danger)
+            : active && (_playback == null || _stateMachine.Source == ProgramSource.DeviceCast) ? ("● 大屏输出中 · 设备来投", UiForegroundRole.Danger)
             : active ? ("● 大屏输出中", UiForegroundRole.Danger)
             : _playback == null ? ("○ 未连接扩展屏 · 仅本地预览", UiForegroundRole.Muted)
             : _stateMachine.CastSwitchOn ? ("○ 大屏待机", UiForegroundRole.Muted)
             : ("○ 大屏待机 · 投屏开关已关闭", UiForegroundRole.Warning);
+        // Collapsed column: the device card is hidden, so the status says a device is waiting in
+        // preview; the ‹ button expands the column back to it (OP-29). (The presenter window is a
+        // window of its own and stays visible when collapsed, so it needs no indicator here.)
+        if (_monitorCollapsed && _deviceInPreview) message += " · 1 台设备在预览";
+        // Stalled device signal (OP-27): the frozen picture must not keep passing for live.
+        if (_deviceSignalStalled) message += " · 信号中断";
         _statusLabel.Text = message;
         ModernUi.SetForegroundRole(_statusLabel, role);
         _filesPanel.SetOutputActive(active);
     }
 
+    /// <summary>Program output was lost without the state machine leaving Active (OP-09: the GPU
+    /// device was removed and the local engine was stopped, so the overlay stays up black). The
+    /// label switches to the failure state and the retry affordance lives in the problem toast
+    /// the caller shows; this only records the state (here and in the dock's chip).</summary>
+    internal void ReportProgramFailure()
+    {
+        _programFailure = true;
+        _previewDock.SetProgramFailed(true);
+        UpdateStatusLabel();
+    }
+
+    private void OnPreviewEngineStateChanged(PlaybackChannelState _) => UpdateStatusLabel();
+
+    private void OnMusicChanged() => UpdateStatusLabel();
+
     private void OnPlaybackDeclinedByCastSwitch(MediaFile file)
     {
         _toastStack.Show($"投屏开关已关闭，未投放：{Path.GetFileName(file.SourcePath)}", ToastSeverity.Warning);
+    }
+
+    private void OnBackgroundAudioTakeIntercepted(MediaFile file)
+    {
+        _toastStack.Show($"《{Path.GetFileName(file.SourcePath)}》是背景音乐，不占用大屏画面", ToastSeverity.Info);
     }
 
     /// <summary>PLANNING.md §11 Toast "涉及播放的异常需带可执行按钮（重试/移除）" — this is that
@@ -966,10 +1150,12 @@ public sealed class MainWindow : GradientForm
             _stateMachine.StateChanged -= OnStateChanged;
             _settingsStore.SettingsChanged -= OnSettingsChanged;
             _settingsStore.AudioOutputFallback -= OnAudioOutputFallback;
+            _music.Changed -= OnMusicChanged;
             _settingsPanel.Dispose();
             if (_playback != null)
             {
                 _playback.PlaybackDeclinedByCastSwitch -= OnPlaybackDeclinedByCastSwitch;
+                _playback.BackgroundAudioTakeIntercepted -= OnBackgroundAudioTakeIntercepted;
                 _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
                 _playback.FileStarted -= OnProgramFileStarted;
                 _playback.StateChanged -= OnProgramPlaybackStateChanged;

@@ -116,16 +116,38 @@ public sealed partial class ActivitiesPanel
     {
         var order = RunOrder();
         int next = NextPosition(order);
-        if (next < 0) return;
+        if (next < 0)
+        {
+            // The button is greyed in this state, but the hotkey (Ctrl+→) is not — it must say
+            // why nothing happened, in the run strip's own words (OP-19).
+            ShowToast?.Invoke(NoNextReason(order, LivePosition(order)), ToastSeverity.Warning, Array.Empty<ToastAction>());
+            return;
+        }
         RunRequested?.Invoke(order[next].Activity, order[next].Index);
     }
+
+    /// <summary>Why there is no next item: the same wording the run strip shows, reused for the
+    /// hotkey-path toast so the greyed button and the hotkey agree (OP-19).</summary>
+    private static string NoNextReason(List<(Activity Activity, int Index)> order, int live) =>
+        live >= 0
+            ? (live + 1 < order.Count ? "本环节已结束 · 选中下一个环节后按「下一项」进入" : "已是最后一项")
+            : "流程里还没有可播放的文件";
 
     /// <summary>「◀ 上一项」: back to the item before the live one, within the live section.</summary>
     private void GoPrevious()
     {
         var order = RunOrder();
         int live = LivePosition(order);
-        if (live <= 0 || !ReferenceEquals(order[live - 1].Activity, order[live].Activity)) return; // stays in the section
+        if (live < 0 || live == 0 || !ReferenceEquals(order[live - 1].Activity, order[live].Activity))
+        {
+            // Same as GoNext: the button is greyed here, the hotkey is not (OP-19).
+            ShowToast?.Invoke(
+                live < 0 ? "没有正在播放的项目，无法回到上一项。"
+                : live == 0 ? "已是第一项，没有上一项。"
+                : "上一项属于上一个环节，请在流程里选中它。",
+                ToastSeverity.Warning, Array.Empty<ToastAction>());
+            return;
+        }
         RunRequested?.Invoke(order[live - 1].Activity, order[live - 1].Index);
     }
 
@@ -145,11 +167,8 @@ public sealed partial class ActivitiesPanel
         var scenario = CurrentScenario;
         string NumberOf((Activity Activity, int Index) item) =>
             $"{(scenario?.Activities.IndexOf(item.Activity) ?? 0) + 1}.{item.Index + 1}";
-        bool sectionEnd = next < 0 && live >= 0;
         _nextName.Text = next < 0
-            ? (sectionEnd
-                ? (live + 1 < order.Count ? "本环节已结束 · 选中下一个环节后按「下一项」进入" : "已是最后一项")
-                : "流程里还没有可播放的文件")
+            ? NoNextReason(order, live)
             : $"{NumberOf(order[next])}  {Path.GetFileName(order[next].Activity.Files[order[next].Index].SourcePath)}";
         ModernUi.SetForegroundRole(_nextName, next < 0 ? UiForegroundRole.Muted : UiForegroundRole.Text);
         _runNextButton.Enabled = next >= 0;

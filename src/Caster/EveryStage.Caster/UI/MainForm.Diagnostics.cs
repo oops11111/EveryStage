@@ -22,6 +22,10 @@ public sealed partial class MainForm
         if (_checking || _liveCastSession != null) return;
         _checking = true;
         _diagnosticsView.SetRunning(true);
+        // OP-31: the 开始投屏 button lives on the standby page, which the operator can return
+        // to while checks run — show it busy there too, so the click does not silently die in
+        // StartCastAsync's _checking guard.
+        _standbyView.SetBusy(true, "诊断检查进行中…");
         StopIndividualSelfTests();
         var results = CheckNames.Select(name => new CheckResult(name, CheckStatus.Pending, "")).ToList();
         void Set(int index, CheckStatus status, string detail)
@@ -124,6 +128,9 @@ public sealed partial class MainForm
             _lastCheckAt = DateTime.Now;
             _checking = false;
             if (!IsDisposed) _diagnosticsView.SetRunning(false);
+            // A start that began while the checks ran owns the button's busy text; otherwise
+            // the checks' busy state must not leak into the standby page.
+            if (!_starting) _standbyView.SetBusy(false);
         }
     }
 
