@@ -27,7 +27,24 @@ function Test-NotificationOverflowMetadata($metadata,[bool]$notificationAncestry
  return $notificationAncestry -and [string]::Equals($metadata.name,'Show Hidden Icons',[StringComparison]::OrdinalIgnoreCase) -and $metadata.class_name -ceq 'SystemTray.NormalButton' -and $metadata.automation_id -ceq 'SystemTrayIcon' -and $metadata.control_type -ceq 'ControlType.Button' -and $metadata.enabled -and !$metadata.offscreen
 }
 function Test-NotificationIconMetadata($metadata,[bool]$notificationAncestry) {
- return $notificationAncestry -and $metadata.name -cmatch '^EveryStage 终端机 - (待机中|扩展屏输出中) / 开关: (开|关)$' -and $metadata.enabled -and !$metadata.offscreen
+ return $notificationAncestry -and $metadata.name -cmatch '^(?:EveryStage 终端机 )?EveryStage 终端机 - (待机中|扩展屏输出中) / 开关: (开|关)$' -and $metadata.class_name -ceq 'SystemTray.NormalButton' -and $metadata.automation_id -ceq 'NotifyItemIcon' -and $metadata.control_type -ceq 'ControlType.Button' -and $metadata.enabled -and !$metadata.offscreen
+}
+function In-NotificationArea($ancestors) {
+ if(!$ancestors.Count){return $false}
+ $shellPid=$ancestors[0].pid
+ $sameProcess=@()
+ foreach($ancestor in $ancestors) {
+  if($ancestor.pid -ne $shellPid){break}
+  $sameProcess+=,$ancestor
+ }
+ $overflow=@($sameProcess|Where-Object {$_.class_name -ceq 'TopLevelWindowForOverflowXamlIsland' -and $_.name -ceq 'System tray overflow window.' -and $_.native_hwnd -ne 0 -and $_.enabled -and !$_.offscreen})
+ if($overflow.Count -eq 1) {
+  $rootBounds=$overflow[0].bounds;$itemBounds=$ancestors[0].bounds
+  return $rootBounds.width -gt 0 -and $rootBounds.height -gt 0 -and $itemBounds.width -gt 0 -and $itemBounds.height -gt 0 -and $itemBounds.left -ge $rootBounds.left -and $itemBounds.top -ge $rootBounds.top -and ($itemBounds.left+$itemBounds.width) -le ($rootBounds.left+$rootBounds.width) -and ($itemBounds.top+$itemBounds.height) -le ($rootBounds.top+$rootBounds.height)
+ }
+ $shellRoots=@($sameProcess|Where-Object {$_.class_name -in @('Shell_TrayWnd','Shell_SecondaryTrayWnd','TrayNotifyWnd') -and $_.native_hwnd -ne 0})
+ $areas=@($sameProcess|Where-Object {$_.class_name -in @('TrayNotifyWnd','SysPager','SystemTray.NormalIconView','SystemTray.OverflowIconView') -or $_.automation_id -match '^(SystemTray|NotificationArea)' -or $_.name -in @('Notification area','User Promoted Notification Area','System tray','System Tray')})
+ return $shellRoots.Count -gt 0 -and $areas.Count -gt 0
 }
 function Find-Name($root,$name) {
  $condition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,$name)
@@ -152,9 +169,6 @@ if ($Action -eq 'Exit') {
   }
   return $ancestors
  }
- function In-NotificationArea($ancestors) {
-  return @($ancestors|Where-Object {$_.class_name -in @('TrayNotifyWnd','SysPager','SystemTray.NormalIconView','SystemTray.OverflowIconView') -or $_.automation_id -match '^(SystemTray|NotificationArea)' -or $_.name -in @('Notification area','User Promoted Notification Area','System tray','System Tray')}).Count -gt 0
- }
  $taskbars=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ClassNameProperty,'Shell_TrayWnd'))
  $taskbarMetadata=@()
  foreach($taskbar in $taskbars) {
@@ -182,12 +196,16 @@ if ($Action -eq 'Exit') {
   if($eligibleIcons.Count -gt 1 -or $eligibleOverflow.Count -gt 1){throw 'Ambiguous eligible notification icons or overflow controls; no input permitted'}
   if($eligibleIcons.Count -eq 1){$icon=$eligibleIcons[0]}
   if(!$icon -and $eligibleOverflow.Count -eq 1 -and !$overflowOpened) {
+   $shellProcess=Get-Process -Id $eligibleOverflow[0].Current.ProcessId
+   if($shellProcess.Path -ne "$env:WINDIR\explorer.exe"){throw 'Notification overflow is not owned by the expected Explorer shell'}
    Invoke-Control $eligibleOverflow[0]
    $overflowOpened=$true
   }
   if(!$icon){Start-Sleep -Milliseconds 200}
  }
  if(!$icon){throw 'Exact source NotifyIcon tooltip in notification-area ancestry unavailable; no taskbar click permitted'}
+ $shellProcess=Get-Process -Id $icon.Current.ProcessId
+ if($shellProcess.Path -ne "$env:WINDIR\explorer.exe"){throw 'Notification icon is not owned by the expected Explorer shell'}
  $iconRecord=Element-Metadata $icon
  $iconRecord.notification_ancestors=@(Notification-Ancestry $icon)
  $iconRecord|ConvertTo-Json -Depth 12|Set-Content -Encoding utf8 "$OutputDirectory/tray-icon.json"
