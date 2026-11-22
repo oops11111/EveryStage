@@ -9,7 +9,7 @@ using EveryStage.Terminal.Playback;
 using EveryStage.Terminal.UI;
 using MotionSoftDemo;
 
-internal static class Program
+internal static partial class Program
 {
     private static int _checks;
     private static readonly List<string> Checks = new();
@@ -56,10 +56,13 @@ internal static class Program
             using var realPreference = new WindowsAnimationPreference();
             bool observedPreference = realPreference.AnimationsEnabled;
             Check(realPreference.AnimationsEnabled == observedPreference, "real system animation preference only read");
+            int drawerRegressionChecks = _checks;
+            PresenterChecks(output);
+            Check(recorder.Created == recorder.Released, "presenter native lifecycle also releases every created handle");
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
             {
                 status = "PASS isolated actual-control harness; not ordinary Terminal startup",
-                checks = _checks, labels = Checks, recorder.Created, recorder.Released,
+                checks = _checks, drawer_regression_checks = drawerRegressionChecks, presenter_checks = _checks - drawerRegressionChecks, labels = Checks, recorder.Created, recorder.Released,
                 system_settings_written = false, program_entry_invoked = false,
                 media_started = false, network_started = false,
                 persistence = "explicit fresh temp overrides, empty music/file libraries",
