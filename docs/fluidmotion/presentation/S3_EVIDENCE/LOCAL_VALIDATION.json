@@ -1,0 +1,60 @@
+{
+  "base": "310679087c302a39157a0e2443bde4a48deae1ef",
+  "original_stage": "presentation-s3-ee39d2dbba764656a142a9581cf410b2",
+  "publication": "UTF8/LF text; originals retained in ignored stage; not runtime evidence",
+  "records": [
+    {
+      "file": "parser.txt",
+      "original_sha256": "1a25e8de7210d6baf92b0fba09b26f3110bec3a37c0f208c304c7fcf54be61f8",
+      "published_sha256": "214695742b1967558c9fcc7532fba48968963cb1eff6811d354f27b8535063bf"
+    },
+    {
+      "file": "verifier-final-pwsh.txt",
+      "original_sha256": "3e564a5ceeab9a603783a657ae1c97ec5e5e2aaee4b6cdd5a7c327b1a57d57d3",
+      "published_sha256": "7d5c014c448d90adbb960de298398b8460197a6cf883c715cb3dd992b1fe9885"
+    },
+    {
+      "file": "verifier-final-winps5.txt",
+      "original_sha256": "3e564a5ceeab9a603783a657ae1c97ec5e5e2aaee4b6cdd5a7c327b1a57d57d3",
+      "published_sha256": "7d5c014c448d90adbb960de298398b8460197a6cf883c715cb3dd992b1fe9885"
+    },
+    {
+      "file": "verifier-pwsh.txt",
+      "original_sha256": "2735e572aeb3a2e86298c794b10120a5c5935c968c5a8835fa86de767a1c3014",
+      "published_sha256": "68d31faa8d06da4f8950af73da3eaa911e8e0ffffa4422919439f148663bbad5"
+    },
+    {
+      "file": "verifier-winps5.txt",
+      "original_sha256": "2735e572aeb3a2e86298c794b10120a5c5935c968c5a8835fa86de767a1c3014",
+      "published_sha256": "68d31faa8d06da4f8950af73da3eaa911e8e0ffffa4422919439f148663bbad5"
+    },
+    {
+      "file": "version-pwsh.txt",
+      "original_sha256": "f6635d903d7c34e651fd2032d5e3c13b39ebd3ae9147bed29d5c6253cdce6aee",
+      "published_sha256": "26604674c4f45c376d7213c9c71ce4b82ab26ef43631a17896adba9c10a284c7"
+    },
+    {
+      "file": "version-winps5.txt",
+      "original_sha256": "f6635d903d7c34e651fd2032d5e3c13b39ebd3ae9147bed29d5c6253cdce6aee",
+      "published_sha256": "26604674c4f45c376d7213c9c71ce4b82ab26ef43631a17896adba9c10a284c7"
+    }
+  ],
+  "source_sha256": {
+    "Directory.Build.props": "e8b86a3ce60c13d065c309f0c298698670818f03bf64177492f34cb71a740f0d",
+    "scripts/Delivery-Version.ps1": "8a051b0468809a90c464eb1b9e4945e3be8708c346a9b45f6e8bb8e2ed9f6eda",
+    "scripts/Test-DeliveryVersion.ps1": "5dc711f3b09ca39035cd7b87b6e14f58ecbc795046fb5022d9e97de68bc36306",
+    "scripts/Verify-PresentationDelivery.ps1": "1a4038c2a0b00e72fb3f4d065288a81eca4ce0f7db1269053431db7db79642b7",
+    "scripts/Test-DeliveryVerifier.ps1": "7fce364789051dd8684423b1f13388daea389ba8408d4da3d5c339c68e1ac824",
+    "scripts/Prepare-InstallerInput.ps1": "c063542bbfbdb09a86b1417903b42dff01fefcb6ebc5998db02bd0dc334d4b67",
+    "scripts/Test-Installer.ps1": "0672d41235d7baaea5e680e53f97916eef8027d835d846d14a787a597559a6d6",
+    "scripts/Seal-InternalDelivery.ps1": "740f20dd9ad8db50afd700ced3bc02a31526a1a7692fa3c607c3f18af6016156",
+    ".github/workflows/ci.yml": "4b1c738fc9285652b845ec922cf2104fcaac1f989e5f370ce64a50d8395974e1"
+  },
+  "ci_failure": {
+    "run": 45023406385,
+    "job": 137212422390,
+    "decoded_connector_log_sha256": "b7697e9112b5f1c4d7ea12da74995248bfdc35add4d8a0502e553d92af060f6b",
+    "original_retained": "artifacts\\s3-ci-45023406385-job137212422390.decoded.log",
+    "state": "build success; pre-install immutable app_version guard rejected; no installer invoked"
+  }
+}

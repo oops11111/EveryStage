@@ -288,6 +288,8 @@ jobs:
       - name: Validate UI helper compile without input or activation
         shell: powershell
         run: |
+          ./scripts/Test-DeliveryVersion.ps1
+          ./scripts/Test-DeliveryVerifier.ps1
           ./scripts/Test-InstallerSelector.ps1
           ./scripts/InstallerUi.ps1 -ValidateOnly
       - name: Install upgrade ordinary UI normal exit and uninstall

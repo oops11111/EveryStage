@@ -1,5 +1,6 @@
 ﻿param([string]$InputDirectory,[string]$BaselineArchive,[string]$OutputDirectory)
 $ErrorActionPreference='Stop'
+. "$PSScriptRoot/Delivery-Version.ps1"
 if($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted'){throw 'Installation acceptance is restricted to disposable GitHub-hosted runners'}
 if(Test-Path $OutputDirectory){throw 'Evidence directory must be fresh'}
 New-Item -ItemType Directory $OutputDirectory|Out-Null
@@ -154,7 +155,7 @@ function Verify-Installation($selection) {
   } elseif($setupState.PSObject.Properties.Name -contains $component){throw 'Unselected Setup component registered'}
  }
  $short=$receipt.source.checkout_commit.Substring(0,7)
- if((Get-ItemProperty $key).DisplayVersion -ne "0.9.2 ($short)"){throw 'Uninstall version registration mismatch'}
+ if((Get-ItemProperty $key).DisplayVersion -ne "$($receipt.app_version) ($short)"){throw 'Uninstall version registration mismatch'}
  $acl=Get-Acl $data
  $users=@($acl.Access|Where-Object {$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value -eq 'S-1-5-32-545' -and $_.AccessControlType -eq 'Allow'})
  if(!@($users|Where-Object {($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::Modify) -eq [Security.AccessControl.FileSystemRights]::Modify -and ($_.InheritanceFlags -band 3) -eq 3}).Count){throw 'Users inherited Modify grant missing'}
@@ -201,6 +202,8 @@ try {
  $baseline=Get-Item "$OutputDirectory/baseline/EveryStage-Setup-0.9.1-win-x64.exe"
  if((Get-FileHash $baseline -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'c6219e786d34affb1b69099ed3e6b0d6af3e2e86c131643e41ea66d6a30560d9'){throw 'Baseline executable hash mismatch'}
  $receipt=Get-Content "$InputDirectory/build-input.json" -Raw|ConvertFrom-Json
+ $version=Assert-DeliveryVersion $receipt "$InputDirectory/Directory.Build.props"
+ if((& git rev-parse HEAD) -cne $receipt.source.checkout_commit){throw 'Smoke checkout does not match immutable build source'}
  foreach($file in $receipt.files){if((Get-FileHash (Join-Path $InputDirectory $file.path)).Hash.ToLowerInvariant() -ne $file.sha256){throw "Input drift $($file.path)"}}
  $setup=Join-Path $InputDirectory $receipt.installer
  Run-Setup $baseline.FullName '/S'
@@ -217,7 +220,7 @@ try {
  Verify-Installation 'Terminal'
  if(Test-Path "$install/Terminal/p3-stale-file.txt"){throw 'Upgrade retained stale program file'}
  if((Get-FileHash "$data/p3-sentinel.txt").Hash -ne $sentinelHash){throw 'Upgrade changed sentinel bytes'}
- if((Get-Item "$install/Terminal/EveryStage.Terminal.exe").VersionInfo.FileVersion -ne '0.9.2.0'){throw 'Installed version mismatch'}
+ if((Get-Item "$install/Terminal/EveryStage.Terminal.exe").VersionInfo.FileVersion -ne $receipt.assembly_file_version){throw 'Installed version mismatch'}
  No-Processes
  $launchLink=(Get-Item -LiteralPath "$env:ProgramData/Microsoft/Windows/Start Menu/Programs/EveryStage/EveryStage 终端机.lnk").FullName
  $launchTarget=[InstallerShellLink]::ReadRawPath($launchLink)

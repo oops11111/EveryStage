@@ -1,10 +1,12 @@
 $ErrorActionPreference='Stop'
 $repo=Split-Path $PSScriptRoot -Parent
+. "$PSScriptRoot/Delivery-Version.ps1"
+$deliveryVersion=Get-DeliveryVersion "$repo/Directory.Build.props"
 $out=Join-Path $repo 'artifacts/installer-input'
 if(Test-Path $out){throw 'Installer input directory must be fresh'}
 New-Item -ItemType Directory $out|Out-Null
 $state=Get-Content "$repo/artifacts/fluidmotion/component-state.json" -Raw|ConvertFrom-Json
-$setup=Get-Item "$repo/artifacts/installer/EveryStage-Setup-0.9.2-win-x64.exe"
+$setup=Get-Item "$repo/artifacts/installer/EveryStage-Setup-$($deliveryVersion.app_version)-win-x64.exe"
 $package=Get-Item (Join-Path $repo $state.package_relative)
 if(!$package.Exists){throw 'Exact consumed package missing'}
 if((Get-FileHash $package.FullName).Hash.ToLowerInvariant() -ne $state.package_sha256){throw 'Consumed package drift'}
@@ -13,7 +15,7 @@ if((Get-FileHash $frameworkResult).Hash.ToLowerInvariant() -ne $state.framework_
 $framework=Get-Content $frameworkResult -Raw|ConvertFrom-Json
 if($framework.source_commit -ne '44401d3f002b427d828500331a3e9b4ada5881cd' -or $framework.source_dirty -or $framework.status -notlike 'PASS*'){throw 'Framework source provenance mismatch'}
 
-Copy-Item -LiteralPath @($setup.FullName,$package.FullName,"$repo/artifacts/fluidmotion/component-state.json") -Destination $out
+Copy-Item -LiteralPath @($setup.FullName,$package.FullName,"$repo/artifacts/fluidmotion/component-state.json","$repo/Directory.Build.props") -Destination $out
 $provenance=Join-Path $out 'provenance'
 New-Item -ItemType Directory $provenance|Out-Null
 Copy-Item -LiteralPath (Join-Path $repo $state.framework_manifest_relative) -Destination "$provenance/framework-result.json"
@@ -80,5 +82,6 @@ foreach($component in @('Terminal','Caster')) {
  $base=Join-Path $repo "artifacts/installer/publish/$component"
  $published[$component]=@(Get-ChildItem $base -File -Recurse|ForEach-Object {@{path=[IO.Path]::GetRelativePath($base,$_.FullName).Replace('\','/');sha256=(Get-FileHash $_.FullName).Hash.ToLowerInvariant()}})
 }
-$receipt=@{published=$published;source=@{checkout_commit=(& git rev-parse HEAD);event_commit=$env:GITHUB_SHA;pull_request_head=$env:PR_HEAD_SHA};installer=$setup.Name;package=$package.Name;package_members=$state.package_members;files=$files;status='build input only; not installation acceptance'}
+$receipt=@{app_version=$deliveryVersion.app_version;assembly_file_version=$deliveryVersion.assembly_file_version;version_props_sha256=$deliveryVersion.version_props_sha256;published=$published;source=@{checkout_commit=(& git rev-parse HEAD);event_commit=$env:GITHUB_SHA;pull_request_head=$env:PR_HEAD_SHA};installer=$setup.Name;package=$package.Name;package_members=$state.package_members;files=$files;status='build input only; not installation acceptance'}
+$null=Assert-DeliveryVersion $receipt "$repo/Directory.Build.props"
 $receipt|ConvertTo-Json -Depth 24|Set-Content -Encoding utf8 "$out/build-input.json"
