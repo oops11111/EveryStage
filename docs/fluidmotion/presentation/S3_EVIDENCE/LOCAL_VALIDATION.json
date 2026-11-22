@@ -43,7 +43,7 @@
     "Directory.Build.props": "e8b86a3ce60c13d065c309f0c298698670818f03bf64177492f34cb71a740f0d",
     "scripts/Delivery-Version.ps1": "8a051b0468809a90c464eb1b9e4945e3be8708c346a9b45f6e8bb8e2ed9f6eda",
     "scripts/Test-DeliveryVersion.ps1": "5dc711f3b09ca39035cd7b87b6e14f58ecbc795046fb5022d9e97de68bc36306",
-    "scripts/Verify-PresentationDelivery.ps1": "1b6e398964e3fa9242b9843400ca8baf3d865ef6957e6248cb1753ac11099cc4",
+    "scripts/Verify-PresentationDelivery.ps1": "1a4038c2a0b00e72fb3f4d065288a81eca4ce0f7db1269053431db7db79642b7",
     "scripts/Test-DeliveryVerifier.ps1": "7fce364789051dd8684423b1f13388daea389ba8408d4da3d5c339c68e1ac824",
     "scripts/Prepare-InstallerInput.ps1": "77087f2dacc859f42fc81f9aa6f60a52305d9cd9fc37105d71aa84c19817ced2",
     "scripts/Test-Installer.ps1": "0672d41235d7baaea5e680e53f97916eef8027d835d846d14a787a597559a6d6",

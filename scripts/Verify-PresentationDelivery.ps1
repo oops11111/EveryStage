@@ -100,7 +100,7 @@ try {
 } finally {$baseline.Dispose()}
 foreach($archive in $m.archives){Require ((Sha (Safe $archive.path)) -ceq $archive.sha256) 'Original artifact archive mismatch'}
 Require (@($m.archives).Count -ge 3) 'Input/smoke/control archives required'
-$control=Read 'evidence/control/result.json' 
+$control=Read 'evidence/control/result.json'
 Require ($control.status -like 'PASS isolated actual-control harness*' -and $control.drawer_regression_checks -eq 47 -and $control.presenter_checks -eq 50 -and $control.Created -eq 51 -and $control.Released -eq 51 -and $control.checks -eq 213 -and $control.original_motion_checks -eq 97 -and $control.slide_transition_checks -eq 116 -and $control.Created -eq $control.Released -and $control.Created -gt 0) 'Presentation control regression mismatch'
 foreach($image in $control.screenshots) {Require ((Sha (Safe ('evidence/control/'+$image.name+'.png'))) -ceq $image.sha256) 'Control screenshot mismatch'}
 $primary=Read 'evidence/POST_PRIMARY_ACCEPTANCE.json'
