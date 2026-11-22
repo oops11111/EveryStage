@@ -722,8 +722,8 @@ internal sealed class SharedPreviewDock : Panel
             _caption = ModernUi.SetForegroundRole(new Label { Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
             // OP-25: clicking the window's caption activates it — a neutral gesture that only
             // switches the follow target (the document bar follows the active window). It never
-            // changes content: content clicks on the picture itself keep their Take/preview
-            // behaviour, and Activate() still refuses a window that follows the big screen.
+            // changes content, and Activate() still refuses a window that follows the big screen.
+            // Clicking the picture does the same (see the Click loop after the drop targets).
             _caption.Click += (_, _) => Activate();
             _caption.Cursor = Cursors.Hand;
             dock._toolTip.SetToolTip(_caption, "单击激活此窗口（只切换，不换内容）");
@@ -771,6 +771,12 @@ internal sealed class SharedPreviewDock : Panel
                     dock.FileDropped?.Invoke(Index, drop.File, drop.Path);
                 };
             }
+
+            // OP-25 (activate-only): clicking the picture activates the window, the same neutral
+            // gesture as the caption click above. Activate() itself refuses a window that
+            // follows the big screen, and nothing here stops, pauses or takes anything.
+            foreach (var target in new Control[] { _frame, Surface, Surface.VideoHost, Surface.ContentSurface, Mirror })
+                target.Click += (_, _) => Activate();
         }
 
         private static (MediaFile? File, string? Path)? Dropped(IDataObject? data)

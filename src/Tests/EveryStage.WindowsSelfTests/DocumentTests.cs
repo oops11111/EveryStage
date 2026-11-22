@@ -27,7 +27,7 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestFilesHeaderNarrow(directory); TestActivityThumbnailAvailability(directory); TestPresenterContentOrdering(); TestDocumentOutputDisposal(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); TestProgramFailureStatus(directory); TestFocusIsInTextBox(); }
+            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestFilesHeaderNarrow(directory); TestActivityThumbnailAvailability(directory); TestPresenterContentOrdering(); TestDocumentOutputDisposal(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); TestProgramFailureStatus(directory); TestFocusIsInTextBox(); TestPictureClickActivatesWindow(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -952,6 +952,50 @@ internal static class DocumentTests
         Require(WaitFor(() => button.ContainsFocus, 1000), "Button did not take focus.");
         Require(!MainWindow.FocusIsInTextBox(form), "A focused button was treated as typing.");
         Console.WriteLine("PASS: typing is recognised in an editable combo box and a NumericUpDown, and nowhere else");
+    }
+
+    /// <summary>OP-25 (activate-only): clicking a monitor window's picture switches the control
+    /// focus (ActiveWindow) to that window and nothing else — the other window keeps playing,
+    /// the clicked window stays idle, and a window following the big screen refuses activation,
+    /// exactly like the caption click. The click is raised through Control.OnClick, the same
+    /// event a real mouse click fires.</summary>
+    private static void TestPictureClickActivatesWindow(string directory)
+    {
+        string dir = Path.Combine(directory, "activate");
+        Directory.CreateDirectory(dir);
+        using var dock = new SharedPreviewDock(new OutputStateMachine());
+        string imagePath = Path.Combine(dir, "activate.png");
+        using (var image = new Bitmap(16, 16)) image.Save(imagePath, ImageFormat.Png);
+        using var first = new PlaybackEngine(PlaybackChannel.Preview, dock.PreviewSurface, null,
+            new SettingsStore(Path.Combine(dir, "first.json")), new ScenarioStore(), null, dir);
+        using var second = new PlaybackEngine(PlaybackChannel.Preview, dock.SecondSurface, null,
+            new SettingsStore(Path.Combine(dir, "second.json")), new ScenarioStore(), null, dir);
+        dock.BindPreview(first);
+        dock.BindSecondPreview(second);
+        first.RequestPlay(new MediaFile
+        {
+            SourcePath = imagePath, Kind = MediaKind.Image, StayDuration = TimeSpan.FromSeconds(60),
+            OnCompletion = CompletionAction.Loop,
+        });
+        Require(WaitFor(() => first.State == PlaybackChannelState.Playing, 5000), "Activation fixture did not start playing.");
+        Require(dock.ActiveWindow == 0, "Playing in the top window did not make it active.");
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var onClick = typeof(Control).GetMethod("OnClick", flags)!;
+        var bottomFrame = DockWindowField<Panel>(dock, 1, "_frame");
+        onClick.Invoke(bottomFrame, new object[] { EventArgs.Empty });
+        Require(dock.ActiveWindow == 1, "Clicking the bottom window's picture did not switch the active window.");
+        Require(first.State == PlaybackChannelState.Playing && second.State == PlaybackChannelState.Idle,
+            "Clicking the picture changed playback: the playing window must keep playing and the clicked window must stay idle.");
+        var topFrame = DockWindowField<Panel>(dock, 0, "_frame");
+        onClick.Invoke(topFrame, new object[] { EventArgs.Empty });
+        Require(dock.ActiveWindow == 0, "Clicking the top window's picture did not switch the active window back.");
+        Require(first.State == PlaybackChannelState.Playing, "Clicking back changed the playing window's state.");
+        // A window following the big screen refuses activation, like the caption click does.
+        dock.SyncWindowToProgram(1);
+        onClick.Invoke(bottomFrame, new object[] { EventArgs.Empty });
+        Require(dock.ActiveWindow == 0, "Clicking the picture of the window following the big screen switched the active window.");
+        Require(first.State == PlaybackChannelState.Playing, "Clicking the following window's picture changed playback.");
+        Console.WriteLine("PASS: clicking a window's picture only switches the active window; playback is untouched");
     }
 
     /// <summary>The real main window (preview dock, document control row, side bar) constructs, shows,
