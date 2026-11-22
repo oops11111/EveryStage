@@ -423,6 +423,22 @@ internal sealed class CheckRow : Control
     }
 }
 
+/// <summary>One self-test in the diagnostics details: its button on the left, its result label
+/// filling the rest of the row. The row is a single flow item in the details panel, so adding a
+/// self-test adds one row — no y arithmetic anywhere (C-04).</summary>
+internal sealed class SelfTestRow : Panel
+{
+    public Control Button { get; }
+    public Label Label { get; }
+
+    public SelfTestRow(Control button, Label label)
+    {
+        Button = button;
+        Label = label;
+        Controls.AddRange(new Control[] { button, label });
+    }
+}
+
 /// <summary>诊断: one button that checks the whole chain, the individual self-tests folded below, and
 /// a report to send to support.</summary>
 internal sealed class DiagnosticsView : CasterView
@@ -448,10 +464,23 @@ internal sealed class DiagnosticsView : CasterView
     {
         _checkCard.Controls.AddRange(new Control[] { _checkTitle, _checkHint, _run });
         _resultsCard.Visible = false;
-        foreach (var control in selfTestControls)
+        // Pairs arrive button-then-label from MainForm: each pair becomes one row, so the button
+        // and its result share a line and the details panel stacks rows. A lone control (none
+        // today) still goes in flat rather than being dropped.
+        var controls = selfTestControls.ToList();
+        for (int i = 0; i < controls.Count; i++)
         {
-            _details.Controls.Add(control);
-            if (control is Label) control.TextChanged += (_, _) => { if (_details.Visible) PerformLayout(); };
+            if (i + 1 < controls.Count && controls[i] is Button button && controls[i + 1] is Label label)
+            {
+                _details.Controls.Add(new SelfTestRow(button, label));
+                label.TextChanged += (_, _) => { if (_details.Visible) PerformLayout(); };
+                i++;
+            }
+            else
+            {
+                _details.Controls.Add(controls[i]);
+                if (controls[i] is Label lone) lone.TextChanged += (_, _) => { if (_details.Visible) PerformLayout(); };
+            }
         }
         _scroll.Controls.AddRange(new Control[] { _checkCard, _resultsCard, _detailsToggle, _details, _export });
         Controls.AddRange(new Control[] { _back, _heading, _scroll });
@@ -532,16 +561,35 @@ internal sealed class DiagnosticsView : CasterView
         y += S(38);
         if (_details.Visible)
         {
+            // Buttons share one measured width so every result label starts at the same x; a row
+            // is as tall as the taller of its button and its wrapped label.
+            int buttonW = S(200);
+            foreach (SelfTestRow row in _details.Controls.OfType<SelfTestRow>())
+                buttonW = Math.Max(buttonW, TextRenderer.MeasureText(row.Button.Text, row.Button.Font).Width + S(24));
+            buttonW = Math.Min(buttonW, (w - S(8)) / 2);
             int detailsH = 0;
             foreach (Control control in _details.Controls)
             {
-                control.Width = w - S(8);
-                if (control is Label label)
+                if (control is SelfTestRow row)
                 {
-                    var size = TextRenderer.MeasureText(label.Text.Length == 0 ? " " : label.Text, label.Font, new Size(control.Width, int.MaxValue), TextFormatFlags.WordBreak);
-                    control.Height = label.Text.Length == 0 ? S(4) : size.Height + S(6);
+                    row.Width = w - S(8);
+                    row.Button.Bounds = new Rectangle(0, 0, buttonW, S(34));
+                    int labelW = Math.Max(S(40), row.Width - buttonW - S(8));
+                    var size = TextRenderer.MeasureText(row.Label.Text.Length == 0 ? " " : row.Label.Text, row.Label.Font, new Size(labelW, int.MaxValue), TextFormatFlags.WordBreak);
+                    int labelH = row.Label.Text.Length == 0 ? S(4) : size.Height + S(6);
+                    row.Label.Bounds = new Rectangle(buttonW + S(8), 0, labelW, labelH);
+                    row.Height = Math.Max(S(34), labelH);
                 }
-                else control.Height = S(34);
+                else
+                {
+                    control.Width = w - S(8);
+                    if (control is Label label)
+                    {
+                        var size = TextRenderer.MeasureText(label.Text.Length == 0 ? " " : label.Text, label.Font, new Size(control.Width, int.MaxValue), TextFormatFlags.WordBreak);
+                        control.Height = label.Text.Length == 0 ? S(4) : size.Height + S(6);
+                    }
+                    else control.Height = S(34);
+                }
                 control.Margin = new Padding(0, 0, 0, S(4));
                 detailsH += control.Height + S(4);
             }

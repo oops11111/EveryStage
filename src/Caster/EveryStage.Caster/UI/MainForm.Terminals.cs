@@ -41,6 +41,15 @@ public sealed partial class MainForm
         var selected = _terminalListBox.SelectedItem as TerminalListEntry;
         var liveTerminals = _discoveryClient.GetTerminals(); // already ordered by name.
 
+        // The sidebar title carries the discovery service's real status, on the same refresh path
+        // as the list itself (C-05): listening with nothing heard yet, or how many live terminals
+        // were heard from. There is no error state to show — the receive loop swallows transient
+        // socket errors and a bind failure is fatal at startup — so none is invented.
+        string discoveryStatus = liveTerminals.Count == 0
+            ? "附近的终端 · 正在发现…"
+            : $"附近的终端 · 已发现 {liveTerminals.Count} 台";
+        if (_sidebarTitle.Text != discoveryStatus) _sidebarTitle.Text = discoveryStatus;
+
         // Online entries first (these are the ones actually actionable), each paired-but-currently-
         // offline entry appended after — see TerminalListEntry's doc comment on why an offline entry
         // can't just reuse a cached live one. A terminal that both paired before and is currently
