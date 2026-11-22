@@ -52,6 +52,14 @@ Run45006030651/job137158793260 actually uploaded mirror14748081692, digest6e953f
 
 ## CI attempt8: exact guide body verified, native normal button exposed as Pane
 
-Run45006847813/build passed; the smoke artifact14748426389 SHA4ce9d0652dc2e278f33d0d7b6d87ba1fec93c6118a96a4a50fb8a665fe9a7f2c shows the full welcome text matched. The single actual native visible enabled default-push Button labeled OK had ControlId2, while UIA exposed its same-PID handle as Pane. Assuming ControlId1 or UIA Button therefore stopped the test before ordinary confirmation; it did not show a product error.
+Push run45006844073/job137161592138 build passed; the smoke artifact14748426389 SHA4ce9d0652dc2e278f33d0d7b6d87ba1fec93c6118a96a4a50fb8a665fe9a7f2c shows the full welcome text matched. The single actual native visible enabled default-push Button labeled OK had ControlId2, while UIA exposed its same-PID handle as Pane. Assuming ControlId1 or UIA Button therefore stopped the test before ordinary confirmation; it did not show a product error.
 
 The correction selects the exact owned unique visible enabled native normal OK by class/text/parent/full-body, records its actual ID and UIA pattern support, and rechecks held process identity. Normal UIA Invoke is preferred; only if unavailable, timeout-bounded standard BM_CLICK on that exact active matched dialog/button is used. No WM_CLOSE, arbitrary dialog acceptance or shutdown backdoor is added. Disappearance and live held Terminal are required afterward. Local ValidateOnly compiles this path without any UI action; actual activation remains pending CI.
+
+## CI attempt9: ordinary UI visible; hash autoload and wrong tray candidate stopped exit
+
+Push run45007683366/job137164210238 reached normal native onboarding confirmation and generated six unobstructed installed application screenshots. Root reviewed closed/open/closed/open/resized/Escape-closed states; the opening sample was already settled, so no in-flight timing is claimed. Artifact14748486760 SHA81a828d00bf7e42356fcd1da7d03f4b4a3d0102efab8fae378a385eb84c364c3 preserves the actual evidence.
+
+Exercise then stopped because Get-FileHash was unavailable in the WindowsPowerShell helper. The replacement uses explicit .NET SHA256 over a disposed read-only file stream. Exit had selected a taskbar application button whose name was EveryStage 终端机 - 1 running window, producing an Explorer Jump List rather than the NotifyIcon menu. The selector now requires the exact source dynamic tooltip including the slash and switch text plus notification-area ancestry. Candidate/ancestor metadata is persisted before interaction; the ordinary Show hidden icons button may be invoked once only within the verified notification area. No arbitrary taskbar right-click or product shutdown alternative is allowed.
+
+Root also subsequently validated actual retained artifact14748081692 wrapper extraction with the current validator: original ZIP76614... and installer c6219... matched, without execution. This proves real mirror retrieval/validation, not simulated HTTP404 selection or retention beyond the actual three-day cap.

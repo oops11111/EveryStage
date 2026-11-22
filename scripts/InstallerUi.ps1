@@ -17,6 +17,12 @@ public static class InstallerInput {
  [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,UIntPtr extra);
 }
 "@
+function Get-ExistingFileSha256([string]$path) {
+ $stream=[IO.File]::OpenRead($path)
+ $algorithm=[Security.Cryptography.SHA256]::Create()
+ try {return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace('-','').ToLowerInvariant()}
+ finally {$stream.Dispose();$algorithm.Dispose()}
+}
 function Find-Name($root,$name) {
  $condition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty,$name)
  return $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)
@@ -35,7 +41,7 @@ $start=$p.StartTime.ToUniversalTime().ToString("o")
 if($ExpectedStartUtc -and $start -ne $ExpectedStartUtc){throw 'Held process starttime mismatch'}
 function Element-Metadata($element) {
  $r=$element.Current.BoundingRectangle
- return @{native_hwnd=$element.Current.NativeWindowHandle;name=$element.Current.Name;pid=$element.Current.ProcessId;control_type=$element.Current.ControlType.ProgrammaticName;enabled=$element.Current.IsEnabled;offscreen=$element.Current.IsOffscreen;bounds=@{left=$r.Left;top=$r.Top;width=$r.Width;height=$r.Height}}
+ return @{automation_id=$element.Current.AutomationId;class_name=$element.Current.ClassName;native_hwnd=$element.Current.NativeWindowHandle;name=$element.Current.Name;pid=$element.Current.ProcessId;control_type=$element.Current.ControlType.ProgrammaticName;enabled=$element.Current.IsEnabled;offscreen=$element.Current.IsOffscreen;bounds=@{left=$r.Left;top=$r.Top;width=$r.Width;height=$r.Height}}
 }
 function Save-Diagnostics([string]$label) {
  try {
@@ -131,16 +137,55 @@ function Dismiss-OwnedFirstRunGuide([bool]$required) {
 try {
 Dismiss-OwnedFirstRunGuide ($Action -eq 'Exercise')
 if ($Action -eq 'Exit') {
- # Windows notification area is outside the application's UIA subtree. Select only its exact product tooltip.
- $icon=$null
- for($i=0;$i -lt 20 -and !$icon;$i++) {
-  $items=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
-  foreach($item in $items) { if($item.Current.Name -like 'EveryStage 终端机 -*' -and $item.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $item.Current.IsEnabled -and !$item.Current.IsOffscreen) { $icon=$item; break } }
-  if(!$icon) { Start-Sleep -Milliseconds 250 }
+ # Match only the exact dynamic NotifyIcon tooltip from TrayIconController, never a running-app taskbar button.
+ $tooltipPattern='^EveryStage 终端机 - (待机中|扩展屏输出中) / 开关: (开|关)$'
+ function Notification-Ancestry($element) {
+  $ancestors=@();$current=$element
+  for($depth=0;$depth -lt 16 -and $current;$depth++) {
+   $ancestors+=Element-Metadata $current
+   $current=[System.Windows.Automation.TreeWalker]::RawViewWalker.GetParent($current)
+  }
+  return $ancestors
  }
- if(!$icon) { throw 'Owned Terminal notification icon unavailable; normal exit not proven' }
+ function In-NotificationArea($ancestors) {
+  return @($ancestors|Where-Object {$_.class_name -in @('TrayNotifyWnd','SysPager','SystemTray.NormalIconView','SystemTray.OverflowIconView') -or $_.automation_id -match '^(SystemTray|NotificationArea)' -or $_.name -in @('Notification area','User Promoted Notification Area','System tray','System Tray')}).Count -gt 0
+ }
+ $taskbars=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ClassNameProperty,'Shell_TrayWnd'))
+ $taskbarMetadata=@()
+ foreach($taskbar in $taskbars) {
+  $children=$taskbar.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+  $entries=@();$count=0
+  foreach($child in $children){if($count++ -ge 512){break};$entries+=Element-Metadata $child}
+  $taskbarMetadata+=@{root=Element-Metadata $taskbar;descendants=$entries;truncated=$children.Count -gt 512}
+ }
+ $taskbarMetadata|ConvertTo-Json -Depth 12|Set-Content -Encoding utf8 "$OutputDirectory/taskbar-notification-metadata-before-input.json"
+ $observations=@();$icon=$null;$overflowOpened=$false
+ for($attempt=0;$attempt -lt 30 -and !$icon;$attempt++) {
+  $items=$root.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+  $eligibleIcons=@();$eligibleOverflow=@()
+  foreach($item in $items) {
+   if($item.Current.Name -like 'EveryStage 终端机*' -or $item.Current.AutomationId -match '^(SystemTray|NotificationArea)' -or $item.Current.Name -eq 'Show hidden icons') {
+    $ancestry=@(Notification-Ancestry $item)
+    $inArea=In-NotificationArea $ancestry
+    $observations+=@{attempt=$attempt;element=Element-Metadata $item;notification_ancestry=$inArea;ancestors=$ancestry}
+    if($item.Current.Name -cmatch $tooltipPattern -and $inArea -and $item.Current.IsEnabled -and !$item.Current.IsOffscreen){$eligibleIcons+=,$item}
+    if($item.Current.Name -ceq 'Show hidden icons' -and $item.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $inArea -and $item.Current.IsEnabled -and !$item.Current.IsOffscreen){$eligibleOverflow+=,$item}
+   }
+  }
+  # Persist notification-area observations before any interaction, including an absent-icon outcome.
+  $observations|ConvertTo-Json -Depth 16|Set-Content -Encoding utf8 "$OutputDirectory/notification-area-observations.json"
+  if($eligibleIcons.Count -gt 1 -or $eligibleOverflow.Count -gt 1){throw 'Ambiguous eligible notification icons or overflow controls; no input permitted'}
+  if($eligibleIcons.Count -eq 1){$icon=$eligibleIcons[0]}
+  if(!$icon -and $eligibleOverflow.Count -eq 1 -and !$overflowOpened) {
+   Invoke-Control $eligibleOverflow[0]
+   $overflowOpened=$true
+  }
+  if(!$icon){Start-Sleep -Milliseconds 200}
+ }
+ if(!$icon){throw 'Exact source NotifyIcon tooltip in notification-area ancestry unavailable; no taskbar click permitted'}
  $iconRecord=Element-Metadata $icon
- $iconRecord|ConvertTo-Json -Depth 6|Set-Content -Encoding utf8 "$OutputDirectory/tray-icon.json"
+ $iconRecord.notification_ancestors=@(Notification-Ancestry $icon)
+ $iconRecord|ConvertTo-Json -Depth 12|Set-Content -Encoding utf8 "$OutputDirectory/tray-icon.json"
  $r=$icon.Current.BoundingRectangle
  $desktop=[Windows.Forms.SystemInformation]::VirtualScreen
  if($r.Width -le 0 -or $r.Height -le 0 -or $r.Left -lt $desktop.Left -or $r.Top -lt $desktop.Top -or $r.Right -gt $desktop.Right -or $r.Bottom -gt $desktop.Bottom){throw 'Notification button coordinates out of screen'}
@@ -226,7 +271,7 @@ Shot 'installed-resized'
 Start-Sleep -Milliseconds 600
 if(!(Find-Name $window '歌单 ▴')){throw 'Ordinary Escape did not close drawer'}
 Shot 'installed-escape'
-$modules=@([InstallerMappings]::Read($ProcessId)|ForEach-Object {@{name=[IO.Path]::GetFileName($_);path=$_;sha256=(Get-FileHash $_ -Algorithm SHA256).Hash.ToLowerInvariant()}})
+$modules=@([InstallerMappings]::Read($ProcessId)|ForEach-Object {@{name=[IO.Path]::GetFileName($_);path=$_;sha256=(Get-ExistingFileSha256 $_)}})
 foreach($name in @('FluidMotion.L1.dll','fluidmotion.dll')) {
  if(@($modules|Where-Object name -ceq $name).Count -ne 1){throw "Actual mapped component missing: $name"}
 }
