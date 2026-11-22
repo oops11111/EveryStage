@@ -24,7 +24,9 @@ internal sealed class CasterSettings
         return new CasterSettings();
     }
 
-    public void Save()
+    /// <summary>False when the file could not be written (OP-37: the caller must say so — a
+    /// preference that silently reverts next launch looks like the app forgot the choice).</summary>
+    public bool Save()
     {
         try
         {
@@ -32,7 +34,8 @@ internal sealed class CasterSettings
             string temp = FilePath + ".tmp";
             File.WriteAllText(temp, JsonSerializer.Serialize(this));
             File.Move(temp, FilePath, overwrite: true);
+            return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { } // a preference not saved is not worth an error
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return false; }
     }
 }

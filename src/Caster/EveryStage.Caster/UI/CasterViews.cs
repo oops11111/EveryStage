@@ -97,7 +97,10 @@ internal sealed class StandbyView : CasterView
 
     public int SelectedOutputIndex => _tiles.Controls.OfType<ChoiceTile>().FirstOrDefault(t => t.Checked)?.Tag is MonitorChoice choice ? choice.OutputIndex : 0;
     public string SelectedMonitorLabel => _tiles.Controls.OfType<ChoiceTile>().FirstOrDefault(t => t.Checked)?.Tag is MonitorChoice choice ? choice.Label : "";
-    private string? SelectedDevice => _tiles.Controls.OfType<ChoiceTile>().FirstOrDefault(t => t.Checked)?.Tag is MonitorChoice choice ? choice.DeviceName : null;
+    /// <summary>The DXGI device name of the chosen screen, for re-resolving it at cast start
+    /// (OP-32: output indices shift when a display is unplugged). Null for the "默认屏幕"
+    /// fallback choice, which has no name to resolve by.</summary>
+    public string? SelectedMonitorDevice => _tiles.Controls.OfType<ChoiceTile>().FirstOrDefault(t => t.Checked)?.Tag is MonitorChoice choice ? choice.DeviceName : null;
 
     public void SetTerminal(string name, string status, bool canStart, bool canRemovePairing, string hint)
     {
@@ -123,7 +126,7 @@ internal sealed class StandbyView : CasterView
     /// a display is unplugged).</summary>
     public void SetMonitors(IReadOnlyList<MonitorChoice> monitors)
     {
-        string? previous = SelectedDevice;
+        string? previous = SelectedMonitorDevice;
         _tiles.SuspendLayout();
         foreach (Control old in _tiles.Controls.Cast<Control>().ToList()) old.Dispose();
         _tiles.Controls.Clear();
@@ -190,7 +193,7 @@ internal sealed class PairingView : CasterView
     private readonly ThemedLabel _title = NewLabel("", TextRole.Muted, 11F, align: ContentAlignment.MiddleCenter);
     private readonly ThemedLabel _code = NewLabel("--- ---", TextRole.Text, 40F, semibold: true, ContentAlignment.MiddleCenter);
     private readonly ThemedLabel _instructions = NewLabel(
-        "到终端机跟前，核对屏幕上弹出的是同一组数字，点「接受」。\n接受后这里自动开始投屏，以后不用再配对。\n终端机就在这台电脑上的话，确认框可能被挡住：在任务栏点「投屏设备配对请求」。",
+        "到终端机跟前，核对屏幕上弹出的是同一组数字，点「接受」。\n接受后这里自动开始投屏，以后不用再配对。\n终端机就在这台电脑上的话，确认框可能被挡住：在任务栏点「投屏设备配对请求」。\n终端机上的确认框 2 分钟后会自动关闭，超时没点请重新发起配对。",
         TextRole.Text, 10.5F, align: ContentAlignment.TopCenter);
     private readonly ThemedLabel _waiting = NewLabel("正在向终端机发送配对请求…", TextRole.Warning, 10F, align: ContentAlignment.MiddleCenter);
     private readonly ActionButton _cancel = NewButton("取消", ButtonKind.Secondary);
@@ -263,7 +266,7 @@ internal sealed class PairingView : CasterView
         int y = Math.Max(S(24), ClientSize.Height / 2 - S(150));
         _title.Bounds = new Rectangle(x, y, w, S(28)); y += S(40);
         _code.Bounds = new Rectangle(x, y, w, S(76)); y += S(88);
-        _instructions.Bounds = new Rectangle(x, y, w, S(76)); y += S(84);
+        _instructions.Bounds = new Rectangle(x, y, w, S(96)); y += S(104);
         _waiting.Bounds = new Rectangle(x, y, w, S(24)); y += S(40);
         _cancel.Bounds = new Rectangle((ClientSize.Width - S(110)) / 2, y, S(110), S(38));
     }

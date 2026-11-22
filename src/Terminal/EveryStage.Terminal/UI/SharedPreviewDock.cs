@@ -136,6 +136,9 @@ internal sealed class SharedPreviewDock : Panel
     public event Action? CollapseRequested;
     public event Action? DeviceTakeRequested;
     public event Action? DeviceRevertRequested;
+    /// <summary>OP-06: the operator asked to VIEW the big screen (PGM mirror) while a device
+    /// holds Program — read-only, never a preemption. The host syncs a free window to Program.</summary>
+    public event Action? ViewProgramRequested;
     public event Action<int, int>? DeviceVideoHostResized;
 
     /// <summary>Error card "从文件库移除".</summary>
@@ -181,6 +184,7 @@ internal sealed class SharedPreviewDock : Panel
         _deviceCard = new DeviceCastCard();
         _deviceCard.TakeRequested += () => DeviceTakeRequested?.Invoke();
         _deviceCard.RevertRequested += () => DeviceRevertRequested?.Invoke();
+        _deviceCard.ViewRequested += () => ViewProgramRequested?.Invoke();
         _deviceCard.VideoHost.SizeChanged += (_, _) => DeviceVideoHostResized?.Invoke(
             Math.Max(1, _deviceCard.VideoHost.ClientSize.Width), Math.Max(1, _deviceCard.VideoHost.ClientSize.Height));
 
@@ -333,13 +337,35 @@ internal sealed class SharedPreviewDock : Panel
         // is shorter than fixedHeight + floor, the windows keep their minimum and the bottom
         // items clip (existing behaviour — the footer already hides itself when it doesn't fit);
         // the dock deliberately does not scroll, so this hand-rolled OnLayout never has to
-        // chase a scroll offset.
+        // chase a scroll offset. Exception (OP-07, below): a connected device's card keeps its
+        // own minimum first, and the pictures yield — the card's button must never be the thing
+        // that clips.
         // The floor must never exceed the cap: in a narrow window fullMonitor * 2 can be
         // smaller than S(240) (the CI self-test window is one such case — 196), and
         // Math.Clamp throws when min > max. Cap the floor at the cap; a short column
         // then just clips the bottom items, as FL-04 intends.
         int monitorFloor = Math.Min(S(240), fullMonitor * 2);
-        int monitorsTotal = Math.Clamp(area.Height - fixedHeight, monitorFloor, fullMonitor * 2);
+        // OP-07: the device card's Take/Revert button is anchored to the card's bottom, so in a
+        // short column the card used to clip first and the only take/revert control vanished.
+        // The card now keeps a minimum height (action strip + caption: the button must survive
+        // any column height) and the monitor pictures yield instead — the floor above applies
+        // in full only when no device is connected and there is no card to protect. The card
+        // minimum is a layout constant, not a clipping-threshold claim (the exact height at
+        // which clipping used to bite varies with DPI and is a real-machine check).
+        int cardHeight = 0;
+        int monitorsTotal;
+        if (deviceHeight > 0)
+        {
+            int room = area.Height - (fixedHeight - deviceHeight);
+            int cardMin = Math.Min(S(72), Math.Max(0, room));
+            int cardCeil = Math.Max(0, room - monitorFloor);
+            cardHeight = Math.Clamp(deviceHeight, cardMin, Math.Max(cardMin, cardCeil));
+            monitorsTotal = Math.Clamp(room - cardHeight, 0, fullMonitor * 2);
+        }
+        else
+        {
+            monitorsTotal = Math.Clamp(area.Height - fixedHeight, monitorFloor, fullMonitor * 2);
+        }
         int first = Math.Min(fullMonitor, monitorsTotal / 2), second = Math.Min(fullMonitor, monitorsTotal - first);
 
         int y = area.Top;
@@ -378,8 +404,8 @@ internal sealed class SharedPreviewDock : Panel
         _deviceCard.Card.Visible = deviceHeight > 0;
         if (deviceHeight > 0)
         {
-            _deviceCard.Card.Bounds = new Rectangle(x, y, w, deviceHeight);
-            y += deviceHeight + gap;
+            _deviceCard.Card.Bounds = new Rectangle(x, y, w, cardHeight);
+            y += cardHeight + gap;
         }
 
         if (_runControls != null)
@@ -420,6 +446,29 @@ internal sealed class SharedPreviewDock : Panel
         RefreshNow();
         if (relayout) PerformLayout();
     }
+
+    /// <summary>OP-09: the GPU device was removed and the local engine was stopped while the
+    /// state machine still claims Active — the chip must say failed, not live. Cleared by
+    /// <see cref="RefreshNow"/> when output stops or the engine plays again.</summary>
+    internal void SetProgramFailed(bool failed)
+    {
+        if (_programFailed == failed) return;
+        _programFailed = failed;
+        RefreshNow();
+    }
+
+    private bool _programFailed;
+
+    /// <summary>No new decoded frame for over ~2 s while a device holds Program (OP-27). Set by
+    /// the host from the cast liveness tick; cleared when the session ends.</summary>
+    internal void SetDeviceSignalStalled(bool stalled)
+    {
+        if (_deviceSignalStalled == stalled) return;
+        _deviceSignalStalled = stalled;
+        RefreshNow();
+    }
+
+    private bool _deviceSignalStalled;
 
     /// <summary>Idle windows show the branded splash rather than a bare dark box.</summary>
     private void ShowIdleSplash(MonitorWindow window)
@@ -499,7 +548,8 @@ internal sealed class SharedPreviewDock : Panel
         }
         var owner = FindForm();
         if (owner == null || !owner.Visible) return;
-        _presenterWindow = new PresenterWindow(() => CurrentShow, () => ProgramScreenBounds?.Invoke(), () => _program);
+        _presenterWindow = new PresenterWindow(() => CurrentShow, () => ProgramScreenBounds?.Invoke(), () => _program,
+            message => (FindForm() as MainWindow)?.ShowToast(message, ToastSeverity.Warning));
         // Open on the operator's screen, never on top of the big screen.
         var work = Screen.FromControl(owner).WorkingArea;
         _presenterWindow.StartPosition = FormStartPosition.Manual;
@@ -535,7 +585,14 @@ internal sealed class SharedPreviewDock : Panel
 
         bool programLive = _stateMachine.State == OutputState.Active;
         var source = programLive ? _stateMachine.Source : ProgramSource.None;
-        var programState = ProgramStatus.Compute(_program != null, programLive, _program?.State);
+        // OP-09: a GPU device loss stops the engine without migrating the state machine, so
+        // Compute alone would still read Live — the recorded failure overrides it until output
+        // stops or the engine plays again.
+        if (!programLive || _program?.State is PlaybackChannelState.Playing or PlaybackChannelState.Paused)
+            _programFailed = false;
+        var programState = _programFailed
+            ? ProgramOutputState.Failed
+            : ProgramStatus.Compute(_program != null, programLive, _program?.State);
         (string statusText, UiForegroundRole statusRole) = programState switch
         {
             ProgramOutputState.Disconnected => ("○ 未连接扩展屏 · 仅本机播放", UiForegroundRole.Muted),
@@ -555,10 +612,16 @@ internal sealed class SharedPreviewDock : Panel
         var activeState = active.Engine?.State ?? PlaybackChannelState.Idle;
         bool canTake = _program != null && !active.SyncedToProgram && active.Engine?.CurrentFile != null
             && activeState is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed or PlaybackChannelState.Loading);
-        _takeButton.Enabled = _fadeButton.Enabled = _swapButton.Enabled = canTake;
+        _takeButton.Enabled = _fadeButton.Enabled = canTake;
+        // Swap additionally needs something on air to swap back (OP-28): with nothing on air —
+        // machine idle, a device cast, a load still in flight, or a failed load — it would
+        // silently degenerate to a plain Take, so the button greys out instead.
+        _swapButton.Enabled = canTake && source == ProgramSource.LocalMedia
+            && _program is { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused, CurrentFile: not null };
 
         _deviceCard.Update(_deviceConnected, _deviceName ?? "设备来投", _deviceOnProgram,
-            _program == null ? "未连接扩展屏" : "等待设备来投", _program != null);
+            _program == null ? "未连接扩展屏" : "等待设备来投", _program != null,
+            ProgramWindow != null, _deviceSignalStalled);
     }
 
     private static void SetText(Control control, string text, Color? color)
@@ -633,8 +696,17 @@ internal sealed class SharedPreviewDock : Panel
 
         public bool Occupied => _synced || Engine is { State: not PlaybackChannelState.Idle };
 
-        /// <summary>The engine the transport drives: the big screen while following it.</summary>
-        private PlaybackEngine? Controlled => _synced ? _program : Engine;
+        /// <summary>The engine the transport drives: the big screen while following it — except
+        /// while a device cast holds Program, when the mirror is read-only viewing (OP-06) and
+        /// there is nothing to drive: the stopped Program engine still carries the preempted
+        /// activity, and Previous/Next on it would play local content onto the big screen and
+        /// silently kick the device off. Null then; the handlers all tolerate it, and the
+        /// deliberate stop button has its own path.</summary>
+        private PlaybackEngine? Controlled => _synced && _source == ProgramSource.DeviceCast
+            ? null
+            : _synced ? _program : Engine;
+
+        private ProgramSource _source = ProgramSource.None;
 
         public MonitorWindow(SharedPreviewDock dock, int index)
         {
@@ -648,6 +720,13 @@ internal sealed class SharedPreviewDock : Panel
             _frame.Controls.Add(Mirror);
             Mirror.Click += (_, _) => { if (_program == null) ExtendDisplayWizard.Show(_dock.FindForm()); };
             _caption = ModernUi.SetForegroundRole(new Label { Font = new Font(ModernUi.UiFont, 8.5F), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true }, UiForegroundRole.Muted);
+            // OP-25: clicking the window's caption activates it — a neutral gesture that only
+            // switches the follow target (the document bar follows the active window). It never
+            // changes content: content clicks on the picture itself keep their Take/preview
+            // behaviour, and Activate() still refuses a window that follows the big screen.
+            _caption.Click += (_, _) => Activate();
+            _caption.Cursor = Cursors.Hand;
+            dock._toolTip.SetToolTip(_caption, "单击激活此窗口（只切换，不换内容）");
             _previous = dock.IconButton("", "上一项 / 上一页");
             _playPause = dock.IconButton("", "播放 / 暂停");
             _stop = dock.IconButton("", "停止");
@@ -746,12 +825,19 @@ internal sealed class SharedPreviewDock : Panel
         public void Refresh(UiPalette palette, PlaybackEngine? program, bool programLive, ProgramSource source, bool active)
         {
             _program = program;
+            _source = source; // OP-06: the transport's read-only guard reads the last seen source
             // Output stopped (after having come on air — going on air can take a moment, e.g. a native show):
             // the window is free again. Never on air within 15 s: give up following.
             if (_synced && programLive) _sawLive = true;
             if (_synced && !programLive && (_sawLive || DateTime.UtcNow - _syncedAt > TimeSpan.FromSeconds(15))) SyncedToProgram = false;
             Mirror.OnAir = _synced && programLive;
             Mirror.IdleText = program == null ? "未连接扩展屏\n点此打开扩展屏向导（Win+P）" : "大屏未输出";
+            // OP-26/OP-09: a failed Program shows its failure in the mirror instead of the stale
+            // frame — whether the engine itself reports Failed (decode failure) or the failure
+            // was recorded after a GPU device loss stopped it (engine Idle, machine Active).
+            bool failed = _synced && programLive && source == ProgramSource.LocalMedia
+                && (program?.State == PlaybackChannelState.Failed || _dock._programFailed);
+            Mirror.Failed = failed;
             var engine = Controlled;
             var file = engine?.CurrentFile;
             var state = engine?.State ?? PlaybackChannelState.Idle;
@@ -759,7 +845,9 @@ internal sealed class SharedPreviewDock : Panel
             string name = _synced && source == ProgramSource.DeviceCast ? "设备来投"
                 : file == null ? "" : Path.GetFileName(file.SourcePath) + (engine?.CurrentDecodeLabel is { } decode ? " · " + decode : "");
             string caption = _synced
-                ? (programLive ? "● 大屏 · " + name + (engine?.IsPaused == true ? " · 已暂停" : "") : "大屏未输出")
+                ? (programLive ? "● 大屏 · " + name
+                    + (failed ? "（播出失败）" : "") // OP-26: the follow caption names the failure
+                    + (engine?.IsPaused == true ? " · 已暂停" : "") : "大屏未输出")
                 : state switch
                 {
                     PlaybackChannelState.Loading => name + " · 加载中",
@@ -834,6 +922,7 @@ internal sealed class SharedPreviewDock : Panel
         private readonly Label _state;
         private readonly Label _caption;
         private readonly RoundedActionButton _actionButton;
+        private readonly RoundedActionButton _viewButton;
         private readonly Panel _videoFrame;
         private readonly Panel _labels;
         private bool _onProgram;
@@ -842,6 +931,8 @@ internal sealed class SharedPreviewDock : Panel
         public Control VideoHost { get; }
         public event Action? TakeRequested;
         public event Action? RevertRequested;
+        /// <summary>OP-06: view the big screen (PGM mirror) while a device holds Program.</summary>
+        public event Action? ViewRequested;
 
         public DeviceCastCard()
         {
@@ -869,12 +960,28 @@ internal sealed class SharedPreviewDock : Panel
             {
                 if (_onProgram) RevertRequested?.Invoke(); else TakeRequested?.Invoke();
             };
+            // OP-06: "查看大屏" — summon the PGM mirror for a device-held Program without
+            // preempting it. Sits left of the Take/Revert button; only shown while a device is
+            // on Program and no window follows it yet.
+            _viewButton = new RoundedActionButton
+            {
+                Text = "查看大屏", Width = 76, Height = 28, Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
+                Visible = false,
+            };
+            ModernUi.StyleButton(_viewButton);
+            _viewButton.Click += (_, _) => ViewRequested?.Invoke();
             _videoFrame.Controls.Add(VideoHost);
             _videoFrame.Controls.Add(_caption);
             _videoFrame.Controls.Add(_actionButton);
-            _videoFrame.Resize += (_, _) => _actionButton.Location = new Point(
-                Math.Max(4, _videoFrame.ClientSize.Width - _actionButton.Width - 8),
-                Math.Max(4, _videoFrame.ClientSize.Height - _actionButton.Height - 8));
+            _videoFrame.Controls.Add(_viewButton);
+            _videoFrame.Resize += (_, _) =>
+            {
+                _actionButton.Location = new Point(
+                    Math.Max(4, _videoFrame.ClientSize.Width - _actionButton.Width - 8),
+                    Math.Max(4, _videoFrame.ClientSize.Height - _actionButton.Height - 8));
+                _viewButton.Location = new Point(
+                    Math.Max(4, _actionButton.Left - _viewButton.Width - 6), _actionButton.Top);
+            };
 
             _labels = new Panel { Dock = DockStyle.Fill, BackColor = Color.Transparent, Padding = new Padding(6, 0, 0, 0) };
             _title = ModernUi.SetForegroundRole(new Label
@@ -889,7 +996,12 @@ internal sealed class SharedPreviewDock : Panel
             Card.Controls.Add(_videoFrame);
         }
 
-        public void Update(bool connected, string title, bool onProgram, string idleStatus, bool displayBound)
+        /// <param name="following">A monitor window already follows Program (a PGM mirror is
+        /// showing), so the "查看大屏" gesture is unnecessary.</param>
+        /// <param name="signalStalled">No new decoded frame for over ~2 s while the device holds
+        /// Program (OP-27) — the card says so instead of still claiming a live picture.</param>
+        public void Update(bool connected, string title, bool onProgram, string idleStatus, bool displayBound,
+            bool following, bool signalStalled)
         {
             var palette = MonitorPalette;
             _onProgram = onProgram;
@@ -900,9 +1012,11 @@ internal sealed class SharedPreviewDock : Panel
                 ? $"{title} · {(onProgram ? "大屏中" : "预览中")}"
                 : "";
             _state.Text = connected
-                ? (onProgram ? "● 大屏输出中" : "● 预览中（未上屏）")
+                ? (onProgram && signalStalled ? "● 信号中断" : onProgram ? "● 大屏输出中" : "● 预览中（未上屏）")
                 : "● " + idleStatus;
-            ModernUi.SetForegroundRole(_state, connected ? (onProgram ? UiForegroundRole.Danger : UiForegroundRole.Success) : UiForegroundRole.Muted);
+            ModernUi.SetForegroundRole(_state, connected
+                ? (onProgram && signalStalled ? UiForegroundRole.Danger : onProgram ? UiForegroundRole.Danger : UiForegroundRole.Success)
+                : UiForegroundRole.Muted);
             _title.ForeColor = _caption.ForeColor = palette.Text;
             _caption.BackColor = palette.SurfaceRaised;
             _videoFrame.BackColor = VideoHost.BackColor = Color.Black;
@@ -910,6 +1024,10 @@ internal sealed class SharedPreviewDock : Panel
             _actionButton.Enabled = connected && (displayBound || onProgram);
             ModernUi.StyleButton(_actionButton, primary: !onProgram, danger: onProgram);
             _actionButton.BringToFront();
+            _viewButton.Visible = connected && onProgram && !following;
+            _viewButton.Enabled = _viewButton.Visible;
+            _viewButton.BringToFront();
+            _caption.Padding = new Padding(8, 0, _viewButton.Visible ? 150 : 76, 0);
             Card.GlassTint = onProgram
                 ? Color.FromArgb(202, Panels.ActivityRowView.Blend(palette.GlassTint, palette.ProgramBorder, 0.19f))
                 : palette.GlassTint;

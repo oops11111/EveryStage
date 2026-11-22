@@ -345,18 +345,14 @@ public sealed partial class ActivitiesPanel
         _detailToggleButton.Visible = false;
         ModernUi.StyleButton(_detailToggleButton);
         _detailToggleButton.Click += (_, _) => SetDetailPanelForced(!_detailPanelForced);
-        _detailToggleButton.KeyDown += OnDetailEscapeKeyDown;
         _toolTip.SetToolTip(_detailToggleButton, "窗口太窄放不下属性面板时，点此以浮层打开");
         Controls.Add(_detailToggleButton);
 
-        // AP-11: Esc leaves the forced overlay. ProcessCmdKey already belongs to the panel's
-        // selection keys (ActivitiesPanel.cs) and cannot be overridden a second time, so the
-        // overlay listens on the detail panel's own control tree instead — every editor is
-        // created in this method, so one recursive walk here covers them all. (An Esc that
-        // closes an open combo drop-down is consumed by the combo itself; the next Esc then
-        // reaches this handler.)
-        foreach (var control in SelfAndDescendants(_detailPanel))
-            control.KeyDown += OnDetailEscapeKeyDown;
+        // OP-22: no Esc-to-close handler here anymore. Esc is owned by the form (MainWindow.
+        // ProcessCmdKey): in a text box it yields to the box, everywhere else it stops output.
+        // A handler that closed the overlay first would have made Esc do two different things
+        // depending on which control had focus, and it was only ever reachable through a text
+        // box's focus anyway. The overlay closes via the toggle button.
 
         // P-01: visibility is managed separately from content — RefreshFileDetails fills the
         // editors and never touches Visible; UpdateDetailPanelVisibility (below) only decides
@@ -474,9 +470,14 @@ public sealed partial class ActivitiesPanel
 
     /// <summary>FL-01a: shows the 「✓ 已保存」 hint after a successful commit and arms the
     /// 2 s timer that hides it again. Called only when the Apply* actually saved — a
-    /// no-change commit shows nothing, because nothing was saved.</summary>
-    private void ShowDetailSavedHint()
+    /// no-change commit shows nothing, because nothing was saved. When the edited file is
+    /// the one on air, the hint says the edit applies next time it airs (OP-02): the engine
+    /// snapshots the stay duration, fade and document timing at Take, so editing the airing
+    /// item cannot change the current播出 — the note says so instead of pretending otherwise,
+    /// and no timer/fade is re-armed live.</summary>
+    private void ShowDetailSavedHint(bool appliesNextTime = false)
     {
+        _detailSavedLabel.Text = appliesNextTime ? "✓ 已保存 · 下次播出时生效" : "✓ 已保存";
         _detailSavedLabel.Visible = true;
         _detailSavedTimer.Stop();
         _detailSavedTimer.Start();
@@ -518,23 +519,6 @@ public sealed partial class ActivitiesPanel
             ClientSize.Width - _detailToggleButton.Width - LogicalToDeviceUnits(8),
             _activityRows.Top - stripHeight + (stripHeight - _detailToggleButton.Height) / 2);
         _detailToggleButton.BringToFront();
-    }
-
-    /// <summary>AP-11: Esc while the forced overlay is open closes it (wired to the toggle
-    /// button and, in BuildDetailPanel, to every control inside the detail panel).</summary>
-    private void OnDetailEscapeKeyDown(object? sender, KeyEventArgs e)
-    {
-        if (e.KeyCode != Keys.Escape || !_detailPanelForced) return;
-        e.SuppressKeyPress = true;
-        SetDetailPanelForced(false);
-    }
-
-    private static IEnumerable<Control> SelfAndDescendants(Control root)
-    {
-        yield return root;
-        foreach (Control child in root.Controls)
-            foreach (var descendant in SelfAndDescendants(child))
-                yield return descendant;
     }
 
     private static void ConfigureGroup(TableLayoutPanel group)
@@ -698,7 +682,7 @@ public sealed partial class ActivitiesPanel
         }
         bool saved = ApplyPlayModeOverride(file, value);
         RefreshFileDetails();
-        if (saved) ShowDetailSavedHint();
+        if (saved) ShowDetailSavedHint(ProgramIsOnAir(file));
     }
 
     private void CommitDetailCompletionAction()
@@ -708,7 +692,7 @@ public sealed partial class ActivitiesPanel
         if (_detailCompletionCombo.SelectedItem is not DetailItem<CompletionAction> item) return;
         bool saved = ApplyCompletionAction(file, item.Value);
         RefreshFileDetails();
-        if (saved) ShowDetailSavedHint();
+        if (saved) ShowDetailSavedHint(ProgramIsOnAir(file));
     }
 
     private void CommitDetailAllowManualSkip()
@@ -717,7 +701,7 @@ public sealed partial class ActivitiesPanel
         HideDetailSavedHint(); // FL-01a
         bool saved = ApplyAllowManualSkip(file, _detailAllowManualSkipCheck.Checked);
         RefreshFileDetails();
-        if (saved) ShowDetailSavedHint();
+        if (saved) ShowDetailSavedHint(ProgramIsOnAir(file));
     }
 
     private void CommitDetailStayDuration()
@@ -726,7 +710,7 @@ public sealed partial class ActivitiesPanel
         HideDetailSavedHint(); // FL-01a
         bool saved = ApplyStayDuration(file, _detailStayCheck.Checked ? TimeSpan.FromSeconds((double)_detailStaySeconds.Value) : null);
         RefreshFileDetails();
-        if (saved) ShowDetailSavedHint();
+        if (saved) ShowDetailSavedHint(ProgramIsOnAir(file));
     }
 
     private void CommitDetailFade()
@@ -736,7 +720,7 @@ public sealed partial class ActivitiesPanel
         bool saved = ApplyFade(file, _detailFadeCheck.Checked,
             _detailFadeCheck.Checked ? TimeSpan.FromSeconds((double)_detailFadeSeconds.Value) : null);
         RefreshFileDetails();
-        if (saved) ShowDetailSavedHint();
+        if (saved) ShowDetailSavedHint(ProgramIsOnAir(file));
     }
 
     private void CommitDetailAudioProperties()
@@ -757,7 +741,7 @@ public sealed partial class ActivitiesPanel
         else visual = AudioVisual.Waveform; // unreachable: the combo always carries its three items
         bool saved = ApplyAudioProperties(file, _detailBgAudioCheck.Checked, visual);
         RefreshFileDetails();
-        if (saved) ShowDetailSavedHint();
+        if (saved) ShowDetailSavedHint(ProgramIsOnAir(file));
     }
 
     /// <summary>Enter in a seconds box commits it (and is swallowed, so it doesn't also beep or

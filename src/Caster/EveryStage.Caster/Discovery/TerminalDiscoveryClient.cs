@@ -472,7 +472,7 @@ public sealed class TerminalDiscoveryClient : IDisposable
         string error = rejected.Reason switch
         {
             "not_paired" => "终端机要求重新配对。",
-            "not_allowed" => "终端机未允许此设备投屏。",
+            "not_allowed" => "终端机未允许此设备投屏。请在终端机已配对设备里开启投屏权限。",
             _ => "终端机拒绝了投屏请求。",
         };
         if (rejected.Reason == "not_paired")

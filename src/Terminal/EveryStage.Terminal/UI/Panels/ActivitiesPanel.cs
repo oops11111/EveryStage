@@ -428,7 +428,7 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         _runNextButton.Font = new Font(ModernUi.UiFontSemibold, 13F);
         _runPreviousButton = ActionButton("◀ 上一项", GoPrevious, height: 34);
         _runPreviewButton = ActionButton("预览下一项", PreviewNext, height: 34);
-        _toolTip.SetToolTip(_runNextButton, "把下一项放到大屏（空格键）");
+        _toolTip.SetToolTip(_runNextButton, "把下一项放到大屏（Ctrl+→）"); // Space is 播放/暂停, never 下一项 (OP-03)
         _toolTip.SetToolTip(_runPreviousButton, "回到上一项");
         _toolTip.SetToolTip(_runPreviewButton, "先在预览里看下一项，不上大屏");
         _runControls.Controls.AddRange(new Control[] { nextCaption, _nextName, _runNextButton, _runPreviousButton, _runPreviewButton });

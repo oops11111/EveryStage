@@ -90,24 +90,39 @@ public sealed partial class MainForm
         bool encoderBusy = DateTime.UtcNow - _lastEncoderDropAt < TimeSpan.FromSeconds(5);
         bool noPicture = session.AccessUnitsSent == 0 && session.FramesCaptured >= 15;
 
-        (CastHealth health, string healthText) = !session.IsTerminalAlive
-            ? (session.FramesCaptured == 0 && elapsed < TimeSpan.FromSeconds(5) ? CastHealth.Connecting : CastHealth.Waiting,
-               elapsed < TimeSpan.FromSeconds(5) ? "连接中" : "等待终端确认")
-            : noPicture ? (CastHealth.Congested, "画面还没出来")
-            : congested ? (CastHealth.Congested, "网络拥堵")
-            : encoderBusy ? (CastHealth.Congested, "电脑忙，已降帧")
-            : (CastHealth.Good, session.TerminalOnProgram ? "大屏显示中" : "流畅");
+        // OP-12/OP-13/OP-14: health must follow the terminal's own report, not just our send
+        // side. A decoder error in the latest report, or the terminal holding the cast in its
+        // preview window instead of Program, is a downgrade — never green. And silence past the
+        // 5 s liveness window is a red failure state, never an endless "waiting": the session
+        // is NOT ended automatically; the warning line below names the 停止 action.
+        bool terminalSilent = !session.IsTerminalAlive && elapsed >= TimeSpan.FromSeconds(5);
+        (CastHealth health, string healthText) = terminalSilent
+            ? (CastHealth.Failed, "终端无回应")
+            : !session.IsTerminalAlive
+                ? (session.FramesCaptured == 0 && elapsed < TimeSpan.FromSeconds(5) ? CastHealth.Connecting : CastHealth.Waiting,
+                   elapsed < TimeSpan.FromSeconds(5) ? "连接中" : "等待终端确认")
+                : session.TerminalVideoError != null ? (CastHealth.Congested, "终端解码出错")
+                : noPicture ? (CastHealth.Congested, "画面还没出来")
+                : congested ? (CastHealth.Congested, "网络拥堵")
+                : encoderBusy ? (CastHealth.Congested, "电脑忙，已降帧")
+                : !session.TerminalOnProgram ? (CastHealth.Congested, "未在大屏显示")
+                : (CastHealth.Good, "大屏显示中");
 
         string latency = session.RealRoundTripEstimate is { } rtt
             ? (session.IsRttStale ? "测量中" : $"约 {rtt.TotalMilliseconds:F0} ms")
             : "测量中";
-        string sound = !_settings.IncludeAudio ? "未投送"
+        // OP-30: the sound cell is liveness-gated — with no terminal report there is nothing to
+        // say about sound. "不可用" is gone: audio simply not being sent says so.
+        string sound = !session.IsTerminalAlive ? "未知（终端无回应）"
+            : !_settings.IncludeAudio ? "未投送"
             : session.HasAudio ? (session.AudioError != null ? "出错" : "正常")
-            : "不可用";
+            : "未投送音频";
 
         // The warning line mirrors the details text's drop lines: shown only while a drop
-        // counter is non-zero, one line, same wording.
+        // counter is non-zero, one line, same wording — plus the OP-14 silence prompt.
         var warningParts = new List<string>();
+        if (terminalSilent)
+            warningParts.Add("终端超过 5 秒没有回应，画面可能没有送达 — 点右上角「停止」结束本次投屏。");
         if (networkDrops > 0 || session.AudioChunksDroppedForBackpressure > 0)
             warningParts.Add($"网络发送跟不上丢弃：视频 {networkDrops} 个，声音 {session.AudioChunksDroppedForBackpressure} 个");
         if (encoderDrops > 0)

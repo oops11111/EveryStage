@@ -300,6 +300,9 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             CheckCastLiveness();
             CheckDecodeHealth();
             SendCastStatus();
+            // OP-27: the stall indicator refreshes on the same 1 s tick that samples the frame
+            // counter (CheckCastLiveness runs first, so the sample is fresh).
+            _mainWindow?.SetDeviceSignalStalled(_deviceCastController?.IsSignalStalled ?? false);
             if (++_castStatusTickCount % ConnectionQualityCheckEveryNTicks == 0) _ = LogConnectionQualityAsync();
         };
 
@@ -477,6 +480,14 @@ internal sealed class TerminalApplicationContext : ApplicationContext
             {
                 while (_pairingQueue.TryDequeue(out var next))
                 {
+                    // OP-33: a request that waited in the queue past its 2-minute deadline is
+                    // already dead in DiscoveryService (pruned, or past its deadline but not
+                    // yet pruned) — never pop a dialog for it. The Caster side timed out at
+                    // 2:15 and already reports "终端未回应"; answering here would call
+                    // RespondToPairing on a request that no longer exists, and an accept would
+                    // look like a success that never happened. The prune log keeps the trace.
+                    var deadline = _discovery.PairingDeadline(next.RequestId);
+                    if (deadline == null || deadline <= DateTimeOffset.Now) continue;
                     _mainWindow.ShowPairingRequest(next);
                     using var dialog = new PairingConfirmationDialog(next, _discovery.PairingDeadline(next.RequestId));
                     if (_overlay != null) OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, _overlay.Monitor);
@@ -643,9 +654,30 @@ internal sealed class TerminalApplicationContext : ApplicationContext
         _uiContext.Post(_ =>
         {
             _crashLogger.LogUnhandledException("VideoSurface.DeviceRemoved", new InvalidOperationException($"GPU device removed: {reason}"));
+            // Remember what was on air BEFORE stopping: Stop() clears the engine's current
+            // file, and the retry below needs it.
+            bool wasLiveLocal = _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia;
+            var wasPlaying = wasLiveLocal ? _playback?.CurrentFile : null;
             if (_stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.DeviceCast) _stateMachine.Disconnect();
             _playback?.Stop();
-            _mainWindow.ShowStartupProblem($"显卡设备已丢失（{reason}），大屏已切黑场。请检查显卡驱动或连接后重启。");
+            string message = $"显卡设备已丢失（{reason}），大屏已切黑场。请检查显卡驱动或连接后重启。";
+            if (!wasLiveLocal)
+            {
+                _mainWindow.ShowStartupProblem(message);
+                return;
+            }
+            // OP-09: _playback.Stop() does NOT migrate the state machine (verified in code) —
+            // without this, the machine still claims Active while the overlay is black. Record
+            // the failure explicitly (title bar + dock chip) instead of inventing a third
+            // OutputState, and offer a retry that replays the interrupted file: if the driver
+            // reset has completed by then, playback resumes; if not, it fails again and the
+            // same toast returns. No automatic rebuild (none exists).
+            _mainWindow.ReportProgramFailure();
+            if (wasPlaying != null)
+                _mainWindow.ShowStartupProblem(message,
+                    new ToastAction("重试播出", () => _playback?.RequestPlay(wasPlaying, PlaybackTrigger.ManualSkip)));
+            else
+                _mainWindow.ShowStartupProblem(message);
         }, null);
     }
 
