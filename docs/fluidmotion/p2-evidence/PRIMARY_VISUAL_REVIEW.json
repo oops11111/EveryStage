@@ -1,0 +1,28 @@
+{
+  "recorded_utc": "2026-11-22T07:47:04.860403+00:00",
+  "reviewer": "primary agent",
+  "status": "PASS isolated actual-control visual review",
+  "scope": "actual MusicDrawer in a harness, not ordinary Terminal startup or installer acceptance",
+  "checks": 47,
+  "created": 6,
+  "released": 6,
+  "package_sha256": "5a091abf4ec43eddcb6bbad81d385ce1732eb8dc70abf3a6cb7b77438bad62ea",
+  "framework_commit": "44401d3f002b427d828500331a3e9b4ada5881cd",
+  "images": {
+    "drawer-closed.png": "4ac61bd8be0d10e0a2b48fa0df3c84b32827d93c69be2d3b9ed9db8e6d05d1a7",
+    "drawer-open.png": "e8e52e28c7df412e175dd3d569e65b1d3cf088320990cbfd86ae0f28f7c3dbcf",
+    "drawer-opening.png": "e1fd640d73cc497a21e5bc1f23de7898e1440e3038c3db1041d093912d165edf",
+    "drawer-resized.png": "a8fb41b1f3cc135cbb5e0572d37d066e03530091d416affdca6dbae8434f028c",
+    "drawer-rest-closed.png": "4ac61bd8be0d10e0a2b48fa0df3c84b32827d93c69be2d3b9ed9db8e6d05d1a7",
+    "drawer-reversing.png": "6aeb2a727e0291924cd2fddbcfaf83c5e84b6302cdc7ac22257a0bf326a6297d"
+  },
+  "observations": [
+    "Different intermediate visible heights in opening and reversing states.",
+    "Full expansion shows heading, playlist, controls and complete footer.",
+    "Resized window shows complete controls and footer with changed layout.",
+    "Closed and rest-closed images are byte-identical and show the empty host.",
+    "Attempt 1 capture clipped non-client extent; original images retained. Attempt 2 full-frame capture resolves clipping."
+  ],
+  "performance_claim": false,
+  "ordinary_application_acceptance_pending_P3": true
+}

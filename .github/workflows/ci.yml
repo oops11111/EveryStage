@@ -26,6 +26,15 @@ jobs:
         with:
           dotnet-version: 8.0.x
 
+      - name: Set up component build Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Prepare exact pinned FluidMotion package once
+        shell: pwsh
+        run: ./scripts/Prepare-FluidMotion.ps1
+
       - name: Restore projects
         shell: pwsh
         run: |
@@ -44,6 +53,10 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
 
+      - name: Verify Terminal exact component assets
+        shell: pwsh
+        run: ./scripts/Verify-FluidMotionConsumption.ps1 -OutputDirectories @('src/Terminal/EveryStage.Terminal/bin/Release/net8.0-windows10.0.22621.0/win-x64')
+
       - name: Prepare timeout diagnostics
         shell: pwsh
         run: |
@@ -61,13 +74,23 @@ jobs:
 
       - name: Build release packages and verify native dependencies
         shell: pwsh
-        run: ./scripts/Build-ReleasePackages.ps1
+        run: |
+          ./scripts/Build-ReleasePackages.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/Verify-FluidMotionConsumption.ps1 -OutputDirectories @('artifacts/release/EveryStage-Terminal-win-x64')
 
       - name: Run Windows content self-tests
         timeout-minutes: 12
         shell: pwsh
         run: |
           dotnet run --project src/Tests/EveryStage.WindowsSelfTests/EveryStage.WindowsSelfTests.csproj --no-build --configuration Release 2>&1 | Tee-Object artifacts/test-diagnostics/windows.log
+          exit $LASTEXITCODE
+
+      - name: Verify isolated actual MusicDrawer and callback lifecycle
+        timeout-minutes: 4
+        shell: pwsh
+        run: |
+          dotnet run --project src/Tests/EveryStage.MotionSelfTests/EveryStage.MotionSelfTests.csproj --no-build --configuration Release -- --output artifacts/motion-control 2>&1 | Tee-Object artifacts/test-diagnostics/motion-control.log
           exit $LASTEXITCODE
 
       - name: Render Caster UI screenshots
@@ -109,6 +132,22 @@ jobs:
             choco install nsis -y --no-progress
           }
           ./scripts/Build-Installer.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./scripts/Verify-FluidMotionConsumption.ps1 -OutputDirectories @('artifacts/installer/publish/Terminal')
+
+      - name: Preserve exact component package and actual-control evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-FluidMotion-control-${{ github.sha }}
+          path: |
+            artifacts/fluidmotion/component-state.json
+            artifacts/fluidmotion/consumption-*.json
+            artifacts/fluidmotion/feed/*.nupkg
+            artifacts/fluidmotion/*.log
+            artifacts/fluidmotion/build-*/result.json
+            artifacts/motion-control/**
+          if-no-files-found: warn
 
       - name: Upload installer
         uses: actions/upload-artifact@v6
