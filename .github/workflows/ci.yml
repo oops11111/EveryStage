@@ -104,6 +104,18 @@ jobs:
             artifacts/motion-control/failure.json
           if-no-files-found: warn
 
+      - name: Preserve software PPT transition evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-PPT-transition-${{ github.sha }}
+          path: |
+            artifacts/motion-control/ppt-*.png
+            artifacts/motion-control/picker-initial-diagnostic.json
+            artifacts/motion-control/result.json
+            artifacts/motion-control/failure.json
+          if-no-files-found: warn
+
       - name: Render Caster UI screenshots
         timeout-minutes: 3
         shell: pwsh

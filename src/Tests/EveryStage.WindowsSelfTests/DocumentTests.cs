@@ -1246,6 +1246,12 @@ internal static class DocumentTests
 
     /// <summary>PPT 翻页过场: every effect × direction starts on the old page, ends on the new one and
     /// shows both halfway; the surface's transition layer paints and finishes.</summary>
+    private sealed class EnabledSlideAnimations : IAnimationPreference
+    {
+        public bool AnimationsEnabled => true;
+        public event Action? Changed { add { } remove { } }
+    }
+
     private static void TestSlideTransitions()
     {
         const int w = 160, h = 90;
@@ -1284,7 +1290,7 @@ internal static class DocumentTests
             }
 
         using var form = new Form { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000), ClientSize = new Size(w, h) };
-        var surface = new ContentSurface { Dock = DockStyle.Fill };
+        var surface = new ContentSurface(new EnabledSlideAnimations()) { Dock = DockStyle.Fill };
         form.Controls.Add(surface);
         form.Show();
         surface.SetFrame(from);

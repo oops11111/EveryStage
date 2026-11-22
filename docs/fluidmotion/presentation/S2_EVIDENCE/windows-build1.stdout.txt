@@ -1,0 +1,9 @@
+C:\Program Files\dotnet\sdk\10.0.300\Sdks\Microsoft.NET.Sdk\targets\Microsoft.PackageDependencyResolution.targets(266,5): error NETSDK1004: 找不到资产文件“<ES_WORKSPACE>\src\Tests\EveryStage.WindowsSelfTests\obj\project.assets.json”。运行 NuGet 包还原以生成此文件。 [<ES_WORKSPACE>\src\Tests\EveryStage.WindowsSelfTests\EveryStage.WindowsSelfTests.csproj]
+
+生成失败。
+
+C:\Program Files\dotnet\sdk\10.0.300\Sdks\Microsoft.NET.Sdk\targets\Microsoft.PackageDependencyResolution.targets(266,5): error NETSDK1004: 找不到资产文件“<ES_WORKSPACE>\src\Tests\EveryStage.WindowsSelfTests\obj\project.assets.json”。运行 NuGet 包还原以生成此文件。 [<ES_WORKSPACE>\src\Tests\EveryStage.WindowsSelfTests\EveryStage.WindowsSelfTests.csproj]
+    0 个警告
+    1 个错误
+
+已用时间 00:00:00.94

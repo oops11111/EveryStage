@@ -1,6 +1,7 @@
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using EveryStage.Terminal.UI;
 
 namespace EveryStage.Terminal.ContentEngine;
 
@@ -43,8 +44,11 @@ public sealed class ContentSurface : Control
         set => Cursor = value ? (s_hiddenCursor ??= CreateHiddenCursor()) : Cursors.Default;
     }
 
-    public ContentSurface()
+    public ContentSurface() : this(null) { }
+
+    internal ContentSurface(IAnimationPreference? preference)
     {
+        _animationPreference = preference;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer
             | ControlStyles.Selectable, true);
         BackColor = Color.Black;
@@ -61,6 +65,7 @@ public sealed class ContentSurface : Control
     /// that change many times a second (window capture), which are scaled with a cheaper filter.</summary>
     public void SetFrame(Bitmap? frame, bool live = false)
     {
+        if (frame is null) EndTransition();
         SwapPainter(null);
         if (!ReferenceEquals(frame, _frame)) ReleaseScaled();
         _frame = frame;
@@ -72,6 +77,7 @@ public sealed class ContentSurface : Control
     /// <summary>Hands the whole surface to <paramref name="painter"/> (null clears it).</summary>
     public void SetPainter(IContentPainter? painter)
     {
+        if (painter is null) EndTransition();
         _frame = null;
         ReleaseScaled();
         SwapPainter(painter);
@@ -113,6 +119,7 @@ public sealed class ContentSurface : Control
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
+        EndTransition();
         _painter?.OnResize();
         Invalidate();
     }
@@ -136,8 +143,9 @@ public sealed class ContentSurface : Control
     private bool _transitionToDirty = true;
     private bool _transitionTickInvalidating;
     private SlideTransitionSpec _transition;
-    private readonly System.Diagnostics.Stopwatch _transitionClock = new();
-    private System.Windows.Forms.Timer? _transitionTimer;
+    private readonly IAnimationPreference? _animationPreference;
+    private SlideTransitionTimeline? _transitionTimeline;
+    private float _transitionProgress;
 
     /// <summary>True while a page transition is being drawn.</summary>
     public bool InTransition => _transitionFrom != null;
@@ -150,37 +158,37 @@ public sealed class ContentSurface : Control
         var still = new Bitmap(Width, Height);
         using (var g = Graphics.FromImage(still))
         {
-            if (_transitionFrom != null) PaintTransitionFrame(g);
+            if (_transitionFrom != null && _transitionFrom.Size == ClientSize) PaintTransitionFrame(g);
             else PaintContent(g);
         }
-        _transitionFrom?.Dispose();
+        EndTransition();
         _transitionFrom = still;
         _transition = spec;
-        _transitionClock.Restart();
-        _transitionTimer ??= CreateTransitionTimer();
-        _transitionTimer.Start();
+        _transitionProgress = 0;
+        _transitionTimeline ??= new SlideTransitionTimeline(this, value =>
+        {
+            _transitionProgress = (float)value;
+            InvalidateTransitionTick();
+        }, _ =>
+        {
+            EndTransition();
+            Invalidate();
+        }, _animationPreference);
+        try { _transitionTimeline.Start(spec.Milliseconds); }
+        catch { EndTransition(); throw; }
         Invalidate();
     }
 
-    private System.Windows.Forms.Timer CreateTransitionTimer()
+    private void InvalidateTransitionTick()
     {
-        var timer = new System.Windows.Forms.Timer { Interval = 15 };
-        // Ends on time even when nothing paints (window minimized, covered or off-screen).
-        timer.Tick += (_, _) =>
-        {
-            if (TransitionProgress >= 1f) EndTransition();
-            // Flagged so the constructor's Invalidated hook doesn't mistake a pure blend-advance
-            // tick for a content change.
-            _transitionTickInvalidating = true;
-            try { Invalidate(); }
-            finally { _transitionTickInvalidating = false; }
-        };
-        return timer;
+        _transitionTickInvalidating = true;
+        try { Invalidate(); }
+        finally { _transitionTickInvalidating = false; }
     }
 
     private void EndTransition()
     {
-        _transitionTimer?.Stop();
+        _transitionTimeline?.Cancel();
         _transitionFrom?.Dispose();
         _transitionFrom = null;
         _transitionTo?.Dispose();
@@ -188,7 +196,7 @@ public sealed class ContentSurface : Control
         _transitionToDirty = true;
     }
 
-    private float TransitionProgress => (float)(_transitionClock.Elapsed.TotalMilliseconds / Math.Max(1, _transition.Milliseconds));
+    private float TransitionProgress => _transitionProgress;
 
     private void PaintTransitionFrame(Graphics g)
     {
@@ -314,7 +322,7 @@ public sealed class ContentSurface : Control
         {
             ReleaseScaled();
             EndTransition();
-            _transitionTimer?.Dispose();
+            _transitionTimeline?.Dispose();
         }
         base.Dispose(disposing);
     }

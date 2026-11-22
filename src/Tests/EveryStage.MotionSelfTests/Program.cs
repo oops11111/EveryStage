@@ -39,7 +39,7 @@ internal static partial class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        string output = args.Length == 2 && args[0] == "--output" ? Path.GetFullPath(args[1])
+        string output = args.Length >= 2 && args[0] == "--output" ? Path.GetFullPath(args[1])
             : Path.Combine(Path.GetTempPath(), "EveryStage-motion-harness-" + Guid.NewGuid().ToString("N"));
         if (Directory.Exists(output)) throw new InvalidOperationException("Use a new harness output directory");
         Directory.CreateDirectory(output);
@@ -49,6 +49,12 @@ internal static partial class Program
         using var recorder = new LifecycleRecorder();
         try
         {
+            if (args.Length == 4 && args[2] == "--case" && args[3] == "picker-diagnostic")
+            {
+                PickerChecks(output, diagnosticOnly: true);
+                Console.WriteLine("PICKER_DIAGNOSTIC_ONLY=" + output);
+                return 0;
+            }
             AdapterChecks();
             DrawerChecks(output);
             Check(recorder.Created > 0 && recorder.Created == recorder.Released,
@@ -59,10 +65,13 @@ internal static partial class Program
             int drawerRegressionChecks = _checks;
             PresenterChecks(output);
             Check(recorder.Created == recorder.Released, "presenter native lifecycle also releases every created handle");
+            int originalMotionChecks = _checks;
+            SlideTimelineChecks(output);
+            Check(recorder.Created == recorder.Released, "software slide timeline releases every created native handle");
             File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
             {
                 status = "PASS isolated actual-control harness; not ordinary Terminal startup",
-                checks = _checks, drawer_regression_checks = drawerRegressionChecks, presenter_checks = _checks - drawerRegressionChecks, labels = Checks, recorder.Created, recorder.Released,
+                checks = _checks, drawer_regression_checks = drawerRegressionChecks, presenter_checks = originalMotionChecks - drawerRegressionChecks, original_motion_checks = originalMotionChecks, slide_transition_checks = _checks - originalMotionChecks, labels = Checks, recorder.Created, recorder.Released,
                 system_settings_written = false, program_entry_invoked = false,
                 media_started = false, network_started = false,
                 persistence = "explicit fresh temp overrides, empty music/file libraries",

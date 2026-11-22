@@ -1,0 +1,199 @@
+{
+  "base_commit": "575ec51496ca14b7ba3c39090df94feea5c3235c",
+  "status": "local actual-control PASS; primary review/CI/merge pending",
+  "originals_retained": "ignored artifacts/slide-s2-6a4a607f",
+  "text_publication": "UTF-8/LF and workspace redaction; original/published hashes separate; PNG bytes unchanged",
+  "records": [
+    {
+      "original_relative_path": "harness-attempt5/result.json",
+      "published_path": "harness-attempt5__result.json",
+      "original_sha256": "33ef4d404acf55ef8d6a1ecbfdc1482322f90b6e630f98886d7c366f5ad86a3c",
+      "published_sha256": "85c3944fbd8a28b162d47062a4f2d5947f9ce43cf955b780d5eb4c7d05f10e7f",
+      "published_bytes": 23122
+    },
+    {
+      "original_relative_path": "harness-attempt5/picker-initial-diagnostic.json",
+      "published_path": "harness-attempt5__picker-initial-diagnostic.json",
+      "original_sha256": "db6a6446bfd1362b0cc19be6ca418a311aece41d36f4da69800412d8dd49f7fc",
+      "published_sha256": "e9b3bf2a410f8aa3350d1eedda11a8bf3fa2c84c8e6cd6702b18f5e8da428990",
+      "published_bytes": 11085
+    },
+    {
+      "original_relative_path": "harness-attempt2/failure.json",
+      "published_path": "harness-attempt2__failure.json",
+      "original_sha256": "876ad04f61f55abc50f1b2dd85be2e543b6efc2c02edb34d496c44ac6ecdf4e8",
+      "published_sha256": "ed455fe6a9c044efc858336d47f5ecf807a741ca1498c827be5839bc7afcfe52",
+      "published_bytes": 14748
+    },
+    {
+      "original_relative_path": "picker-diagnostic-attempt3/picker-initial-diagnostic.json",
+      "published_path": "picker-diagnostic-attempt3__picker-initial-diagnostic.json",
+      "original_sha256": "d137565d9fe937bdae648f6e50c8286a5797d44e0d9126769d591bb7ca612817",
+      "published_sha256": "719b93febbc4203c231f572d52171bd10c3db20487c025087347fae91bad94f9",
+      "published_bytes": 4720
+    },
+    {
+      "original_relative_path": "harness-attempt4/result.json",
+      "published_path": "harness-attempt4__result.json",
+      "original_sha256": "23792501a026f34a492f5b958e79c4c67bcb85462d39700cca184b2f731af8de",
+      "published_sha256": "86ef7f67828cd87f2cad3a67fe5d2f9034c448a5f87ccd3e71a633ef0e20ab96",
+      "published_bytes": 23123
+    },
+    {
+      "original_relative_path": "motion-build1.stdout.txt",
+      "published_path": "motion-build1.stdout.txt",
+      "original_sha256": "a84ac6e753f7a8bb005b179ce58ef09d96cfd16b95f47f92ce6c1f3713eaf82d",
+      "published_sha256": "afbf87891cbd34275ea7f74a4a3080ba90dfb52060c87e8694116b57234baf43",
+      "published_bytes": 889
+    },
+    {
+      "original_relative_path": "motion-build2.stdout.txt",
+      "published_path": "motion-build2.stdout.txt",
+      "original_sha256": "03c8e416bd954add81dbaecf32aa35f163904b61fc444edd8c194b120dbe4c6b",
+      "published_sha256": "8f68a140a4de9bf4c9804e24047c9e0897421e3317a4d2c79a317cace3ef3521",
+      "published_bytes": 889
+    },
+    {
+      "original_relative_path": "motion-build3.stdout.txt",
+      "published_path": "motion-build3.stdout.txt",
+      "original_sha256": "1dfa4d8e485f8636ef29b497bc50c09224efb11c5476dcc2795ba46d5d292fd5",
+      "published_sha256": "9aa444092f27d3da825a49a9a5fbf71673719d38fdffbddea5a14063c057f01f",
+      "published_bytes": 889
+    },
+    {
+      "original_relative_path": "motion-build4.stdout.txt",
+      "published_path": "motion-build4.stdout.txt",
+      "original_sha256": "00ba75afccd928ee9807d251a3be741fe65c3742990d81b4436d06f4cb533da1",
+      "published_sha256": "a298764c376487d6bf8d3104ee083984ce64595cc6b9c5f2a411fadf3d3cc5f8",
+      "published_bytes": 889
+    },
+    {
+      "original_relative_path": "motion-build5.stdout.txt",
+      "published_path": "motion-build5.stdout.txt",
+      "original_sha256": "df6d6344340cd9d47504c948174b6482282a4f7b8261c71ff33be03479c7acf1",
+      "published_sha256": "c4ac0a9f3dc3f6a0e7ed62f6eebe75f2e981f81ae36f60a4ac9253a3efcfb39d",
+      "published_bytes": 889
+    },
+    {
+      "original_relative_path": "motion-run1.stdout.txt",
+      "published_path": "motion-run1.stdout.txt",
+      "original_sha256": "573d32f17eb0ea981652699105fd22309d0930ef31f85174bb3803fdc3016627",
+      "published_sha256": "31a95e933294c343b767524bc36e70a81ba2c04690777356a10916cadae87ea9",
+      "published_bytes": 8326
+    },
+    {
+      "original_relative_path": "motion-run2.stderr.txt",
+      "published_path": "motion-run2.stderr.txt",
+      "original_sha256": "c6937536305110b094beb1a27ef97c00e87784ba83c62d4f5a5d09a6b4983fbf",
+      "published_sha256": "2dbdb291a02861a8223f7d48cc83b2c3a43c16c84a92258b47c32350e279af23",
+      "published_bytes": 748
+    },
+    {
+      "original_relative_path": "motion-run2.stdout.txt",
+      "published_path": "motion-run2.stdout.txt",
+      "original_sha256": "96986de4b1c2e578941fb00ad94a17d6f6e8033d2aa110b1909a09a993222de7",
+      "published_sha256": "95c5a556ba18402a9316f1e8b504fe91e3fcb362e9823e8a16e46749766d9cc9",
+      "published_bytes": 14522
+    },
+    {
+      "original_relative_path": "motion-run4.stdout.txt",
+      "published_path": "motion-run4.stdout.txt",
+      "original_sha256": "30bf19f64fdf4a870aea55954a87ea4c414e1ee221bd3617a49b7b9c38a1d3fc",
+      "published_sha256": "ceb983e2f8738af313b7c213c8dc9469e03b49535719da11f32c5fc2be11dc49",
+      "published_bytes": 15531
+    },
+    {
+      "original_relative_path": "motion-run5.stdout.txt",
+      "published_path": "motion-run5.stdout.txt",
+      "original_sha256": "6fc6e2f6f3fe421d4d75a6158217a10ebe8c9661d52ee89384a243902646a5bf",
+      "published_sha256": "d7d682f401adedc5bd19fe3f114fa5beec2afaa77d471a400c21cacae44cbd14",
+      "published_bytes": 15531
+    },
+    {
+      "original_relative_path": "picker-diagnostic3.stderr.txt",
+      "published_path": "picker-diagnostic3.stderr.txt",
+      "original_sha256": "46f319e0629dbac7afae63f695dea9ed76b8c4247e19472d37a20f9c98791a38",
+      "published_sha256": "0ebc8c4dd3498f4903514af965c70fe98e3bbbca311ef1bf78d905156453fccc",
+      "published_bytes": 637
+    },
+    {
+      "original_relative_path": "target-build1.stdout.txt",
+      "published_path": "target-build1.stdout.txt",
+      "original_sha256": "31209169c2ed70e4a8a08ca307169c353fa6bb4be17b1ca4486312baaace9afc",
+      "published_sha256": "446e7e50f30b6447bff705b20bd131b8976b418caac716d303e8a3f48dc37164",
+      "published_bytes": 727
+    },
+    {
+      "original_relative_path": "windows-build1.stdout.txt",
+      "published_path": "windows-build1.stdout.txt",
+      "original_sha256": "72f90abc2d1d5657e0be2892f5cca8a158975c594d915b7340d0216fbc0a4728",
+      "published_sha256": "dba194ecb60f62e084f228e30d221c9aa322d2e2d7adda8b9d08461a9d188863",
+      "published_bytes": 836
+    },
+    {
+      "original_relative_path": "windows-build2.stdout.txt",
+      "published_path": "windows-build2.stdout.txt",
+      "original_sha256": "85833608f2792876d89d6dd40b3141b1beeb1fcb457d18b5b4ab7b84ab608e6f",
+      "published_sha256": "541e15330dffba894b006ed405caa8ed0d28364c8a57953370e54d61d4c0b6a5",
+      "published_bytes": 892
+    },
+    {
+      "original_relative_path": "windows-restore1.stdout.txt",
+      "published_path": "windows-restore1.stdout.txt",
+      "original_sha256": "fb245d76e066c578cef79163fc54cad2b65b8d115ff972b3d05ca998114370fe",
+      "published_sha256": "82ce381aadc33160a2fa1156c2ff412cb5ebfbbcecbfcab5f8eafa3d6e0ec18e",
+      "published_bytes": 212
+    },
+    {
+      "original_relative_path": "harness-attempt5/ppt-Fade-middle.png",
+      "published_path": "harness-attempt5__ppt-Fade-middle.png",
+      "original_sha256": "7872e888691a29b840006549ad005994771c24f7373d3b1fefd41ca3a3431ab7",
+      "published_sha256": "7872e888691a29b840006549ad005994771c24f7373d3b1fefd41ca3a3431ab7",
+      "published_bytes": 6124
+    },
+    {
+      "original_relative_path": "harness-attempt5/ppt-fast-replacement-start.png",
+      "published_path": "harness-attempt5__ppt-fast-replacement-start.png",
+      "original_sha256": "b39b4426e225d3cbe981396041e6284d04800995bf46e5c2674f254b92ecefb9",
+      "published_sha256": "b39b4426e225d3cbe981396041e6284d04800995bf46e5c2674f254b92ecefb9",
+      "published_bytes": 6172
+    },
+    {
+      "original_relative_path": "harness-attempt5/ppt-PageTurn-middle.png",
+      "published_path": "harness-attempt5__ppt-PageTurn-middle.png",
+      "original_sha256": "50bf335d664891b96841ac2f4965abfaaa522ffd07fc59e61d09ab6f3b398e49",
+      "published_sha256": "50bf335d664891b96841ac2f4965abfaaa522ffd07fc59e61d09ab6f3b398e49",
+      "published_bytes": 6391
+    },
+    {
+      "original_relative_path": "harness-attempt5/ppt-picker-middle.png",
+      "published_path": "harness-attempt5__ppt-picker-middle.png",
+      "original_sha256": "27fb6af9bdcc32b66d46f978d73d9f0904e8890506aab0e751a3e2207f176a90",
+      "published_sha256": "27fb6af9bdcc32b66d46f978d73d9f0904e8890506aab0e751a3e2207f176a90",
+      "published_bytes": 77900
+    },
+    {
+      "original_relative_path": "harness-attempt5/ppt-picker-reduced-target.png",
+      "published_path": "harness-attempt5__ppt-picker-reduced-target.png",
+      "original_sha256": "e2569e211e3b79eef405ea7aadcbb10eecc77ed5f2a249bf50974dcc0c721ebf",
+      "published_sha256": "e2569e211e3b79eef405ea7aadcbb10eecc77ed5f2a249bf50974dcc0c721ebf",
+      "published_bytes": 85664
+    },
+    {
+      "original_relative_path": "harness-attempt5/ppt-RainSoak-middle.png",
+      "published_path": "harness-attempt5__ppt-RainSoak-middle.png",
+      "original_sha256": "36a9b7bfa0fc406e9fcdda28f559660af6ca1f2baf3fedf342a683cbe0b8c175",
+      "published_sha256": "36a9b7bfa0fc406e9fcdda28f559660af6ca1f2baf3fedf342a683cbe0b8c175",
+      "published_bytes": 6910
+    }
+  ],
+  "source_sha256": {
+    "src/Terminal/EveryStage.Terminal/UI/SlideTransitionTimeline.cs": "b923a1c4e50d1ad45488bf1bbaefda11ec020ed8f64d449f2059fa56584bba42",
+    "src/Terminal/EveryStage.Terminal/ContentEngine/ContentSurface.cs": "74c822e3e3c60a6ece32bcdf8799605d723d9840041e84af6aacd09099501044",
+    "src/Terminal/EveryStage.Terminal/UI/Panels/SlideTransitionPicker.cs": "5a0da351364e8a8fd5ac82d514675f27a17b93bccb6f538e0728d2f98d0b3759",
+    "src/Tests/EveryStage.MotionSelfTests/Program.cs": "a41dadd5457b23296702ac14bc42be3ffb20e5b8e5e0330b53cf9dd0ecd00a65",
+    "src/Tests/EveryStage.MotionSelfTests/SlideTimelineChecks.cs": "2e847141f2d88d735c83b0a05ae9f0587ad4052afcf1d300761821e37eb8b572",
+    "src/Tests/EveryStage.MotionSelfTests/SoftwareSurfaceChecks.cs": "5f65be5466ae11e5099d1f4e194a3e1a023887b9d14277a3a7054af4b2e8e4c6",
+    "src/Tests/EveryStage.WindowsSelfTests/DocumentTests.cs": "078b7e53b60be31c07d445708a15e822d2372b7729abd8ee9fb4c687668fa71e"
+  }
+}
