@@ -192,6 +192,8 @@ internal static partial class Program
         form.Controls.Add(picker);
         picker.FitToWidth(form.ClientSize.Width);
         form.Show();
+        picker.FitToWidth(form.ClientSize.Width);
+        Check(form.ClientRectangle.Contains(picker.Bounds), "shown picker fits the actual desktop-constrained client bounds");
         int changes = 0;
         picker.SelectionChanged += () => changes++;
         var samples = new List<object>();
@@ -273,7 +275,10 @@ internal static partial class Program
                 capturedMiddle, capturedProgress, restarted, held, valuesCancelled, normalDone,
                 final_progress = timeline.Progress, timeline.IsRunning, timeline.TimerEnabled, timeline.DurationMilliseconds, timeline.HoldMilliseconds,
                 final_preview = S2Field<float>(picker, "_previewT"), preference_enabled = preference.AnimationsEnabled,
-                picker.Visible, picker.IsHandleCreated, picker.Width, picker.Height
+                picker.Visible, picker.IsHandleCreated, picker.Width, picker.Height,
+                actual_client_width = form.ClientSize.Width, actual_client_height = form.ClientSize.Height,
+                picker_bounds = new { picker.Left, picker.Top, picker.Right, picker.Bottom },
+                picker_contained = form.ClientRectangle.Contains(picker.Bounds)
             }, new JsonSerializerOptions { WriteIndented = true }));
         }
         if (diagnosticOnly) return;

@@ -185,6 +185,76 @@
       "original_sha256": "36a9b7bfa0fc406e9fcdda28f559660af6ca1f2baf3fedf342a683cbe0b8c175",
       "published_sha256": "36a9b7bfa0fc406e9fcdda28f559660af6ca1f2baf3fedf342a683cbe0b8c175",
       "published_bytes": 6910
+    },
+    {
+      "original_relative_path": "harness-attempt6/ppt-Fade-middle.png",
+      "published_path": "harness-attempt6__ppt-Fade-middle.png",
+      "original_sha256": "2296c9b47ea23d8233e0331b98500be07afc437ce4094252b1b1a34e345a64d5",
+      "published_sha256": "2296c9b47ea23d8233e0331b98500be07afc437ce4094252b1b1a34e345a64d5",
+      "published_bytes": 6107
+    },
+    {
+      "original_relative_path": "harness-attempt6/ppt-fast-replacement-start.png",
+      "published_path": "harness-attempt6__ppt-fast-replacement-start.png",
+      "original_sha256": "4f6fa5f2fa20e6ff60e1b0aa96ba8da2b48ed1d708ba558d69c7c6a273b944c7",
+      "published_sha256": "4f6fa5f2fa20e6ff60e1b0aa96ba8da2b48ed1d708ba558d69c7c6a273b944c7",
+      "published_bytes": 6060
+    },
+    {
+      "original_relative_path": "harness-attempt6/ppt-PageTurn-middle.png",
+      "published_path": "harness-attempt6__ppt-PageTurn-middle.png",
+      "original_sha256": "08b51d54bcf8890eee8c741fe242f6e1e811ad5289d8e03aaa762c2c4daa8868",
+      "published_sha256": "08b51d54bcf8890eee8c741fe242f6e1e811ad5289d8e03aaa762c2c4daa8868",
+      "published_bytes": 6395
+    },
+    {
+      "original_relative_path": "harness-attempt6/ppt-picker-middle.png",
+      "published_path": "harness-attempt6__ppt-picker-middle.png",
+      "original_sha256": "7a9958861a01e4bffec001bf4db51c225234b56a6ac0c76095067105ae166eda",
+      "published_sha256": "7a9958861a01e4bffec001bf4db51c225234b56a6ac0c76095067105ae166eda",
+      "published_bytes": 77586
+    },
+    {
+      "original_relative_path": "harness-attempt6/ppt-picker-reduced-target.png",
+      "published_path": "harness-attempt6__ppt-picker-reduced-target.png",
+      "original_sha256": "e2569e211e3b79eef405ea7aadcbb10eecc77ed5f2a249bf50974dcc0c721ebf",
+      "published_sha256": "e2569e211e3b79eef405ea7aadcbb10eecc77ed5f2a249bf50974dcc0c721ebf",
+      "published_bytes": 85664
+    },
+    {
+      "original_relative_path": "harness-attempt6/ppt-RainSoak-middle.png",
+      "published_path": "harness-attempt6__ppt-RainSoak-middle.png",
+      "original_sha256": "36a9b7bfa0fc406e9fcdda28f559660af6ca1f2baf3fedf342a683cbe0b8c175",
+      "published_sha256": "36a9b7bfa0fc406e9fcdda28f559660af6ca1f2baf3fedf342a683cbe0b8c175",
+      "published_bytes": 6910
+    },
+    {
+      "original_relative_path": "harness-attempt6/result.json",
+      "published_path": "harness-attempt6__result.json",
+      "original_sha256": "f7d0c9f2c600664f049b6d63ccb5c250db77a91ea9157aa5e53c1873426da7d8",
+      "published_sha256": "a85c252a257b34147beea9f8c1b52eb3108edf1223d6a5b2ea5036fed411fb9c",
+      "published_bytes": 23191
+    },
+    {
+      "original_relative_path": "harness-attempt6/picker-initial-diagnostic.json",
+      "published_path": "harness-attempt6__picker-initial-diagnostic.json",
+      "original_sha256": "1fb1793204b5c5612312fa582f584209f59db359d29d79b650faa22634ed6ced",
+      "published_sha256": "17f6fcd6b4545024229378aee14a48ec21e353aad976f12dfd54b8eab65dfdf4",
+      "published_bytes": 11334
+    },
+    {
+      "original_relative_path": "motion-build6.stdout.txt",
+      "published_path": "motion-build6.stdout.txt",
+      "original_sha256": "6e29c922590de30759417509870716c2022ae3117609e6acdf1c4468e4c49d1f",
+      "published_sha256": "967bda1de39733235f7f76aa2b14122de6c79e515bcb529952e7d8614e5879b4",
+      "published_bytes": 889
+    },
+    {
+      "original_relative_path": "motion-run6.stdout.txt",
+      "published_path": "motion-run6.stdout.txt",
+      "original_sha256": "ddf4f912127f1aa53286ffe14cf410fd23ead3e18e10d294a58d1364915f6d19",
+      "published_sha256": "b2fdd9a674c41f8780aebb96cca630bfe3da4a16666a5c109a4a4d47eb44e7ef",
+      "published_bytes": 15599
     }
   ],
   "source_sha256": {
@@ -193,7 +263,8 @@
     "src/Terminal/EveryStage.Terminal/UI/Panels/SlideTransitionPicker.cs": "5a0da351364e8a8fd5ac82d514675f27a17b93bccb6f538e0728d2f98d0b3759",
     "src/Tests/EveryStage.MotionSelfTests/Program.cs": "a41dadd5457b23296702ac14bc42be3ffb20e5b8e5e0330b53cf9dd0ecd00a65",
     "src/Tests/EveryStage.MotionSelfTests/SlideTimelineChecks.cs": "2e847141f2d88d735c83b0a05ae9f0587ad4052afcf1d300761821e37eb8b572",
-    "src/Tests/EveryStage.MotionSelfTests/SoftwareSurfaceChecks.cs": "5f65be5466ae11e5099d1f4e194a3e1a023887b9d14277a3a7054af4b2e8e4c6",
+    "src/Tests/EveryStage.MotionSelfTests/SoftwareSurfaceChecks.cs": "adb90d56a38c505c148c2e98510f4a30bb33fdaaea7a12e60431ffd43cb667a6",
     "src/Tests/EveryStage.WindowsSelfTests/DocumentTests.cs": "078b7e53b60be31c07d445708a15e822d2372b7729abd8ee9fb4c687668fa71e"
-  }
+  },
+  "previous_receipts_sha256": "f4c2b79b6e66cf740f7260e556bdbd2aba8acaa3758682d241118a9c5b3dbe7f"
 }
