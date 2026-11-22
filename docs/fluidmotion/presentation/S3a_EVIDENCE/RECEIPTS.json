@@ -1,0 +1,49 @@
+{
+  "product_source": "9d0438120038274eac776278ca3ed4aa766c6d0c",
+  "product_run": 45024807010,
+  "original_bundle": "EveryStage-0.9.3-internal-45024807010-55830cf6",
+  "original_bundle_unchanged": true,
+  "validation": "corrected source verifier readonly on preserved bundle; not final portable acceptance",
+  "source_sha256": {
+    "scripts/Verify-PresentationDelivery.ps1": "99e925919a902197f2476b650acfc9855cf35b00aac4d6e0d0a31c61718ac929",
+    "scripts/Test-DeliveryVerifier.ps1": "3bc7c34ea9f06f338c4155ec239eea45e25d65a4a9efac30be7ed1b97e88e2ab"
+  },
+  "records": [
+    {
+      "file": "actual-read-final-pwsh.stdout.txt",
+      "original_sha256": "3653b258a12ac88faa5a367faf33c5b155549dbd7557ac8b1be87952f8ba30f8",
+      "published_sha256": "dbb57ce1e789c3cd781568d77a85d3218a5bc03bde222bece4ba8ecfe2232fec"
+    },
+    {
+      "file": "actual-read-final-winps5.stdout.txt",
+      "original_sha256": "3653b258a12ac88faa5a367faf33c5b155549dbd7557ac8b1be87952f8ba30f8",
+      "published_sha256": "dbb57ce1e789c3cd781568d77a85d3218a5bc03bde222bece4ba8ecfe2232fec"
+    },
+    {
+      "file": "actual-read-pwsh.stdout.txt",
+      "original_sha256": "3653b258a12ac88faa5a367faf33c5b155549dbd7557ac8b1be87952f8ba30f8",
+      "published_sha256": "dbb57ce1e789c3cd781568d77a85d3218a5bc03bde222bece4ba8ecfe2232fec"
+    },
+    {
+      "file": "actual-read-winps5.stdout.txt",
+      "original_sha256": "3653b258a12ac88faa5a367faf33c5b155549dbd7557ac8b1be87952f8ba30f8",
+      "published_sha256": "dbb57ce1e789c3cd781568d77a85d3218a5bc03bde222bece4ba8ecfe2232fec"
+    },
+    {
+      "file": "full-original-bundle-pwsh.stdout.txt",
+      "original_sha256": "0f7856433fc5dc925b4fde5d1548a5f714a17df87f7c1272d0aab00f3001b2f5",
+      "published_sha256": "eb0a81f9f6853bf07346e8a7fd05ba31c8d2b35d04b9b233823a36d86f7d9f7a"
+    },
+    {
+      "file": "full-original-bundle-winps5.stdout.txt",
+      "original_sha256": "0f7856433fc5dc925b4fde5d1548a5f714a17df87f7c1272d0aab00f3001b2f5",
+      "published_sha256": "eb0a81f9f6853bf07346e8a7fd05ba31c8d2b35d04b9b233823a36d86f7d9f7a"
+    },
+    {
+      "file": "verify-first.stderr.txt",
+      "original_sha256": "0fbce4ca245dfa8f2327b6a30be64a074e8dd3ae3e0b8a28ea43900d0575dc2f",
+      "published_sha256": "ef26367f20ff993a3aaf00c1935326a6714068d9b245343fa52fffeec8d5f0f9"
+    }
+  ],
+  "publication": "UTF8/LF/workspace placeholders; trailing whitespace trimmed only in published failure stderr; original retained unchanged"
+}
