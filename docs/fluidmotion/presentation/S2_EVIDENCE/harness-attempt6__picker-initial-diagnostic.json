@@ -1,0 +1,500 @@
+{
+  "diagnostic_only": false,
+  "initial_layout_flushed": true,
+  "samples": [
+    {
+      "phase": 0,
+      "Progress": 0,
+      "IsRunning": true,
+      "TimerEnabled": false,
+      "DurationMilliseconds": 500,
+      "HoldMilliseconds": 300,
+      "preview": 0
+    },
+    {
+      "phase": 0,
+      "Progress": 0.062135,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 500,
+      "HoldMilliseconds": 300,
+      "preview": 0.062135
+    },
+    {
+      "phase": 0,
+      "Progress": 0.1234336,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 500,
+      "HoldMilliseconds": 300,
+      "preview": 0.1234336
+    },
+    {
+      "phase": 0,
+      "Progress": 0.18521740000000003,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 500,
+      "HoldMilliseconds": 300,
+      "preview": 0.1852174
+    },
+    {
+      "phase": 0,
+      "Progress": 0.2472602,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 500,
+      "HoldMilliseconds": 300,
+      "preview": 0.2472602
+    },
+    {
+      "phase": 1,
+      "Progress": 0,
+      "IsRunning": true,
+      "TimerEnabled": false,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0
+    },
+    {
+      "phase": 1,
+      "Progress": 0,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0
+    },
+    {
+      "phase": 1,
+      "Progress": 0.07862249999999998,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.0786225
+    },
+    {
+      "phase": 1,
+      "Progress": 0.11786325,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.11786325
+    },
+    {
+      "phase": 1,
+      "Progress": 0.15738249999999998,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.1573825
+    },
+    {
+      "phase": 1,
+      "Progress": 0.196953625,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.19695362
+    },
+    {
+      "phase": 1,
+      "Progress": 0.23607499999999998,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.236075
+    },
+    {
+      "phase": 1,
+      "Progress": 0.277253875,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.27725387
+    },
+    {
+      "phase": 1,
+      "Progress": 0.31672075,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.31672075
+    },
+    {
+      "phase": 1,
+      "Progress": 0.35537925,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.35537925
+    },
+    {
+      "phase": 1,
+      "Progress": 0.3945136249999999,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.39451364
+    },
+    {
+      "phase": 1,
+      "Progress": 0.434733875,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.43473387
+    },
+    {
+      "phase": 1,
+      "Progress": 0.474296,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.474296
+    },
+    {
+      "phase": 1,
+      "Progress": 0.5141376249999999,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.5141376
+    },
+    {
+      "phase": 1,
+      "Progress": 0.555569875,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.5555699
+    },
+    {
+      "phase": 1,
+      "Progress": 0.597627125,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.5976271
+    },
+    {
+      "phase": 1,
+      "Progress": 0.642329375,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.6423294
+    },
+    {
+      "phase": 1,
+      "Progress": 0.6848767499999999,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.68487674
+    },
+    {
+      "phase": 1,
+      "Progress": 0.7271885,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.7271885
+    },
+    {
+      "phase": 1,
+      "Progress": 0.769915375,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.7699154
+    },
+    {
+      "phase": 1,
+      "Progress": 0.815388875,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.81538886
+    },
+    {
+      "phase": 1,
+      "Progress": 0.85879275,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.8587927
+    },
+    {
+      "phase": 1,
+      "Progress": 0.901704,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.901704
+    },
+    {
+      "phase": 1,
+      "Progress": 0.9451679999999999,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.945168
+    },
+    {
+      "phase": 1,
+      "Progress": 0.988762125,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.98876214
+    },
+    {
+      "phase": 1,
+      "Progress": 1,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 1
+    },
+    {
+      "phase": 2,
+      "Progress": 1,
+      "IsRunning": false,
+      "TimerEnabled": false,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.5
+    },
+    {
+      "phase": 2,
+      "Progress": 1,
+      "IsRunning": false,
+      "TimerEnabled": false,
+      "DurationMilliseconds": 800,
+      "HoldMilliseconds": 480,
+      "preview": 0.5
+    },
+    {
+      "phase": 2,
+      "Progress": 0,
+      "IsRunning": true,
+      "TimerEnabled": false,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0
+    },
+    {
+      "phase": 3,
+      "Progress": 0.19897233333333333,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.19897233
+    },
+    {
+      "phase": 3,
+      "Progress": 0.3043703333333333,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.30437034
+    },
+    {
+      "phase": 3,
+      "Progress": 0.40240133333333333,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.40240133
+    },
+    {
+      "phase": 3,
+      "Progress": 0.49909466666666663,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.49909467
+    },
+    {
+      "phase": 3,
+      "Progress": 0.5949653333333333,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.59496534
+    },
+    {
+      "phase": 3,
+      "Progress": 0.6903036666666666,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.6903037
+    },
+    {
+      "phase": 3,
+      "Progress": 0.7862153333333333,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.7862153
+    },
+    {
+      "phase": 3,
+      "Progress": 0.8800803333333334,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.88008034
+    },
+    {
+      "phase": 3,
+      "Progress": 0.9746469999999998,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.974647
+    },
+    {
+      "phase": 3,
+      "Progress": 1,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 1
+    },
+    {
+      "phase": 3,
+      "Progress": 1,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 1
+    },
+    {
+      "phase": 3,
+      "Progress": 1,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 1
+    },
+    {
+      "phase": 3,
+      "Progress": 1,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 1
+    },
+    {
+      "phase": 3,
+      "Progress": 1,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 1
+    },
+    {
+      "phase": 3,
+      "Progress": 1,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 1
+    },
+    {
+      "phase": 3,
+      "Progress": 1,
+      "IsRunning": true,
+      "TimerEnabled": true,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 1
+    },
+    {
+      "phase": 3,
+      "Progress": 1,
+      "IsRunning": false,
+      "TimerEnabled": false,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 1
+    },
+    {
+      "phase": 3,
+      "Progress": 1,
+      "IsRunning": false,
+      "TimerEnabled": false,
+      "DurationMilliseconds": 300,
+      "HoldMilliseconds": 180,
+      "preview": 0.5
+    }
+  ],
+  "capturedMiddle": true,
+  "capturedProgress": 0.2472602,
+  "restarted": true,
+  "held": true,
+  "valuesCancelled": true,
+  "normalDone": true,
+  "final_progress": 1,
+  "IsRunning": false,
+  "TimerEnabled": false,
+  "DurationMilliseconds": 300,
+  "HoldMilliseconds": 180,
+  "final_preview": 0.5,
+  "preference_enabled": true,
+  "Visible": true,
+  "IsHandleCreated": true,
+  "Width": 1100,
+  "Height": 432,
+  "actual_client_width": 1100,
+  "actual_client_height": 660,
+  "picker_bounds": {
+    "Left": 0,
+    "Top": 0,
+    "Right": 1100,
+    "Bottom": 432
+  },
+  "picker_contained": true
+}

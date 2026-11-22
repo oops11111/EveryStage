@@ -1,0 +1,3 @@
+  正在确定要还原的项目…
+  已还原 <ES_WORKSPACE>\src\Tests\EveryStage.WindowsSelfTests\EveryStage.WindowsSelfTests.csproj (用时 3.22 秒)。
+  5 个项目(共 6 个)是最新的，无法还原。

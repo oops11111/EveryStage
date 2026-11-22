@@ -1,0 +1,12 @@
+  EveryStage.Discovery -> <ES_WORKSPACE>\src\Shared\EveryStage.Discovery\bin\Release\net8.0\EveryStage.Discovery.dll
+  EveryStage.Transport -> <ES_WORKSPACE>\src\Shared\EveryStage.Transport\bin\Release\net8.0\EveryStage.Transport.dll
+  EveryStage.Rendering -> <ES_WORKSPACE>\src\Shared\EveryStage.Rendering\bin\Release\net8.0-windows10.0.19041.0\EveryStage.Rendering.dll
+  EveryStage.SharedUi -> <ES_WORKSPACE>\src\Shared\EveryStage.SharedUi\bin\Release\net8.0-windows10.0.19041.0\EveryStage.SharedUi.dll
+  EveryStage.Terminal -> <ES_WORKSPACE>\src\Terminal\EveryStage.Terminal\bin\Release\net8.0-windows10.0.22621.0\win-x64\EveryStage.Terminal.dll
+  EveryStage.MotionSelfTests -> <ES_WORKSPACE>\src\Tests\EveryStage.MotionSelfTests\bin\Release\net8.0-windows10.0.22621.0\win-x64\EveryStage.MotionSelfTests.dll
+
+已成功生成。
+    0 个警告
+    0 个错误
+
+已用时间 00:00:03.97
