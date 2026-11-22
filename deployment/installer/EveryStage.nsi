@@ -253,6 +253,21 @@ SectionEnd
 ; ── Callbacks ────────────────────────────────────────────────────────────────────────────────
 
 Function .onInit
+  ; Explicit finite component selection for unattended internal deployment.
+  ; Parse before any installation mutation; omitted preserves existing defaults.
+  ${GetParameters} $R8
+  ClearErrors
+  ${GetOptions} $R8 "/COMPONENTS=" $R9
+  ${IfNot} ${Errors}
+    ${If} $R9 != "Terminal"
+    ${AndIf} $R9 != "Caster"
+    ${AndIf} $R9 != "Both"
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+  ${Else}
+    StrCpy $R9 ""
+  ${EndIf}
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "${PRODUCT} 需要 64 位 Windows 10（2004 或更高版本）或 Windows 11。"
     Abort
@@ -277,6 +292,18 @@ Function .onInit
     !insertmacro SelectSection ${SecCaster}
   ${Else}
     !insertmacro UnselectSection ${SecCaster}
+  ${EndIf}
+  ${If} $R9 != ""
+    !insertmacro UnselectSection ${SecTerminal}
+    !insertmacro UnselectSection ${SecCaster}
+    ${If} $R9 == "Terminal"
+    ${OrIf} $R9 == "Both"
+      !insertmacro SelectSection ${SecTerminal}
+    ${EndIf}
+    ${If} $R9 == "Caster"
+    ${OrIf} $R9 == "Both"
+      !insertmacro SelectSection ${SecCaster}
+    ${EndIf}
   ${EndIf}
 FunctionEnd
 

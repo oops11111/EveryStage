@@ -135,6 +135,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           ./scripts/Verify-FluidMotionConsumption.ps1 -OutputDirectories @('artifacts/installer/publish/Terminal')
 
+      - name: Prepare immutable installer acceptance inputs and notices
+        shell: pwsh
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/Prepare-InstallerInput.ps1
+
+      - name: Upload immutable installer acceptance inputs
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-installer-input-${{ github.sha }}
+          path: artifacts/installer-input/**
+          if-no-files-found: error
+
       - name: Preserve exact component package and actual-control evidence
         if: always()
         uses: actions/upload-artifact@v6
@@ -166,3 +179,44 @@ jobs:
             artifacts/release/DEPLOYMENT.md
             artifacts/release/deployment/*.ps1
           if-no-files-found: error
+
+  installer-smoke:
+    permissions:
+      contents: read
+      actions: read
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download exact inputs from this pipeline
+        uses: actions/download-artifact@v7
+        with:
+          name: EveryStage-installer-input-${{ github.sha }}
+          path: artifacts/installer-input
+      - name: Download fixed user baseline without execution
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const fs = require('fs');
+            const response = await fetch('https://api.github.com/repos/oops11111/EveryStage/actions/artifacts/14736098352/zip', {
+              headers: {Authorization: `Bearer ${github.token}`, Accept: 'application/vnd.github+json'}
+            });
+            if (!response.ok) throw new Error(`Baseline download ${response.status}`);
+            fs.writeFileSync('artifacts/baseline.zip', Buffer.from(await response.arrayBuffer()));
+      - name: Validate UI helper compile without input or activation
+        shell: powershell
+        run: ./scripts/InstallerUi.ps1 -ValidateOnly
+      - name: Install upgrade ordinary UI normal exit and uninstall
+        shell: pwsh
+        run: ./scripts/Test-Installer.ps1 -InputDirectory artifacts/installer-input -BaselineArchive artifacts/baseline.zip -OutputDirectory artifacts/installer-smoke
+      - name: Record pipeline-tested immutable delivery
+        shell: pwsh
+        run: ./scripts/Seal-InternalDelivery.ps1 -InputDirectory artifacts/installer-input -EvidenceDirectory artifacts/installer-smoke -OutputPath artifacts/installer-smoke/pipeline-tested-manifest.json
+      - name: Preserve installer evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-installer-smoke-${{ github.sha }}
+          path: artifacts/installer-smoke/**
+          if-no-files-found: warn

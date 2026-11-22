@@ -3,7 +3,7 @@
        Scripts and CI only read it (scripts/Build-Installer.*); bump it here for each release.
        InformationalVersion gets "+<commit>" from SourceRevisionId, which CI and the build scripts pass in. -->
   <PropertyGroup>
-    <EveryStageVersion>0.9.1</EveryStageVersion>
+    <EveryStageVersion>0.9.2</EveryStageVersion>
     <Version>$(EveryStageVersion)</Version>
     <SourceRevisionId Condition="'$(SourceRevisionId)' == '' and '$(GITHUB_SHA)' != ''">$(GITHUB_SHA)</SourceRevisionId>
   </PropertyGroup>
