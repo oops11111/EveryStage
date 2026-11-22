@@ -267,5 +267,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: EveryStage-installer-smoke-${{ github.sha }}
-          path: artifacts/installer-smoke/**
+          path: |
+            artifacts/installer-smoke/**
+            !artifacts/installer-smoke/baseline/**
           if-no-files-found: warn

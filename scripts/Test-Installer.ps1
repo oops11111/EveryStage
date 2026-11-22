@@ -73,7 +73,10 @@ function Run-UiHelper([string]$action,[Diagnostics.Process]$held) {
  try {
   if(!$worker.WaitForExit(120000)){throw 'UI helper timeout; no retry/force cleanup'}
   $entry.exit=$worker.ExitCode
-  if($worker.ExitCode -ne 0){throw "Installed UI $action helper failed: exit $($worker.ExitCode)"}
+  if($worker.ExitCode -ne 0){
+   foreach($log in @($entry.stdout,$entry.stderr)){if(Test-Path $log){Write-Output "UI helper $action captured log: $log";Get-Content -LiteralPath $log -Raw}}
+   throw "Installed UI $action helper failed: exit $($worker.ExitCode)"
+  }
  } finally {$entry|ConvertTo-Json -Compress|Add-Content -Encoding utf8 "$OutputDirectory/ui-helper-calls.jsonl"}
 }
 function No-Processes {

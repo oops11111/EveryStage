@@ -26,6 +26,7 @@ function Invoke-Control($control) {
  $control.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern).Invoke()
 }
 Add-Type -Path "$PSScriptRoot/InstallerMappings.cs"
+Add-Type -Path "$PSScriptRoot/InstallerDialogMetadata.cs"
 if($ValidateOnly){Write-Output 'PASS UIA/WinForms/native metadata compile; no process/UI/input operations';return}
 if([InstallerInput]::SetThreadDpiAwarenessContext([IntPtr]::new(-4)) -eq [IntPtr]::Zero){throw 'Process-local thread DPI context unavailable'}
 $p=Get-Process -Id $ProcessId
@@ -34,7 +35,7 @@ $start=$p.StartTime.ToUniversalTime().ToString("o")
 if($ExpectedStartUtc -and $start -ne $ExpectedStartUtc){throw 'Held process starttime mismatch'}
 function Element-Metadata($element) {
  $r=$element.Current.BoundingRectangle
- return @{name=$element.Current.Name;pid=$element.Current.ProcessId;control_type=$element.Current.ControlType.ProgrammaticName;enabled=$element.Current.IsEnabled;offscreen=$element.Current.IsOffscreen;bounds=@{left=$r.Left;top=$r.Top;width=$r.Width;height=$r.Height}}
+ return @{native_hwnd=$element.Current.NativeWindowHandle;name=$element.Current.Name;pid=$element.Current.ProcessId;control_type=$element.Current.ControlType.ProgrammaticName;enabled=$element.Current.IsEnabled;offscreen=$element.Current.IsOffscreen;bounds=@{left=$r.Left;top=$r.Top;width=$r.Width;height=$r.Height}}
 }
 function Save-Diagnostics([string]$label) {
  try {
@@ -79,19 +80,35 @@ function Dismiss-OwnedFirstRunGuide([bool]$required) {
  $record=@{title='开始使用';pid=$ProcessId;dialog=Element-Metadata $dialog;action='not invoked'}
  try {
   if($dialog.Current.ProcessId -ne $ProcessId -or $dialog.Current.IsOffscreen -or !$dialog.Current.IsEnabled){throw 'First-run guide identity/readiness mismatch'}
-  $textCondition=[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Text)
-  $texts=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,$textCondition)
-  $record.observed_static_text=@($texts|ForEach-Object {$_.Current.Name})
+  $descendants=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.Condition]::TrueCondition)
+  $record.uia_descendants=@($descendants|ForEach-Object {Element-Metadata $_})
   $expected="欢迎使用 EveryStage。文件库还是空的、也还没有活动，可以按三步开始：`n`n1. 在「文件」页点「导入」，把图片、视频、文档等素材加入文件库；`n2. 在「流程」页新建活动，把文件加入活动并排好播放顺序；`n3. 选好扩展屏后即可播放，也可以等待投屏机连接投屏。"
   $matched=$false
-  foreach($text in $texts){if($text.Current.Name.Replace("`r`n","`n") -ceq $expected){$matched=$true}}
+  foreach($element in $descendants){if($element.Current.Name.Replace("`r`n","`n") -ceq $expected){$matched=$true}}
+  $nativeChildren=@()
+  if(!$matched) {
+   $nativeChildren=@([InstallerDialogMetadata]::Read($ProcessId,[long]$dialog.Current.NativeWindowHandle))
+   $record.native_children=$nativeChildren
+   foreach($child in $nativeChildren){if($child.ClassName -ceq 'Static' -and $null -ne $child.Text -and $child.Text.Replace("`r`n","`n") -ceq $expected){$matched=$true}}
+   $record.body_source='owned native Static WM_GETTEXT after UIA omitted exact body'
+  } else {$record.body_source='owned UIA descendant name'}
   $record.expected_welcome_text=$matched
-  if(!$matched){throw 'Owned first-run dialog text differs from pinned source'}
-  $buttons=$dialog.FindAll([System.Windows.Automation.TreeScope]::Descendants,[System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty,[System.Windows.Automation.ControlType]::Button))
+  if(!$matched){throw 'Expected full source welcome text not verified through UIA or owned native Static metadata'}
+  $buttons=@($descendants|Where-Object {$_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button})
   $record.all_buttons=@($buttons|ForEach-Object {Element-Metadata $_})
-  # Native dialog title-bar chrome may expose Close; only the matched content OK is eligible.
+  # Native title-bar Close is never eligible; accept only the content OK.
   $okButtons=@($buttons|Where-Object {$_.Current.Name -in @('OK','确定') -and $_.Current.IsEnabled -and !$_.Current.IsOffscreen})
-  if($okButtons.Count -ne 1){throw 'First-run guide does not have the single expected enabled visible OK button'}
+  if(!$okButtons.Count) {
+   if(!$nativeChildren.Count){$nativeChildren=@([InstallerDialogMetadata]::Read($ProcessId,[long]$dialog.Current.NativeWindowHandle));$record.native_children=$nativeChildren}
+   $nativeOk=@($nativeChildren|Where-Object {$_.ClassName -ceq 'Button' -and $_.ControlId -eq 1 -and $_.Text -in @('OK','确定')})
+   if($nativeOk.Count -eq 1) {
+    $button=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($nativeOk[0].Hwnd))
+    if($button.Current.ProcessId -ne $ProcessId -or !$button.Current.IsEnabled -or $button.Current.IsOffscreen){throw 'Owned native IDOK UIA element readiness mismatch'}
+    $okButtons=@($button)
+    $record.button_source='UIA FromHandle of exact owned native Button IDOK'
+   }
+  } else {$record.button_source='owned UIA descendant Button'}
+  if($okButtons.Count -ne 1){throw 'First-run guide does not expose exactly one eligible ordinary OK button'}
   $record.button=Element-Metadata $okButtons[0]
   Invoke-Control $okButtons[0]
   for($attempt=0;$attempt -lt 30;$attempt++) {
