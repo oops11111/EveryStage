@@ -25,6 +25,7 @@ function Canonical-ExistingPath([string]$path) {
  return $buffer.ToString()
 }
 
+Add-Type -Path "$PSScriptRoot/InstallerShellLink.cs"
 $script:ShortcutSequence=0
 function Capture-Shortcut([string]$shortcut,[string]$phase) {
  $script:ShortcutSequence++
@@ -37,6 +38,7 @@ function Capture-Shortcut([string]$shortcut,[string]$phase) {
  $hash=(Get-FileHash -LiteralPath $native).Hash.ToLowerInvariant()
  if((Get-FileHash -LiteralPath $copy).Hash.ToLowerInvariant() -ne $hash){throw 'Shortcut evidence copy mismatch'}
  $record=@{phase=$phase;path=$native;copy=$copy;bytes=$bytes.Length;sha256=$hash}
+ try{$record.native_raw_path=[InstallerShellLink]::ReadRawPath($native)}catch{$record.native_error=$_.Exception.ToString()}
  if($bytes.Length -ge 28){$record.header_size=[BitConverter]::ToUInt32($bytes,0);$record.link_flags=[BitConverter]::ToUInt32($bytes,20);$record.file_attributes=[BitConverter]::ToUInt32($bytes,24)}
  $shell=New-Object -ComObject WScript.Shell
  try {
@@ -97,12 +99,12 @@ function Verify-Installation($selection) {
    if((Test-Path $shortcut) -ne $selected){throw 'Component shortcut mismatch'}
    if($selected) {
     $captured=Capture-Shortcut $shortcut 'upgraded-or-selected'
-    $shell=New-Object -ComObject WScript.Shell
     $shortcutRecord=@{link=(Get-Item -LiteralPath $shortcut).FullName;expected="$path\EveryStage.$component.exe"}
     try {
      # Canonicalize existing paths and retain raw values; the empty-target cause is not yet established.
      $nativeLink=$shortcutRecord.link.Replace('/','\')
-     $shortcutRecord.raw_target=$shell.CreateShortcut($nativeLink).TargetPath
+     $shortcutRecord.wsh_raw_target=$captured.pwsh7.target
+     $shortcutRecord.raw_target=[InstallerShellLink]::ReadRawPath($nativeLink)
      $shortcutRecord.resolved_expected=Canonical-ExistingPath $shortcutRecord.expected
      $shortcutRecord.resolved_target=Canonical-ExistingPath $shortcutRecord.raw_target
      if(![string]::Equals($shortcutRecord.resolved_target,$shortcutRecord.resolved_expected,[StringComparison]::OrdinalIgnoreCase)){throw 'Shortcut target mismatch'}
@@ -112,7 +114,6 @@ function Verify-Installation($selection) {
      throw
     } finally {
      $shortcutRecord|ConvertTo-Json -Compress|Add-Content -Encoding utf8 "$OutputDirectory/shortcut-targets.jsonl"
-     [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)|Out-Null
     }
    }
   }
@@ -198,7 +199,31 @@ try {
  if(Test-Path "$install/Terminal/p3-stale-file.txt"){throw 'Upgrade retained stale program file'}
  if((Get-FileHash "$data/p3-sentinel.txt").Hash -ne $sentinelHash){throw 'Upgrade changed sentinel bytes'}
  if((Get-Item "$install/Terminal/EveryStage.Terminal.exe").VersionInfo.FileVersion -ne '0.9.2.0'){throw 'Installed version mismatch'}
- $terminal=Start-Process "$install/Terminal/EveryStage.Terminal.exe" -PassThru
+ No-Processes
+ $launchLink=(Get-Item -LiteralPath "$env:ProgramData/Microsoft/Windows/Start Menu/Programs/EveryStage/EveryStage 终端机.lnk").FullName
+ $launchTarget=[InstallerShellLink]::ReadRawPath($launchLink)
+ $expectedExe=Canonical-ExistingPath "$install/Terminal/EveryStage.Terminal.exe"
+ if((Canonical-ExistingPath $launchTarget) -ne $expectedExe){throw 'Shortcut launch target drift'}
+ $launchStart=[DateTime]::UtcNow
+ $launchRecord=@{shortcut=$launchLink;shortcut_sha256=(Get-FileHash $launchLink).Hash.ToLowerInvariant();native_target=$launchTarget;started_utc=$launchStart.ToString('o')}
+ try {
+  $terminal=Start-Process -FilePath $launchLink -PassThru
+  if(!$terminal) {
+   # ShellExecute may not return a process handle. Only this fresh exact target is eligible.
+   for($i=0;$i -lt 30;$i++) {
+    $matches=@(Get-Process -Name 'EveryStage.Terminal' -ErrorAction SilentlyContinue|Where-Object {$_.Path -eq $expectedExe -and $_.StartTime.ToUniversalTime() -ge $launchStart})
+    if($matches.Count -gt 1){throw 'Ambiguous newly launched Terminal processes'}
+    if($matches.Count -eq 1){$terminal=$matches[0];break}
+    Start-Sleep -Milliseconds 100
+   }
+  }
+  if(!$terminal -or $terminal.Path -ne $expectedExe -or $terminal.StartTime.ToUniversalTime() -lt $launchStart){throw 'Shortcut did not launch a verified new exact Terminal PID'}
+  $launchRecord.pid=$terminal.Id
+  $launchRecord.process_started_utc=$terminal.StartTime.ToUniversalTime().ToString('o')
+  $launchRecord.verified_path=$terminal.Path
+ } catch {$launchRecord.error=$_.Exception.ToString();throw} finally {
+  $launchRecord|ConvertTo-Json -Depth 8|Set-Content -Encoding utf8 "$OutputDirectory/shortcut-launch.json"
+ }
  try {
   & powershell.exe -NoProfile -STA -File "$PSScriptRoot/InstallerUi.ps1" -ProcessId $terminal.Id -Action Exercise -OutputDirectory $OutputDirectory
   if($LASTEXITCODE -ne 0){throw 'Installed UI acceptance failed'}
