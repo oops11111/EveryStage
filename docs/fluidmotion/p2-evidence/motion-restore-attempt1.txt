@@ -1,0 +1,3 @@
+  正在确定要还原的项目…
+  已还原 %EVERYSTAGE_ROOT%\src\Tests\EveryStage.MotionSelfTests\EveryStage.MotionSelfTests.csproj (用时 4.64 秒)。
+  5 个项目(共 6 个)是最新的，无法还原。

@@ -1,0 +1,6 @@
+  正在确定要还原的项目…
+  已还原 %EVERYSTAGE_ROOT%\src\Shared\EveryStage.Transport\EveryStage.Transport.csproj (用时 2.1 秒)。
+  已还原 %EVERYSTAGE_ROOT%\src\Shared\EveryStage.Discovery\EveryStage.Discovery.csproj (用时 2.1 秒)。
+  已还原 %EVERYSTAGE_ROOT%\src\Shared\EveryStage.SharedUi\EveryStage.SharedUi.csproj (用时 21.82 秒)。
+  已还原 %EVERYSTAGE_ROOT%\src\Shared\EveryStage.Rendering\EveryStage.Rendering.csproj (用时 28.76 秒)。
+  已还原 %EVERYSTAGE_ROOT%\src\Terminal\EveryStage.Terminal\EveryStage.Terminal.csproj (用时 11.32 分钟)。

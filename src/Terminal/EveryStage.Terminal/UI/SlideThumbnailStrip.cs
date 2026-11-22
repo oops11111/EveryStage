@@ -19,6 +19,14 @@ internal sealed class SlideThumbnailStrip : Control
     private float _offset;
     private int _version;
     private bool _loading;
+    private bool _loadRequested;
+    private int _visibleFirst = -1, _visibleLast = -1;
+    private readonly PresenterOffsetMotion _motion;
+
+    internal float PresentedOffset => _offset;
+    internal double RequestedOffset => _motion.Target;
+    internal bool MotionRunning => _motion.IsRunning;
+    internal bool MotionTimerEnabled => _motion.TimerEnabled;
     private int _hover = -1;
     private int _keyboardSlide;
     private Point _downAt;
@@ -28,7 +36,7 @@ internal sealed class SlideThumbnailStrip : Control
     /// <summary>A thumbnail was clicked (1-based slide number).</summary>
     public event Action<int>? SlideChosen;
 
-    public SlideThumbnailStrip(Color back, Color card, Color line, Color ink, Color muted, Color accent)
+    public SlideThumbnailStrip(Color back, Color card, Color line, Color ink, Color muted, Color accent, IAnimationPreference? preference = null)
     {
         (_back, _card, _line, _ink, _muted, _accent) = (back, card, line, ink, muted, accent);
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
@@ -39,6 +47,13 @@ internal sealed class SlideThumbnailStrip : Control
         AccessibleRole = AccessibleRole.List;
         AccessibleName = "页面缩略图";
         AccessibleDescription = "方向键选择页面，回车跳到该页";
+        _motion = new PresenterOffsetMotion(this, value =>
+        {
+            if (IsDisposed) return;
+            _offset = Math.Clamp((float)value, 0, MaxOffset);
+            Invalidate();
+            LoadIfVisibleRangeChanged();
+        }, RequestVisibleLoad, preference);
     }
 
     private int S(int value) => LogicalToDeviceUnits(value);
@@ -47,12 +62,16 @@ internal sealed class SlideThumbnailStrip : Control
     private int Gap => S(10);
     private int Inset => S(4);
     private int Item => ThumbWidth + Gap;
-    private float MaxOffset => Math.Max(0, Inset * 2 + _count * Item - Gap - Width);
+    private float MaxOffset => Math.Max(0f, Inset * 2f + _count * (float)Item - Gap - Width);
 
     /// <summary>Starts over for a show of <paramref name="count"/> slides (0 = none).</summary>
     public void Reset(int count, Func<int, Task<Bitmap?>>? loader)
     {
         _version++;
+        _motion.Freeze(_offset);
+        _pressed = _dragging = false;
+        Capture = false;
+        _visibleFirst = _visibleLast = -1;
         foreach (var image in _images.Values) image.Dispose();
         _images.Clear();
         _requested.Clear();
@@ -63,7 +82,7 @@ internal sealed class SlideThumbnailStrip : Control
         _offset = 0;
         _hover = -1;
         Invalidate();
-        _ = LoadVisibleAsync();
+        RequestVisibleLoad();
     }
 
     /// <summary>Supplies a thumbnail directly (CI screenshot).</summary>
@@ -85,7 +104,7 @@ internal sealed class SlideThumbnailStrip : Control
             _current = value;
             ScrollIntoView(value);
             Invalidate();
-            _ = LoadVisibleAsync();
+            RequestVisibleLoad();
         }
     }
 
@@ -101,11 +120,35 @@ internal sealed class SlideThumbnailStrip : Control
 
     private void ScrollBy(float delta)
     {
-        float next = Math.Clamp(_offset + delta, 0, MaxOffset);
-        if (Math.Abs(next - _offset) < 0.5f) return;
-        _offset = next;
+        double basis = _motion.IsRunning ? _motion.Target : _offset;
+        double next = Math.Clamp(basis + delta, 0, MaxOffset);
+        MoveOffset(next);
+    }
+
+    private void MoveOffset(double target)
+    {
+        if (_pressed || IsDisposed) return; // Direct manipulation has priority over automatic follow.
+        target = Math.Clamp(target, 0, MaxOffset);
+        if (Math.Abs(target - (_motion.IsRunning ? _motion.Target : _offset)) < 0.5) return;
+        _motion.MoveTo(target, _offset);
+        RequestVisibleLoad();
+    }
+
+    private void SetDirectOffset(float value)
+    {
+        _offset = Math.Clamp(value, 0, MaxOffset);
         Invalidate();
-        _ = LoadVisibleAsync();
+        LoadIfVisibleRangeChanged();
+    }
+
+    private void LoadIfVisibleRangeChanged()
+    {
+        int first = Math.Max(1, (int)((_offset - Inset) / Item) + 1);
+        int last = Math.Min(_count, (int)((_offset + Width) / Item) + 2);
+        if (first == _visibleFirst && last == _visibleLast) return;
+        _visibleFirst = first;
+        _visibleLast = last;
+        RequestVisibleLoad();
     }
 
     protected override void OnGotFocus(EventArgs e)
@@ -141,7 +184,7 @@ internal sealed class SlideThumbnailStrip : Control
             _keyboardSlide = slide;
             ScrollIntoView(slide);
             Invalidate();
-            _ = LoadVisibleAsync();
+            RequestVisibleLoad();
             e.Handled = true;
             return;
         }
@@ -165,6 +208,7 @@ internal sealed class SlideThumbnailStrip : Control
     {
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
+        _motion.Freeze(_offset);
         _pressed = true;
         _dragging = false;
         _downAt = e.Location;
@@ -182,7 +226,7 @@ internal sealed class SlideThumbnailStrip : Control
             if (_dragging)
             {
                 Cursor = Cursors.SizeWE;
-                ScrollBy(_downOffset - dx - _offset);
+                SetDirectOffset(_downOffset - dx);
             }
             return;
         }
@@ -194,11 +238,20 @@ internal sealed class SlideThumbnailStrip : Control
     {
         base.OnMouseUp(e);
         if (!_pressed) return;
+        bool wasDragging = _dragging;
         _pressed = false;
         Capture = false;
         Cursor = Cursors.Hand;
-        if (!_dragging && HitTest(e.Location) is var slide and > 0) SlideChosen?.Invoke(slide);
+        if (!wasDragging && HitTest(e.Location) is var slide and > 0) SlideChosen?.Invoke(slide);
         _dragging = false;
+    }
+
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (Capture) return;
+        _pressed = _dragging = false;
+        Cursor = Cursors.Hand;
     }
 
     protected override void OnMouseLeave(EventArgs e)
@@ -210,29 +263,41 @@ internal sealed class SlideThumbnailStrip : Control
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
-        _offset = Math.Clamp(_offset, 0, MaxOffset);
+        if (_motion == null) return; // Control base constructor can resize before fields initialize.
+        _pressed = _dragging = false;
+        Capture = false;
+        _motion.Freeze(Math.Clamp(_offset, 0, MaxOffset));
+        SetDirectOffset(_offset);
         ScrollIntoView(_current); // a narrower window must not leave the page on air half cut off
-        _ = LoadVisibleAsync();
+        RequestVisibleLoad();
     }
 
     private void ScrollIntoView(int slide)
     {
         if (slide < 1) return;
-        float left = Inset + (slide - 1) * Item, right = left + ThumbWidth;
-        if (left < _offset + Inset) _offset = left - Inset - Item; // keep the previous one visible too
-        else if (right > _offset + Width - Inset) _offset = right - Width + Inset + Item;
-        _offset = Math.Clamp(_offset, 0, MaxOffset);
-        Invalidate();
+        double next = _motion.IsRunning ? _motion.Target : _offset;
+        float left = Inset + (slide - 1) * (float)Item, right = left + ThumbWidth;
+        if (left < next + Inset) next = left - Inset - Item; // keep the previous one visible too
+        else if (right > next + Width - Inset) next = right - Width + Inset + Item;
+        MoveOffset(next);
+    }
+
+    private void RequestVisibleLoad()
+    {
+        if (IsDisposed || _loader == null || _count == 0) return;
+        _loadRequested = true;
+        if (!_loading) _ = LoadVisibleAsync();
     }
 
     private async Task LoadVisibleAsync()
     {
-        if (_loading || _loader == null || _count == 0 || IsDisposed) return;
+        if (_loading || IsDisposed) return;
         _loading = true;
         try
         {
-            while (!IsDisposed && _loader != null)
+            while (!IsDisposed && _loader != null && _count > 0)
             {
+                _loadRequested = false;
                 int first = Math.Max(1, (int)((_offset - Inset) / Item) + 1);
                 int last = Math.Min(_count, (int)((_offset + Width) / Item) + 2);
                 int wanted = -1;
@@ -244,13 +309,20 @@ internal sealed class SlideThumbnailStrip : Control
                 int version = _version;
                 Bitmap? image = null;
                 try { image = await _loader(wanted); } catch (Exception) { }
-                if (IsDisposed || version != _version) { image?.Dispose(); return; }
-                if (image != null) { _images[wanted] = image; Invalidate(); }
+                if (IsDisposed) { image?.Dispose(); return; }
+                if (version != _version) { image?.Dispose(); continue; }
+                if (image != null)
+                {
+                    if (_images.Remove(wanted, out var previous)) previous.Dispose();
+                    _images[wanted] = image;
+                    Invalidate();
+                }
             }
         }
         finally
         {
             _loading = false;
+            if (_loadRequested && !IsDisposed && _loader != null && _count > 0) RequestVisibleLoad();
         }
     }
 
@@ -316,6 +388,8 @@ internal sealed class SlideThumbnailStrip : Control
         if (disposing)
         {
             _version++;
+            _loadRequested = false;
+            _motion?.Dispose();
             foreach (var image in _images.Values) image.Dispose();
             _images.Clear();
         }

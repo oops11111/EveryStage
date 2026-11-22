@@ -1,0 +1,218 @@
+{
+  "source_artifact": 14748878288,
+  "source_archive_sha256": "93af9e6a2c20e0d9dd3074f1afeef69a242d53c043757acfc9580255e301f3ea",
+  "overflow": {
+    "native_hwnd": 0,
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "SystemTrayIcon",
+    "control_type": "ControlType.Button",
+    "class_name": "SystemTray.NormalButton",
+    "name": "Show Hidden Icons",
+    "bounds": {
+      "left": 790,
+      "width": 32,
+      "top": 720,
+      "height": 48
+    },
+    "pid": 5720
+  },
+  "notification_ancestry": true,
+  "wrong_taskbar": {
+    "control_type": "ControlType.Button",
+    "name": "EveryStage 终端机 - 1 running window",
+    "native_hwnd": 0,
+    "pid": 808,
+    "offscreen": false,
+    "bounds": {
+      "left": 688,
+      "width": 44,
+      "top": 720,
+      "height": 48
+    },
+    "enabled": true
+  },
+  "wrong_taskbar_source_artifact": 14748486760,
+  "overflow_ancestors": [
+    {
+      "native_hwnd": 0,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "SystemTrayIcon",
+      "control_type": "ControlType.Button",
+      "class_name": "SystemTray.NormalButton",
+      "name": "Show Hidden Icons",
+      "bounds": {
+        "left": 790,
+        "width": 32,
+        "top": 720,
+        "height": 48
+      },
+      "pid": 5720
+    },
+    {
+      "native_hwnd": 65980,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "",
+      "control_type": "ControlType.Pane",
+      "class_name": "Windows.UI.Input.InputSite.WindowClass",
+      "name": "",
+      "bounds": {
+        "left": 0,
+        "width": 1024,
+        "top": 720,
+        "height": 48
+      },
+      "pid": 5720
+    },
+    {
+      "native_hwnd": 65978,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "",
+      "control_type": "ControlType.Pane",
+      "class_name": "Windows.UI.Composition.DesktopWindowContentBridge",
+      "name": "DesktopWindowXamlSource",
+      "bounds": {
+        "left": 0,
+        "width": 1024,
+        "top": 720,
+        "height": 48
+      },
+      "pid": 5720
+    },
+    {
+      "native_hwnd": 262332,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "",
+      "control_type": "ControlType.Pane",
+      "class_name": "Shell_TrayWnd",
+      "name": "",
+      "bounds": {
+        "left": 0,
+        "width": 1024,
+        "top": 720,
+        "height": 48
+      },
+      "pid": 5720
+    },
+    {
+      "native_hwnd": 65548,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "",
+      "control_type": "ControlType.Pane",
+      "class_name": "#32769",
+      "name": "",
+      "bounds": {
+        "left": 0,
+        "width": 1024,
+        "top": 0,
+        "height": 768
+      },
+      "pid": 7032
+    }
+  ],
+  "notification_icon": {
+    "native_hwnd": 0,
+    "offscreen": false,
+    "enabled": true,
+    "automation_id": "NotifyItemIcon",
+    "control_type": "ControlType.Button",
+    "class_name": "SystemTray.NormalButton",
+    "name": "EveryStage 终端机 EveryStage 终端机 - 待机中 / 开关: 开",
+    "bounds": {
+      "left": 746,
+      "width": 40,
+      "top": 663,
+      "height": 40
+    },
+    "pid": 6168
+  },
+  "notification_icon_ancestors": [
+    {
+      "native_hwnd": 0,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "NotifyItemIcon",
+      "control_type": "ControlType.Button",
+      "class_name": "SystemTray.NormalButton",
+      "name": "EveryStage 终端机 EveryStage 终端机 - 待机中 / 开关: 开",
+      "bounds": {
+        "left": 746,
+        "width": 40,
+        "top": 663,
+        "height": 40
+      },
+      "pid": 6168
+    },
+    {
+      "native_hwnd": 197348,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "",
+      "control_type": "ControlType.Pane",
+      "class_name": "Windows.UI.Input.InputSite.WindowClass",
+      "name": "",
+      "bounds": {
+        "left": 729,
+        "width": 154,
+        "top": 646,
+        "height": 74
+      },
+      "pid": 6168
+    },
+    {
+      "native_hwnd": 197350,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "",
+      "control_type": "ControlType.Pane",
+      "class_name": "Windows.UI.Composition.DesktopWindowContentBridge",
+      "name": "DesktopWindowXamlSource",
+      "bounds": {
+        "left": 729,
+        "width": 154,
+        "top": 646,
+        "height": 74
+      },
+      "pid": 6168
+    },
+    {
+      "native_hwnd": 131808,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "",
+      "control_type": "ControlType.Pane",
+      "class_name": "TopLevelWindowForOverflowXamlIsland",
+      "name": "System tray overflow window.",
+      "bounds": {
+        "left": 729,
+        "width": 154,
+        "top": 646,
+        "height": 74
+      },
+      "pid": 6168
+    },
+    {
+      "native_hwnd": 65548,
+      "offscreen": false,
+      "enabled": true,
+      "automation_id": "",
+      "control_type": "ControlType.Pane",
+      "class_name": "#32769",
+      "name": "",
+      "bounds": {
+        "left": 0,
+        "width": 1024,
+        "top": 0,
+        "height": 768
+      },
+      "pid": 1364
+    }
+  ],
+  "notification_icon_source_artifact": 14748809732,
+  "notification_icon_source_archive_sha256": "cbca9cb80ccfcfd4bd1828db357bb6dae48c3844584e72b62d5b6bbf0986564a"
+}

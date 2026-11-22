@@ -1,0 +1,19 @@
+# Presentation motion integration: staged plan
+
+Acceptance source: user requested presenter-view and in-application PPT transition integration; primary released S1 only. Base EveryStage drop-prewarm191f4d65b15e6fecf0118e0b120c7760ef3d8d53, component MF44401d3f002b427d828500331a3e9b4ada5881cd/exact[0.1.0]. No open PR/issues or AGENTS at discovery. Sealed0.9.2 delivery/component originals remain untouched. Merge target drop-prewarm; no implementation-agent merge.
+
+## S1 (accepted): actual presenter thumbnail navigation
+Dependencies: existing formal L1 package and actual UI/PresenterWindow→SlideThumbnailStrip. Scope SlideThumbnailStrip, new private offset adapter, actual-control MotionSelfTests, additive CI evidence upload, these new docs. No retired PresenterStrip or unrelated MusicDrawer refactor.
+Deliver: smooth wheel/key/current-slide follow with cumulative pending-target wheel navigation and continuous from:null retarget. Mouse down freezes presented offset and cancels motion; drag remains immediate, capture loss safe. Reset/resize/dispose reject stale writes and clamp bounds. Read-only/injected animation preference, idle pump stops, native callbacks never reenter fm. Serial loader remains maxConcurrency1, stale Reset returns dispose old bitmap then continues the new loader; animation frames do not flood loads.
+Tests: normal existing restore/build Release -warnaserror, complete original47 Drawer checks plus linked actual Strip/adapter midframes, rapid target reversal, wheel accumulation, drag/capture loss, resize/reset/dispose, reduced preference and queued callbacks, slow TCS loader/version/bitmap ownership/concurrency. Produce visible synthetic PresenterWindow/actual-strip harness captures, clearly not a real Office deck or ordinary installed-app certification. No Terminal Program/installer or existing stores on user machine.
+CI: retain all original core/windows/control/Caster/NSIS/smoke gates and package checks; upload new harness evidence. Primary reviews actual screenshots and all applicable current checks before merge, then target post CI. Stop on package/API/freeze drift, uncontrolled data access, new credentials/system/Office requirements; report, no waiver/install/OS preference change.
+
+## S2 (authorized / in progress): software PPT timeline
+Depends on S1 accepted, separate PR. ContentSurface/SlideTransitionPicker + private duration timeline using LoadTokens/CreateAnimation/Play, linear progress then existing SlideTransitions.Ease once; keep three effects/four directions and duration contract. Preserve dirty-target cache/live-frame behavior, mid-transition snapshot continuity, resize safety, preview hold/rest semantics. Office/WPS native animation/TransitionPolicy and PlaybackEngine hold remain unchanged. Real control synthetic bitmaps/tests; native Office/device requirements remain separately evidenced limits.
+
+## S3 (planned / not started): new internal app package
+Depends on S1/S2 acceptance. New app version proposed0.9.3; do not overwrite sealed0.9.2/0.1.0 artifacts. Update existing version-specific installer tests only in this stage. Disposable CI install/upgrade/UI/normal tray exit/uninstall/source hashes and fresh external seal; preserve actual unsigned/three-day artifact retention/offline baseline/notices limits. No local installed Terminal/installer execution or public publish.
+
+Current discovery: OpenPresenterView in SharedPreviewDock creates real PresenterWindow, which owns SlideThumbnailStrip; native-show-only live presenter source comes from Program.DocumentMode.NativeShow. Existing tests of retired PresenterStrip do not prove this live path. ContentSurface handles static-page and captured-native-show software transitions; original Office/WPS animation remains native, not an engine-replacement goal.
+
+S1 accepted: merge575ec51496ca14b7ba3c39090df94feea5c3235c; post45017572942 build and installer-smoke SUCCESS. S2 execution plan is S2_PLAN.md; S3 is not started.

@@ -1,0 +1,76 @@
+{
+  "originals_retained_ignored": true,
+  "files": [
+    {
+      "path": "result.json",
+      "original_sha256": "3381fb27424181649df74eb9c9e2a48a7ecdf996ee7ca248a3eff94e48d4fc35",
+      "published_sha256": "a06b13a1354f05493588e539ef66e080491d5b5e5562e07f6b781f100fbce550",
+      "png_exact_bytes": false
+    },
+    {
+      "path": "presenter-strip-current-last.png",
+      "original_sha256": "f9c106a86dacce464640bca4417706930187a18bcfb449bc013f027f44d839b0",
+      "published_sha256": "f9c106a86dacce464640bca4417706930187a18bcfb449bc013f027f44d839b0",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "presenter-strip-initial.png",
+      "original_sha256": "e880f623e7f3497d7a552e5f9093a0b01cf2519f3f0c0d584210e6443d1769ec",
+      "published_sha256": "e880f623e7f3497d7a552e5f9093a0b01cf2519f3f0c0d584210e6443d1769ec",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "presenter-strip-resized.png",
+      "original_sha256": "63159924140d41606ff2058c8669c60c38df7b2bf8a5f34a2ef6be2edd09cc6f",
+      "published_sha256": "63159924140d41606ff2058c8669c60c38df7b2bf8a5f34a2ef6be2edd09cc6f",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "presenter-strip-reverse-middle.png",
+      "original_sha256": "d2145a797e1a8c63bd84a580a0683d47717487c5c9bcc184520a8d221b6aca58",
+      "published_sha256": "d2145a797e1a8c63bd84a580a0683d47717487c5c9bcc184520a8d221b6aca58",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "presenter-strip-wheel-middle.png",
+      "original_sha256": "342c92ab58228bd950cad92c958566daf4406ea3184cac04cde39e57078351ab",
+      "published_sha256": "342c92ab58228bd950cad92c958566daf4406ea3184cac04cde39e57078351ab",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-run.stdout.txt",
+      "original_sha256": "4dd796ce9e9204f1647527efa29243cdad494830b972c702ec86cc5535d062ad",
+      "published_sha256": "d8ce5cc92c7acae31252e7360e23b452ee93c3d393870be8bddc2fbee0e29219",
+      "png_exact_bytes": false
+    },
+    {
+      "path": "motion-build.stdout.txt",
+      "original_sha256": "14799b974ef3d66627b592b4e153c24346dfc98a26f549ae739507b1b8d7f9dc",
+      "published_sha256": "e755da0706b394211c455f0d25d7e159f427e76f55a848bfa766d5cc194ef748",
+      "png_exact_bytes": false
+    },
+    {
+      "path": "terminal-build.stdout.txt",
+      "original_sha256": "78ef8b42d9e1e20d3dcdf72c36ce38933f6ed76ca3ea958f2f1d93ea6c3b973f",
+      "published_sha256": "fc9bc7b505f07e6442fd3d5900ceb64f6de70164ebb9794eb949b8185670c788",
+      "png_exact_bytes": false
+    },
+    {
+      "path": "terminal-build2.stdout.txt",
+      "original_sha256": "7f37658ebe37707277bed03411c8b2c0b42f6bf09477032b6738d70eb12e25da",
+      "published_sha256": "f0bcb43cf55ddee7356d55305ea1efd32bc64cc3f9cfe6ef8a31f2aaeca36d24",
+      "png_exact_bytes": false
+    }
+  ],
+  "source_sha256": {
+    "src/Terminal/EveryStage.Terminal/UI/SlideThumbnailStrip.cs": "93d637786e5f9124ed850225bdfecd7145a21b122d05155c1c0442ca0279e380",
+    "src/Terminal/EveryStage.Terminal/UI/PresenterOffsetMotion.cs": "027dbe981eaf51c03cb1f443495d192ee8cb9fd9c0057034bb6253c0a219950e",
+    "src/Tests/EveryStage.MotionSelfTests/Program.cs": "574b0d025965010780f63206d62f16a483808902f15c658e46ad48aac2569b0d",
+    "src/Tests/EveryStage.MotionSelfTests/PresenterChecks.cs": "700018c499381ea0f0ba349a92cc22f64e3323b93d4f69e0fbfbfc7eb149f300"
+  },
+  "base": "191f4d65b15e6fecf0118e0b120c7760ef3d8d53",
+  "local_consumed_package_sha256": "b2e47d89488e51ef32d16b4775298d6171dddfc992eb187d4d7f253243354062",
+  "sealed_previous_installer_and_package_unchanged": true,
+  "primary_local_review_sha256": "abf45475c566162ffa59979f2a7744f6210c5cb8dbc10db62081f4247fd16885",
+  "scope": "isolated actual controls/synthetic bitmaps, not Terminal Program or Office/native-show acceptance"
+}

@@ -23,8 +23,8 @@ internal sealed class SlideTransitionPicker : Control
 
     private readonly Bitmap _pageA;
     private readonly Bitmap _pageB;
-    private readonly System.Windows.Forms.Timer _timer = new() { Interval = 15 };
-    private readonly System.Diagnostics.Stopwatch _clock = new();
+    private readonly IAnimationPreference? _animationPreference;
+    private SlideTransitionTimeline? _timeline;
     private readonly TrackBar _duration;
     private readonly Label _durationLabel;
     private readonly RoundedActionButton _play;
@@ -50,6 +50,8 @@ internal sealed class SlideTransitionPicker : Control
     /// <summary>Shows saved values (设置 reloaded) without raising <see cref="SelectionChanged"/>.</summary>
     public void SetValues(SlideTransitionEffect effect, SlideTransitionDirection direction, int milliseconds)
     {
+        _timeline?.Cancel();
+        _previewT = _timeline?.RunReduced == true ? 1f : 0.5f;
         _setting = true;
         try
         {
@@ -61,8 +63,9 @@ internal sealed class SlideTransitionPicker : Control
         Invalidate();
     }
 
-    public SlideTransitionPicker(SlideTransitionEffect effect, SlideTransitionDirection direction, int milliseconds)
+    public SlideTransitionPicker(SlideTransitionEffect effect, SlideTransitionDirection direction, int milliseconds, IAnimationPreference? preference = null)
     {
+        _animationPreference = preference;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer
             | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor | ControlStyles.Selectable, true);
         BackColor = Color.Transparent;
@@ -72,7 +75,13 @@ internal sealed class SlideTransitionPicker : Control
         _pageB = SamplePage("产品展示", "第 8 页", Color.FromArgb(29, 78, 107), Color.FromArgb(11, 34, 51), Color.White);
         _duration = new TrackBar { Minimum = 3, Maximum = 20, TickStyle = TickStyle.None, Value = Math.Clamp(milliseconds / 100, 3, 20), AutoSize = false, Height = 30 };
         _durationLabel = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = ModernUi.Text };
-        _duration.ValueChanged += (_, _) => { UpdateDurationLabel(); Invalidate(); if (!_setting) SelectionChanged?.Invoke(); };
+        _duration.ValueChanged += (_, _) =>
+        {
+            UpdateDurationLabel();
+            if (!_setting && _timeline?.IsRunning == true) PlayPreview();
+            Invalidate();
+            if (!_setting) SelectionChanged?.Invoke();
+        };
         _play = new RoundedActionButton { Text = "▶ 播放预览", Height = 32, Width = 110 };
         ModernUi.StyleButton(_play, primary: true);
         _play.Click += (_, _) => PlayPreview();
@@ -80,14 +89,6 @@ internal sealed class SlideTransitionPicker : Control
         Controls.Add(_durationLabel);
         Controls.Add(_play);
         UpdateDurationLabel();
-        _timer.Tick += (_, _) =>
-        {
-            float t = (float)(_clock.Elapsed.TotalMilliseconds / Milliseconds);
-            // Play, hold the new page briefly, then return to the halfway still.
-            if (t > 1.6f) { _timer.Stop(); _previewT = 0.5f; }
-            else _previewT = Math.Min(1f, t);
-            Invalidate(_preview);
-        };
         Cursor = Cursors.Default;
         AccessibleName = "PPT 翻页过场";
     }
@@ -96,9 +97,16 @@ internal sealed class SlideTransitionPicker : Control
 
     private void PlayPreview()
     {
-        _clock.Restart();
-        _previewT = 0f;
-        _timer.Start();
+        _timeline ??= new SlideTransitionTimeline(this, value =>
+        {
+            _previewT = (float)value;
+            Invalidate(_preview);
+        }, reduced =>
+        {
+            _previewT = reduced ? 1f : 0.5f;
+            Invalidate(_preview);
+        }, _animationPreference);
+        _timeline.Start(Milliseconds, (int)Math.Round(Milliseconds * 0.6));
     }
 
     private int S(int v) => LogicalToDeviceUnits(v);
@@ -314,7 +322,7 @@ internal sealed class SlideTransitionPicker : Control
     {
         if (disposing)
         {
-            _timer.Dispose();
+            _timeline?.Dispose();
             _pageA.Dispose();
             _pageB.Dispose();
         }

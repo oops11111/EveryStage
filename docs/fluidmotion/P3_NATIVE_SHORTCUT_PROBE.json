@@ -1,0 +1,43 @@
+{
+  "recorded_utc": "2026-11-22T08:49:18.229151+00:00",
+  "scope": "metadata-only native reader; no Resolve/Save/target launch",
+  "source_ci_run": 45003808125,
+  "source_artifact": 14747200609,
+  "source_archive_sha256": "54ac0e8977f7b6c004ca78af0574676470e4e72ebde6bd66d38043abf9818af4",
+  "reader_sha256": "4b978ddc83fde4754cb0912437b766683033ad6233957a6edf77eefbbe5f8617",
+  "records": [
+    {
+      "source_relative": "01-baseline-before-upgrade/EveryStage \u7ec8\u7aef\u673a.lnk",
+      "sha256": "6beadef54b0fa50beeb216711c6dcfcd3919b9eda5fddcc2bf0c61bb00d371d5",
+      "native_raw_path": "C:\\Program Files\\EveryStage\\Terminal\\EveryStage.Terminal.exe",
+      "native_status": "S_OK nonempty exact expected"
+    },
+    {
+      "source_relative": "02-baseline-before-upgrade/EveryStage \u7ec8\u7aef\u673a.lnk",
+      "sha256": "6d9b05e81d331398250d2f98b4494f6ea516f1432fd3f9c0466cf76b158f2f9e",
+      "native_raw_path": "C:\\Program Files\\EveryStage\\Terminal\\EveryStage.Terminal.exe",
+      "native_status": "S_OK nonempty exact expected"
+    },
+    {
+      "source_relative": "03-upgraded-before-assertions/EveryStage \u7ec8\u7aef\u673a.lnk",
+      "sha256": "5db9645079277d0afbe743c8e352e81f976d7977ee8b165299b081740081d73f",
+      "native_raw_path": "C:\\Program Files\\EveryStage\\Terminal\\EveryStage.Terminal.exe",
+      "native_status": "S_OK nonempty exact expected"
+    },
+    {
+      "source_relative": "04-upgraded-before-assertions/EveryStage \u7ec8\u7aef\u673a.lnk",
+      "sha256": "ffbedfa25823fddeb695ab46a422fe8aafc6629d1033daab690cab0b7bc8948c",
+      "native_raw_path": "C:\\Program Files\\EveryStage\\Terminal\\EveryStage.Terminal.exe",
+      "native_status": "S_OK nonempty exact expected"
+    },
+    {
+      "source_relative": "05-upgraded-or-selected/EveryStage \u7ec8\u7aef\u673a.lnk",
+      "sha256": "5db9645079277d0afbe743c8e352e81f976d7977ee8b165299b081740081d73f",
+      "native_raw_path": "C:\\Program Files\\EveryStage\\Terminal\\EveryStage.Terminal.exe",
+      "native_status": "S_OK nonempty exact expected"
+    }
+  ],
+  "owned_harmless_positive": "PASS exact target",
+  "owned_invalid_negative": "PASS rejected",
+  "all_original_link_sha_unchanged": true
+}

@@ -1,0 +1,148 @@
+{
+  "originals_retained_ignored": true,
+  "files": [
+    {
+      "path": "motion-control-attempt1/drawer-closed.png",
+      "original_sha256": "15f12aad54be66f4bfcaae7c7a7762bbf51445e7d21788e66512d53d4ef487ce",
+      "published_sha256": "15f12aad54be66f4bfcaae7c7a7762bbf51445e7d21788e66512d53d4ef487ce",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt1/drawer-open.png",
+      "original_sha256": "03097cb7bdef393f0b69cfb327869874a775b63b294eaf16832b36a62f65e50b",
+      "published_sha256": "03097cb7bdef393f0b69cfb327869874a775b63b294eaf16832b36a62f65e50b",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt1/drawer-opening.png",
+      "original_sha256": "ef1f78c548f1228f73aefaaabd23f4f8918ea60a542ddfcbe0aaa206c52eb05e",
+      "published_sha256": "ef1f78c548f1228f73aefaaabd23f4f8918ea60a542ddfcbe0aaa206c52eb05e",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt1/drawer-resized.png",
+      "original_sha256": "771a2467d3857456d2171139d939490ea4f026f50ddc1b00fe141288d848d1d8",
+      "published_sha256": "771a2467d3857456d2171139d939490ea4f026f50ddc1b00fe141288d848d1d8",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt1/drawer-rest-closed.png",
+      "original_sha256": "15f12aad54be66f4bfcaae7c7a7762bbf51445e7d21788e66512d53d4ef487ce",
+      "published_sha256": "15f12aad54be66f4bfcaae7c7a7762bbf51445e7d21788e66512d53d4ef487ce",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt1/drawer-reversing.png",
+      "original_sha256": "2cfb2ee9579f6199d55d9c1442c65ed4ac58fca2058bd6b7bc9b06022a14b364",
+      "published_sha256": "2cfb2ee9579f6199d55d9c1442c65ed4ac58fca2058bd6b7bc9b06022a14b364",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt1/result.json",
+      "original_sha256": "841f6b72dbda34ef97651f28f345a52b17685c52d4e3a7a5fa0be3e6df114826",
+      "published_sha256": "81b1139ed2b8bb3a8255166caf1f00f5dae645a6b908a81d64d22a19c3c9c810",
+      "png_exact_bytes": false
+    },
+    {
+      "path": "motion-control-attempt2/drawer-closed.png",
+      "original_sha256": "4ac61bd8be0d10e0a2b48fa0df3c84b32827d93c69be2d3b9ed9db8e6d05d1a7",
+      "published_sha256": "4ac61bd8be0d10e0a2b48fa0df3c84b32827d93c69be2d3b9ed9db8e6d05d1a7",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt2/drawer-open.png",
+      "original_sha256": "e8e52e28c7df412e175dd3d569e65b1d3cf088320990cbfd86ae0f28f7c3dbcf",
+      "published_sha256": "e8e52e28c7df412e175dd3d569e65b1d3cf088320990cbfd86ae0f28f7c3dbcf",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt2/drawer-opening.png",
+      "original_sha256": "e1fd640d73cc497a21e5bc1f23de7898e1440e3038c3db1041d093912d165edf",
+      "published_sha256": "e1fd640d73cc497a21e5bc1f23de7898e1440e3038c3db1041d093912d165edf",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt2/drawer-resized.png",
+      "original_sha256": "a8fb41b1f3cc135cbb5e0572d37d066e03530091d416affdca6dbae8434f028c",
+      "published_sha256": "a8fb41b1f3cc135cbb5e0572d37d066e03530091d416affdca6dbae8434f028c",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt2/drawer-rest-closed.png",
+      "original_sha256": "4ac61bd8be0d10e0a2b48fa0df3c84b32827d93c69be2d3b9ed9db8e6d05d1a7",
+      "published_sha256": "4ac61bd8be0d10e0a2b48fa0df3c84b32827d93c69be2d3b9ed9db8e6d05d1a7",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt2/drawer-reversing.png",
+      "original_sha256": "6aeb2a727e0291924cd2fddbcfaf83c5e84b6302cdc7ac22257a0bf326a6297d",
+      "published_sha256": "6aeb2a727e0291924cd2fddbcfaf83c5e84b6302cdc7ac22257a0bf326a6297d",
+      "png_exact_bytes": true
+    },
+    {
+      "path": "motion-control-attempt2/result.json",
+      "original_sha256": "a45d3105d211e8f3b84f8a6a697c330fe3c2761fdc02f0968e1e139ffe200d73",
+      "published_sha256": "2a26b859f526eebeef97c99e94b0b3485480d2aa535b95e97e6f1cfaec1710c2",
+      "png_exact_bytes": false
+    },
+    {
+      "path": "component-state.json",
+      "original_sha256": "01bfbfede0ac40aed3120eb5f52dee3f283e79c8ca74abda46faaf4b8849a3a5",
+      "published_sha256": "4ed3540def181a292ec27dd7f66292fad7cffb77947d8e1d68ed09d458b70aed",
+      "redacted_separate_copy": true
+    },
+    {
+      "path": "first-wrapper-cleanup.json",
+      "original_sha256": "771334feac4f75d513dd011d73b0d3ddccd9b15b5304410fa5e9a3e7c37a0522",
+      "published_sha256": "78f22014a77b17bbd6e255bd67590038f9ed2cd6def2c0741b459154b98ca576",
+      "redacted_separate_copy": true
+    },
+    {
+      "path": "terminal-restore-attempt1.txt",
+      "original_sha256": "4f2982ecec58732d46490f44387d33153cc171f6fdc9a63815fc4a895fbb9c38",
+      "published_sha256": "175053fad95bcef3ecc2f9fead9e821099e023a7ae9a57553724acad71c4ca95",
+      "redacted_separate_copy": true
+    },
+    {
+      "path": "terminal-build-attempt1.txt",
+      "original_sha256": "7c3c42c6efdf5e85699c96e22c400def953012de3ac2eb9d7bd46335297bd532",
+      "published_sha256": "ec6f4767bae5045fd84f6c061a262b85541bb371a7e78693e2caa95ee654f1d8",
+      "redacted_separate_copy": true
+    },
+    {
+      "path": "motion-restore-attempt1.txt",
+      "original_sha256": "9348e1aabcd492faad77007e737be98ed42e9c5c8795dff638a64943fbc861a1",
+      "published_sha256": "dfc6a685287f9a19939e59b2c5551c214d2e3cf70ef42c29a3586ae3caa19368",
+      "redacted_separate_copy": true
+    },
+    {
+      "path": "motion-build-attempt1.txt",
+      "original_sha256": "a4f595193c9f8db798fcfb2223aa0b3c2f7cdebc09b5baaf15c036e7c707aaf4",
+      "published_sha256": "32e287bba378cfcf7e9218e84e64752c48c31591e3bac92da3ff094a29f0b01f",
+      "redacted_separate_copy": true
+    },
+    {
+      "path": "motion-run-attempt1.txt",
+      "original_sha256": "14c906bd00e67607cd54f76c790277a2a44df58f5f81ffd12fd5364bbd7694a5",
+      "published_sha256": "819dd9fea27becae9079379dc3e84a640462acd6ed2733e8971a3452eaead51c",
+      "redacted_separate_copy": true
+    },
+    {
+      "path": "motion-build-attempt2.txt",
+      "original_sha256": "5016064fd0e128b811b258e4f85aaa70892930acfc9817be50aade007af9321b",
+      "published_sha256": "02b96a5c4cb0f9e153306428287af11ac0790f5cf438c2575460c3158f2f4f0c",
+      "redacted_separate_copy": true
+    },
+    {
+      "path": "motion-run-attempt2.txt",
+      "original_sha256": "fef6e713443c6c890ff79a1cd6da4992133844a0ac2e6a6d7f81cd28afca6540",
+      "published_sha256": "5a72b96383e1463cb50693c22552325cf79af7a17d055cba2231886c4f36c190",
+      "redacted_separate_copy": true
+    }
+  ],
+  "primary_review": {
+    "path": "PRIMARY_VISUAL_REVIEW.json",
+    "sha256": "977e906b36380452f05e5fe0ff19ae94001fcba7164f08f88d4ccd3ea710d555",
+    "exact_primary_source_bytes": true
+  }
+}
