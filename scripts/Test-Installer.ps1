@@ -61,6 +61,21 @@ function Capture-ProductShortcuts([string]$phase) {
   }
  }
 }
+function Run-UiHelper([string]$action,[Diagnostics.Process]$held) {
+ $prefix=Join-Path $OutputDirectory ("ui-{0}-{1}" -f $action,[guid]::NewGuid().ToString('N'))
+ $helper=(Resolve-Path "$PSScriptRoot/InstallerUi.ps1").Path
+ $output=(Resolve-Path $OutputDirectory).Path
+ $expectedStart=$held.StartTime.ToUniversalTime().ToString('o')
+ $arguments=@('-NoProfile','-STA','-File',"`"$helper`"",'-ProcessId',$held.Id,'-Action',$action,'-OutputDirectory',"`"$output`"",'-ExpectedStartUtc',$expectedStart)
+ $entry=@{action=$action;owned_pid=$held.Id;owned_start_utc=$expectedStart;helper_sha256=(Get-FileHash $helper).Hash.ToLowerInvariant();stdout="$prefix.stdout.txt";stderr="$prefix.stderr.txt"}
+ $worker=Start-Process powershell.exe -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput $entry.stdout -RedirectStandardError $entry.stderr
+ $entry.helper_pid=$worker.Id
+ try {
+  if(!$worker.WaitForExit(120000)){throw 'UI helper timeout; no retry/force cleanup'}
+  $entry.exit=$worker.ExitCode
+  if($worker.ExitCode -ne 0){throw "Installed UI $action helper failed: exit $($worker.ExitCode)"}
+ } finally {$entry|ConvertTo-Json -Compress|Add-Content -Encoding utf8 "$OutputDirectory/ui-helper-calls.jsonl"}
+}
 function No-Processes {
  $processes=@(Get-Process -ErrorAction Stop|Where-Object ProcessName -in @('EveryStage.Terminal','EveryStage.Caster'))
  if($processes.Count){throw 'EveryStage process still running; refusing installer broad-kill path'}
@@ -161,7 +176,8 @@ function Uninstall($deleteData) {
  if((Test-Path $key) -or (Test-Path "$install\Terminal") -or (Test-Path "$install\Caster")){throw 'Uninstall artifacts remain'}
  No-Processes
  for($i=0;$i -lt 60;$i++) {
-  $remaining=@(Get-CimInstance Win32_Process|Where-Object {$_.Name -like '*~ns*.tmp' -or $_.Name -eq 'Uninstall.exe'})
+  $remaining=@(Get-CimInstance Win32_Process|Where-Object {$_.Name -like '*~ns*.tmp' -or $_.Name -in @('Uninstall.exe','Un.exe')})
+  @{observed_utc=[DateTime]::UtcNow.ToString("o");processes=@($remaining|Select-Object ProcessId,ParentProcessId,ExecutablePath,CreationDate,Name)}|ConvertTo-Json -Depth 6 -Compress|Add-Content -Encoding utf8 "$OutputDirectory/uninstaller-process-observations.jsonl"
   if(!$remaining.Count){break}
   Start-Sleep -Milliseconds 500
  }
@@ -225,14 +241,13 @@ try {
   $launchRecord|ConvertTo-Json -Depth 8|Set-Content -Encoding utf8 "$OutputDirectory/shortcut-launch.json"
  }
  try {
-  & powershell.exe -NoProfile -STA -File "$PSScriptRoot/InstallerUi.ps1" -ProcessId $terminal.Id -Action Exercise -OutputDirectory $OutputDirectory
-  if($LASTEXITCODE -ne 0){throw 'Installed UI acceptance failed'}
+  Run-UiHelper 'Exercise' $terminal
   $result.ordinary_app='PASS ordinary installed Terminal drawer'
  } catch {
   $result.primary_error=$_.Exception.ToString()
  } finally {
   try {
-   if(!$terminal.HasExited){& powershell.exe -NoProfile -STA -File "$PSScriptRoot/InstallerUi.ps1" -ProcessId $terminal.Id -Action Exit -OutputDirectory $OutputDirectory; if($LASTEXITCODE -ne 0){throw 'Normal tray exit failed'}}
+   if(!$terminal.HasExited){Run-UiHelper 'Exit' $terminal}
    if($terminal.HasExited -and $terminal.ExitCode -ne 0){throw 'Owned Terminal exited nonzero'}
   } catch {$result.exit_error=$_.Exception.ToString()}
  }
