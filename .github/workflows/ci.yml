@@ -93,6 +93,17 @@ jobs:
           dotnet run --project src/Tests/EveryStage.MotionSelfTests/EveryStage.MotionSelfTests.csproj --no-build --configuration Release -- --output artifacts/motion-control 2>&1 | Tee-Object artifacts/test-diagnostics/motion-control.log
           exit $LASTEXITCODE
 
+      - name: Preserve actual presenter thumbnail motion evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-Presenter-motion-${{ github.sha }}
+          path: |
+            artifacts/motion-control/presenter-*.png
+            artifacts/motion-control/result.json
+            artifacts/motion-control/failure.json
+          if-no-files-found: warn
+
       - name: Render Caster UI screenshots
         timeout-minutes: 3
         shell: pwsh
