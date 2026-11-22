@@ -115,8 +115,8 @@ public sealed partial class FilesPanel : UserControl
     /// has no audio — see <see cref="AudioPlayerBar"/>'s own doc comment.</summary>
     private readonly AudioPlayerBar _audioBar;
 
-    /// <summary>The audio bar is also the controller behind MainWindow's sidebar「音频独立播放区」card
-    /// (<see cref="AudioSidebarCard"/>), so both always show and drive the same track.</summary>
+    /// <summary>Exposes the audio bar for MainWindow-level wiring. Cross-page background-music
+    /// control lives in MainWindow's own music bar + 歌单 drawer, not in a second view of this bar.</summary>
     internal AudioPlayerBar AudioBar => _audioBar;
     private readonly System.Windows.Forms.Timer _audioBarRefreshTimer;
     private readonly Label _emptyStateLabel;
@@ -237,32 +237,44 @@ public sealed partial class FilesPanel : UserControl
         header.Resize += (_, _) => LayoutHeader();
         void LayoutHeader()
         {
-            const int gap = 12;
+            // FP-09: the header's gaps and widths scale with DPI like the rest of the page.
+            int S(int v) => LogicalToDeviceUnits(v);
+            int gap = S(12);
             int w = header.ClientSize.Width, cy = (header.ClientSize.Height - 6) / 2;
             importButton.Width = importButton.PreferredContentWidth();
             pageTitle.Location = new Point(0, cy - pageTitle.Height / 2);
-            int fullFilter = Math.Min(filterTabs.MaximumWidth, 5 * 58);
+            int fullFilter = Math.Min(filterTabs.MaximumWidth, 5 * S(58));
             // Narrow pages give up, in order: the count, the wide filter segments, the card-size
-            // buttons, and finally search width (never below 90px) — controls never overlap.
-            // The output-status chip is not given up: it is the page's live output state.
+            // buttons, and finally the output-status chip — controls never overlap. The chip is
+            // the last to go only because the title bar already shows the same output state
+            // (U1-01); it is not given up before the other three. Past the last give-up the
+            // filter segments shrink to their text floor before the search box goes below its
+            // floor (FP-01): the hard constraint is filter-right ≤ search-left, always.
             for (int step = 0; ; step++)
             {
-                bool showCount = step < 1, wideFilter = step < 2, showSize = step < 3;
+                bool showCount = step < 1, wideFilter = step < 2, showSize = step < 3, showChip = step < 4;
                 filterTabs.Compact = !wideFilter;
                 int filterWidth = wideFilter ? fullFilter : filterTabs.MinimumWidth;
                 int right = w - importButton.Width - (showSize ? gap + sizeTabs.MinimumWidth : 0);
-                int left = pageTitle.Right + gap + (showCount ? _countLabel.PreferredWidth + gap : 0) + _outputStatusChip.Width + gap;
+                int left = pageTitle.Right + gap + (showCount ? _countLabel.PreferredWidth + gap : 0) + (showChip ? _outputStatusChip.Width + gap : 0);
                 int searchRoom = right - gap - (left + filterWidth + gap);
-                if (searchRoom < 160 && step < 3) continue;
+                if (searchRoom < S(160) && step < 4) continue;
+                if (searchRoom < S(90))
+                {
+                    int shrink = Math.Min(filterWidth - filterTabs.FloorWidth, S(90) - searchRoom);
+                    filterWidth -= shrink;
+                    searchRoom += shrink;
+                }
+                int searchWidth = Math.Clamp(searchRoom, 0, S(240));
 
                 _countLabel.Visible = showCount;
                 sizeTabs.Visible = showSize;
+                _outputStatusChip.Visible = showChip;
                 importButton.Location = new Point(w - importButton.Width, cy - importButton.Height / 2);
                 sizeTabs.Bounds = new Rectangle(importButton.Left - gap - sizeTabs.MinimumWidth, cy - sizeTabs.Height / 2, sizeTabs.MinimumWidth, sizeTabs.Height);
                 _countLabel.Location = new Point(pageTitle.Right + gap, cy - _countLabel.Height / 2 + 2);
                 _outputStatusChip.Location = new Point(pageTitle.Right + gap + (showCount ? _countLabel.PreferredWidth + gap : 0), cy - _outputStatusChip.Height / 2);
                 filterTabs.Bounds = new Rectangle(left, cy - filterTabs.Height / 2, filterWidth, filterTabs.Height);
-                int searchWidth = Math.Clamp(searchRoom, 90, 240);
                 _searchBox.Bounds = new Rectangle(right - gap - searchWidth, cy - _searchBox.Height / 2, searchWidth, _searchBox.Height);
                 break;
             }
@@ -305,6 +317,10 @@ public sealed partial class FilesPanel : UserControl
         };
         // 单击即上屏 (设置): the click already took it to the big screen; a double-click adds nothing.
         _grid.ItemDoubleClicked += (item, _) => { if (ClickTakesToAir?.Invoke() != true) TakeRequested?.Invoke(item.File); };
+        // Keyboard (FP-03): Enter previews like a plain click (MainWindow decides preview vs.
+        // take-to-air); Delete removes through the same confirm path as the menu.
+        _grid.ItemPreviewRequested += item => FileClicked?.Invoke(item.File);
+        _grid.DeleteRequested += () => OnRemoveClick(this, EventArgs.Empty);
         _grid.ContextMenuRequested += (item, point) =>
         {
             if (item == null) { _toolbarMenu.Show(_grid, point); return; }
@@ -644,7 +660,9 @@ public sealed partial class FilesPanel : UserControl
         }
         _grid.SetItems(items);
 
-        _countLabel.Text = $"{_library.Files.Count(f => f.Kind != MediaKind.Audio)} 个文件";
+        // FP-06: the count follows the current view (tab + search), not the whole library —
+        // on the 音频 tab it is the audio count, and with a search it is the match count.
+        _countLabel.Text = $"{items.Count} 个文件";
         RefreshAudioBar();
         HighlightCurrentFile();
         _emptyStateLabel.Text = search.Length > 0 ? $"没有名称包含“{search}”的文件"

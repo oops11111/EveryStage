@@ -50,8 +50,24 @@ public sealed partial class FilesPanel
         /// <summary>Narrow-window fallback: segments may shrink to fit just their two-character labels.</summary>
         public bool Compact { get; set; }
 
-        public int MinimumWidth => _labels.Length * (Compact ? 44 : 56);
-        public int MaximumWidth => _labels.Length * 76;
+        // FP-09: segment widths scale with DPI — the labels are drawn at the scaled font size,
+        // so fixed pixel widths would clip them at high DPI.
+        public int MinimumWidth => _labels.Length * LogicalToDeviceUnits(Compact ? 44 : 56);
+        public int MaximumWidth => _labels.Length * LogicalToDeviceUnits(76);
+
+        /// <summary>Floor width: just the labels plus a small margin, so the narrowest header
+        /// step (FP-01) can shrink the segments without clipping their two-character text.</summary>
+        public int FloorWidth
+        {
+            get
+            {
+                int widest = 0;
+                foreach (var label in _labels)
+                    widest = Math.Max(widest, TextRenderer.MeasureText(label, Font,
+                        new Size(int.MaxValue, int.MaxValue), TextFormatFlags.NoPadding).Width);
+                return _labels.Length * (widest + LogicalToDeviceUnits(12));
+            }
+        }
 
         public int SelectedIndex
         {
@@ -178,8 +194,10 @@ public sealed partial class FilesPanel
         {
             base.OnLayout(levent);
             if (_text == null) return;
-            int left = 30;
-            _text.Bounds = new Rectangle(left, (Height - _text.PreferredHeight) / 2, Math.Max(10, Width - left - 10), _text.PreferredHeight);
+            // FP-09: the text offset and right margin scale with DPI, matching the magnifier below.
+            int left = LogicalToDeviceUnits(30);
+            int margin = LogicalToDeviceUnits(10);
+            _text.Bounds = new Rectangle(left, (Height - _text.PreferredHeight) / 2, Math.Max(margin, Width - left - margin), _text.PreferredHeight);
         }
 
         protected override void OnPaintBackground(PaintEventArgs e) =>
@@ -199,8 +217,10 @@ public sealed partial class FilesPanel
             }
             using var pen = new Pen(ModernUi.Muted, 1.6F);
             int cy = Height / 2;
-            g.DrawEllipse(pen, 10, cy - 7, 10, 10);
-            g.DrawLine(pen, 18.5F, cy + 1.5F, 22F, cy + 5F);
+            // FP-09: the magnifier scales with DPI (it sits in the scaled text offset above).
+            int m = LogicalToDeviceUnits(10);
+            g.DrawEllipse(pen, m, cy - LogicalToDeviceUnits(7), m, m);
+            g.DrawLine(pen, LogicalToDeviceUnits(18), cy + LogicalToDeviceUnits(2), LogicalToDeviceUnits(22), cy + LogicalToDeviceUnits(5));
         }
     }
 }

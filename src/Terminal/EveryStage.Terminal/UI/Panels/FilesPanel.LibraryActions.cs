@@ -19,7 +19,10 @@ public sealed partial class FilesPanel
     {
         using var dialog = new OpenFileDialog
         {
-            Multiselect = true, Title = "导入音频到文件库",
+            // FP-07: audio never enters the file library — it goes to the background-music
+            // playlist (see ImportPaths). The title must say so, or the operator watches the
+            // audio bar stay empty and concludes the import failed.
+            Multiselect = true, Title = "导入音频到背景音乐",
             Filter = "音频文件|*.mp3;*.wav;*.flac;*.aac;*.m4a;*.wma|所有文件|*.*",
         };
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
@@ -162,7 +165,21 @@ public sealed partial class FilesPanel
         var all = paths.ToList();
         var audio = all.Where(p => FileLibraryStore.InferKind(p) == MediaKind.Audio).ToList();
         if (audio.Count > 0) AudioDropped?.Invoke(audio);
-        var rest = all.Except(audio).ToList();
+        // FP-05: importing the same file twice used to create two indistinguishable cards.
+        // Skip paths already in the library (or repeated within this batch) and report them
+        // as a third summary category instead of silently duplicating. Dedup lives here, the
+        // one funnel for the picker and drag-drop: ImportMany's index-aligned null contract
+        // (null = rejected) has no third signal, and no other product caller feeds it.
+        var duplicates = new List<string>();
+        var rest = new List<string>();
+        var known = new HashSet<string>(_library.Files.Select(f => NormalizeLibraryPath(f.SourcePath)), StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in all.Except(audio))
+        {
+            if (known.Contains(NormalizeLibraryPath(path)) || !seen.Add(NormalizeLibraryPath(path)))
+                duplicates.Add(Path.GetFileName(path));
+            else rest.Add(path);
+        }
         if (rest.Count > 0)
         {
             // 性能审查 P-19: one batch import = one library save at the end, instead of a full
@@ -214,6 +231,14 @@ public sealed partial class FilesPanel
                 + string.Join("\n", needsTranscode.Select(file =>
                     $"{Path.GetFileName(file.SourcePath)}：{TranscodeReason(file)}"));
         }
+        if (duplicates.Count > 0)
+        {
+            // FP-05: skipped, not failed — say so, or the operator re-imports a third time
+            // wondering why nothing appeared.
+            message += (message.Length > 0 ? "\n\n" : "")
+                + $"以下文件已在文件库中，跳过 {duplicates.Count} 个：\n"
+                + string.Join("\n", duplicates);
+        }
         if (message.Length > 0)
             MessageBox.Show(this, message, "导入", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
@@ -240,6 +265,18 @@ public sealed partial class FilesPanel
         catch (Exception ex)
         {
             System.Diagnostics.Trace.TraceError("Pre-conversion failed for {0}: {1}", sourcePath, ex);
+        }
+    }
+
+    /// <summary>FP-05: dedup key for a library path — fully qualified, so relative and
+    /// absolute spellings of the same file collapse, and compared case-insensitively, as
+    /// Windows paths are. Falls back to the raw path when the path cannot be qualified.</summary>
+    private static string NormalizeLibraryPath(string path)
+    {
+        try { return Path.GetFullPath(path); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return path;
         }
     }
 

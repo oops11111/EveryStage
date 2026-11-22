@@ -27,7 +27,7 @@ internal static class DocumentTests
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestActivityThumbnailAvailability(directory); TestPresenterContentOrdering(); TestDocumentOutputDisposal(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
+            try { TestContainedThumbnails(directory); TestThumbnailDiskCache(directory); TestVisibleThumbnails(directory); TestFilesHeaderNarrow(directory); TestActivityThumbnailAvailability(directory); TestPresenterContentOrdering(); TestDocumentOutputDisposal(directory); TestThemeRoles(); TestAudioOutputSettings(directory); TestDefaultAudioNotifications(); TestHotkeyRegistration(); TestMainWindowStarts(directory); }
             catch (Exception ex) { failure = ex; }
         });
         thread.SetApartmentState(ApartmentState.STA);
@@ -130,6 +130,38 @@ internal static class DocumentTests
             && loaded.Keys.All(key => grid.VisibleItems().Any(item => item.File.Id.ToString() == key)), 5000),
             "Resizing did not update visible thumbnails.");
         Console.WriteLine("PASS: visible thumbnails, scrolling/resizing, offscreen release and automatic missing/restored/edited file updates");
+    }
+
+    /// <summary>FP-01: at minimum-window page widths the header's filter segments never overlap
+    /// the search box, and the search box keeps its floor width. The header gives up the count,
+    /// the wide segments, the card-size buttons and finally the output chip before it lets the
+    /// two overlap; the segments shrink to their text floor only past that.</summary>
+    private static void TestFilesHeaderNarrow(string directory)
+    {
+        var library = new FileLibraryStore(Path.Combine(directory, "header-library.json"));
+        using var form = new Form { ClientSize = new Size(520, 600), ShowInTaskbar = false, Opacity = 0,
+            StartPosition = FormStartPosition.Manual, Location = new Point(-32000, -32000) };
+        using var panel = new FilesPanel(library, new EveryStage.Terminal.Logging.FileOperationLogger(directory),
+            new ScenarioStore(), new ScenarioRepository(Path.Combine(directory, "header-scenarios.json")), null);
+        form.Controls.Add(panel);
+        form.Show();
+        Pump(200);
+        var filter = FindByTypeName(panel, "SegmentedFilter")!;
+        var search = FindByTypeName(panel, "SearchBox")!;
+        int floor = panel.LogicalToDeviceUnits(90);
+        int cap = panel.LogicalToDeviceUnits(240);
+        foreach (int width in new[] { 520, 480, 700, 1100 })
+        {
+            form.ClientSize = new Size(width, 600);
+            Pump(100);
+            Require(filter.Right <= search.Left,
+                $"文件库页头在 {width}px 宽时筛选段压住了搜索框 ({filter.Bounds} / {search.Bounds})。");
+            Require(search.Width >= floor,
+                $"文件库页头在 {width}px 宽时搜索框窄于下限 ({search.Width} < {floor})。");
+            Require(search.Width <= cap,
+                $"文件库页头在 {width}px 宽时搜索框宽于上限 ({search.Width} > {cap})。");
+        }
+        Console.WriteLine("PASS: files header keeps filter and search apart at narrow widths");
     }
 
     private static void TestThumbnailDiskCache(string directory)
@@ -873,8 +905,14 @@ internal static class DocumentTests
         Pump(400);
         window.Size = new Size(1000, 760);
         Pump(200);
-        // Emergency output stop must work even while a text box has keyboard focus.
-        using (var text = new TextBox())
+        // FP-02 (user decision 2026-11-22, changing the behavior this block used to pin):
+        // with a text box focused, the local emergency-stop key yields to the text box's own
+        // Esc handling (the Files search box clears its text) instead of stopping output; with
+        // focus elsewhere it still stops output. The text box sits in a plain Control wrapper,
+        // like the search box's inner TextBox, so the focus check must follow focus through
+        // non-container nesting — a direct TextBox child would not prove that path.
+        using (var wrapper = new Control { Size = new Size(200, 30) })
+        using (var text = new TextBox { Size = new Size(180, 23) })
         {
             string imagePath = Path.Combine(dir, "emergency-auto.png");
             using (var image = new Bitmap(16, 16)) image.Save(imagePath, ImageFormat.Png);
@@ -885,19 +923,28 @@ internal static class DocumentTests
                 OnCompletion = CompletionAction.Loop,
             });
             Require(WaitFor(() => preview.State == PlaybackChannelState.Playing, 3000), "Emergency fixture did not start.");
-            window.Controls.Add(text);
+            wrapper.Controls.Add(text);
+            window.Controls.Add(wrapper);
             text.Focus();
+            Require(WaitFor(() => text.Focused, 1000), "Test text box did not take focus.");
             outputState.AcceptDeviceCastRequest();
             var command = typeof(MainWindow).GetMethod("ProcessCmdKey", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
             object[] arguments = { new Message(), Keys.Escape };
-            Require((bool)command.Invoke(window, arguments)! && outputState.State == OutputState.Idle,
-                "Esc (急停 本程序内) did not stop output with a text box focused.");
+            Require(!(bool)command.Invoke(window, arguments)! && outputState.State != OutputState.Idle
+                && preview.State == PlaybackChannelState.Playing,
+                "Esc (急停 本程序内) stopped output with a text box focused instead of yielding to the text box.");
+            // Focus away from the text box: the same key stops output again.
+            window.Controls.Remove(wrapper);
+            window.Focus();
+            Pump(100);
+            object[] stopArguments = { new Message(), Keys.Escape };
+            Require((bool)command.Invoke(window, stopArguments)! && outputState.State == OutputState.Idle,
+                "Esc (急停 本程序内) did not stop output once focus left the text box.");
             Pump(1200);
             Require(outputState.State == OutputState.Idle && preview.State == PlaybackChannelState.Idle && preview.CurrentFile == null,
                 "An automatic timer restarted playback after emergency stop.");
-            window.Controls.Remove(text);
         }
-        Console.WriteLine("PASS: Esc (急停 本程序内) stops output with text-box focus and leaves it idle");
+        Console.WriteLine("PASS: Esc (急停 本程序内) yields to a focused text box and still stops output otherwise, leaving it idle");
         var hotkey = (EmergencyStopHotkey)typeof(MainWindow).GetField("_emergencyHotkey", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(window)!;
         hotkey.Configure(true);
         if (hotkey.Registered)
