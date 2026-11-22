@@ -682,7 +682,7 @@ public sealed class SettingsPanel : UserControl
             string description = action switch
             {
                 HotkeyAction.EmergencyStopGlobal => "停止输出：大屏断开、预览与背景音乐停止，没有撤销。勾选「全局注册」后，其他程序在前台时也有效：Windows 不允许注册时（F12 常被系统保留给调试器）自动改用只识别这一个键的键盘监听，不记录任何按键。以管理员身份运行的程序在前台时可能收不到。",
-                HotkeyAction.EmergencyStopLocal => "EveryStage 窗口在前台时停止输出；歌单面板展开时先收起面板。",
+                HotkeyAction.EmergencyStopLocal => "EveryStage 窗口在前台时停止输出；歌单面板展开时先收起面板；光标在输入框里时先由输入框处理（文件搜索框按 Esc 清除搜索，不停止输出）。",
                 HotkeyAction.Take => "把预览中的内容（含播放位置）投到大屏。",
                 HotkeyAction.PauseProgram => "大屏有本地媒体在播时暂停 / 继续大屏，否则暂停 / 继续预览。在输入框里打字时不生效。",
                 HotkeyAction.PreviousItem => "流程：回到当前环节的上一项。",

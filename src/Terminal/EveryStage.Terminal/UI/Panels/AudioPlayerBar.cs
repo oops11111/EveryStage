@@ -22,9 +22,8 @@ namespace EveryStage.Terminal.UI.Panels;
 /// </list>
 /// 「当前条」绑定的文件：操作员在文件名选择器（「背景音乐.mp3 ▾」）里选的那首；没选过时是正在播放的
 /// 音频，否则是列表第一首。某首音频<b>新开始</b>播放时，播放条跟过去。进度/时长/音量/播放态由外部计时器
-/// 每 500ms 调 <see cref="RefreshLiveState"/> 刷新，每次刷新后 raise <see cref="StateChanged"/>——
-/// 侧栏的「音频独立播放区」卡片（<see cref="AudioSidebarCard"/>）是这条播放条的第二个视图，读它的状态、
-/// 调它的方法，两处控制的永远是同一首。
+/// 每 500ms 调 <see cref="RefreshLiveState"/> 刷新，每次刷新后 raise <see cref="StateChanged"/>。
+/// 这条播放条是文件页上唯一的音频视图；跨页的背景音乐控制是 MainWindow 的歌单抽屉那套。
 /// </summary>
 internal sealed class AudioPlayerBar : GlassPanel
 {
@@ -112,7 +111,7 @@ internal sealed class AudioPlayerBar : GlassPanel
         SetStyle(ControlStyles.Selectable, true);
         TabStop = true;
         AccessibleName = "音频播放器";
-        AccessibleDescription = "空格播放或暂停，左右键跳转十秒，上下键调节音量，L 切换循环。";
+        AccessibleDescription = "空格播放或暂停，左右键跳转十秒，上下键调节音量，L 切换循环，回车打开选曲。";
         GotFocus += (_, _) => Invalidate();
         LostFocus += (_, _) => Invalidate();
 
@@ -168,7 +167,7 @@ internal sealed class AudioPlayerBar : GlassPanel
         StateChanged?.Invoke();
     }
 
-    // ── State and commands shared with the sidebar「音频独立播放区」card ──
+    // ── State and commands: the bar's own view of the bound track ──
 
     public MediaFile? BoundFile => _boundFile;
     public IReadOnlyList<MediaFile> AudioFiles => _audioFiles;
@@ -194,18 +193,6 @@ internal sealed class AudioPlayerBar : GlassPanel
         RefreshLiveState();
     }
 
-    /// <summary>Plays the bound track from the beginning (the sidebar card's ↻).</summary>
-    public void Restart()
-    {
-        if (_boundFile == null) return;
-        if (_playback != null && IsBoundPlaying)
-        {
-            _playback.SeekAudioRelative(-_playback.AudioPosition);
-            if (_playback.IsPaused) _playback.Resume();
-        }
-        else PlayRequested?.Invoke(_boundFile);
-        RefreshLiveState();
-    }
 
     public void SeekToFraction(double fraction)
     {
@@ -217,7 +204,10 @@ internal sealed class AudioPlayerBar : GlassPanel
 
     public void SetVolume(float fraction)
     {
-        if (_playback == null || !IsBoundPlaying) return;
+        // FP-10: volume is an engine-level single value (see the class doc), so dragging it
+        // works whenever an engine exists — not only while this file is the current one.
+        // Gating on IsBoundPlaying made idle drags silently do nothing.
+        if (_playback == null) return;
         _playback.AudioVolume = Math.Clamp(fraction, 0f, 1f);
         RefreshLiveState();
     }
@@ -421,27 +411,32 @@ internal sealed class AudioPlayerBar : GlassPanel
                 g.FillPath(fg, fgPath);
         if (knob)
         {
+            // FP-09: the knob scales with DPI (the track rect already does).
+            int k = LogicalToDeviceUnits(6);
             int kx = track.Left + (int)(track.Width * fraction);
             using var kb = new SolidBrush(Color.White);
-            g.FillEllipse(kb, kx - 6, track.Top + track.Height / 2 - 6, 12, 12);
+            g.FillEllipse(kb, kx - k, track.Top + track.Height / 2 - k, k * 2, k * 2);
         }
     }
 
     private void DrawVolumeIcon(Graphics g, Rectangle r)
     {
+        // FP-09: the icon's horizontal offsets and arc size scale with DPI (the icon rect
+        // already does); the vertical proportions stay fractions of the rect height.
+        int S(int v) => LogicalToDeviceUnits(v);
         using var pen = new Pen(ModernUi.Muted, 2F) { LineJoin = LineJoin.Round, StartCap = LineCap.Round, EndCap = LineCap.Round };
         using var fill = new SolidBrush(ModernUi.Muted);
         var speaker = new[]
         {
-            new PointF(r.Left + 2, r.Top + r.Height * 0.38f),
-            new PointF(r.Left + 6, r.Top + r.Height * 0.38f),
-            new PointF(r.Left + 11, r.Top + r.Height * 0.22f),
-            new PointF(r.Left + 11, r.Top + r.Height * 0.78f),
-            new PointF(r.Left + 6, r.Top + r.Height * 0.62f),
-            new PointF(r.Left + 2, r.Top + r.Height * 0.62f),
+            new PointF(r.Left + S(2), r.Top + r.Height * 0.38f),
+            new PointF(r.Left + S(6), r.Top + r.Height * 0.38f),
+            new PointF(r.Left + S(11), r.Top + r.Height * 0.22f),
+            new PointF(r.Left + S(11), r.Top + r.Height * 0.78f),
+            new PointF(r.Left + S(6), r.Top + r.Height * 0.62f),
+            new PointF(r.Left + S(2), r.Top + r.Height * 0.62f),
         };
         g.FillPolygon(fill, speaker);
-        g.DrawArc(pen, r.Left + 11, r.Top + 5, 10, r.Height - 10, -55, 110);
+        g.DrawArc(pen, r.Left + S(11), r.Top + S(5), S(10), r.Height - S(10), -55, 110);
     }
 
     /// <summary>效果图的「☑ 循环播放」：描边方框（循环时打勾）加文字标签。</summary>
@@ -477,7 +472,10 @@ internal sealed class AudioPlayerBar : GlassPanel
         return (float)(_playback.AudioPosition.TotalSeconds / d.TotalSeconds);
     }
 
-    public float VolumeFraction() => IsBoundPlaying && _playback != null ? Math.Clamp(_playback.AudioVolume, 0f, 1f) : 0.7f;
+    /// <summary>FP-10: the engine's real volume whenever an engine exists — never a made-up
+    /// value. With no engine bound there is no volume to show, so the knob rests at zero
+    /// instead of the old hardcoded 0.7 that looked like a real 70%.</summary>
+    public float VolumeFraction() => _playback != null ? Math.Clamp(_playback.AudioVolume, 0f, 1f) : 0f;
 
     public string PositionText()
     {
@@ -488,12 +486,22 @@ internal sealed class AudioPlayerBar : GlassPanel
     }
 
     protected override bool IsInputKey(Keys keyData) =>
-        (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down || base.IsInputKey(keyData);
+        (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Enter || base.IsInputKey(keyData);
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (_boundFile == null || e.Modifiers != Keys.None) return;
+        if (e.Modifiers != Keys.None) return;
+        // FP-03: Enter opens the file-name selector — the keyboard equivalent of clicking the
+        // title ▾. It works even with no bound file (the menu then offers just 导入音频).
+        if (e.KeyCode == Keys.Enter)
+        {
+            ShowFilePicker(this, new Point(_titleRect.Left, _titleRect.Bottom + 4));
+            e.Handled = true;
+            e.SuppressKeyPress = true;
+            return;
+        }
+        if (_boundFile == null) return;
         if (e.KeyCode is Keys.Space or Keys.L)
         {
             Rectangle target = e.KeyCode == Keys.Space ? _playButton : _loopButton;
@@ -502,11 +510,19 @@ internal sealed class AudioPlayerBar : GlassPanel
         }
         else if (e.KeyCode is Keys.Left or Keys.Right or Keys.Up or Keys.Down)
         {
-            if (IsBoundPlaying && _playback != null)
+            // Seek needs the bound track loaded; volume is engine-level (FP-10) and works
+            // whenever an engine exists, matching SetVolume's drag behavior.
+            if (e.KeyCode is Keys.Left or Keys.Right)
             {
-                if (e.KeyCode is Keys.Left or Keys.Right)
+                if (IsBoundPlaying && _playback != null)
+                {
                     _playback.SeekAudioRelative(TimeSpan.FromSeconds(e.KeyCode == Keys.Left ? -10 : 10));
-                else _playback.AudioVolume = Math.Clamp(_playback.AudioVolume + (e.KeyCode == Keys.Up ? 0.05f : -0.05f), 0, 1);
+                    RefreshLiveState();
+                }
+            }
+            else if (_playback != null)
+            {
+                _playback.AudioVolume = Math.Clamp(_playback.AudioVolume + (e.KeyCode == Keys.Up ? 0.05f : -0.05f), 0, 1);
                 RefreshLiveState();
             }
         }

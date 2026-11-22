@@ -23,7 +23,14 @@ internal sealed class MediaGrid : Control
         public bool Selected { get; set; }
     }
 
-    private readonly List<Item> _items = new();
+    // FP-08: the item list is REPLACED, never mutated in place. Thumbnail passes run
+    // continuations on pool threads (ConfigureAwait(false) upstream) that call VisibleItems()
+    // while the UI thread rebuilds the list on search/filter/import — mutating one shared List
+    // from both threads raced (torn reads / ArgumentOutOfRange mid-iteration, swallowed by the
+    // pass's catch, leaving blank thumbnails until the next pass). A swap is atomic and every
+    // reader works on the reference it first read, so any thread always sees one complete list.
+    // Selection flags on the Item objects themselves are still only touched on the UI thread.
+    private volatile List<Item> _items = new();
     private readonly VScrollBar _scrollBar = new() { Visible = false };
     private readonly ToolTip _toolTip = new() { InitialDelay = 600 };
     private readonly System.Windows.Forms.Timer _autoScroll = new() { Interval = 30 };
@@ -61,6 +68,12 @@ internal sealed class MediaGrid : Control
     /// <summary>A plain left click on a card (not a Ctrl/Shift selection click, not the end of a drag).</summary>
     public event Action<Item, MouseEventArgs>? ItemClicked;
     public event Action<Item, MouseEventArgs>? ItemDoubleClicked;
+    /// <summary>Enter on the focused card: preview it — the same action as a plain click, i.e.
+    /// the owner decides preview vs. take-to-air. Deliberately NOT a double-click (FP-03): the
+    /// keyboard must not inherit the mouse double-click's take-to-air meaning.</summary>
+    public event Action<Item>? ItemPreviewRequested;
+    /// <summary>Delete on the grid: remove the selection through the owner's usual confirm path.</summary>
+    public event Action? DeleteRequested;
     /// <summary>Right click: the card under the pointer (null on empty space) and the point.</summary>
     public event Action<Item?, Point>? ContextMenuRequested;
     /// <summary>Drag to reorder: the cards being moved, and the card they go before (null: the end).</summary>
@@ -90,32 +103,45 @@ internal sealed class MediaGrid : Control
     }
 
     public IReadOnlyList<Item> Items => _items;
-    public IReadOnlyList<Item> SelectedItems => _items.Where(i => i.Selected).ToList();
+    public IReadOnlyList<Item> SelectedItems
+    {
+        get
+        {
+            var items = _items;
+            return items.Where(i => i.Selected).ToList();
+        }
+    }
 
     public IReadOnlyList<Item> VisibleItems()
     {
+        // Read the list reference once: SetItems may swap it mid-call on the UI thread while
+        // this runs on a pool-thread thumbnail continuation (FP-08) — the snapshot stays valid.
+        var items = _items;
         var visible = new List<Item>();
         if (!Visible || ClientSize.Width <= 0 || ClientSize.Height <= 0) return visible;
         var viewport = new Rectangle(0, 0, ViewWidth, ClientSize.Height);
-        for (int i = FirstVisible(); i < _items.Count; i++)
+        for (int i = FirstVisible(); i < items.Count; i++)
         {
             var bounds = CardBounds(i);
             if (bounds.Top >= viewport.Bottom) break;
-            if (bounds.IntersectsWith(viewport)) visible.Add(_items[i]);
+            if (bounds.IntersectsWith(viewport)) visible.Add(items[i]);
         }
         return visible;
     }
 
     public void SetItems(IEnumerable<Item> items)
     {
-        // Keep the selection of files that are still listed.
+        // Keep the selection of files that are still listed. Build the new list first, then
+        // swap the reference: readers on other threads keep seeing the old complete list
+        // until the swap, never a half-cleared one (FP-08).
         var selected = _items.Where(i => i.Selected).Select(i => i.File.Id).ToHashSet();
-        _items.Clear();
+        var list = new List<Item>();
         foreach (var item in items)
         {
             item.Selected = selected.Contains(item.File.Id);
-            _items.Add(item);
+            list.Add(item);
         }
+        _items = list;
         _hoverItem = null;
         _anchor = _focus = -1;
         Relayout();
@@ -131,7 +157,14 @@ internal sealed class MediaGrid : Control
 
     private int S(int v) => LogicalToDeviceUnits(v);
     private int ViewWidth => Math.Max(1, ClientSize.Width - (_scrollBar.Visible ? _scrollBar.Width : 0));
-    private int ContentHeight => _items.Count == 0 ? 0 : S(Gap) + (_items.Count + _columns - 1) / _columns * (_tileHeight + S(Gap));
+    private int ContentHeight
+    {
+        get
+        {
+            int count = _items.Count;
+            return count == 0 ? 0 : S(Gap) + (count + _columns - 1) / _columns * (_tileHeight + S(Gap));
+        }
+    }
 
     private void Relayout()
     {
@@ -175,11 +208,12 @@ internal sealed class MediaGrid : Control
 
     public Item? ItemAt(Point p)
     {
-        for (int i = FirstVisible(); i < _items.Count; i++)
+        var items = _items;
+        for (int i = FirstVisible(); i < items.Count; i++)
         {
             var bounds = CardBounds(i);
             if (bounds.Top > ClientSize.Height) break;
-            if (bounds.Contains(p)) return _items[i];
+            if (bounds.Contains(p)) return items[i];
         }
         return null;
     }
@@ -232,21 +266,24 @@ internal sealed class MediaGrid : Control
 
     protected override void OnPaint(PaintEventArgs e)
     {
+        // Snapshot the list: paint runs on the UI thread, but a thumbnail pass may be reading
+        // VisibleItems on a pool thread at the same time — both must see one stable list (FP-08).
+        var items = _items;
         var g = e.Graphics;
         g.Clear(BackColor == Color.Transparent ? ModernUi.Background : BackColor);
-        for (int i = FirstVisible(); i < _items.Count; i++)
+        for (int i = FirstVisible(); i < items.Count; i++)
         {
             var bounds = CardBounds(i);
             if (bounds.Top > ClientSize.Height) break;
             if (bounds.Bottom < 0 || !bounds.IntersectsWith(e.ClipRectangle)) continue;
-            DrawCard?.Invoke(g, _items[i], bounds);
-            if (_dragging && _items[i].Selected)
+            DrawCard?.Invoke(g, items[i], bounds);
+            if (_dragging && items[i].Selected)
             {
                 using var veil = new SolidBrush(Color.FromArgb(120, ModernUi.Background));
                 g.FillRectangle(veil, bounds);
             }
         }
-        if (Focused && ShowFocusCues && _focus >= 0 && _focus < _items.Count)
+        if (Focused && ShowFocusCues && _focus >= 0 && _focus < items.Count)
             ControlPaint.DrawFocusRectangle(g, Rectangle.Inflate(CardBounds(_focus), 3, 3), ModernUi.Text, ModernUi.Background);
         if (_dragging && _insertAt >= 0) DrawInsertionBar(g);
     }
@@ -430,6 +467,7 @@ internal sealed class MediaGrid : Control
 
     protected override bool IsInputKey(Keys keyData) =>
         (keyData & Keys.KeyCode) is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.PageUp or Keys.PageDown
+        or Keys.Enter or Keys.Delete or Keys.Apps or Keys.F10
         || base.IsInputKey(keyData);
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -460,7 +498,29 @@ internal sealed class MediaGrid : Control
         };
         if (e.KeyCode == Keys.Enter && _focus >= 0)
         {
-            ItemDoubleClicked?.Invoke(_items[_focus], new MouseEventArgs(MouseButtons.Left, 2, 0, 0, 0));
+            ItemPreviewRequested?.Invoke(_items[_focus]);
+            e.Handled = true;
+            return;
+        }
+        if (e.KeyCode == Keys.Delete)
+        {
+            DeleteRequested?.Invoke();
+            e.Handled = true;
+            return;
+        }
+        if (e.KeyCode == Keys.Apps || (e.KeyCode == Keys.F10 && e.Shift))
+        {
+            // Keyboard equivalent of right-click: same menu, at the focused card, with the
+            // card first selected exactly as a right-click selects it (FP-03). The ⋯ glyph is
+            // painted, not a control, so there is no control to focus for this.
+            int index = _focus >= 0 ? _focus : _items.FindIndex(item => item.Selected);
+            if (index >= 0)
+            {
+                var item = _items[index];
+                if (!item.Selected) SelectOnly(item);
+                var bounds = CardBounds(index);
+                ContextMenuRequested?.Invoke(item, new Point(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2));
+            }
             e.Handled = true;
             return;
         }

@@ -644,16 +644,9 @@ static void TestAudioLayout(string directory)
             Require(stateChanges >= 2, "Audio bar did not announce its state changes.");
             type.GetEvent("StateChanged")!.RemoveEventHandler(bar, onState);
 
-            // The sidebar「音频独立播放区」card is a second view of the same bar.
-            var cardType = type.Assembly.GetType("EveryStage.Terminal.UI.Panels.AudioSidebarCard", throwOnError: true)!;
-            using var card = (Control)Activator.CreateInstance(cardType, bar)!;
-            foreach (bool compact in new[] { false, true })
-            {
-                cardType.GetProperty("Compact")!.SetValue(card, compact);
-                card.Size = new Size(218, (int)cardType.GetProperty(compact ? "CompactHeight" : "FullHeight")!.GetValue(card)!);
-                using var cardBitmap = new Bitmap(card.Width, card.Height);
-                card.DrawToBitmap(cardBitmap, card.ClientRectangle);
-            }
+            // FP-04: the sidebar「音频独立播放区」card was deleted (user decision — it was never
+            // instantiated in product code and its "always shown" doc comments were false), so
+            // there is no second view left to paint-check here.
         }
         catch (Exception ex) { failure = ex; }
     });
@@ -661,7 +654,7 @@ static void TestAudioLayout(string directory)
     thread.Start();
     if (!thread.Join(TimeSpan.FromSeconds(20))) throw new TimeoutException("Audio layout test did not finish.");
     if (failure != null) throw new InvalidOperationException("Audio layout test failed.", failure);
-    Console.WriteLine("PASS: audio bar layout, offscreen painting, keyboard playback, modifier isolation, loop persistence, track selection and sidebar card");
+    Console.WriteLine("PASS: audio bar layout, offscreen painting, keyboard playback, modifier isolation, loop persistence and track selection");
 }
 
 static void WritePdfFixture(string path)

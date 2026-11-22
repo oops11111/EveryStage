@@ -766,12 +766,22 @@ public sealed class MainWindow : GradientForm
 
     /// <summary>设置 · 热键 inside the main window. The global 急停 key is handled by
     /// <see cref="_emergencyHotkey"/> (also inside dialogs). 急停 (本程序内, Esc) first closes an open
-    /// 歌单 drawer; plain-letter and Ctrl+arrow keys are left to a text box that has focus.</summary>
+    /// 歌单 drawer — unless a text box has focus, in which case Esc is left to the text box
+    /// (FP-02: the Files search box clears its text); plain-letter and Ctrl+arrow keys are
+    /// left to a text box that has focus.</summary>
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         var settings = _settingsStore.Current;
         if (keyData == settings.HotkeyFor(HotkeyAction.EmergencyStopLocal))
         {
+            // FP-02: focus inside a text box means the operator is editing, not stopping the
+            // show — let the key reach the box (the Files search box clears on Esc) instead of
+            // eating it here. The drawer is not closed and output is not stopped either: the
+            // stop buttons and the other keys still stop output. Falling through (rather than
+            // clearing here) is the same mechanism the typing exemption below already relies
+            // on for plain-letter keys, and the global-key message filter only watches the
+            // global key, so it cannot defeat this exemption.
+            if (FocusIsInTextBox(this)) return base.ProcessCmdKey(ref msg, keyData);
             if (keyData == Keys.Escape && _musicDrawer.IsOpen) _musicDrawer.Close();
             else StopProgramOutput();
             return true;
@@ -794,6 +804,26 @@ public sealed class MainWindow : GradientForm
             while (active is ContainerControl { ActiveControl: { } inner }) active = inner;
             return active;
         }
+    }
+
+    /// <summary>Whether keyboard focus is inside a text box under <paramref name="root"/> — the
+    /// focused control itself, or a text box nested in a plain wrapper control. The second case
+    /// matters: <see cref="FocusedControl"/> above stops at a non-container wrapper (the Files
+    /// search box is a plain <c>Control</c> holding an inner <c>TextBox</c>), so a plain
+    /// <c>is TextBoxBase</c> check on it would miss the search box entirely. Walks the
+    /// <c>ContainsFocus</c> chain instead, which follows real focus through any nesting.</summary>
+    internal static bool FocusIsInTextBox(Control root)
+    {
+        for (Control? current = root; current != null;)
+        {
+            if (current is TextBoxBase && current.Focused) return true;
+            Control? next = null;
+            foreach (Control child in current.Controls)
+                if (child.ContainsFocus) { next = child; break; }
+            if (next == null) return false;
+            current = next;
+        }
+        return false;
     }
 
     /// <summary>播放 / 暂停 (Space): the big screen while local media is on air (same as 「暂停大屏」),
