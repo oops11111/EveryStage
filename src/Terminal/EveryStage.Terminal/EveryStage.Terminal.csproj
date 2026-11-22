@@ -22,6 +22,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="FluidMotion.L1" Version="[0.1.0]" />
+    <InternalsVisibleTo Include="EveryStage.MotionSelfTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="Assets\EveryStage.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 

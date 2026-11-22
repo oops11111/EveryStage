@@ -1,0 +1,8 @@
+{
+  "no_build_servers_or_user_processes_terminated": true,
+  "wrapper_pid": 64188,
+  "wrapper_created_utc": "2026-11-22T07:24:37.7623340Z",
+  "component_status": "PASS internal candidate, not sealed or published",
+  "wrapper_status": "owned wrapper terminated while waiting for descendant build servers; not normal exit0",
+  "wrapper_command": "\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -NoProfile -File scripts/Prepare-FluidMotion.ps1 -FrameworkSourcePath <MF_WORKSPACE>"
+}

@@ -1,0 +1,42 @@
+PASS actual adapter rejects off-owner motion calls before native entry
+PASS actual adapter enters intermediate state (functional watchdog, not performance)
+PASS from-null reversal does not replace current visual value
+PASS reverse reaches rest (functional watchdog, not performance)
+PASS rest target and idle timer stopped
+PASS fake reduced preference reaches target (functional watchdog, not performance)
+PASS reduced preference keeps correct final target
+PASS queued worker preference after Dispose is harmless and detached
+PASS actual native apply can dispose without fm reentry (functional watchdog, not performance)
+PASS deferred native teardown removes preference and timer
+PASS completion apply can start a newer actual animation (functional watchdog, not performance)
+PASS stale completion did not settle the newer request
+PASS callback B then current A drains safely (functional watchdog, not performance)
+PASS last request wins and clears stale pending B
+PASS constructor failure unsubscribes preference and releases native state
+PASS actual store instances retain explicit fresh temp paths
+PASS owned harness HWND visible for drawer-closed
+PASS actual drawer reaches a meaningful intermediate height (functional watchdog, not performance)
+PASS owned harness HWND visible for drawer-opening
+PASS reverse reaches a meaningful intermediate height (functional watchdog, not performance)
+PASS owned harness HWND visible for drawer-reversing
+PASS actual drawer quick reverse closes (functional watchdog, not performance)
+PASS closed rest hides drawer and releases bitmap
+PASS owned harness HWND visible for drawer-rest-closed
+PASS reopen reaches full rest (functional watchdog, not performance)
+PASS real controls restored after whole-bitmap animation
+PASS owned harness HWND visible for drawer-open
+PASS parent resize retargets actual drawer (functional watchdog, not performance)
+PASS owned harness HWND visible for drawer-resized
+PASS actual collapse button closes (functional watchdog, not performance)
+PASS collapse final state
+PASS open before actual Escape handling (functional watchdog, not performance)
+PASS actual ProcessCmdKey handles Escape
+PASS Escape closes actual drawer (functional watchdog, not performance)
+PASS open before disposal (functional watchdog, not performance)
+PASS actual control disposal detaches preference and stops motion
+PASS actual parent resize ownership detached
+PASS in-flight bitmap disposed with actual drawer
+PASS empty explicit stores unchanged and no media started
+PASS actual native lifecycle Created equals Released across all control tests
+PASS real system animation preference only read
+HARNESS_OUTPUT=%EVERYSTAGE_ROOT%\artifacts\motion-control-attempt1

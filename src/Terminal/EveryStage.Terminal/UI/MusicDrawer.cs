@@ -15,7 +15,6 @@ internal sealed class MusicDrawer : Panel
 {
     private static readonly string[] AudioExtensions = { ".mp3", ".wav", ".flac", ".aac", ".m4a", ".wma", ".ogg" };
     private const int SheetLogicalHeight = 300;
-    private const int SlideMilliseconds = 180;
 
     private readonly MusicChannel _music;
     private readonly FileLibraryStore _fileLibrary;
@@ -32,10 +31,10 @@ internal sealed class MusicDrawer : Panel
     private readonly ComboBox _mode;
     private readonly CheckBox _autoPlay;
     private readonly CheckBox _duck;
-    private readonly System.Windows.Forms.Timer _slide = new() { Interval = 15 };
+    private readonly DrawerHeightMotion _motion;
+    private Control? _resizeParent;
+    private int _slideGeneration;
     private readonly ToolTip _toolTip = new();
-    private DateTime _slideStart;
-    private int _slideFrom;
     private bool _open;
     private bool _updating;
     private const string TrackDragFormat = "EveryStage.MusicTracks";
@@ -52,7 +51,7 @@ internal sealed class MusicDrawer : Panel
 
     public bool IsOpen => _open;
 
-    public MusicDrawer(MusicChannel music, FileLibraryStore fileLibrary)
+    public MusicDrawer(MusicChannel music, FileLibraryStore fileLibrary, IAnimationPreference? motionPreference = null)
     {
         _music = music;
         _fileLibrary = fileLibrary;
@@ -150,8 +149,12 @@ internal sealed class MusicDrawer : Panel
         };
         _duck.CheckedChanged += (_, _) => { if (!_updating) { Library.DuckForVideo = _duck.Checked; Save(); } };
         // The playing song's marker follows the channel.
+        _motion = new DrawerHeightMotion(this, value =>
+        {
+            Height = Math.Max(0, (int)Math.Round(value));
+            if (!IsDisposed) Invalidate();
+        }, CompleteSlide, motionPreference);
         _music.Changed += OnMusicChanged;
-        _slide.Tick += (_, _) => StepSlide();
 
         RefreshPlaylists(Library.Current);
 
@@ -283,11 +286,9 @@ internal sealed class MusicDrawer : Panel
 
     private void BringToSlide()
     {
-        _slideFrom = Height;
-        _slideStart = DateTime.UtcNow;
+        _slideGeneration++;
         CaptureSlideImage();
-        _slide.Start();
-        StepSlide();
+        _motion.MoveTo(_open ? TargetHeight : 0, Height);
     }
 
     private void CaptureSlideImage()
@@ -316,26 +317,20 @@ internal sealed class MusicDrawer : Panel
         if (_slideImage != null) e.Graphics.DrawImageUnscaled(_slideImage, 0, Height - _slideImage.Height);
     }
 
-    private void StepSlide()
+    private void CompleteSlide()
     {
-        if (IsDisposed) { _slide.Stop(); return; }
-        int target = _open ? TargetHeight : 0;
-        double t = Math.Min(1, (DateTime.UtcNow - _slideStart).TotalMilliseconds / SlideMilliseconds);
-        double eased = 1 - Math.Pow(1 - t, 3); // ease-out: fast start, gentle stop
-        Height = (int)Math.Round(_slideFrom + (target - _slideFrom) * eased);
+        if (IsDisposed) return;
+        int generation = _slideGeneration;
+        Height = _open ? TargetHeight : 0;
+        if (IsDisposed || generation != _slideGeneration) return;
+        _slideImage?.Dispose();
+        _slideImage = null;
+        _sheet.Visible = _open;
+        if (IsDisposed || generation != _slideGeneration) return;
         Invalidate();
-        if (t >= 1)
-        {
-            _slide.Stop();
-            Height = target;
-            _slideImage?.Dispose();
-            _slideImage = null;
-            _sheet.Visible = _open;
-            Invalidate();
-            if (!_open) Visible = false;
-            else if (_tracks.Items.Count > 0) _tracks.Focus();
-            else _playlists.Focus();
-        }
+        if (!_open) Visible = false;
+        else if (_tracks.Items.Count > 0) _tracks.Focus();
+        else _playlists.Focus();
     }
 
     protected override void OnLayout(LayoutEventArgs levent)
@@ -344,14 +339,21 @@ internal sealed class MusicDrawer : Panel
         if (_sheet == null) return; // raised from the base constructor
         // The sheet keeps its full height and rides on the drawer's bottom edge, so opening reveals it
         // from the top edge down — it slides up out of the music bar rather than unrolling.
-        int full = _open || _slide.Enabled ? Math.Max(Height, TargetHeight) : TargetHeight;
+        int full = _open || _motion is { IsRunning: true } ? Math.Max(Height, TargetHeight) : TargetHeight;
         _sheet.Bounds = new Rectangle(0, Height - full, ClientSize.Width, full);
     }
 
     protected override void OnParentChanged(EventArgs e)
     {
         base.OnParentChanged(e);
-        if (Parent != null) Parent.Resize += (_, _) => { if (_open && !_slide.Enabled) Height = TargetHeight; };
+        if (_resizeParent != null) _resizeParent.Resize -= OnParentResize;
+        _resizeParent = Parent;
+        if (_resizeParent != null) _resizeParent.Resize += OnParentResize;
+    }
+
+    private void OnParentResize(object? sender, EventArgs e)
+    {
+        if (!IsDisposed && (_open || _motion is { IsRunning: true })) BringToSlide();
     }
 
     private void LayoutSheet()
@@ -640,7 +642,9 @@ internal sealed class MusicDrawer : Panel
         if (disposing)
         {
             _music.Changed -= OnMusicChanged;
-            _slide.Dispose();
+            if (_resizeParent != null) _resizeParent.Resize -= OnParentResize;
+            _resizeParent = null;
+            _motion?.Dispose();
             _slideImage?.Dispose();
             _toolTip.Dispose();
         }
