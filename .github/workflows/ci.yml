@@ -194,18 +194,56 @@ jobs:
         with:
           name: EveryStage-installer-input-${{ github.sha }}
           path: artifacts/installer-input
-      - name: Download fixed user baseline without execution
+      - name: Retrieve original or retained exact upgrade baseline
         uses: actions/github-script@v8
         env:
           BASELINE_DOWNLOAD_TOKEN: ${{ github.token }}
         with:
           script: |
             const fs = require('fs');
-            const response = await fetch('https://api.github.com/repos/oops11111/EveryStage/actions/artifacts/14736098352/zip', {
-              headers: {Authorization: `Bearer ${process.env.BASELINE_DOWNLOAD_TOKEN}`, Accept: 'application/vnd.github+json'}
-            });
-            if (!response.ok) throw new Error(`Baseline download ${response.status}`);
-            fs.writeFileSync('artifacts/baseline.zip', Buffer.from(await response.arrayBuffer()));
+            const mirrorName = 'EveryStage-upgrade-baseline-76614f31aa34372c15f0de26d69f818f89c3b5814967b24a0aa980b4c7eaad94';
+            const headers = {Authorization: `Bearer ${process.env.BASELINE_DOWNLOAD_TOKEN}`, Accept: 'application/vnd.github+json'};
+            const originalUrl = 'https://api.github.com/repos/oops11111/EveryStage/actions/artifacts/14736098352/zip';
+            let response = await fetch(originalUrl, {headers});
+            let artifactId = 14736098352;
+            let route = 'original-artifact';
+            let destination = 'artifacts/baseline.zip';
+            if (response.status === 404 || response.status === 410) {
+              const {data} = await github.rest.actions.listArtifactsForRepo({...context.repo, name: mirrorName, per_page: 100});
+              const candidates = data.artifacts.filter(a => a.name === mirrorName && !a.expired).sort((a,b) => b.created_at.localeCompare(a.created_at));
+              if (!candidates.length) throw new Error('Original baseline expired and no verified-name retained artifact exists; no version fallback');
+              artifactId = candidates[0].id;
+              route = 'retained-actions-artifact';
+              destination = 'artifacts/baseline-mirror.zip';
+              response = await fetch(`https://api.github.com/repos/${context.repo.owner}/${context.repo.repo}/actions/artifacts/${artifactId}/zip`, {headers});
+            }
+            if (!response.ok) throw new Error(`Baseline download HTTP ${response.status}; no authentication fallback`);
+            fs.writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
+            const {data: metadata} = await github.rest.actions.getArtifact({...context.repo, artifact_id: artifactId});
+            fs.writeFileSync('artifacts/baseline-source.json', JSON.stringify({route, retrieved_artifact_id: artifactId, retrieved_artifact_name: metadata.name, retrieved_artifact_digest: metadata.digest, retrieved_artifact_expires_at: metadata.expires_at}, null, 2));
+      - name: Validate original baseline bytes without execution
+        shell: pwsh
+        run: ./scripts/Validate-UpgradeBaseline.ps1
+      - name: Retain unchanged original upgrade baseline
+        id: baseline_mirror
+        uses: actions/upload-artifact@v6
+        with:
+          name: EveryStage-upgrade-baseline-76614f31aa34372c15f0de26d69f818f89c3b5814967b24a0aa980b4c7eaad94
+          path: artifacts/baseline.zip
+          retention-days: 90
+          if-no-files-found: error
+      - name: Record actual retained artifact expiry and distinct digest
+        uses: actions/github-script@v8
+        env:
+          MIRROR_ARTIFACT_ID: ${{ steps.baseline_mirror.outputs.artifact-id }}
+        with:
+          script: |
+            const fs = require('fs');
+            const receipt = JSON.parse(fs.readFileSync('artifacts/baseline-source.json', 'utf8').replace(/^\uFEFF/, ''));
+            const {data} = await github.rest.actions.getArtifact({...context.repo, artifact_id: Number(process.env.MIRROR_ARTIFACT_ID)});
+            receipt.retained_artifact = {id: data.id, name: data.name, digest: data.digest, created_at: data.created_at, expires_at: data.expires_at, requested_retention_days: 90};
+            receipt.retention_limit = 'Actual Actions expiry is finite; no repository or organization retention setting changed';
+            fs.writeFileSync('artifacts/baseline-source.json', JSON.stringify(receipt, null, 2));
       - name: Validate UI helper compile without input or activation
         shell: powershell
         run: ./scripts/InstallerUi.ps1 -ValidateOnly
@@ -215,6 +253,15 @@ jobs:
       - name: Record pipeline-tested immutable delivery
         shell: pwsh
         run: ./scripts/Seal-InternalDelivery.ps1 -InputDirectory artifacts/installer-input -EvidenceDirectory artifacts/installer-smoke -OutputPath artifacts/installer-smoke/pipeline-tested-manifest.json
+      - name: Preserve baseline provenance in stable smoke artifact layout
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path artifacts/baseline-source.json) {
+            # This is after the driver, never before its fresh output-directory guard.
+            New-Item -ItemType Directory -Force artifacts/installer-smoke | Out-Null
+            Copy-Item -LiteralPath artifacts/baseline-source.json -Destination artifacts/installer-smoke/baseline-source.json
+          }
       - name: Preserve installer evidence even on failure
         if: always()
         uses: actions/upload-artifact@v6
