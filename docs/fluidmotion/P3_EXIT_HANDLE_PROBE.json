@@ -1,0 +1,102 @@
+{
+  "scope": "owned harmless child processes only; no EveryStage launch",
+  "result": "cached kernel Handle preserves exact zero/nonzero exit under both tested shells; null is never accepted as zero",
+  "records": [
+    {
+      "scope": "owned harmless PowerShell child; no application entry",
+      "shell": "5.1.19041.6456",
+      "cached_handle": false,
+      "actual": null,
+      "expected": 0,
+      "identity": {
+        "start_utc": "2026-11-22T10:05:57.8073332Z",
+        "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "pid": 51772
+      }
+    },
+    {
+      "scope": "owned harmless PowerShell child; no application entry",
+      "shell": "5.1.19041.6456",
+      "cached_handle": true,
+      "actual": 0,
+      "expected": 0,
+      "identity": {
+        "start_utc": "2026-11-22T10:06:00.2811950Z",
+        "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "pid": 85640
+      }
+    },
+    {
+      "scope": "owned harmless PowerShell child; no application entry",
+      "shell": "5.1.19041.6456",
+      "cached_handle": false,
+      "actual": null,
+      "expected": 7,
+      "identity": {
+        "start_utc": "2026-11-22T10:06:02.7491849Z",
+        "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "pid": 55112
+      }
+    },
+    {
+      "scope": "owned harmless PowerShell child; no application entry",
+      "shell": "5.1.19041.6456",
+      "cached_handle": true,
+      "actual": 7,
+      "expected": 7,
+      "identity": {
+        "start_utc": "2026-11-22T10:06:05.2079884Z",
+        "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "pid": 20460
+      }
+    },
+    {
+      "identity": {
+        "pid": 68448,
+        "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "start_utc": "2026-11-22T10:06:57.7708282Z"
+      },
+      "scope": "owned harmless PowerShell child; no application entry",
+      "expected": 0,
+      "actual": null,
+      "shell": "7.6.10",
+      "cached_handle": false
+    },
+    {
+      "identity": {
+        "pid": 32112,
+        "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "start_utc": "2026-11-22T10:07:00.1927781Z"
+      },
+      "scope": "owned harmless PowerShell child; no application entry",
+      "expected": 0,
+      "actual": 0,
+      "shell": "7.6.10",
+      "cached_handle": true
+    },
+    {
+      "identity": {
+        "pid": 77932,
+        "path": null,
+        "start_utc": "2026-11-22T10:07:02.5866038Z"
+      },
+      "scope": "owned harmless PowerShell child; no application entry",
+      "expected": 7,
+      "actual": null,
+      "shell": "7.6.10",
+      "cached_handle": false
+    },
+    {
+      "identity": {
+        "pid": 84076,
+        "path": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+        "start_utc": "2026-11-22T10:07:04.9946540Z"
+      },
+      "scope": "owned harmless PowerShell child; no application entry",
+      "expected": 7,
+      "actual": 7,
+      "shell": "7.6.10",
+      "cached_handle": true
+    }
+  ]
+}

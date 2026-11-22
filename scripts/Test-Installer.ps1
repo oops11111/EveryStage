@@ -237,6 +237,9 @@ try {
    }
   }
   if(!$terminal -or $terminal.Path -ne $expectedExe -or $terminal.StartTime.ToUniversalTime() -lt $launchStart){throw 'Shortcut did not launch a verified new exact Terminal PID'}
+  $terminalRetainedHandle=$terminal.Handle
+  if($terminalRetainedHandle -eq [IntPtr]::Zero){throw 'Could not retain exact launched process handle'}
+  $launchRecord.retained_handle=$true
   $launchRecord.pid=$terminal.Id
   $launchRecord.process_started_utc=$terminal.StartTime.ToUniversalTime().ToString('o')
   $launchRecord.verified_path=$terminal.Path
@@ -251,8 +254,12 @@ try {
  } finally {
   try {
    if(!$terminal.HasExited){Run-UiHelper 'Exit' $terminal}
-   if($terminal.HasExited -and $terminal.ExitCode -ne 0){throw 'Owned Terminal exited nonzero'}
-  } catch {$result.exit_error=$_.Exception.ToString()}
+   if(!$terminal.WaitForExit(30000)){throw 'Owned Terminal has not exited after normal tray Exit'}
+   $actualExit=$terminal.ExitCode
+   if($null -eq $actualExit -or $actualExit -ne 0){throw 'Owned Terminal exact retained-handle exit code missing or nonzero'}
+   $exitProof=Get-Content "$OutputDirectory/normal-exit.json" -Raw|ConvertFrom-Json
+   if(!$exitProof.normal_tray_exit -or !$exitProof.retained_handle -or $exitProof.pid -ne $terminal.Id -or $exitProof.start_utc -ne $launchRecord.process_started_utc -or $null -eq $exitProof.exit -or $exitProof.exit -ne 0){throw 'Held normal tray Exit proof mismatch'}
+  } catch {$result.exit_error=$_.Exception.ToString()} finally {$terminal.Dispose()}
  }
  if($result.primary_error){throw $result.primary_error}
  if($result.exit_error){throw $result.exit_error}

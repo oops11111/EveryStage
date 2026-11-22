@@ -240,7 +240,25 @@ jobs:
           script: |
             const fs = require('fs');
             const receipt = JSON.parse(fs.readFileSync('artifacts/baseline-source.json', 'utf8').replace(/^\uFEFF/, ''));
-            const {data} = await github.rest.actions.getArtifact({...context.repo, artifact_id: Number(process.env.MIRROR_ARTIFACT_ID)});
+            const exactId = Number(process.env.MIRROR_ARTIFACT_ID);
+            const expectedName = 'EveryStage-upgrade-baseline-76614f31aa34372c15f0de26d69f818f89c3b5814967b24a0aa980b4c7eaad94';
+            receipt.uploaded_mirror_id = exactId;
+            receipt.fresh_metadata_attempts = [];
+            let data;
+            for (let attempt = 1; attempt <= 5; attempt++) {
+              try {
+                const response = await github.rest.actions.getArtifact({...context.repo, artifact_id: exactId});
+                receipt.fresh_metadata_attempts.push({attempt, status: response.status});
+                data = response.data;
+                break;
+              } catch (error) {
+                receipt.fresh_metadata_attempts.push({attempt, status: error.status ?? null});
+                fs.writeFileSync('artifacts/baseline-source.json', JSON.stringify(receipt, null, 2));
+                if (error.status !== 404 || attempt === 5) throw error;
+                await new Promise(resolve => setTimeout(resolve, 1000));
+              }
+            }
+            if (data.id !== exactId || data.name !== expectedName || data.expired) throw new Error('Fresh mirror metadata identity mismatch');
             receipt.retained_artifact = {id: data.id, name: data.name, digest: data.digest, created_at: data.created_at, expires_at: data.expires_at, requested_retention_days: 90};
             receipt.retention_limit = 'Actual Actions expiry is finite; no repository or organization retention setting changed';
             fs.writeFileSync('artifacts/baseline-source.json', JSON.stringify(receipt, null, 2));

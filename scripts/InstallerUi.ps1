@@ -62,6 +62,11 @@ $p=Get-Process -Id $ProcessId
 if ($p.Path -ne "$env:ProgramFiles\EveryStage\Terminal\EveryStage.Terminal.exe") { throw 'Unexpected Terminal path' }
 $start=$p.StartTime.ToUniversalTime().ToString("o")
 if($ExpectedStartUtc -and $start -ne $ExpectedStartUtc){throw 'Held process starttime mismatch'}
+# Materialize and retain the kernel handle while the verified process is alive.
+# Attached Get-Process objects can otherwise lose ExitCode after process exit.
+$heldProcessHandle=$p.Handle
+if($heldProcessHandle -eq [IntPtr]::Zero){throw 'Could not retain verified process handle'}
+
 function Element-Metadata($element) {
  $r=$element.Current.BoundingRectangle
  return @{automation_id=$element.Current.AutomationId;class_name=$element.Current.ClassName;native_hwnd=$element.Current.NativeWindowHandle;name=$element.Current.Name;pid=$element.Current.ProcessId;control_type=$element.Current.ControlType.ProgrammaticName;enabled=$element.Current.IsEnabled;offscreen=$element.Current.IsOffscreen;bounds=@{left=$r.Left;top=$r.Top;width=$r.Width;height=$r.Height}}
@@ -234,8 +239,10 @@ if ($Action -eq 'Exit') {
  if($p.StartTime.ToUniversalTime().ToString('o') -ne $start){throw 'PID identity changed'}
  Invoke-Control $exitItem
  if(!$p.WaitForExit(30000)) { throw 'Tray Exit did not terminate held PID; installer must not proceed' }
- if($p.ExitCode -ne 0){throw "Normal tray Exit returned $($p.ExitCode)"}
- @{normal_tray_exit=$true;pid=$ProcessId;exit=$p.ExitCode}|ConvertTo-Json|Set-Content -Encoding utf8 "$OutputDirectory/normal-exit.json"
+ $actualExit=$p.ExitCode
+ if($null -eq $actualExit){throw 'Normal tray Exit code unavailable despite retained handle'}
+ if($actualExit -ne 0){throw "Normal tray Exit returned $actualExit"}
+ @{normal_tray_exit=$true;pid=$ProcessId;start_utc=$start;retained_handle=$true;exit=$actualExit}|ConvertTo-Json|Set-Content -Encoding utf8 "$OutputDirectory/normal-exit.json"
  return
 }
 $window=$null
@@ -303,4 +310,6 @@ $modules|ConvertTo-Json -Depth 6|Set-Content -Encoding utf8 "$OutputDirectory/lo
 } catch {
  Save-Diagnostics $_.Exception.Message
  throw
+} finally {
+ $p.Dispose()
 }
