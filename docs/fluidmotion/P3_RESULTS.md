@@ -11,3 +11,7 @@ CI failure evidence is always uploaded. Installed UI samples are qualitative ord
 ## CI attempt1: baseline download stopped before installation
 
 Push run45001799932/job137146130843 built successfully but baseline download returned HTTP401 at2026-11-22T08:19:28Z. No installer ran. The downloader incorrectly referenced `github.token` as a JavaScript Octokit property; this is not the workflow expression context. The scoped step environment now carries the existing workflow token to `process.env.BASELINE_DOWNLOAD_TOKEN`, without logging it or changing permissions, source, hashes or installation steps. Original failed run/logs remain authoritative; the concurrent original PR run was not cancelled.
+
+## CI attempt2: shortcut target assertion stopped before ordinary startup
+
+Push run45002365256/job137147756134 downloaded the fixed baseline successfully, then stopped at Test-Installer.ps1 shortcut target assertion after install/upgrade. Ordinary application UI was not reached. The first assertion did not record raw target values, so the installed shortcut has not been adjudicated wrong. The reader now passes the existing .lnk native absolute path to WScript.Shell and records raw expected/actual plus existing long-path canonical targets; missing/incorrect targets remain hard failures. No NSIS target or installation scope is changed. Background silent installer/invalid-input checks now use WindowStyle Hidden, while ordinary Terminal stays visible; installer call receipts are compressed one-object-per-line JSONL. Original failed runs remain preserved.

@@ -6,6 +6,25 @@ New-Item -ItemType Directory $OutputDirectory|Out-Null
 $install="$env:ProgramFiles\EveryStage"
 $data="$env:ProgramData\EveryStage"
 $key='HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\EveryStage'
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class InstallerPaths {
+ [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+ public static extern uint GetLongPathName(string input, StringBuilder output, uint capacity);
+}
+"@
+function Canonical-ExistingPath([string]$path) {
+ if([string]::IsNullOrWhiteSpace($path)){throw 'Shortcut target is empty'}
+ $native=[IO.Path]::GetFullPath($path).Replace('/','\')
+ if(!(Test-Path -LiteralPath $native -PathType Leaf)){throw "Shortcut target does not exist: $native"}
+ $buffer=[Text.StringBuilder]::new(32768)
+ $count=[InstallerPaths]::GetLongPathName($native,$buffer,[uint32]$buffer.Capacity)
+ if($count -eq 0 -or $count -ge $buffer.Capacity){throw 'Existing target long-path resolution failed'}
+ return $buffer.ToString()
+}
+
 function No-Processes {
  $processes=@(Get-Process -ErrorAction Stop|Where-Object ProcessName -in @('EveryStage.Terminal','EveryStage.Caster'))
  if($processes.Count){throw 'EveryStage process still running; refusing installer broad-kill path'}
@@ -13,14 +32,14 @@ function No-Processes {
 function Run-Setup($file,$arguments) {
  No-Processes
  $entry=@{file=$file;sha256=(Get-FileHash $file).Hash.ToLowerInvariant();arguments=$arguments;started_utc=[DateTime]::UtcNow.ToString('o')}
- $process=Start-Process -FilePath $file -ArgumentList $arguments -PassThru
+ $process=Start-Process -FilePath $file -ArgumentList $arguments -WindowStyle Hidden -PassThru
  $entry.pid=$process.Id
  try {
   if(!$process.WaitForExit(120000)){throw 'Installer timeout; no retry'}
   $entry.exit=$process.ExitCode
   if($process.ExitCode -ne 0){throw "Installer exit $($process.ExitCode)"}
  } finally {
-  $entry|ConvertTo-Json|Add-Content -Encoding utf8 "$OutputDirectory/installer-calls.jsonl"
+  $entry|ConvertTo-Json -Compress|Add-Content -Encoding utf8 "$OutputDirectory/installer-calls.jsonl"
  }
 }
 function Product-State {
@@ -44,7 +63,22 @@ function Verify-Installation($selection) {
    if((Test-Path $shortcut) -ne $selected){throw 'Component shortcut mismatch'}
    if($selected) {
     $shell=New-Object -ComObject WScript.Shell
-    try {if($shell.CreateShortcut($shortcut).TargetPath -ne "$path\EveryStage.$component.exe"){throw 'Shortcut target mismatch'}}finally{[Runtime.InteropServices.Marshal]::ReleaseComObject($shell)|Out-Null}
+    $shortcutRecord=@{link=(Get-Item -LiteralPath $shortcut).FullName;expected="$path\EveryStage.$component.exe"}
+    try {
+     # WScript.Shell expects a native absolute .lnk path; forward slash paths can create an empty shortcut object.
+     $nativeLink=$shortcutRecord.link.Replace('/','\')
+     $shortcutRecord.raw_target=$shell.CreateShortcut($nativeLink).TargetPath
+     $shortcutRecord.resolved_expected=Canonical-ExistingPath $shortcutRecord.expected
+     $shortcutRecord.resolved_target=Canonical-ExistingPath $shortcutRecord.raw_target
+     if(![string]::Equals($shortcutRecord.resolved_target,$shortcutRecord.resolved_expected,[StringComparison]::OrdinalIgnoreCase)){throw 'Shortcut target mismatch'}
+     $shortcutRecord.status='PASS exact existing canonical target'
+    } catch {
+     $shortcutRecord.error=$_.Exception.ToString()
+     throw
+    } finally {
+     $shortcutRecord|ConvertTo-Json -Compress|Add-Content -Encoding utf8 "$OutputDirectory/shortcut-targets.jsonl"
+     [Runtime.InteropServices.Marshal]::ReleaseComObject($shell)|Out-Null
+    }
    }
   }
   $rules=@(Get-NetFirewallRule -DisplayName "EveryStage $component" -ErrorAction SilentlyContinue)
@@ -163,7 +197,7 @@ try {
  }
  if((Test-Path "$data/p3-sentinel.txt") -or !(Test-Path "$data/logs/p3-sentinel.log")){throw 'Delete-data/log retention mismatch'}
  No-Processes
- $invalid=Start-Process $setup -ArgumentList '/S /COMPONENTS=Invalid' -PassThru
+ $invalid=Start-Process $setup -ArgumentList '/S /COMPONENTS=Invalid' -WindowStyle Hidden -PassThru
  $invalid.WaitForExit()
  if($invalid.ExitCode -ne 2){throw 'Invalid component exit was not 2'}
  Assert-ProductAbsent
