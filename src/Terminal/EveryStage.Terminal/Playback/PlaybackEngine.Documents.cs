@@ -89,6 +89,7 @@ public sealed partial class PlaybackEngine
     private readonly List<Action> _retiring = new();
     private PdfViewportState? _pendingPdfState;
     private int? _pendingSlide;
+    private int _prewarmVersion;
 
     /// <summary>Office sessions shared with the other channel (tests use their own manager).</summary>
     public OfficeSessionManager OfficeSessions { get; set; } = OfficeSessionManager.Shared;
@@ -286,6 +287,45 @@ public sealed partial class PlaybackEngine
         catch (Exception ex)
         {
             DocLog.LogEvent("conversion_prefetch_failed", file.SourcePath, detail: ex.Message);
+        }
+    }
+
+    /// <summary>Background pre-conversion of every still-unconverted Office document in the
+    /// activity that just became current: the first file of an activity converts on demand
+    /// when played, but the rest convert here, in the background, while it plays — so taking
+    /// a later document is a cache hit. Callers fire this only when the activity reference
+    /// actually changes; re-entering the same activity re-scans cheaply because
+    /// <see cref="DocumentConversionCache.TryGet"/> skips what is already cached. A superseded
+    /// sweep stops before its next file and never converts for an activity that is no longer
+    /// current; losing a race to the real play path is harmless because
+    /// <see cref="DocumentConversionCache.GetOrConvertAsync"/> re-checks the cache under its
+    /// gate. Never touches the UI and never throws: failures are logged like
+    /// <see cref="WarmNextConversionAsync"/> and playback retries on demand.</summary>
+    private void PrewarmActivityConversions(Activity activity)
+    {
+        int version = ++_prewarmVersion;
+        string[] paths = activity.Files
+            .Where(file => file.Kind == MediaKind.Document
+                && DocumentFormats.Of(file.SourcePath) is DocumentFormat.Word or DocumentFormat.Presentation)
+            .Select(file => file.SourcePath)
+            .ToArray();
+        _ = PrewarmActivityConversionsAsync(paths, version);
+    }
+
+    private async Task PrewarmActivityConversionsAsync(string[] paths, int version)
+    {
+        foreach (string path in paths)
+        {
+            if (version != _prewarmVersion) return;
+            try
+            {
+                if (ConversionCache.TryGet(path) == null)
+                    await ConversionCache.GetOrConvertAsync(path, DocumentFormats.Of(path)).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                DocLog.LogEvent("conversion_prefetch_failed", path, detail: ex.Message);
+            }
         }
     }
 

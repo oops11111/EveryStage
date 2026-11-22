@@ -1439,6 +1439,36 @@ internal static class DocumentTests
             playbackField.SetValue(window, savedProgram);
             Console.WriteLine("PASS: 监看 windows: first free window, then the top one; a dropped file plays where it was dropped");
         }
+        // A drop on the window following the big screen redirects to the other window: the
+        // mirror keeps following and the dropped file previews elsewhere (drop-prewarm change 1;
+        // no Ctrl held, so the escape hatch to the old un-mirroring behavior does not apply).
+        {
+            var redirectDock = (SharedPreviewDock)type.GetField("_previewDock", flags)!.GetValue(window)!;
+            var redirectTop = (PlaybackEngine)type.GetField("_preview", flags)!.GetValue(window)!;
+            var redirectBottom = (PlaybackEngine)type.GetField("_preview2", flags)!.GetValue(window)!;
+            string redirectDir = Path.Combine(Path.GetTempPath(), "EveryStage-Redirect-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(redirectDir);
+            MediaFile RedirectImage(string name)
+            {
+                string path = Path.Combine(redirectDir, name);
+                using (var bitmap = new Bitmap(32, 18)) bitmap.Save(path, ImageFormat.Png);
+                return new MediaFile { SourcePath = path, Kind = MediaKind.Image };
+            }
+            var redirectDropped = RedirectImage("dropped.png");
+            redirectDock.SyncWindowToProgram(1);
+            Require(redirectDock.ProgramWindow == 1, "The bottom window did not start following the program.");
+            var redirectDelegate = typeof(SharedPreviewDock).GetField("FileDropped", flags)!.GetValue(redirectDock) as Delegate;
+            redirectDelegate!.DynamicInvoke(1, redirectDropped, null);
+            Require(WaitFor(() => ReferenceEquals(redirectTop.CurrentFile, redirectDropped), 3000),
+                "A file dropped on the following window did not preview in the other window.");
+            Require(redirectDock.ProgramWindow == 1 && !ReferenceEquals(redirectBottom.CurrentFile, redirectDropped),
+                "A drop on the following window disturbed the mirror.");
+            redirectDock.ReleaseProgramWindow();
+            redirectTop.Stop();
+            redirectBottom.Stop();
+            Pump(50);
+            Console.WriteLine("PASS: a drop on the following window previews in the other window; the mirror is untouched");
+        }
         string[] pages = { "_filesPanel", "_activitiesPanel", "_devicesPanel", "_settingsPanel" };
         foreach (var size in new[] { new Size(1440, 900), new Size(1024, 640) })
         {
