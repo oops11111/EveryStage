@@ -49,3 +49,9 @@ The next bounded reader records all dialog descendants and can query only this m
 ### Observed external retention cap
 
 Run45006030651/job137158793260 actually uploaded mirror14748081692, digest6e953f43d6779a8f2927411f3bd7203e4cd3d352107aacb10f9352634cf21f6b. Actions warned that requested90 days exceeded the repository/organization/enterprise limit and used3 days instead; actual expiry2026-11-25T09:07:56Z. No external setting is changed. This is a real three-day retention constraint, not90-day or long-term CI availability. Fallback works only while a verified retained copy exists; after all copies expire it stops. P4 offline delivery retains the original baseline ZIP and receipt; restoring longer-term CI input availability requires a separate scoped decision. Root is independently downloading this actual mirror for validation.
+
+## CI attempt8: exact guide body verified, native normal button exposed as Pane
+
+Run45006847813/build passed; the smoke artifact14748426389 SHA4ce9d0652dc2e278f33d0d7b6d87ba1fec93c6118a96a4a50fb8a665fe9a7f2c shows the full welcome text matched. The single actual native visible enabled default-push Button labeled OK had ControlId2, while UIA exposed its same-PID handle as Pane. Assuming ControlId1 or UIA Button therefore stopped the test before ordinary confirmation; it did not show a product error.
+
+The correction selects the exact owned unique visible enabled native normal OK by class/text/parent/full-body, records its actual ID and UIA pattern support, and rechecks held process identity. Normal UIA Invoke is preferred; only if unavailable, timeout-bounded standard BM_CLICK on that exact active matched dialog/button is used. No WM_CLOSE, arbitrary dialog acceptance or shutdown backdoor is added. Disappearance and live held Terminal are required afterward. Local ValidateOnly compiles this path without any UI action; actual activation remains pending CI.

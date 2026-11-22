@@ -94,29 +94,36 @@ function Dismiss-OwnedFirstRunGuide([bool]$required) {
   } else {$record.body_source='owned UIA descendant name'}
   $record.expected_welcome_text=$matched
   if(!$matched){throw 'Expected full source welcome text not verified through UIA or owned native Static metadata'}
-  $buttons=@($descendants|Where-Object {$_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button})
-  $record.all_buttons=@($buttons|ForEach-Object {Element-Metadata $_})
-  # Native title-bar Close is never eligible; accept only the content OK.
-  $okButtons=@($buttons|Where-Object {$_.Current.Name -in @('OK','确定') -and $_.Current.IsEnabled -and !$_.Current.IsOffscreen})
-  if(!$okButtons.Count) {
-   if(!$nativeChildren.Count){$nativeChildren=@([InstallerDialogMetadata]::Read($ProcessId,[long]$dialog.Current.NativeWindowHandle));$record.native_children=$nativeChildren}
-   $nativeOk=@($nativeChildren|Where-Object {$_.ClassName -ceq 'Button' -and $_.ControlId -eq 1 -and $_.Text -in @('OK','确定')})
-   if($nativeOk.Count -eq 1) {
-    $button=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($nativeOk[0].Hwnd))
-    if($button.Current.ProcessId -ne $ProcessId -or !$button.Current.IsEnabled -or $button.Current.IsOffscreen){throw 'Owned native IDOK UIA element readiness mismatch'}
-    $okButtons=@($button)
-    $record.button_source='UIA FromHandle of exact owned native Button IDOK'
-   }
-  } else {$record.button_source='owned UIA descendant Button'}
-  if($okButtons.Count -ne 1){throw 'First-run guide does not expose exactly one eligible ordinary OK button'}
-  $record.button=Element-Metadata $okButtons[0]
-  Invoke-Control $okButtons[0]
+  if(!$nativeChildren.Count){$nativeChildren=@([InstallerDialogMetadata]::Read($ProcessId,[long]$dialog.Current.NativeWindowHandle));$record.native_children=$nativeChildren}
+  $nativeOk=@($nativeChildren|Where-Object {$_.ClassName -ceq 'Button' -and $_.Visible -and $_.Enabled -and $_.Text -in @('OK','确定')})
+  if($nativeOk.Count -ne 1){throw 'First-run guide does not expose exactly one eligible owned native OK button'}
+  $nativeButton=$nativeOk[0]
+  $button=[System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($nativeButton.Hwnd))
+  if($button.Current.ProcessId -ne $ProcessId -or !$button.Current.IsEnabled -or $button.Current.IsOffscreen){throw 'Owned native OK UIA element readiness mismatch'}
+  $record.button=Element-Metadata $button
+  $record.native_button=$nativeButton
+  $p.Refresh()
+  if($p.StartTime.ToUniversalTime().ToString('o') -ne $start){throw 'Held process identity changed before ordinary OK'}
+  [InstallerDialogMetadata]::ValidateNormalButton($ProcessId,[long]$dialog.Current.NativeWindowHandle,$nativeButton.Hwnd,$expected)
+  $invokePattern=$null
+  $record.uia_invoke_available=$button.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern,[ref]$invokePattern)
+  if($record.uia_invoke_available) {
+   $invokePattern.Invoke()
+   $record.button_source='normal UIA Invoke on verified owned native OK'
+  } else {
+   [InstallerInput]::SetForegroundWindow([IntPtr]::new($dialog.Current.NativeWindowHandle))|Out-Null
+   if([InstallerInput]::GetForegroundWindow() -ne [IntPtr]::new($dialog.Current.NativeWindowHandle)){throw 'Owned welcome guide is not active for normal button click'}
+   [InstallerDialogMetadata]::ClickNormalButton($ProcessId,[long]$dialog.Current.NativeWindowHandle,$nativeButton.Hwnd,$expected)
+   $record.button_source='standard bounded BM_CLICK on verified active owned native OK; UIA Invoke unavailable'
+  }
   for($attempt=0;$attempt -lt 30;$attempt++) {
    if(!$root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)){break}
    Start-Sleep -Milliseconds 200
   }
   if($root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$condition)){throw 'First-run guide remained after ordinary OK invocation'}
-  $record.action='normal OK invoked; exact owned guide dismissed'
+  $p.Refresh()
+  if($p.HasExited){throw 'Terminal exited while dismissing ordinary onboarding'}
+  $record.action='normal OK invoked; exact owned guide dismissed; held Terminal remains alive'
  } catch {$record.error=$_.Exception.ToString();throw} finally {
   $record|ConvertTo-Json -Depth 10|Set-Content -Encoding utf8 "$OutputDirectory/onboarding-$Action.json"
  }
