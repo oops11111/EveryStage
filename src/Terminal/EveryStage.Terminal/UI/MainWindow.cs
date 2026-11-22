@@ -231,6 +231,18 @@ public sealed class MainWindow : GradientForm
         {
             var dropped = file ?? (path != null && FileLibraryStore.InferKind(path) is { } kind ? new MediaFile { SourcePath = path, Kind = kind } : null);
             if (dropped == null) return;
+            // A drop on the window following the big screen leaves the mirror alone: the file
+            // previews in the other window instead. Ctrl held during the drop keeps the old
+            // behavior (preview here, un-mirror). The drop event carries no key state, so the
+            // modifier is read here, at drop time, while Ctrl is still held — keeping the
+            // three-argument event untouched for its other raisers (including the self-tests).
+            bool forceHere = Control.ModifierKeys.HasFlag(Keys.Control);
+            if (_previewDock.ProgramWindow == window && !forceHere)
+            {
+                _toastStack?.Show("跟随窗不动，已在另一监看窗口预览。", ToastSeverity.Info);
+                PlayInWindow(dropped, 1 - window);
+                return;
+            }
             // Dropping on the window that follows the big screen quietly un-mirrors it
             // (UseForLocalPlayback, inside PlayInWindow) — say so, so the operator is not
             // surprised when the big screen stops being mirrored in this window.
