@@ -32,7 +32,11 @@ public sealed partial class PlaybackEngine
         bool activityChanged = !ReferenceEquals(_currentActivity, activity);
         _currentActivity = activity;
         _currentFileIndex = fileIndex;
-        if (activityChanged) PrewarmActivityConversions(activity);
+        if (activityChanged)
+        {
+            PrewarmActivityConversions(activity);
+            OfficeSessions.ReleaseParkedSession();
+        }
         return PlayFile(file, trigger);
     }
 
@@ -169,6 +173,7 @@ public sealed partial class PlaybackEngine
                 _currentActivity = activity;
                 _currentFileIndex = activity.Files.IndexOf(candidate);
                 PrewarmActivityConversions(activity);
+                OfficeSessions.ReleaseParkedSession();
                 PlayFile(candidate, PlaybackTrigger.ActivityAuto);
                 return true;
             }

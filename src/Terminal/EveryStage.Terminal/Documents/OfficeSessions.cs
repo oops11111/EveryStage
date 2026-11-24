@@ -88,6 +88,11 @@ public abstract class OfficeSession
 
     private protected void LogEvent(string evt, string? detail = null) => _log.LogEvent(evt, SourcePath, SuiteName, Version, detail);
 
+    /// <summary>Stage timings of the last open, for the show-open summary event (Change 3): starting
+    /// the application and opening the file, measured inside the single open dispatch.</summary>
+    private protected long _appStartMs;
+    private protected long _openFileMs;
+
     /// <summary>Starts (or restarts) capturing <paramref name="window"/>, optionally cropped.</summary>
     private protected void StartCapture(IntPtr window, Func<Rectangle?>? region)
     {
@@ -154,7 +159,18 @@ public abstract class OfficeSession
         {
             if (OfficeApplicationController.IsPasswordProtected(SourcePath))
                 throw new OfficeOperationException(OfficeStage.OpenFile, SuiteName, null, "文档受密码保护，无法在 EveryStage 中打开。");
-            await Dispatcher.InvokeAsync(() => { Controller.Start(); OpenCore(settings); return true; }, OpenTimeout).ConfigureAwait(false);
+            // One dispatch, as before; the two stages are timed separately inside it so the
+            // summary event can tell a slow application start from a slow file open.
+            await Dispatcher.InvokeAsync(() =>
+            {
+                var stage = System.Diagnostics.Stopwatch.StartNew();
+                Controller.Start();
+                _appStartMs = stage.ElapsedMilliseconds;
+                stage.Restart();
+                OpenCore(settings);
+                _openFileMs = stage.ElapsedMilliseconds;
+                return true;
+            }, OpenTimeout).ConfigureAwait(false);
             LogEvent("opened");
             await AfterOpenAsync(settings).ConfigureAwait(false);
         }
@@ -352,6 +368,16 @@ public sealed class SlideShowSession : OfficeSession
     internal int? EndSlide { get; set; }
     internal bool Loop { get; set; }
 
+    /// <summary>True when this session was adopted from the manager's parked slot: the show is
+    /// already running, so the next play must verify it is alive and navigate to the requested
+    /// slide instead of starting the show again. Consumed by the adopting play.</summary>
+    internal bool AdoptedFromPark { get; set; }
+
+    /// <summary>The transition policy the open document was stripped with (Change 2): stripping
+    /// mutates the open document, so a later start of the same session skips it unless the policy
+    /// changed. Reset when the document is re-opened (<see cref="ReloadAsync"/>).</summary>
+    private (bool Unify, bool KeepMorph, bool KeepAutoAdvance)? _strippedPolicy;
+
     private protected override void OpenCore(DocumentPlaybackSettings settings)
     {
         Controller.OpenPresentation(SourcePath, withWindow: false);
@@ -360,21 +386,33 @@ public sealed class SlideShowSession : OfficeSession
     }
 
     private protected override async Task AfterOpenAsync(DocumentPlaybackSettings settings) =>
-        await StartShowAsync(InitialSlide, InitialBounds).ConfigureAwait(false);
+        await StartShowAsync(InitialSlide, InitialBounds, logTiming: true).ConfigureAwait(false);
 
-    private async Task StartShowAsync(int slide, Rectangle bounds)
+    private async Task StartShowAsync(int slide, Rectangle bounds, bool logTiming = false)
     {
         _bounds = bounds;
         var policy = TransitionPolicy;
+        long stripMs = 0, showMs = 0;
         var window = await Dispatcher.InvokeAsync(() =>
         {
-            if (policy.Unify)
+            if (policy.Unify && _strippedPolicy != policy)
             {
-                try { SlidesWithOwnTransition = Controller.StripSlideTransitions(policy.KeepMorph, policy.KeepAutoAdvance); }
+                // Change 2: the strip mutates the open document, so a session whose document was
+                // already stripped with this policy skips the per-slide COM walk.
+                var stage = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    SlidesWithOwnTransition = Controller.StripSlideTransitions(policy.KeepMorph, policy.KeepAutoAdvance);
+                    _strippedPolicy = policy;
+                }
                 catch (Exception) { SlidesWithOwnTransition = new HashSet<int>(); }
+                stripMs = stage.ElapsedMilliseconds;
             }
-            else SlidesWithOwnTransition = Enumerable.Range(1, Math.Max(1, SlideCount)).ToHashSet();
-            return Controller.StartSlideShow(slide, EndSlide, Loop, bounds);
+            else if (!policy.Unify) SlidesWithOwnTransition = Enumerable.Range(1, Math.Max(1, SlideCount)).ToHashSet();
+            var showStage = System.Diagnostics.Stopwatch.StartNew();
+            var started = Controller.StartSlideShow(slide, EndSlide, Loop, bounds);
+            showMs = showStage.ElapsedMilliseconds;
+            return started;
         }, CallTimeout).ConfigureAwait(false);
         _showWindow = window;
         ShowRunning = true;
@@ -382,6 +420,21 @@ public sealed class SlideShowSession : OfficeSession
         await RefreshPositionAsync().ConfigureAwait(false);
         SetStatus(OfficeSessionStatus.Ready);
         LogEvent("show_started", $"slide={slide} bounds={bounds}");
+        // Change 3: one summary event per first open, so a slow Take can be told apart by stage.
+        if (logTiming) LogEvent("show_open_timing", $"start={_appStartMs}ms open={_openFileMs}ms strip={stripMs}ms show={showMs}ms");
+    }
+
+    /// <summary>Adopt-path liveness: the parked show's process may have died since the health tick
+    /// last saw it. A dead session is never resurrected — the caller cold-starts instead. Never
+    /// throws: an unanswerable session counts as dead. A live session also refreshes its position,
+    /// so the caller navigates from a fresh slide number.</summary>
+    internal async Task<bool> VerifyAliveForAdoptAsync()
+    {
+        bool alive;
+        try { alive = await Dispatcher.InvokeAsync(() => Controller.ApplicationAlive && Controller.ShowRunning, TimeSpan.FromSeconds(3)).ConfigureAwait(false); }
+        catch (Exception) { return false; }
+        if (alive) await RefreshPositionAsync().ConfigureAwait(false);
+        return alive;
     }
 
     /// <summary>Moves the show to new output bounds (Program attached / detached).</summary>
@@ -533,6 +586,8 @@ public sealed class SlideShowSession : OfficeSession
             SlideCount = Controller.SlideCount;
             return true;
         }, CallTimeout).ConfigureAwait(false);
+        // The document was re-opened, so its transitions are back: strip again on the next start.
+        _strippedPolicy = null;
         lock (_slideImages) _slideImages.Clear();
         await StartShowAsync(Math.Clamp(slide, 1, Math.Max(1, SlideCount)), _bounds).ConfigureAwait(false);
         LogEvent("reloaded", $"slide={slide}");
@@ -589,6 +644,14 @@ public sealed class OfficeSessionManager
     private readonly DocumentLogger _log;
     private Rectangle? _programBounds;
 
+    /// <summary>The one parked slide show (Change 1): a live show whose last channel let go of it,
+    /// kept running behind the operator's windows so the next Take reuses it instead of cold-starting
+    /// WPS/Office. The slot owns its single reference (References == 1); the session stays in
+    /// <see cref="_sessions"/> so CloseAll still finds it.</summary>
+    private SlideShowSession? _parked;
+    private long _parkedLength = -1;
+    private long _parkedLastWriteTicks = -1;
+
     public OfficeSessionManager(string? logRootOverride = null) => _log = new DocumentLogger(logRootOverride);
 
     /// <summary>The app-wide instance used by both channels.</summary>
@@ -610,6 +673,18 @@ public sealed class OfficeSessionManager
 
     public SlideShowSession AcquireSlideShow(string path, OfficeSuite suite, int startSlide, int? endSlide, bool loop, bool forProgram, Rectangle programBounds)
     {
+        if (_parked != null && string.Equals(_parked.SourcePath, path, StringComparison.OrdinalIgnoreCase))
+        {
+            if (TryAdoptParked(path, suite, endSlide, loop) is { } adopted)
+            {
+                if (forProgram) BindProgram(adopted, programBounds);
+                return adopted;
+            }
+            // Same file, unusable park (changed on disk, wrong shape/suite, dead show): close it
+            // before opening fresh, so two sessions never hold the same file. A parked session
+            // for a different file is left alone — parking another show closes it in its turn.
+            ReleaseParkedSession();
+        }
         var session = Acquire(path, DocumentFormat.Presentation, () => new SlideShowSession(path, suite, _log)
         {
             InitialSlide = startSlide,
@@ -621,9 +696,86 @@ public sealed class OfficeSessionManager
         return session;
     }
 
+    /// <summary>Reuses the parked show when it is the same file, suite and show shape, still running,
+    /// and the file on disk is unchanged since it was parked. Ownership moves from the slot to the
+    /// caller without changing References (it stays 1); the caller verifies liveness and navigates
+    /// before showing it. Returns null when there is nothing parkable to adopt.</summary>
+    private SlideShowSession? TryAdoptParked(string path, OfficeSuite suite, int? endSlide, bool loop)
+    {
+        var parked = _parked;
+        if (parked == null) return null;
+        bool matches = string.Equals(parked.SourcePath, path, StringComparison.OrdinalIgnoreCase)
+            && parked.Suite == suite
+            && parked.Status == OfficeSessionStatus.Ready
+            && parked.ShowRunning
+            && parked.ShowWindow != IntPtr.Zero && NativeMethods.IsWindow(parked.ShowWindow)
+            && parked.EndSlide == endSlide && parked.Loop == loop
+            && ParkedIdentityMatches(parked);
+        if (!matches) return null;
+        _parked = null;
+        _parkedLength = _parkedLastWriteTicks = -1;
+        parked.AdoptedFromPark = true;
+        _log.LogEvent("show_adopted", parked.SourcePath, parked.SuiteName, parked.Version);
+        return parked;
+    }
+
+    private bool ParkedIdentityMatches(SlideShowSession parked)
+    {
+        try
+        {
+            var info = new FileInfo(parked.SourcePath);
+            return info.Length == _parkedLength && info.LastWriteTimeUtc.Ticks == _parkedLastWriteTicks;
+        }
+        catch (Exception) { return false; } // cannot stat the file: treat as changed
+    }
+
+    /// <summary>Parks a live slide show instead of closing it: the slot takes over its last reference
+    /// and the show window moves behind the operator's windows (the existing parking placement). A
+    /// session that is not the last reference, not Ready, not running, or whose file cannot be
+    /// snapshotted is released as before. At most one session is parked: parking another closes the
+    /// old one first. Writer sessions are never parked (callers only pass slide shows).</summary>
+    public void ParkSession(SlideShowSession session)
+    {
+        if (ReferenceEquals(session, _parked)) return;
+        if (session.References != 1 || session.Status != OfficeSessionStatus.Ready || !session.ShowRunning)
+        {
+            _ = ReleaseAsync(session);
+            return;
+        }
+        long length, ticks;
+        try
+        {
+            var info = new FileInfo(session.SourcePath);
+            length = info.Length;
+            ticks = info.LastWriteTimeUtc.Ticks;
+        }
+        catch (Exception)
+        {
+            _ = ReleaseAsync(session);
+            return;
+        }
+        ReleaseParkedSession();
+        _parked = session;
+        _parkedLength = length;
+        _parkedLastWriteTicks = ticks;
+        UnbindProgram(session);
+        _log.LogEvent("show_parked", session.SourcePath, session.SuiteName, session.Version);
+    }
+
+    /// <summary>Closes the parked slide show, if any — the activity changed or the application exits.
+    /// Idempotent; never blocks (the close runs as <see cref="ReleaseAsync"/> always does).</summary>
+    public void ReleaseParkedSession()
+    {
+        var parked = _parked;
+        _parked = null;
+        _parkedLength = _parkedLastWriteTicks = -1;
+        if (parked != null) _ = ReleaseAsync(parked);
+    }
+
     private T Acquire<T>(string path, DocumentFormat format, Func<T> create) where T : OfficeSession
     {
         var existing = _sessions.OfType<T>().FirstOrDefault(s => s.Format == format
+            && !ReferenceEquals(s, _parked)
             && string.Equals(s.SourcePath, path, StringComparison.OrdinalIgnoreCase)
             && s.Status is not (OfficeSessionStatus.Closed or OfficeSessionStatus.Failed));
         if (existing != null)
@@ -650,6 +802,13 @@ public sealed class OfficeSessionManager
     /// <summary>Drops one channel's use of <paramref name="session"/>; the last one closes it.</summary>
     public Task ReleaseAsync(OfficeSession session)
     {
+        // A released session is no longer parked, whoever held the slot's reference: the slot only
+        // ever holds unreferenced sessions, so releasing one ends the park either way.
+        if (ReferenceEquals(session, _parked))
+        {
+            _parked = null;
+            _parkedLength = _parkedLastWriteTicks = -1;
+        }
         if (--session.References > 0) return Task.CompletedTask;
         _sessions.Remove(session);
         if (session.Status == OfficeSessionStatus.Closed) return Task.CompletedTask;
