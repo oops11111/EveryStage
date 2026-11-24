@@ -430,12 +430,28 @@ public sealed partial class PlaybackEngine
             _ = OfficeSessions.ReleaseAsync(session);
             return;
         }
+        // A session adopted from the park is already running: verify it is still alive (a dead one
+        // is never resurrected — release it and cold-start once) and navigate it to the requested
+        // slide instead of restarting the show.
+        bool adopted = session.AdoptedFromPark;
+        session.AdoptedFromPark = false;
+        if (adopted && !await session.VerifyAliveForAdoptAsync().ConfigureAwait(false))
+        {
+            _ = OfficeSessions.ReleaseAsync(session);
+            if (version == _contentLoadVersion && ReferenceEquals(file, _currentFile))
+                await PlayNativeShowAsync(file, suite, settings, startSlide, triedOther);
+            return;
+        }
         AttachOfficeSession(session);
         if (Channel == PlaybackChannel.Preview)
         {
             _presenter = new PresenterView();
             _presenterBrowseSlide = 0;
         }
+        // An adopted show navigates before the first frame is posted: the Jump's transition hold
+        // freezes the previous program picture, so the audience never sees the parked slide.
+        if (adopted && session.Position.Slide != startSlide)
+            await SlideCommandAsync(s => s.GoToSlideAsync(startSlide), "转到指定页", SlideMove.Jump);
         ShowLatestOfficeFrame(force: true);
         if (settings.SecondsPerPage is > 0) ArmDocumentAutoTimer(file, settings);
         _ = WatchForBlankShowAsync(file, session, settings, startSlide, version);
@@ -486,8 +502,15 @@ public sealed partial class PlaybackEngine
         _officeSession = null;
         if (release)
         {
-            if (Channel == PlaybackChannel.Program && session is SlideShowSession show && session.References > 1) OfficeSessions.UnbindProgram(show);
-            _ = OfficeSessions.ReleaseAsync(session);
+            if (Channel == PlaybackChannel.Program && session is SlideShowSession show)
+            {
+                // The last reference parks the running show instead of closing it, so the next Take
+                // reuses it; a shared show is only unbound (ParkSession releases instead when the
+                // show is not parkable). Other channels and editors close as before.
+                if (session.References > 1) { OfficeSessions.UnbindProgram(show); _ = OfficeSessions.ReleaseAsync(session); }
+                else OfficeSessions.ParkSession(show);
+            }
+            else _ = OfficeSessions.ReleaseAsync(session);
         }
     }
 
