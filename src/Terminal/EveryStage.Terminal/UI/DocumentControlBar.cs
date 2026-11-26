@@ -26,7 +26,16 @@ internal sealed class DocumentControlBar : Panel
     /// previous modal dialogs (standalone/test use).</summary>
     public Func<string, string[], Task<int?>>? ConfirmAsync { get; set; }
 
+    /// <summary>DEV-21: the no-frame prompt after 结束放映 (no captured frame to freeze) goes
+    /// through the host's non-modal toast. Unset in standalone/test use: the prompt is dropped.</summary>
+    public Action<string>? NotifyToast { get; set; }
+
     private bool _reloadDecisionPending;
+
+    /// <summary>DEV-20: downgrade notices the operator has accepted (file id + downgrade count),
+    /// so an accepted notice never comes back for the same downgrade — while a fresh downgrade
+    /// (new count) always shows again.</summary>
+    private readonly HashSet<(Guid, int)> _acknowledgedDowngrades = new();
 
     private readonly DocumentProgramSync _sync;
     private readonly ToolTip _toolTip;
@@ -97,7 +106,10 @@ internal sealed class DocumentControlBar : Panel
     {
         var palette = ModernUi.PaletteFor(this);
         var status = Status;
-        string key = status == null ? "" : $"{status.Format}|{status.Mode}";
+        // DEV-20: the layout key carries the downgrade notice state, so accepting the notice
+        // rebuilds the bar without it (and a fresh downgrade rebuilds it back in).
+        string key = status == null ? "" : $"{status.Format}|{status.Mode}"
+            + (Target?.DocumentDowngraded == true && !IsDowngradeAcked() ? "|downgraded" : "");
         if (key != _layoutKey)
         {
             _layoutKey = key;
@@ -128,12 +140,57 @@ internal sealed class DocumentControlBar : Panel
 
     private void UpdateEndShowText()
     {
+        bool ended = SlideShow?.Status == OfficeSessionStatus.Ended;
         foreach (var item in _items)
+        {
             if (item.Control is RoundedActionButton { Tag: "endshow" } button)
             {
-                string text = SlideShow?.Status == OfficeSessionStatus.Ended ? "开始放映" : "结束放映";
+                // DEV-21: the caption says what the button does and does not do — it only ends
+                // the show and freezes the last frame; it never runs the item's 播完后, and it
+                // is not the F12 full stop.
+                string text = ended ? "开始放映" : "结束放映";
                 if (button.Text != text) { button.Text = text; PerformLayout(); }
+                string tip = ended ? "重新开始放映" : "只结束放映，不执行播完后（大屏保持最后画面）";
+                _toolTip.SetToolTip(button, tip);
             }
+            else if (item.Control is Label { Tag: "endshow-note" } note)
+            {
+                string text = ended ? "已结束放映，点“开始放映”重新开始" : "只结束放映，不执行播完后";
+                if (note.Text != text) { note.Text = text; PerformLayout(); }
+            }
+        }
+    }
+
+    /// <summary>DEV-20: whether the current downgrade's notice was accepted (file id + the
+    /// engine's downgrade count — a later downgrade of the same file is a new count).</summary>
+    private bool IsDowngradeAcked()
+    {
+        var target = Target;
+        return target?.CurrentFile != null && _acknowledgedDowngrades.Contains((target.CurrentFile.Id, target.DocumentDowngradeCount));
+    }
+
+    /// <summary>DEV-20: 接受静态 — the operator confirms the static picture; the notice goes
+    /// away for this downgrade only. The saved mode is untouched (the retry button is what
+    /// changes it), and the downgrade stays recorded in the engine's runtime state.</summary>
+    private void AcknowledgeDowngrade()
+    {
+        var target = Target;
+        if (target?.CurrentFile != null) _acknowledgedDowngrades.Add((target.CurrentFile.Id, target.DocumentDowngradeCount));
+        Changed?.Invoke(); // re-runs RefreshState: the layout key drops "|downgraded".
+    }
+
+    /// <summary>DEV-21: ends the show, freezing the last captured frame. When no frame was ever
+    /// captured there is nothing to freeze: an honest non-modal prompt says so instead of
+    /// leaving a black screen unexplained. The frame check reads the state at press time —
+    /// a frame landing during the end command does not retroactively change the answer.</summary>
+    private async Task<bool> EndShowWithFrameCheckAsync()
+    {
+        var target = Target;
+        if (target == null) return false;
+        bool hadFrame = target.OfficeFrameSequence >= 0;
+        bool ok = await target.EndShowAsync();
+        if (ok && !hadFrame) NotifyToast?.Invoke("没有可保留的画面：放映尚未输出过画面，大屏将保持黑屏。");
+        return ok;
     }
 
     private void Rebuild(DocumentStatus? status)
@@ -158,6 +215,22 @@ internal sealed class DocumentControlBar : Panel
                     AddButton("缩放 ▾", "适合宽度 / 适合页面 / 实际大小 / 自定义比例", null, () => View != null, zoomMenu: true);
                     break;
                 case DocumentPlaybackMode.StaticSlides:
+                    // DEV-20: the downgrade notice comes first (it is the reason this row is
+                    // static at all): a plain warning label — no success color, no ✓ — stating
+                    // the failure and what the static picture lacks, plus 重试原生 (the
+                    // existing mode switch) and 接受静态 (dismisses this downgrade's notice).
+                    // It never claims the item went up natively, and it never re-pushes the
+                    // picture after an e-stop: it only appears while this engine holds the
+                    // downgraded document.
+                    if (Target?.DocumentDowngraded == true && !IsDowngradeAcked())
+                    {
+                        AddNoteLabel("原生放映失败，已改为静态幻灯片（不含动画、转场和嵌入媒体）", UiForegroundRole.Warning);
+                        AddButton("重试原生", "再次尝试原生放映（保留动画、转场和嵌入媒体）",
+                            () => Target?.SwitchPresentationMode(PresentationMode.Native),
+                            () => Target != null && OfficeInstallation.HasPresentation);
+                        AddButton("接受静态", "确认以静态幻灯片播出，不再提示此次降级",
+                            AcknowledgeDowngrade, () => true);
+                    }
                     AddButton("大屏原生放映", "投到大屏时用原生放映（保留动画、转场和嵌入媒体）；放映窗口只在扩展屏上，预览仍为静态幻灯片",
                         () => Target?.SwitchPresentationMode(PresentationMode.Native),
                         () => Target != null && OfficeInstallation.HasPresentation);
@@ -187,12 +260,17 @@ internal sealed class DocumentControlBar : Panel
                         () => Slide(s => s.ToggleScreenAsync(SlideShowScreen.White), "白屏", SlideMove.Screen), () => SessionReady);
                     AddToggle("暂停", "暂停自动放映 / 继续", () => SlideShow?.Position.Screen == SlideShowScreen.Paused,
                         () => Slide(s => s.ToggleScreenAsync(SlideShowScreen.Paused), "暂停"), () => SessionReady);
-                    var end = AddButton("结束放映", "结束放映（大屏保持最后画面）/ 重新开始放映", () =>
+                    var end = AddButton("结束放映", "只结束放映，不执行播完后（大屏保持最后画面）/ 重新开始放映", () =>
                     {
                         if (SlideShow?.Status == OfficeSessionStatus.Ended) RunAsync(Target!.RestartShowAsync());
-                        else RunAsync(Target!.EndShowAsync());
+                        else RunAsync(EndShowWithFrameCheckAsync());
                     }, () => Target?.OfficeSession?.Status is OfficeSessionStatus.Ready or OfficeSessionStatus.Ended);
                     end.Tag = "endshow";
+                    // DEV-21: the caption next to the button states the boundary in words — it
+                    // only ends the show, it does not run 播完后. (Static-downgraded items have
+                    // no end-show button: their completion follows the static path's 播完后.)
+                    var endNote = AddNoteLabel("只结束放映，不执行播完后", UiForegroundRole.Muted);
+                    endNote.Tag = "endshow-note";
                     AddButton("编辑", "结束放映并在编辑器中修改（大屏保持最后画面）", EditPresentation, () => SessionReady);
                     AddButton("重新载入放映", "保存修改后重新开始放映，回到原幻灯片", ReloadPresentation,
                         () => Target?.OfficeSession?.Status is OfficeSessionStatus.Editing or OfficeSessionStatus.Disconnected);
@@ -223,6 +301,23 @@ internal sealed class DocumentControlBar : Panel
         button.Width = TextRenderer.MeasureText(button.Text, button.Font).Width + 18;
         _toolTip.SetToolTip(button, tip);
         return button;
+    }
+
+    /// <summary>A short explanatory label in the bar (DEV-20 downgrade notice, DEV-21
+    /// end-show caption). Labels have no Run, so the overflow menu skips them — the wording
+    /// is kept short enough to fit, and the full explanation rides the neighbouring button's
+    /// tooltip / the caption tooltip.</summary>
+    private Label AddNoteLabel(string text, UiForegroundRole role)
+    {
+        var label = new Label
+        {
+            AutoSize = true, Text = text, Margin = Padding.Empty, BackColor = Color.Transparent,
+            Font = new Font(ModernUi.UiFont, 8.5F),
+        };
+        ModernUi.SetForegroundRole(label, role);
+        _items.Add(new Item(label, text, () => true, null, null));
+        Controls.Add(label);
+        return label;
     }
 
     private RoundedActionButton AddButton(string text, string tip, Action? run, Func<bool> enabled, bool zoomMenu = false)

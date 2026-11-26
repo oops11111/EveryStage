@@ -69,6 +69,15 @@ public sealed class VideoContentController : IDisposable
     private float _volume = 1f;
     private bool _muted;
     private float _fadeMultiplier = 1f;
+    private float _outputDim = 1f;
+
+    /// <summary>DEV-18: the fade-to-black dim, 0..1, applied on top of volume, fade and mute —
+    /// same contract as <see cref="AudioContentController.OutputDim"/>.</summary>
+    public float OutputDim
+    {
+        get => _outputDim;
+        set { _outputDim = Math.Clamp(value, 0f, 1f); ApplyVolume(); }
+    }
 
     // Silent continuation (audit A-24/B-20): when the audio output cannot be opened, or dies mid-play,
     // the video keeps going on the wall clock, which then starts at _wallBaseTicks (the audio clock's
@@ -575,7 +584,7 @@ public sealed class VideoContentController : IDisposable
     {
         var clock = _audioClock;
         if (clock == null) return;
-        try { clock.Volume = _muted ? 0f : _volume * _fadeMultiplier; }
+        try { clock.Volume = _muted ? 0f : _volume * _fadeMultiplier * _outputDim; }
         catch (Exception) { } // the device can vanish mid-flight; timing doesn't depend on volume.
     }
 

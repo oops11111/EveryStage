@@ -116,6 +116,29 @@ await RunAsync("File library: legacy bare array loads, saves become the versione
 await RunAsync("Scenario store: a newer schema file is left untouched and refuses saves", () => Task.FromResult(TestScenarioNewerSchema()));
 await RunAsync("Transcode risk: non-MP4 video containers are flagged at import", () => Task.FromResult(TestTranscodeRisk()));
 await RunAsync("Pre-show check: a file flagged as needing transcode is reported", () => Task.FromResult(TestPreShowNeedsTranscode()));
+await RunAsync("DEV-16 decode observations: software-only badge needs software evidence and no hardware evidence", () => Task.FromResult(TestDecodePathObservations()));
+
+(bool, string?) TestDecodePathObservations()
+{
+    // No evidence → no badge; software alone → badge; any hardware → no badge; clearing
+    // resets to no evidence. (Unknown reports record nothing, by construction — the
+    // registry has no Unknown entry point.)
+    DecodePathObservations.Clear();
+    if (DecodePathObservations.OnlySoftwareObserved || DecodePathObservations.AnyObserved)
+        return (false, "Empty observations reported evidence.");
+    DecodePathObservations.RecordSoftware();
+    if (!DecodePathObservations.OnlySoftwareObserved)
+        return (false, "Software-only observations did not raise the badge condition.");
+    DecodePathObservations.RecordHardware();
+    if (DecodePathObservations.OnlySoftwareObserved)
+        return (false, "Hardware evidence did not clear the software-only condition.");
+    DecodePathObservations.Clear();
+    DecodePathObservations.RecordHardware();
+    if (DecodePathObservations.OnlySoftwareObserved || !DecodePathObservations.AnyObserved)
+        return (false, "Hardware-only observations misreported.");
+    DecodePathObservations.Clear();
+    return (true, null);
+}
 await RunAsync("PDF viewport layout (resize keeps content position)", () => Task.FromResult(TestPdfViewport()));
 await RunAsync("Document playback settings persist and clone", () => Task.FromResult(TestDocumentSettings()));
 await RunAsync("Multichannel PCM folds to stereo without clipping (5.1 / 7.1 / quad)", () => Task.FromResult(TestPcmDownmix()));

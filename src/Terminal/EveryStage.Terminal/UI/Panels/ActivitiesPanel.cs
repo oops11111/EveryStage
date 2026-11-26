@@ -293,9 +293,11 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         // The 详情面板 (ActivitiesPanel.Details.cs) edits every one of those in place through
         // the same Apply* tails in ActivitiesPanel.Editing.cs, so the menu copies were a
         // second, divergent track for the same properties. What stays, and why: 进入这一项的
-        // 过场 (the panel has no transition editor at all) and 文档播放设置... (the panel only
-        // offers a button that opens this very dialog — it is not an in-place editor, so by
-        // the "只读/间接展示不算覆盖" rule the menu entry is the real one and stays).
+        // 过场 (DEV-04(2) added an in-place editor to the panel too — the menu entry stays
+        // as the second path to the same value, like the panel's other duplicated edits)
+        // and 文档播放设置... (the panel only offers a button that opens this very dialog
+        // — it is not an in-place editor, so by the "只读/间接展示不算覆盖" rule the menu
+        // entry is the real one and stays).
         // PDF / Word / presentation playback settings (reading mode, page range, editor, native/static…).
         _documentSettingsButton = new ToolStripMenuItem("文档播放设置...") { Enabled = false };
         _documentSettingsButton.Click += (_, _) => OnEditDocumentSettings();
@@ -615,6 +617,14 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     /// <summary>设置 「单击即上屏」: a plain click on an item runs it (as a double-click does otherwise).</summary>
     public Func<bool>? ClickTakesToAir { get; set; }
 
+    /// <summary>DEV-24(b): 设置 「GO 先入 PVW」 — when true, GO (下一项) loads the next item
+    /// into 预览 instead of taking it to air. Wired by the host window; null reads as off.</summary>
+    public Func<bool>? GoLoadsPreviewFirst { get; set; }
+
+    /// <summary>DEV-15: the scenario's activities changed (add / remove / clear) — the host
+    /// window re-checks the first-run empty state. Wired by MainWindow; null in standalone use.</summary>
+    public Action? ContentChanged { get; set; }
+
     /// <summary>Selects the node (and drives the Shift/Ctrl multi-selection) without running it —
     /// the right-click menu path and the drag-grip press use this (FL-06): opening a menu or
     /// starting a drag must not put the item on air in 「单击即上屏」 mode.</summary>
@@ -848,6 +858,7 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
         if (selectedTag != null && FindNode(selectedTag) is { } reselect) _tree.SelectedNode = reselect;
         RefreshCardStyles();
         UpdateButtonStates();
+        ContentChanged?.Invoke(); // DEV-15: the scenario's activities may have changed.
     }
 
     /// <summary>Flags a background-audio file right in the tree, rather than requiring the operator
@@ -883,6 +894,9 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     {
         if (InvokeRequired) { BeginInvoke(() => OnFileStarted(file)); return; }
         TryHighlightPlayingFile(file);
+        // DEV-03: the preview engine advanced — an unlocked NEXT item may just have gone
+        // on air in the preview, or stopped being next; re-evaluate the panel lock.
+        RefreshDetailProtection();
     }
 
     /// <summary>PLANNING.md §16第5项's "悬浮预览窗/文件面板/活动面板联动" (previously listed in this
@@ -938,6 +952,9 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     {
         if (InvokeRequired) { BeginInvoke(() => OnStateChanged(state)); return; }
         RefreshCardStyles();
+        // DEV-03: output starting/stopping changes which items are protected (on-air/next)
+        // even when the selection never moves.
+        RefreshDetailProtection();
     }
 
     /// <summary>L-05: keyboard selection navigation. The visible list is

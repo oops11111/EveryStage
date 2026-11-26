@@ -324,7 +324,10 @@ public sealed partial class ActivitiesPanel
         _addFileButton.Enabled = activity != null;
         _musicCueItem.Enabled = activity != null;
         _transitionItem.Enabled = file != null;
-        _documentSettingsButton.Enabled = file?.Kind == MediaKind.Document;
+        // DEV-03: the dialog edits the same dangerous presentation attrs the panel locks
+        // （每张停留/循环/放映方式) — locked while the file is on air or next, unlocked from
+        // the detail panel like the in-place editors.
+        _documentSettingsButton.Enabled = file?.Kind == MediaKind.Document && file != null && !DetailEditLocked(file);
         _removeButton.Enabled = file != null;
         // File reorder: disabled while filtering too (AP-06, V1 gate #25's "筛选/搜索时禁拖排"
         // wording) — the rows' ⋮⋮ drag is refused at its own host entry point for the same

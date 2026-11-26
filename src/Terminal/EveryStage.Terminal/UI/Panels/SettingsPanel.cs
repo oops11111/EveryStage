@@ -37,8 +37,18 @@ public sealed class SettingsPanel : UserControl
     private readonly Label _diagnosticsLabel;
     private readonly ComboBox _transitionComboBox;
     private readonly NumericUpDown _transitionMilliseconds;
+    /// <summary>DEV-23: clears a copied token from the clipboard ~30 s after copying (only
+    /// if the clipboard still holds it). A WinForms timer, so the tick runs on the UI thread.</summary>
+    private System.Windows.Forms.Timer? _tokenClearTimer;
+    private string? _copiedToken;
+
     private readonly ComboBox _slideTransitionSource;
     private readonly SlideTransitionPicker _slideTransitionPicker;
+    /// <summary>DEV-05: the section-selection delegate captured at build time, and the index
+    /// of the PPT 翻页过场 section — so the 详情面板's entry can jump straight to the
+    /// existing global setting.</summary>
+    private Action<int>? _selectSettingsSection;
+    private int _slideTransitionSectionIndex = -1;
     private readonly CheckBox _keepMorph;
     private readonly CheckBox _keepAutoAdvance;
     private readonly CheckBox _transitionOnBlack;
@@ -46,6 +56,9 @@ public sealed class SettingsPanel : UserControl
     private readonly CheckBox _httpControlCheckbox;
     private readonly ComboBox _castClick;
     private readonly NumericUpDown _goLiveFade;
+    private readonly NumericUpDown _ftbDuration;
+    private readonly CheckBox _autoAdvanceCheck;
+    private readonly CheckBox _goPreviewFirstCheck;
     private readonly Label _keyVisualLabel;
 
     private void UpdateKeyVisualLabel(string? path)
@@ -179,6 +192,21 @@ public sealed class SettingsPanel : UserControl
         _goLiveFade.ValueChanged += (_, _) => Commit(s => s.GoLiveFadeMilliseconds = (int)_goLiveFade.Value, "上屏淡入");
         output.AddRow("上屏淡入", "大屏从未输出变为输出时，从黑场淡入的时长；0 为直接出画面（默认），最长 2 秒。项目之间的切换用下面的「大屏过场」",
             "下次上屏生效", UiForegroundRole.Accent, _goLiveFade, ModernUi.SetForegroundRole(new Label { Text = "毫秒", AutoSize = true }, UiForegroundRole.Muted));
+        // DEV-18: FTB 时长 — its own setting, next to 上屏淡入 but explicitly not it.
+        _ftbDuration = new NumericUpDown { Minimum = 0, Maximum = 2000, Increment = 100, Width = 70, Value = Math.Clamp(settings.FadeToBlackMilliseconds, 0, 2000) };
+        _ftbDuration.ValueChanged += (_, _) => Commit(s => s.FadeToBlackMilliseconds = (int)_ftbDuration.Value, "黑场时长");
+        output.AddRow("黑场（FTB）时长", "黑场（FTB）时画面与节目声音一起淡出 / 恢复的时长；0 为直接切黑，最长 2 秒。与「上屏淡入」和项目过场无关",
+            "下次黑场生效", UiForegroundRole.Accent, _ftbDuration, ModernUi.SetForegroundRole(new Label { Text = "毫秒", AutoSize = true }, UiForegroundRole.Muted));
+        // DEV-24(a): cross-activity auto-advance switch (default on).
+        _autoAdvanceCheck = new CheckBox { Text = "启用", AutoSize = true, Checked = settings.AutoAdvanceToNextActivity };
+        _autoAdvanceCheck.CheckedChanged += (_, _) => Commit(s => s.AutoAdvanceToNextActivity = _autoAdvanceCheck.Checked, "顺序播完后进入下一环节");
+        output.AddRow("顺序播完后进入下一环节", "环节播完（最后一项的播完后为下一项）时自动进入下一环节；关闭则在环节结束时停住",
+            "即时生效", UiForegroundRole.Accent, _autoAdvanceCheck);
+        // DEV-24(b): GO loads the next item into PVW first (default off).
+        _goPreviewFirstCheck = new CheckBox { Text = "启用", AutoSize = true, Checked = settings.GoToPreviewFirst };
+        _goPreviewFirstCheck.CheckedChanged += (_, _) => Commit(s => s.GoToPreviewFirst = _goPreviewFirstCheck.Checked, "GO 先入 PVW");
+        output.AddRow("GO 先入 PVW", "GO（下一项）先把下一项载入预览（PVW），再按 Take 上屏；关闭时 GO 直接上屏。「预览下一项」按钮不受此设置影响",
+            "即时生效", UiForegroundRole.Accent, _goPreviewFirstCheck);
         _keyVisualLabel = ModernUi.SetForegroundRole(new Label { AutoSize = false, Width = 180, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Height = 30 }, UiForegroundRole.Muted);
         UpdateKeyVisualLabel(settings.MainKeyVisualPath);
         var chooseKeyVisual = new RoundedActionButton { Text = "选择...", Width = 72, Height = 30 };
@@ -238,6 +266,7 @@ public sealed class SettingsPanel : UserControl
         slides.AddRow("自动换片的页面", "PPT 里设置了「N 秒后自动换片」的页，换页时机无法提前得知，保留原转场更自然", null, null, _keepAutoAdvance);
         slides.AddRow("黑屏 / 白屏切换", "按黑屏、白屏和恢复时，也用所选动画过渡", null, null, _transitionOnBlack);
         slides.AddNote("页内动画（逐条出现的文字、图表）不受影响，仍按原 PPT 播放。");
+        _slideTransitionSectionIndex = sections.IndexOf(slides); // DEV-05 jump target
 
         // --- 网络与设备 ---
         _deviceNameTextBox = ModernUi.SetBackgroundRole(ModernUi.SetForegroundRole(
@@ -265,7 +294,19 @@ public sealed class SettingsPanel : UserControl
         ModernUi.StyleButton(copyToken);
         copyToken.Click += (_, _) =>
         {
-            try { Clipboard.SetText(EveryStage.Terminal.Remote.HttpControlToken.Current()); _savedLabel.Text = "令牌已复制"; }
+            try
+            {
+                // DEV-23: remember exactly what was copied, so the ~30 s clear can compare
+                // content and never touch anything the operator copied afterwards. The token
+                // itself is never logged.
+                string token = EveryStage.Terminal.Remote.HttpControlToken.Current();
+                Clipboard.SetText(token);
+                _copiedToken = token;
+                _savedLabel.Text = "令牌已复制，约 30 秒后自动从剪贴板清除";
+                _tokenClearTimer ??= CreateTokenClearTimer();
+                _tokenClearTimer.Stop();
+                _tokenClearTimer.Start();
+            }
             catch (System.Runtime.InteropServices.ExternalException) { _savedLabel.Text = "剪贴板被占用，请重试"; }
         };
         var resetToken = new RoundedActionButton { Text = "重置令牌", Width = 92, Height = 30 };
@@ -277,7 +318,7 @@ public sealed class SettingsPanel : UserControl
             EveryStage.Terminal.Remote.HttpControlToken.Reset();
             _savedLabel.Text = "令牌已重置";
         };
-        network.AddRow("访问令牌", "令牌保存在受限的数据目录中，只显示不保存在设置文件里；泄露时请重置", null, null, copyToken, resetToken);
+        network.AddRow("访问令牌", "令牌保存在受限的数据目录中，只显示不保存在设置文件里；泄露时请重置。复制后约 30 秒自动从剪贴板清除（仅当剪贴板仍是该令牌时）", null, null, copyToken, resetToken);
         // DEV-07: the token file could not be moved into the restricted folder — the token works
         // for this run only and is never written to the old location. Say so here, where the token
         // lives, instead of failing silently.
@@ -387,6 +428,7 @@ public sealed class SettingsPanel : UserControl
             navButtons.Add(navButton);
             nav.Controls.Add(navButton);
         }
+        _selectSettingsSection = SelectSection;
         SelectSection(0); // 外观 first, as before (it headed the old single scroll page)
 
         // Dock order: within body the nav must claim the left edge first, so page is added before
@@ -513,6 +555,9 @@ public sealed class SettingsPanel : UserControl
             _httpControlCheckbox.Checked = settings.HttpControlEnabled;
             _castClick.SelectedIndex = settings.ClickTakesToAir ? 1 : 0;
             _goLiveFade.Value = Math.Clamp(settings.GoLiveFadeMilliseconds, 0, 2000);
+            _ftbDuration.Value = Math.Clamp(settings.FadeToBlackMilliseconds, 0, 2000);
+            _autoAdvanceCheck.Checked = settings.AutoAdvanceToNextActivity;
+            _goPreviewFirstCheck.Checked = settings.GoToPreviewFirst;
             UpdateKeyVisualLabel(settings.MainKeyVisualPath);
             foreach (var (action, button) in _hotkeyButtons) button.Keys = settings.HotkeyFor(action);
             if (_globalEmergency != null) _globalEmergency.Checked = settings.GlobalEmergencyStopEnabled;
@@ -694,7 +739,9 @@ public sealed class SettingsPanel : UserControl
                 HotkeyAction.Take => "把预览中的内容（含播放位置）投到大屏。",
                 HotkeyAction.PauseProgram => "大屏有本地媒体在播时暂停 / 继续大屏，否则暂停 / 继续预览。在输入框里打字时不生效。",
                 HotkeyAction.PreviousItem => "流程：回到当前环节的上一项。",
-                _ => "流程：当前环节的下一项；环节结束后需要先选中下一个环节。",
+                HotkeyAction.NextItem => "流程：当前环节的下一项；环节结束后需要先选中下一个环节。",
+                HotkeyAction.FadeToBlack => "大屏渐黑 / 恢复：画面与节目声音一起淡出、一起恢复，输出不断开。只在 EveryStage 内有效，不是全局热键；在输入框里打字或正在编辑 Office 文档时不生效。时长在「输出与播放」里设置。",
+                _ => "",
             };
             if (action == HotkeyAction.EmergencyStopGlobal)
                 hotkeys.AddRow(Hotkeys.Label(action), description, null, null, button, globalEmergency, reset);
@@ -929,6 +976,51 @@ public sealed class SettingsPanel : UserControl
     /// its cache, which should make repeated calls correct in a normal WinForms message-pump app like
     /// this one, but this sandbox has no way to verify that behavior against a real monitor
     /// unplug/replug on an actual Windows machine.</summary>
+    /// <summary>DEV-23: the ~30 s clipboard-clear timer (created once, restarted on every
+    /// successful copy). A WinForms timer ticks on the UI thread, which clipboard access
+    /// requires; the tick guards against a disposed panel, since the timer is not owned by
+    /// any component container.</summary>
+    private System.Windows.Forms.Timer CreateTokenClearTimer()
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 30_000 };
+        timer.Tick += (_, _) => ClearCopiedTokenFromClipboard();
+        return timer;
+    }
+
+    private void ClearCopiedTokenFromClipboard()
+    {
+        _tokenClearTimer?.Stop();
+        if (IsDisposed || Disposing || _copiedToken == null) return;
+        string copied = _copiedToken;
+        _copiedToken = null;
+        try
+        {
+            // Clear ONLY if the clipboard still holds this token: the operator may have
+            // copied something else meanwhile, and that content is never touched. When the
+            // token is already gone (empty or replaced), there is nothing to do.
+            if (Clipboard.GetText() == copied)
+            {
+                Clipboard.Clear();
+                _savedLabel.Text = "剪贴板中的令牌已清除";
+            }
+            else _savedLabel.Text = "令牌已不在剪贴板中";
+        }
+        catch (System.Runtime.InteropServices.ExternalException)
+        {
+            _savedLabel.Text = "剪贴板被占用，未能清除令牌，请手动清除";
+        }
+    }
+
+    /// <summary>DEV-05: shows the PPT 翻页过场 section and puts keyboard focus on its
+    /// duration slider, for the 详情面板's "统一翻页过场设置..." entry. No-op before the
+    /// panel is built; never opens a dialog or changes a value.</summary>
+    public void RevealSlideTransition()
+    {
+        if (_slideTransitionSectionIndex < 0 || _selectSettingsSection == null) return;
+        _selectSettingsSection(_slideTransitionSectionIndex);
+        _slideTransitionPicker.FocusDuration();
+    }
+
     public void Refresh_()
     {
         // Every change is already saved, so the stored value is what the lists show again.

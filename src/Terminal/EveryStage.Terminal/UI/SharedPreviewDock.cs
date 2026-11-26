@@ -10,8 +10,9 @@ namespace EveryStage.Terminal.UI;
 /// <summary>
 /// 「监看」— the right-hand column beside every main page.
 ///
-/// Top row: the big screen's status, 「停止输出」 and 「收起」. Below it two identical monitor windows (no
-/// role labels). Each window has its own preview engine and the same compact transport, and either plays
+/// Top row: the big screen's status, 「停止输出」 and 「收起」. Below it two identical monitor windows whose
+/// captions name their role and path (DEV-19/DEV-22: 大屏·PGM / 预览·PVW, plus 原生/静态/静态（已降级）).
+/// Each window has its own preview engine and the same compact transport, and either plays
 /// its own content locally or follows the big screen: then it shows exactly what the extended display
 /// shows (<see cref="ProgramMirror"/>, red flashing border) and its transport drives the big screen.
 /// MainWindow decides which window does what (<see cref="ProgramWindow"/>, <see cref="FreeWindow"/>):
@@ -80,6 +81,7 @@ internal sealed class SharedPreviewDock : Panel
     private readonly RoundedActionButton _takeButton;
     private readonly RoundedActionButton _fadeButton;
     private readonly RoundedActionButton _swapButton;
+    private readonly RoundedActionButton _ftbButton;
     private readonly DeviceCastCard _deviceCard;
     private readonly System.Windows.Forms.Timer _timer;
     private readonly ToolTip _toolTip = new();
@@ -90,6 +92,14 @@ internal sealed class SharedPreviewDock : Panel
     private bool _deviceOnProgram;
     private DocumentControlBar? _documentBar;
     private Func<string, string[], Task<int?>>? _confirmAsync;
+
+    /// <summary>DEV-18: FTB — the host toggles the fade-to-black. The button is plain (never red),
+    /// clearly distinct from e-stop, and does not replace F12.</summary>
+    public event Action? FadeToBlackRequested;
+
+    /// <summary>DEV-18: whether the FTB black is currently on screen (fading or held) — the
+    /// button's checked look. Wired by the host; null reads as off.</summary>
+    public Func<bool>? FadeToBlackActive { get; set; }
 
     /// <summary>Reload decisions (DEV-06): forwarded to the document bar when it is bound — a
     /// non-modal notice instead of a modal dialog. See <see cref="DocumentControlBar.ConfirmAsync"/>.</summary>
@@ -193,6 +203,13 @@ internal sealed class SharedPreviewDock : Panel
         _fadeButton.Font = new Font(ModernUi.UiFontSemibold, 10F);
         _fadeButton.AccessibleName = "淡入淡出到大屏";
         _swapButton = TextButton("⇄ 对调", "本地窗口的内容淡入淡出上屏，原大屏内容回到另一个窗口（暂停）");
+        // DEV-18: FTB sits with the other program-output actions (Take / Fade / Swap) but is
+        // plainly styled — never red, never primary — so it cannot be mistaken for a stop.
+        _ftbButton = TextButton("黑场", "黑场（FTB）：画面与节目声音一起淡出，输出不断开；再按恢复（Ctrl+B，可在设置 · 热键里改）");
+        ModernUi.StyleButton(_ftbButton);
+        _ftbButton.Font = new Font(ModernUi.UiFontSemibold, 10F);
+        _ftbButton.AccessibleName = "黑场（FTB）";
+        _ftbButton.Click += (_, _) => FadeToBlackRequested?.Invoke();
 
         _deviceCard = new DeviceCastCard();
         _deviceCard.TakeRequested += () => DeviceTakeRequested?.Invoke();
@@ -206,7 +223,7 @@ internal sealed class SharedPreviewDock : Panel
         statusMenu.Opening += (_, _) => presenterItem.Enabled = CurrentShow != null;
         _status.ContextMenuStrip = statusMenu;
 
-        Controls.AddRange(new Control[] { _status, _presenterButton, _stopOutputButton, _collapseButton, _takeButton, _fadeButton, _swapButton, _deviceCard.Card });
+        Controls.AddRange(new Control[] { _status, _presenterButton, _stopOutputButton, _collapseButton, _takeButton, _fadeButton, _swapButton, _ftbButton, _deviceCard.Card });
         foreach (var window in _windows) window.AddTo(this);
 
         _takeButton.Click += (_, _) => TakeRequested?.Invoke(TransitionStyle.Cut);
@@ -400,9 +417,12 @@ internal sealed class SharedPreviewDock : Panel
             y += button + S(6);
         }
 
-        int swapWidth = S(72), takeWidth = (w - swapWidth - S(12)) / 2;
+        // DEV-18: the FTB button is compact ("黑场" needs little room) so Take/Fade keep
+        // most of their width; Swap keeps its fixed width at the right.
+        int swapWidth = S(72), ftbWidth = S(58), takeWidth = (w - swapWidth - ftbWidth - S(18)) / 2;
         _takeButton.Bounds = new Rectangle(x, y, takeWidth, S(36));
         _fadeButton.Bounds = new Rectangle(x + takeWidth + S(6), y, takeWidth, S(36));
+        _ftbButton.Bounds = new Rectangle(x + (takeWidth + S(6)) * 2, y, ftbWidth, S(36));
         _swapButton.Bounds = new Rectangle(area.Right - swapWidth, y, swapWidth, S(36));
         y += S(36) + gap;
 
@@ -507,6 +527,9 @@ internal sealed class SharedPreviewDock : Panel
         _documentSync = sync;
         _documentBar = new DocumentControlBar(sync, _toolTip, ButtonHeight) { Visible = false };
         _documentBar.ConfirmAsync = _confirmAsync;
+        // DEV-21: the no-frame prompt after 结束放映, on the same non-modal toast surface
+        // the presenter window uses (resolved at call time, when the dock has a form).
+        _documentBar.NotifyToast = message => (FindForm() as MainWindow)?.ShowToast(message, ToastSeverity.Warning);
         _documentBar.StopProgramRequested += () => StopProgramRequested?.Invoke();
         _documentBar.Changed += RefreshNow;
         Controls.Add(_documentBar);
@@ -637,6 +660,15 @@ internal sealed class SharedPreviewDock : Panel
         // silently degenerate to a plain Take, so the button greys out instead.
         _swapButton.Enabled = canTake && source == ProgramSource.LocalMedia
             && _program is { State: PlaybackChannelState.Playing or PlaybackChannelState.Paused, CurrentFile: not null };
+        // DEV-18: FTB only while local media is on air (a device cast owns the picture, and
+        // with nothing on air there is nothing to black out) — the same gate as the host's
+        // ToggleFadeToBlack. While black is up the button reads checked (accent fill, like
+        // the document bar's toggles), plain otherwise: never red, never a stop look.
+        _ftbButton.Enabled = programLive && source == ProgramSource.LocalMedia;
+        bool ftbOn = FadeToBlackActive?.Invoke() == true;
+        var ftbBack = ftbOn ? palette.AccentFill : palette.Surface;
+        if (_ftbButton.BackColor != ftbBack) { _ftbButton.BackColor = ftbBack; _ftbButton.Invalidate(); }
+        _ftbButton.ForeColor = ftbOn ? palette.AccentFillForeground : palette.Text;
 
         _deviceCard.Update(_deviceConnected, _deviceName ?? "设备来投", _deviceOnProgram,
             _program == null ? "未连接扩展屏" : "等待设备来投", _program != null,
@@ -847,6 +879,24 @@ internal sealed class SharedPreviewDock : Panel
             return y + button + S(6);
         }
 
+        /// <summary>DEV-19: the document path word for the caption — presentation files only
+        /// (other documents have no native/static distinction to name). A downgraded show is
+        /// "静态（已降级）", never "原生"; a presentation still opening (Cover) or in any other
+        /// mode names no path rather than guessing. The preview channel always browses
+        /// static slides, so it reads 静态 by construction.</summary>
+        private static string DocumentPathTag(PlaybackEngine engine)
+        {
+            var file = engine.CurrentFile;
+            if (file?.Kind != MediaKind.Document || Documents.DocumentFormats.Of(file.SourcePath) != Documents.DocumentFormat.Presentation) return "";
+            if (engine.DocumentDowngraded) return "静态（已降级）";
+            return engine.DocumentMode switch
+            {
+                DocumentPlaybackMode.NativeShow => "原生",
+                DocumentPlaybackMode.StaticSlides => "静态",
+                _ => "",
+            };
+        }
+
         public void Refresh(UiPalette palette, PlaybackEngine? program, bool programLive, ProgramSource source, bool active)
         {
             _program = program;
@@ -869,22 +919,41 @@ internal sealed class SharedPreviewDock : Panel
 
             string name = _synced && source == ProgramSource.DeviceCast ? "设备来投"
                 : file == null ? "" : Path.GetFileName(file.SourcePath) + (engine?.CurrentDecodeLabel is { } decode ? " · " + decode : "");
+            // DEV-19/DEV-22: the caption names the path the picture actually travels. The
+            // following window is "大屏·PGM" (red); the other window is "预览·PVW" (green).
+            // The mode word names the real document path — 原生 / 静态 / 静态（已降级） — and
+            // is never "原生" after a downgrade. No PGM label when the window is not
+            // following a live LocalMedia program (no extended screen, device cast, output
+            // stopped): the label is earned by following, not by being the first window.
+            bool isProgram = _synced && programLive && source == ProgramSource.LocalMedia;
+            string pathTag = engine == null ? "" : DocumentPathTag(engine);
+            string pathSuffix = pathTag == "" ? "" : " · " + pathTag;
+            // DEV-19: while a document opens, the caption carries the same progress wording
+            // the open reports ("正在打开…"/"正在原生播放…") instead of a bare 加载中.
+            string loadingText = file?.Kind == MediaKind.Document && engine?.CurrentContentNote is { } note && note != ""
+                ? note : "加载中";
             string caption = _synced
-                ? (programLive ? "● 大屏 · " + name
+                ? (programLive ? (isProgram ? "● 大屏·PGM" : "● 大屏") + pathSuffix + " · " + name
                     + (failed ? "（播出失败）" : "") // OP-26: the follow caption names the failure
                     + (engine?.IsPaused == true ? " · 已暂停" : "") : "大屏未输出")
                 : state switch
                 {
-                    PlaybackChannelState.Loading => name + " · 加载中",
-                    PlaybackChannelState.Playing => name,
-                    PlaybackChannelState.Paused when engine!.IsCompleted => name + " · 播放完成",
-                    PlaybackChannelState.Paused => name + " · 已暂停",
-                    PlaybackChannelState.Failed => name + " · 播放失败",
+                    PlaybackChannelState.Loading => "预览·PVW" + pathSuffix + " · " + name + " · " + loadingText,
+                    PlaybackChannelState.Playing => "预览·PVW" + pathSuffix + " · " + name,
+                    PlaybackChannelState.Paused when engine!.IsCompleted => "预览·PVW" + pathSuffix + " · " + name + " · 播放完成",
+                    PlaybackChannelState.Paused => "预览·PVW" + pathSuffix + " · " + name + " · 已暂停",
+                    PlaybackChannelState.Failed => "预览·PVW" + pathSuffix + " · " + name + " · 播放失败",
                     _ => "空闲 · 把文件拖到这里，或单击文件播放",
                 };
             if (!_synced && engine?.Muted == true && state is PlaybackChannelState.Playing or PlaybackChannelState.Paused) caption += " · 静音（大屏输出中）";
             SetTextRole(_caption, caption, _synced && programLive ? UiForegroundRole.Danger
-                : state == PlaybackChannelState.Failed ? UiForegroundRole.Danger : file == null ? UiForegroundRole.Muted : UiForegroundRole.Text);
+                : state == PlaybackChannelState.Failed ? UiForegroundRole.Danger : file == null ? UiForegroundRole.Muted
+                : _synced ? UiForegroundRole.Text : UiForegroundRole.Success);
+            // The full notice (downgrade reason, dialog pending, read-only…) rides the
+            // caption tooltip: the caption stays one short line, the detail is one hover away.
+            _dock._toolTip.SetToolTip(_caption, engine?.CurrentContentNote is { } fullNote && fullNote != ""
+                ? "单击激活此窗口（只切换，不换内容）\n" + fullNote
+                : "单击激活此窗口（只切换，不换内容）");
 
             // Frame: red while following the big screen (the mirror flashes itself), accent for the active
             // local window, plain otherwise.

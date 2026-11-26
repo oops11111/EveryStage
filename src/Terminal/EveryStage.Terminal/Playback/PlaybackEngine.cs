@@ -432,6 +432,10 @@ public sealed partial class PlaybackEngine : IDisposable
         DropPreparedAudio();
         _waitingAudioOutput = null;
         var stoppedFile = _currentFile;
+        // DEV-16: a stop (including the e-stop path, which funnels here) still logs the
+        // decoder — a video stopped mid-play would otherwise leave no evidence. Logged
+        // before the controller stops, while its decode path is still readable.
+        if (stoppedFile?.Kind == MediaKind.Video) LogVideoDecoderOnce(stoppedFile);
         if (_currentFile != null) _playbackLogger.LogPlaybackEnded(_currentFile.Id, "stopped");
         _currentFile = null;
         _currentActivity = null;
@@ -471,6 +475,9 @@ public sealed partial class PlaybackEngine : IDisposable
     /// the abnormal-interruption event (Program shows a Toast).</summary>
     private void Fail(MediaFile file, Exception ex)
     {
+        // DEV-16: a failed video logs its decoder too — a decode failure is exactly when the
+        // venue needs to know which path was in use.
+        if (file.Kind == MediaKind.Video) LogVideoDecoderOnce(file);
         var error = PlaybackError.From(file, ex);
         LastError = error;
         string codecs = string.Join("/", new[] { error.VideoCodec, error.AudioCodec }.Where(c => c != null));
@@ -513,7 +520,7 @@ public sealed partial class PlaybackEngine : IDisposable
     // device cast can need it before any local video ever plays).
     private VideoContentController VideoController =>
         _videoController ??= new VideoContentController(_videoSurface
-            ?? throw new InvalidOperationException("视频呈现不可用：显卡（D3D11）初始化失败，无法在此窗口播放视频。")) { AudioOutputFactory = _settingsStore.OpenAudioOutput };
+            ?? throw new InvalidOperationException("视频呈现不可用：显卡（D3D11）初始化失败，无法在此窗口播放视频。")) { AudioOutputFactory = _settingsStore.OpenAudioOutput, OutputDim = (float)_outputDim };
 
     // Same laziness reasoning as VideoController, but there's no shared GPU resource to justify
     // eager construction the way TerminalApplicationContext eagerly builds _videoSurface for a
@@ -526,7 +533,7 @@ public sealed partial class PlaybackEngine : IDisposable
     {
         get
         {
-            _audioController ??= new AudioContentController { Volume = _pendingAudioVolume, Muted = _muted, AudioOutputFactory = _settingsStore.OpenAudioOutput };
+            _audioController ??= new AudioContentController { Volume = _pendingAudioVolume, Muted = _muted, AudioOutputFactory = _settingsStore.OpenAudioOutput, OutputDim = _outputDim };
             return _audioController;
         }
     }
@@ -539,9 +546,29 @@ public sealed partial class PlaybackEngine : IDisposable
     // Volume is left at AudioContentController's own default (1.0, full) — no per-background-track
     // volume control is exposed anywhere yet; see this project's README for that being an accepted,
     // documented scope limit rather than an oversight.
-    private AudioContentController BackgroundAudioController => _backgroundAudioController ??= new AudioContentController { Muted = _muted, AudioOutputFactory = _settingsStore.OpenAudioOutput };
+    private AudioContentController BackgroundAudioController => _backgroundAudioController ??= new AudioContentController { Muted = _muted, AudioOutputFactory = _settingsStore.OpenAudioOutput, OutputDim = _outputDim };
 
     private float _pendingAudioVolume = 1f;
+
+    private double _outputDim = 1.0;
+
+    /// <summary>DEV-18: the fade-to-black dim for everything this engine plays (video audio,
+    /// standalone audio, background overlay audio), 0..1. Multiplies the existing volume /
+    /// fade / mute paths — it never writes <see cref="AudioVolume"/> or any mute flag, so
+    /// restoring the picture restores the exact previous levels, and a stopped controller
+    /// stays stopped. Controllers created later are seeded from this value at construction
+    /// (see the lazy getters above), so a first play during an FTB starts dimmed.</summary>
+    public double OutputDim
+    {
+        get => _outputDim;
+        set
+        {
+            _outputDim = Math.Clamp(value, 0.0, 1.0);
+            if (_videoController != null) _videoController.OutputDim = (float)_outputDim;
+            if (_audioController != null) _audioController.OutputDim = _outputDim;
+            if (_backgroundAudioController != null) _backgroundAudioController.OutputDim = _outputDim;
+        }
+    }
 
     /// <summary>Standalone (non-background) audio playback volume, 0.0-1.0 — read/written by
     /// <c>FloatingPreviewWindow</c>'s volume buttons. Tracked here rather than only inside

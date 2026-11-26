@@ -153,6 +153,10 @@ public sealed partial class PlaybackEngine
     /// it actually finds somewhere real to land.</summary>
     private bool TryAdvanceToNextActivity()
     {
+        // DEV-24(a): the cross-activity auto-advance can be switched off (default on). Off
+        // means the show stops at the activity boundary, exactly as if there were no next
+        // activity — the caller's fallback runs instead.
+        if (!_settingsStore.Current.AutoAdvanceToNextActivity) return false;
         if (_currentActivity == null) return false;
 
         var scenario = _scenarioStore.Scenarios.FirstOrDefault(s => s.Activities.Contains(_currentActivity));

@@ -9,7 +9,11 @@ namespace EveryStage.Terminal.UI;
 /// <item>PDF: reading mode, start page and position inside it, end page, zoom, live sync, automatic
 ///   scrolling / page interval.</item>
 /// <item>Word: editor (WPS / Microsoft Word / read-only preview), allow editing, live sync, initial scroll.</item>
-/// <item>Presentation: native / static / automatic, start and end slide, automatic advance, loop, live sync.</item>
+/// <item>Presentation: native / static / automatic, start and end slide, automatic advance, loop
+///   (live sync is stored but not shown — unverified for the native show, DEV-04(7)); the
+///   five presentation fields are also editable in place on the 详情面板.</item>
+/// <item>Spreadsheet: no playback rows — a sheet cannot play directly (DEV-04); stored
+///   progress/sync values are preserved untouched.</item>
 /// </list>
 /// The completion action stays the item's own 完成后动作 setting.
 /// </summary>
@@ -20,8 +24,12 @@ public sealed class DocumentSettingsDialog : Form
     private readonly ComboBox? _readingMode, _zoomMode, _openMode, _presentationMode;
     private readonly NumericUpDown? _startPage, _startOffset, _endPage, _customZoom, _scroll;
     private readonly CheckBox? _hasEnd, _allowEdit, _loop, _keepTransitions;
-    private readonly CheckBox _liveSync, _auto;
-    private readonly NumericUpDown _autoSeconds;
+    /// <summary>Null for spreadsheets / unknown formats (DEV-04: the auto-advance rows are
+    /// dropped there, and <see cref="Collect"/> then leaves the stored values untouched
+    /// instead of clearing them). Null for presentations only in the sense that the row is
+    /// hidden — see the constructor: the checkbox still exists and Collect still reads it.</summary>
+    private readonly CheckBox? _liveSync, _auto;
+    private readonly NumericUpDown? _autoSeconds;
 
     public DocumentPlaybackSettings Result { get; private set; }
 
@@ -99,28 +107,49 @@ public sealed class DocumentSettingsDialog : Form
                 break;
         }
 
-        _auto = new CheckBox
+        // DEV-04: spreadsheets (and unknown formats) get no auto-advance or sync rows at
+        // all — a sheet has no page flow for them to drive — and Collect leaves the stored
+        // values alone (see its null guards) instead of clearing them.
+        bool hasProgressRows = _format is not (DocumentFormat.Spreadsheet or DocumentFormat.None);
+        if (hasProgressRows)
         {
-            Text = _format == DocumentFormat.Pdf ? "自动滚动 / 自动翻页" : _format == DocumentFormat.Presentation ? "自动推进" : "自动推进（不适用）",
-            AutoSize = true, Checked = _settings.SecondsPerPage is > 0, Enabled = _format != DocumentFormat.Word,
-        };
-        _autoSeconds = Number(1, 3600, (decimal)(_settings.SecondsPerPage ?? 10));
-        _autoSeconds.Enabled = _auto.Checked && _auto.Enabled;
-        _auto.CheckedChanged += (_, _) => _autoSeconds.Enabled = _auto.Checked;
-        Row("推进", _auto);
-        Row(_format == DocumentFormat.Presentation ? "每张停留 (秒)" : "每页用时 (秒)", _autoSeconds);
-        _liveSync = new CheckBox { Text = "大屏实时跟随预览 / 编辑", AutoSize = true, Checked = _settings.LiveSync };
-        Row("同步", _liveSync);
+            var auto = new CheckBox
+            {
+                Text = _format == DocumentFormat.Pdf ? "自动滚动 / 自动翻页" : _format == DocumentFormat.Presentation ? "自动推进" : "自动推进（不适用）",
+                AutoSize = true, Checked = _settings.SecondsPerPage is > 0, Enabled = _format != DocumentFormat.Word,
+            };
+            var autoSeconds = Number(1, 3600, (decimal)(_settings.SecondsPerPage ?? 10));
+            autoSeconds.Enabled = auto.Checked && auto.Enabled;
+            auto.CheckedChanged += (_, _) => autoSeconds.Enabled = auto.Checked;
+            Row("推进", auto);
+            Row(_format == DocumentFormat.Presentation ? "每张停留 (秒)" : "每页用时 (秒)", autoSeconds);
+            _auto = auto;
+            _autoSeconds = autoSeconds;
+            var liveSync = new CheckBox { Text = "大屏实时跟随预览 / 编辑", AutoSize = true, Checked = _settings.LiveSync };
+            // DEV-04(7): the live-follow preview is unverified for the native show, so the
+            // row is hidden for presentations — the checkbox still exists, Collect still
+            // reads it, and the stored value is preserved (never silently rewritten). The
+            // sidebar (详情面板) does not carry this control either.
+            if (_format != DocumentFormat.Presentation) Row("同步", liveSync);
+            _liveSync = liveSync;
+        }
+        else
+        {
+            _auto = null;
+            _autoSeconds = null;
+            _liveSync = null;
+        }
 
         var note = new Label
         {
             Text = _format switch
             {
-                DocumentFormat.Presentation => "静态幻灯片不保留动画、转场和嵌入音视频；未安装 PowerPoint/WPS 时自动使用静态模式。播放结束后执行此项的“完成后动作”。",
+                DocumentFormat.Presentation => "静态幻灯片不保留动画、转场和嵌入音视频；未安装 PowerPoint/WPS 时自动使用静态模式。播放结束后执行此项的“完成后动作”。大屏实时跟随预览未经原生放映验证，暂不在此显示；已有设置保持不变。",
                 DocumentFormat.Word => "编辑器窗口留在操作员屏幕，大屏显示其文档区域的画面。关闭实时同步后，修改只在点“更新大屏”时上屏。",
+                DocumentFormat.Spreadsheet => "表格不能直接播放，请另存为 PDF 后再加入流程。",
                 _ => "连续滚动按“每页用时”平滑滚动；单页模式按此间隔翻页。播放到结束页后执行此项的“完成后动作”。",
             },
-            AutoSize = false, Size = new Size(360, 48), Margin = new Padding(3, 6, 3, 3),
+            AutoSize = false, Size = new Size(360, _format == DocumentFormat.Presentation ? 64 : 48), Margin = new Padding(3, 6, 3, 3),
         };
         ModernUi.SetForegroundRole(note, UiForegroundRole.Muted);
         grid.Controls.Add(note);
@@ -166,8 +195,12 @@ public sealed class DocumentSettingsDialog : Form
         if (_presentationMode != null) s.PresentationMode = (PresentationMode)_presentationMode.SelectedIndex;
         if (_loop != null) s.Loop = _loop.Checked;
         if (_keepTransitions != null) s.KeepOriginalTransitions = _keepTransitions.Checked;
-        s.SecondsPerPage = _auto.Checked && _auto.Enabled ? (double)_autoSeconds.Value : null;
-        s.LiveSync = _liveSync.Checked;
+        // DEV-04: null controls (spreadsheet / unknown format) mean the rows were not
+        // shown, so the stored values are preserved — hiding a field must never rewrite
+        // or lose a saved value (the pre-change shape would have cleared SecondsPerPage
+        // for any format whose checkbox was merely disabled).
+        if (_auto != null && _autoSeconds != null) s.SecondsPerPage = _auto.Checked && _auto.Enabled ? (double)_autoSeconds.Value : null;
+        if (_liveSync != null) s.LiveSync = _liveSync.Checked;
         return s;
     }
 

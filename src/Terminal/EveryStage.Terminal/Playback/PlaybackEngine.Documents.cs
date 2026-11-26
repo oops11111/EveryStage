@@ -82,6 +82,16 @@ public sealed partial class PlaybackEngine
     private int _presenterBrowseSlide;
     private DocumentPlaybackMode _documentMode;
     private string? _documentNotice;
+    /// <summary>DEV-20: the current document is showing static slides because a native show
+    /// failed or was replaced — not because the operator chose static, and not because the
+    /// per-file mode is static. Reset on every new document load; the saved
+    /// <see cref="DocumentPlaybackSettings.PresentationMode"/> is never rewritten by a
+    /// downgrade, and the item is never recorded as natively played.</summary>
+    private bool _documentDowngraded;
+    /// <summary>DEV-20: downgrade events this engine has produced. Monotonic (never reset) so
+    /// a notice acknowledgement keyed by file + count cannot be reused by a later downgrade
+    /// of the same file.</summary>
+    private int _documentDowngradeCount;
     /// <summary>The session this play is still opening (DEV-02): only its progress posts may change
     /// the notice — a post queued before the open finished is ignored once this is cleared.</summary>
     private OfficeSession? _openingSession;
@@ -120,6 +130,13 @@ public sealed partial class PlaybackEngine
     /// see whether a frozen Program really kept its picture.</summary>
     internal long OfficeFrameSequence => _officeFrame?.Sequence ?? -1;
     public DocumentPlaybackMode DocumentMode => _currentFile?.Kind == MediaKind.Document ? _documentMode : DocumentPlaybackMode.None;
+
+    /// <summary>DEV-20: the current document was downgraded to static slides by a native-show
+    /// failure. The dock bar notice and the caption's "静态（已降级）" key off this; it is
+    /// runtime state only, never written to the saved settings.</summary>
+    public bool DocumentDowngraded => _currentFile?.Kind == MediaKind.Document && _documentDowngraded;
+    /// <summary>DEV-20: downgrade events this engine has produced (monotonic, never reset).</summary>
+    public int DocumentDowngradeCount => _documentDowngradeCount;
 
     public DocumentStatus? Document
     {
@@ -163,6 +180,7 @@ public sealed partial class PlaybackEngine
         var settings = file.Document ?? new DocumentPlaybackSettings();
         var format = DocumentFormats.Of(file.SourcePath);
         _documentNotice = null;
+        _documentDowngraded = false; // DEV-20: a fresh load starts undowngraded.
         _userEndedShow = false;
         DocumentLiveSync = settings.LiveSync;
         DocumentFrozen = false;
@@ -425,8 +443,13 @@ public sealed partial class PlaybackEngine
             if (ex is OfficeOperationException office)
             {
                 // No engine could run the show: play the slides statically instead of failing.
+                // DEV-20: mark the downgrade (and count it) so the UI can say so plainly —
+                // the saved PresentationMode is untouched, so the item is not recorded as
+                // natively played.
                 _documentMode = DocumentPlaybackMode.StaticSlides;
-                _documentNotice = $"原生放映失败（{OfficeOperationException.StageName(office.Stage)}：{office.Message}），已改为静态幻灯片";
+                _documentDowngraded = true;
+                _documentDowngradeCount++;
+                _documentNotice = $"原生放映失败（{OfficeOperationException.StageName(office.Stage)}：{office.Message}），已改为静态幻灯片（不含动画、转场和嵌入媒体）";
                 RaiseDocumentChanged();
                 await PlayConvertedAsync(file, settings, new PdfViewportState(startSlide - 1, 0, PdfDisplayMode.SinglePage, PdfZoomMode.FitPage));
                 return;
@@ -515,6 +538,11 @@ public sealed partial class PlaybackEngine
     {
         RetireDocument();
         _documentMode = DocumentPlaybackMode.StaticSlides;
+        // DEV-20: same downgrade mark as the open-failure path (the blank-capture and
+        // crash paths both land here). Callers already word the notice with the
+        // "不含动画、转场和嵌入媒体" clause.
+        _documentDowngraded = true;
+        _documentDowngradeCount++;
         _documentNotice = notice;
         await PlayConvertedAsync(file, settings, new PdfViewportState(Math.Max(1, slide) - 1, 0, PdfDisplayMode.SinglePage, PdfZoomMode.FitPage));
     }

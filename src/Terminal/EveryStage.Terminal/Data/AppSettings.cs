@@ -85,6 +85,22 @@ public sealed class AppSettings
     /// instead of in 预览 (PVW). Off by default; turning it on asks first.</summary>
     public bool ClickTakesToAir { get; set; }
 
+    /// <summary>DEV-24(a): 顺序播完后进入下一环节 — when an activity's last item completes with
+    /// 播完后 = 下一项, the show advances into the next activity instead of stopping. On by
+    /// default; turning it off stops at the activity boundary. (No policy re-vote: the
+    /// cross-activity rule itself is unchanged, this only gates whether it runs.)</summary>
+    public bool AutoAdvanceToNextActivity { get; set; } = true;
+
+    /// <summary>DEV-24(b): GO 先入 PVW — the GO control (下一项 / Run) loads the next item into
+    /// 预览 (PVW) instead of taking it straight to air. Off by default; the 预览下一项 button
+    /// already exists for the same move on demand.</summary>
+    public bool GoToPreviewFirst { get; set; }
+
+    /// <summary>DEV-18: FTB 时长 — how long the fade-to-black takes (0 = cut to black at once,
+    /// at most 2000 ms). Separate from 上屏淡入 and from every item/PPT transition; the FTB
+    /// fades picture and program audio together and restores both.</summary>
+    public int FadeToBlackMilliseconds { get; set; } = 800;
+
     // --- 过场 ---
 
     /// <summary>How the big screen changes from one item to the next (an item can override it).</summary>

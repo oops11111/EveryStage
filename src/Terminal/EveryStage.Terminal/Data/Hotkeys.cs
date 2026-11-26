@@ -16,6 +16,7 @@ public static class Hotkeys
         HotkeyAction.PauseProgram => "播放 / 暂停",
         HotkeyAction.PreviousItem => "上一项（当前环节内）",
         HotkeyAction.NextItem => "下一项（当前环节内）",
+        HotkeyAction.FadeToBlack => "黑场（FTB）",
         _ => action.ToString(),
     };
 

@@ -47,6 +47,10 @@ internal sealed class SlideTransitionPicker : Control
 
     private bool _setting;
 
+    /// <summary>DEV-05: puts keyboard focus on the duration slider (the 详情面板's jump
+    /// lands here, so the operator can adjust the duration at once).</summary>
+    public void FocusDuration() => _duration.Focus();
+
     /// <summary>Shows saved values (设置 reloaded) without raising <see cref="SelectionChanged"/>.</summary>
     public void SetValues(SlideTransitionEffect effect, SlideTransitionDirection direction, int milliseconds)
     {
@@ -70,7 +74,10 @@ internal sealed class SlideTransitionPicker : Control
         Direction = direction;
         _pageA = SamplePage("三大核心功能", "①  一键投屏　②  节目单流程", Color.FromArgb(244, 241, 234), Color.FromArgb(232, 226, 212), Color.FromArgb(28, 39, 51));
         _pageB = SamplePage("产品展示", "第 8 页", Color.FromArgb(29, 78, 107), Color.FromArgb(11, 34, 51), Color.White);
-        _duration = new TrackBar { Minimum = 3, Maximum = 20, TickStyle = TickStyle.None, Value = Math.Clamp(milliseconds / 100, 3, 20), AutoSize = false, Height = 30 };
+        // DEV-05: 0 = 直切 (instant cut). The playback clamp is 0..3000 ms
+        // (SlideTransitionSpec.From), so the picker spans the same range; the default
+        // stays 800 ms (AppSettings.SlideTransitionMilliseconds).
+        _duration = new TrackBar { Minimum = 0, Maximum = 20, TickStyle = TickStyle.None, Value = Math.Clamp(milliseconds / 100, 0, 20), AutoSize = false, Height = 30 };
         _durationLabel = new Label { AutoSize = false, TextAlign = ContentAlignment.MiddleLeft, BackColor = Color.Transparent, ForeColor = ModernUi.Text };
         _duration.ValueChanged += (_, _) => { UpdateDurationLabel(); Invalidate(); if (!_setting) SelectionChanged?.Invoke(); };
         _play = new RoundedActionButton { Text = "▶ 播放预览", Height = 32, Width = 110 };
@@ -82,6 +89,9 @@ internal sealed class SlideTransitionPicker : Control
         UpdateDurationLabel();
         _timer.Tick += (_, _) =>
         {
+            // DEV-05: 0 ms is a cut — no division, no misleading halfway still: the
+            // preview jumps straight to the new page and holds it.
+            if (Milliseconds <= 0) { _timer.Stop(); _previewT = 1f; Invalidate(_preview); return; }
             float t = (float)(_clock.Elapsed.TotalMilliseconds / Milliseconds);
             // Play, hold the new page briefly, then return to the halfway still.
             if (t > 1.6f) { _timer.Stop(); _previewT = 0.5f; }
@@ -92,7 +102,7 @@ internal sealed class SlideTransitionPicker : Control
         AccessibleName = "PPT 翻页过场";
     }
 
-    private void UpdateDurationLabel() => _durationLabel.Text = $"{_duration.Value / 10.0:0.0} 秒";
+    private void UpdateDurationLabel() => _durationLabel.Text = _duration.Value == 0 ? "直切" : $"{_duration.Value / 10.0:0.0} 秒";
 
     private void PlayPreview()
     {

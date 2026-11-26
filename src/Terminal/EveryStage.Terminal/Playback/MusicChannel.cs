@@ -26,6 +26,7 @@ public sealed class MusicChannel : IDisposable
     private readonly Random _random = new();
     private double _duck = 1.0;          // 1 = full, DuckLevel = ducked; eased toward its target
     private double _fadeOut = 1.0;       // 1 = no fade-out; 0 = silent (then stopped)
+    private double _outputDim = 1.0;     // DEV-18 FTB dim: 1 = full; 0 = silent (BGM stays loaded)
     private bool _fadingOut;
     private int _generation;             // bumps on every Play/Stop, so stale completions are ignored
     private (string Track, TimeSpan Position, int Generation)? _waitingAudioOutput;
@@ -283,7 +284,17 @@ public sealed class MusicChannel : IDisposable
         if (changed) ApplyVolume();
     }
 
-    private void ApplyVolume() => _audio.Volume = (float)(Library.Volume * _duck * _fadeOut);
+    /// <summary>DEV-18: the fade-to-black dim for the background music, 0..1, applied on top of
+    /// the library volume, duck and fade-out. The library volume itself is never ramped, so
+    /// restoring the picture restores the exact previous level, and a stopped channel stays
+    /// stopped (its fade-out already silenced it; the dim multiplies, never revives).</summary>
+    public double OutputDim
+    {
+        get => _outputDim;
+        set { _outputDim = Math.Clamp(value, 0.0, 1.0); ApplyVolume(); }
+    }
+
+    private void ApplyVolume() => _audio.Volume = (float)(Library.Volume * _duck * _fadeOut * _outputDim);
 
     private void Post(Action action)
     {
