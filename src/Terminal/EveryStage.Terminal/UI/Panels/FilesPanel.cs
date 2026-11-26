@@ -163,6 +163,10 @@ public sealed partial class FilesPanel : UserControl
     /// <summary>设置 「单击即上屏」 (MainWindow routes the click to the big screen instead of 预览).</summary>
     public Func<bool>? ClickTakesToAir { get; set; }
 
+    /// <summary>DEV-15: the library changed (import / remove / clear) — the host window
+    /// re-checks the first-run empty state. Wired by MainWindow; null in standalone use.</summary>
+    public Action? ContentChanged { get; set; }
+
     public FilesPanel(
         FileLibraryStore library, FileOperationLogger fileOpLog, ScenarioStore scenarioStore,
         ScenarioRepository scenarioRepository, PlaybackEngine? playback)
@@ -672,6 +676,7 @@ public sealed partial class FilesPanel : UserControl
         _emptyStateLabel.Visible = _grid.Items.Count == 0;
         PositionEmptyState();
         if (IsHandleCreated) _ = LoadThumbnailsAsync(_thumbnailLoad.Token);
+        ContentChanged?.Invoke(); // DEV-15: the library's contents may have changed.
     }
 
     protected override void OnHandleCreated(EventArgs e)

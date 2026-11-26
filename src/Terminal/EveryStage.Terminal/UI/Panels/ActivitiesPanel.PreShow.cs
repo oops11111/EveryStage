@@ -36,10 +36,15 @@ public sealed partial class ActivitiesPanel
     private void ShowPreShowResult(Scenario scenario, IReadOnlyList<PreShowFinding> findings, int total)
     {
         _preShowWindow?.Close();
+        // DEV-16: the software-decode badge — shown only on observed evidence (videos actually
+        // played this run were all software-decoded, hardware never observed). It is listed
+        // separately from the findings below (it is not a 需转码 finding), and it never blocks
+        // the show: the window stays non-modal and the show starts regardless.
+        bool softwareBadge = DecodePathObservations.OnlySoftwareObserved;
         var window = new Form
         {
             Text = $"开演前检查 · {scenario.Name}", FormBorderStyle = FormBorderStyle.SizableToolWindow, ShowInTaskbar = false,
-            StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(560, findings.Count == 0 ? 150 : 340),
+            StartPosition = FormStartPosition.CenterParent, ClientSize = new Size(560, (findings.Count == 0 ? 150 : 340) + (softwareBadge ? 36 : 0)),
             MinimumSize = new Size(420, 150),
         };
         var summary = new Label
@@ -47,6 +52,16 @@ public sealed partial class ActivitiesPanel
             Dock = DockStyle.Top, Height = 56, Padding = new Padding(12, 10, 12, 0),
             Text = (findings.Count == 0 ? $"全部 {total} 个文件都存在、可读取且格式支持。" : $"{total} 个文件中有 {findings.Count} 个需要处理：") + "\n" + PreShowCheck.Scope,
         };
+        Label? badge = null;
+        if (softwareBadge)
+        {
+            badge = new Label
+            {
+                Dock = DockStyle.Top, Height = 36, Padding = new Padding(12, 4, 12, 0),
+                Text = "仅供参考：本次运行已播放的视频均为软解码，尚未观察到硬件解码；未播放过的视频不作判断。与“需转码”无关，也不阻止开演。",
+            };
+            ModernUi.SetForegroundRole(badge, UiForegroundRole.Warning);
+        }
         var list = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true, HeaderStyle = ColumnHeaderStyle.Nonclickable, BorderStyle = BorderStyle.None };
         list.Columns.Add("位置", 70);
         list.Columns.Add("文件", 220);
@@ -81,6 +96,9 @@ public sealed partial class ActivitiesPanel
         close.Click += (_, _) => window.Close();
         if (findings.Count > 0) window.Controls.Add(list);
         window.Controls.Add(close);
+        // Dock order: the badge is added before the summary so it docks below it (the last
+        // Top-docked control takes the top edge first).
+        if (badge != null) window.Controls.Add(badge);
         window.Controls.Add(summary);
         window.FormClosed += (_, _) => { if (ReferenceEquals(_preShowWindow, window)) _preShowWindow = null; window.Dispose(); };
         ModernUi.StyleDialog(window);

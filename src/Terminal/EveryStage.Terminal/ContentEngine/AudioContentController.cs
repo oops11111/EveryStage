@@ -102,6 +102,17 @@ public sealed class AudioContentController : IDisposable
     private bool _muted;
     private bool _paused;
     private double _fadeMultiplier = 1.0;
+    private double _outputDim = 1.0;
+
+    /// <summary>DEV-18: the fade-to-black dim, 0..1, applied on top of volume, fade and mute.
+    /// The user's volume and mute intent are untouched: dimming to 0 silences output without
+    /// changing either, so restoring the picture restores the exact previous level. Never
+    /// resurrects stopped audio — a stopped clock gets no volume applied at all.</summary>
+    public double OutputDim
+    {
+        get => _outputDim;
+        set { _outputDim = Math.Clamp(value, 0.0, 1.0); ApplyVolume(); }
+    }
 
     /// <summary>Silences output without affecting timing or position.</summary>
     public bool Muted
@@ -112,7 +123,7 @@ public sealed class AudioContentController : IDisposable
 
     public bool IsPaused => _paused;
 
-    private float EffectiveVolume => _muted ? 0f : (float)(_volume * _fadeMultiplier);
+    private float EffectiveVolume => _muted ? 0f : (float)(_volume * _fadeMultiplier * _outputDim);
 
     private void ApplyVolume()
     {
@@ -333,7 +344,7 @@ public sealed class AudioContentController : IDisposable
             var position = resumePosition ?? CurrentPosition;
             if (!replacement.TrySeek(position)) return false;
             var newFade = _fadeDuration.HasValue ? ComputeFadeMultiplier(position.Ticks) : 1.0;
-            clock.Volume = _muted ? 0f : (float)(_volume * newFade);
+            clock.Volume = _muted ? 0f : (float)(_volume * newFade * _outputDim);
             var oldSource = _source;
             bool joined = StopPlaybackThreadAndClock();
             _source = replacement;

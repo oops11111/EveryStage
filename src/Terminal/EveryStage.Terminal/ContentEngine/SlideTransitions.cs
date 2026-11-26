@@ -8,8 +8,11 @@ namespace EveryStage.Terminal.ContentEngine;
 /// <summary>What a slide transition looks like and how long it takes.</summary>
 public readonly record struct SlideTransitionSpec(SlideTransitionEffect Effect, SlideTransitionDirection Direction, int Milliseconds)
 {
+    /// <summary>Duration is clamped to 0–3000 ms: 0 (DEV-05) is a real cut, honoured end
+    /// to end by <see cref="ContentSurface.BeginTransition"/> — the old 100 ms floor
+    /// silently turned a requested cut into a short fade.</summary>
     public static SlideTransitionSpec From(AppSettings settings) =>
-        new(settings.SlideTransition, settings.SlideTransitionDirection, Math.Clamp(settings.SlideTransitionMilliseconds, 100, 3000));
+        new(settings.SlideTransition, settings.SlideTransitionDirection, Math.Clamp(settings.SlideTransitionMilliseconds, 0, 3000));
 }
 
 /// <summary>

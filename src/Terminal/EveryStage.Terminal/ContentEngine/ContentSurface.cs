@@ -143,10 +143,19 @@ public sealed class ContentSurface : Control
     public bool InTransition => _transitionFrom != null;
 
     /// <summary>Freezes the current picture; the content changed after this call is revealed with
-    /// <paramref name="spec"/>. Starting again mid-transition continues from what is on screen.</summary>
+    /// <paramref name="spec"/>. Starting again mid-transition continues from what is on screen.
+    /// A spec of 0 ms or less (DEV-05 直切) is a real cut: any in-flight transition is
+    /// ended and the new content shows at once — no still is captured, no timer runs, and
+    /// the surface is not left showing a stale frozen frame.</summary>
     public void BeginTransition(SlideTransitionSpec spec)
     {
         if (Width < 2 || Height < 2 || IsDisposed) return;
+        if (spec.Milliseconds <= 0)
+        {
+            EndTransition();
+            Invalidate();
+            return;
+        }
         var still = new Bitmap(Width, Height);
         using (var g = Graphics.FromImage(still))
         {

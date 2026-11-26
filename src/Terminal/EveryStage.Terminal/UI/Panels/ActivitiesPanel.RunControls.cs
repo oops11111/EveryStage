@@ -111,7 +111,8 @@ public sealed partial class ActivitiesPanel
     internal void RunNext() => GoNext();
     internal void RunPrevious() => GoPrevious();
 
-    /// <summary>「下一项 ▶」 / space: put the next item on the big screen.</summary>
+    /// <summary>「下一项 ▶」 / space: put the next item on the big screen — or, with 设置 「GO 先入 PVW」,
+    /// load it into 预览 instead (the same move as 「预览下一项」; Take still takes it to air).</summary>
     private void GoNext()
     {
         var order = RunOrder();
@@ -123,6 +124,7 @@ public sealed partial class ActivitiesPanel
             ShowToast?.Invoke(NoNextReason(order, LivePosition(order)), ToastSeverity.Warning, Array.Empty<ToastAction>());
             return;
         }
+        if (GoLoadsPreviewFirst?.Invoke() == true) { PreviewNext(); return; }
         RunRequested?.Invoke(order[next].Activity, order[next].Index);
     }
 

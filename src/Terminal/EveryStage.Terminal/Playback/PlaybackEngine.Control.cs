@@ -99,14 +99,41 @@ public sealed partial class PlaybackEngine
 
     private TimeSpan _remainingOnPause;
 
+    /// <summary>DEV-16: which decoder this video really uses, once per playback — the path is
+    /// logged at the first frame (and again here / on stop / on failure only if the first frame
+    /// never logged it, e.g. a video that failed before its first frame). The mapping is honest:
+    /// Hardware → "hardware", Software → "software", Unknown → "unknown" — the old code collapsed
+    /// Unknown into "software". The observation registry records only known paths, so an
+    /// untested path is never labelled hardware. Runs on the playback thread, like the old
+    /// completion log did; the logger is thread-safe for this call.</summary>
+    private VideoContentController? _decoderLoggedController;
+    private int _decoderLoggedGeneration = -1;
+
+    private void LogVideoDecoderOnce(MediaFile file)
+    {
+        if (_videoController is not { } video) return;
+        int generation = video.PlaybackGeneration;
+        if (ReferenceEquals(video, _decoderLoggedController) && generation == _decoderLoggedGeneration) return;
+        _decoderLoggedController = video;
+        _decoderLoggedGeneration = generation;
+        string path = video.DecodePath switch
+        {
+            EveryStage.Rendering.Decode.VideoDecodePath.Hardware => "hardware",
+            EveryStage.Rendering.Decode.VideoDecodePath.Software => "software",
+            _ => "unknown",
+        };
+        _playbackLogger.LogVideoDecoder(file.Id, path, video.VideoCodec);
+        if (video.DecodePath == EveryStage.Rendering.Decode.VideoDecodePath.Hardware) Data.DecodePathObservations.RecordHardware();
+        else if (video.DecodePath == EveryStage.Rendering.Decode.VideoDecodePath.Software) Data.DecodePathObservations.RecordSoftware();
+    }
+
     private void OnVideoCompleted()
     {
         var file = _currentFile;
         int generation = _videoController?.PlaybackGeneration ?? 0;
         if (file == null) return;
         // Which decoder this video really uses, once per playback (the log is how a venue PC is checked).
-        if (_videoController is { } video)
-            _playbackLogger.LogVideoDecoder(file.Id, video.DecodePath == EveryStage.Rendering.Decode.VideoDecodePath.Hardware ? "hardware" : "software", video.VideoCodec);
+        LogVideoDecoderOnce(file);
         // Raised from VideoContentController's background playback thread — marshal to the UI
         // thread before touching timers/overlay state.
         _output.Post(new Action(() => { if (generation == _videoController?.PlaybackGeneration) HandleCompletion(file); }));
@@ -117,6 +144,9 @@ public sealed partial class PlaybackEngine
         var file = _currentFile;
         int generation = _videoController?.PlaybackGeneration ?? 0;
         if (file == null) return;
+        // DEV-16: the decode path is known as soon as the first frame exists — log it here, not
+        // only at the end, so a video stopped or failed mid-play still leaves its evidence.
+        LogVideoDecoderOnce(file);
         _output.Post(() =>
         {
             if (generation != _videoController?.PlaybackGeneration || !ReferenceEquals(file, _currentFile) || State != PlaybackChannelState.Loading) return;

@@ -43,6 +43,10 @@ public sealed class MainWindow : GradientForm
     private readonly Panel _rail;
     private readonly MusicLibraryStore _musicStore;
     private readonly MusicChannel _music;
+    /// <summary>DEV-18: the fade-to-black controller (its own curtain + dims). Built once; it
+    /// reads the current program engine, music channel, screen bounds and duration through
+    /// delegates, so engine swaps and setting changes need no re-wiring.</summary>
+    private readonly FadeToBlackController _ftbController;
     private readonly MusicBar _musicBar;
     private readonly MusicDrawer _musicDrawer;
     private readonly Panel _monitorColumn;
@@ -84,10 +88,15 @@ public sealed class MainWindow : GradientForm
     /// whenever the machine is Idle or the engine is playing/paused again.</summary>
     private bool _programFailure;
     private bool _deviceFeedbackLive;
-    /// <summary>首启引导只弹一次（见 <see cref="ShowFirstRunGuideIfEmpty"/>）；窗口靠托盘反复隐藏/显示，
-    /// 不能每次显示都弹。</summary>
-    private bool _firstRunGuideShown;
-    /// <summary>自检里打开的主窗口不能弹模态引导框（没人点，测试会卡住）。</summary>
+    /// <summary>DEV-15: the in-page first-run empty-state banner (see
+    /// <see cref="RefreshFirstRunBanner"/>). Run-scoped dismiss: closing it hides it until the
+    /// library / activities become non-empty and empty again (a library clear or a new config
+    /// may bring it back). Never modal, never blocks F12/Esc.</summary>
+    private Panel? _firstRunBanner;
+    private Label? _firstRunBannerLabel;
+    private bool _firstRunBannerDismissed;
+    /// <summary>自检里打开的主窗口不能显示首启引导（没人点，测试会卡住）。Kill-switch for the
+    /// DEV-15 empty-state banner; the tests set it false.</summary>
     internal bool FirstRunGuideEnabled { get; init; } = true;
     private readonly FilesPanel _filesPanel;
     private readonly DevicesPanel _devicesPanel;
@@ -335,6 +344,16 @@ public sealed class MainWindow : GradientForm
         };
         _previewDock.AdditionalStopCondition = () => _music.IsPlaying;
         _music.Changed += OnMusicChanged; // music start/stop changes StopAvailable (OP-04)
+        // DEV-18: the FTB controller reads everything through delegates (the program engine
+        // is swapped by AttachPlaybackEngine, the duration is a live setting), so it is built
+        // once here. The dock button and Ctrl+B both funnel through ToggleFadeToBlack below.
+        _ftbController = new FadeToBlackController(
+            () => _playback,
+            () => _music,
+            () => ProgramScreenBounds?.Invoke(),
+            () => _settingsStore.Current.FadeToBlackMilliseconds);
+        _previewDock.FadeToBlackRequested += ToggleFadeToBlack;
+        _previewDock.FadeToBlackActive = () => _ftbController.IsActive;
         _musicBar = new MusicBar(_music) { Dock = DockStyle.Bottom };
         _musicDrawer = new MusicDrawer(_music, _library) { Dock = DockStyle.Bottom };
         _musicBar.PlaylistsRequested += _musicDrawer.Toggle;
@@ -363,6 +382,10 @@ public sealed class MainWindow : GradientForm
         };
         _activitiesPanel.RunRequested += RunActivityItem;
         _activitiesPanel.ClickTakesToAir = () => _settingsStore.Current.ClickTakesToAir;
+        _activitiesPanel.GoLoadsPreviewFirst = () => _settingsStore.Current.GoToPreviewFirst; // DEV-24(b)
+        // DEV-15: library / activity changes re-check the empty-state banner.
+        _filesPanel.ContentChanged = RefreshFirstRunBanner;
+        _activitiesPanel.ContentChanged = RefreshFirstRunBanner;
         _filesPanel.ClickTakesToAir = () => _settingsStore.Current.ClickTakesToAir;
         _library.DefaultCompletion = settingsStore.Current.DefaultCompletionAction;
         _settingsPanel = new SettingsPanel(settingsStore, identity);
@@ -375,6 +398,15 @@ public sealed class MainWindow : GradientForm
         activitiesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, activitiesButton); ShowPanel(_activitiesPanel); };
         devicesButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, devicesButton); ShowPanel(_devicesPanel); };
         settingsButton.Click += (_, _) => { ModernUi.SetNavActive(navButtons, settingsButton); ShowPanel(_settingsPanel); };
+        // DEV-05: the 详情面板's "统一翻页过场设置..." entry jumps to the existing global
+        // setting (same nav state + panel switch as the settings button, then the section
+        // reveal inside the panel). No new setting, no dialog.
+        _activitiesPanel.ShowTransitionSettingsRequested = () =>
+        {
+            ModernUi.SetNavActive(navButtons, settingsButton);
+            ShowPanel(_settingsPanel);
+            _settingsPanel.RevealSlideTransition();
+        };
         hotkeysButton.Click += (_, _) => { using var dialog = new HotkeyListDialog(_settingsStore.Current); dialog.ShowDialog(this); };
 
         var titleBar = new AppTitleBar(this, "终端机");
@@ -448,30 +480,68 @@ public sealed class MainWindow : GradientForm
             }
         };
 
-        // 首启空态引导：窗口第一次真正显示出来后再判断和弹框（构造时窗口还没就位）。
-        Shown += (_, _) => ShowFirstRunGuideIfEmpty();
+        // 首启空态引导：窗口第一次真正显示出来后再判断（构造时窗口还没就位）。
+        Shown += (_, _) => RefreshFirstRunBanner();
     }
 
-    /// <summary>当且仅当文件库为空、且没有任何方案建过活动时，给新用户一个三步引导。判断只读本窗口
-    /// 已经持有的数据（<see cref="_library"/> 与 <see cref="_scenarioStore"/>），不需要新依赖，也不需要
-    /// 持久化「已看过」标记：用户一旦导入文件或建了活动，条件自然不再成立，之后启动不会再出现。
-    /// 注意默认方案是 ActivitiesPanel 的 <c>EnsureAtLeastOneScenario</c> 补建的空方案（零个活动），
-    /// 所以判断看的是「活动总数」，不是「方案是否存在」。DEV-15：输出中绝不弹出——那时操作员正在
-    /// 跑演出，不是 onboarding；那次尝试不消耗，输出停止后由 <see cref="OnStateChanged"/> 再试。</summary>
-    private void ShowFirstRunGuideIfEmpty()
+    /// <summary>DEV-15: the first-run empty state, in page and non-modal (the old MessageBox
+    /// guide is gone). When — and only when — the library is empty and no scenario has any
+    /// activity, a banner across the top of the hosted page carries the same three steps;
+    /// it never shows while output is Active, never blocks F12/Esc, and never depends on
+    /// the unimplemented show lock. The judgement only reads data this window already holds
+    /// (<see cref="_library"/> and <see cref="_scenarioStore"/>), with no persisted
+    /// "already seen" flag: once the operator imports a file or creates an activity the
+    /// condition stops holding. Note the default scenario is the empty one ActivitiesPanel's
+    /// <c>EnsureAtLeastOneScenario</c> builds (zero activities), so the judgement counts
+    /// activities, not scenarios. Dismissing is run-scoped and forgotten as soon as content
+    /// exists again, so the banner may reappear after a library clear / new config.</summary>
+    private void RefreshFirstRunBanner()
     {
-        if (_firstRunGuideShown || !FirstRunGuideEnabled) return;
-        if (InvokeRequired) { try { BeginInvoke(ShowFirstRunGuideIfEmpty); } catch (InvalidOperationException) { } return; }
-        if (_stateMachine.State == OutputState.Active) return;
-        _firstRunGuideShown = true;
-        if (_library.Files.Count > 0) return;
-        if (_scenarioStore.Scenarios.Any(scenario => scenario.Activities.Count > 0)) return;
-        MessageBox.Show(this,
-            "欢迎使用 EveryStage。文件库还是空的、也还没有活动，可以按三步开始：\n\n"
-            + "1. 在「文件」页点「导入」，把图片、视频、文档等素材加入文件库；\n"
-            + "2. 在「流程」页新建活动，把文件加入活动并排好播放顺序；\n"
-            + "3. 选好扩展屏后即可播放，也可以等待投屏机连接投屏。",
-            "开始使用", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        if (InvokeRequired) { try { BeginInvoke(RefreshFirstRunBanner); } catch (InvalidOperationException) { } return; }
+        bool empty = FirstRunGuideEnabled && _stateMachine.State != OutputState.Active
+            && _library.Files.Count == 0 && !_scenarioStore.Scenarios.Any(scenario => scenario.Activities.Count > 0);
+        if (!empty)
+        {
+            _firstRunBannerDismissed = false;
+            if (_firstRunBanner != null) _firstRunBanner.Visible = false;
+            return;
+        }
+        if (_firstRunBannerDismissed) return;
+        _firstRunBanner ??= BuildFirstRunBanner();
+        // Re-apply the roles: the banner survives panel switches (ShowPanel clears the host),
+        // and a theme change while it is hidden must not leave it in stale colours.
+        ModernUi.SetBackgroundRole(_firstRunBanner, UiBackgroundRole.SurfaceRaised);
+        if (_firstRunBannerLabel != null) ModernUi.SetForegroundRole(_firstRunBannerLabel, UiForegroundRole.Text);
+        if (!_panelHost.Controls.Contains(_firstRunBanner))
+            _panelHost.Controls.Add(_firstRunBanner); // added after the Fill page: later additions dock first, so the Top banner claims the top edge
+        _firstRunBanner.Visible = true;
+        _firstRunBanner.BringToFront();
+    }
+
+    private Panel BuildFirstRunBanner()
+    {
+        var banner = new Panel { Dock = DockStyle.Top, Height = 80, Padding = new Padding(12, 8, 12, 8) };
+        ModernUi.SetBackgroundRole(banner, UiBackgroundRole.SurfaceRaised);
+        var label = new Label
+        {
+            Dock = DockStyle.Fill, AutoSize = false,
+            Text = "欢迎使用 EveryStage。文件库还是空的、也还没有活动，可以按三步开始：\n"
+                + "1. 在「文件」页点「导入」，把图片、视频、文档等素材加入文件库；\n"
+                + "2. 在「流程」页新建活动，把文件加入活动并排好播放顺序；\n"
+                + "3. 选好扩展屏后即可播放，也可以等待投屏机连接投屏。",
+        };
+        ModernUi.SetForegroundRole(label, UiForegroundRole.Text);
+        var dismiss = new Button { Text = "知道了", Dock = DockStyle.Right, Width = 76, Height = 30 };
+        ModernUi.StyleButton(dismiss);
+        dismiss.Click += (_, _) =>
+        {
+            _firstRunBannerDismissed = true;
+            banner.Visible = false;
+        };
+        banner.Controls.Add(label);
+        banner.Controls.Add(dismiss);
+        _firstRunBannerLabel = label;
+        return banner;
     }
 
     /// <summary>PLANNING.md §5's runtime monitor-hot-plug binding — called (at most once, from
@@ -500,6 +570,9 @@ public sealed class MainWindow : GradientForm
     public void AttachPlaybackEngine(PlaybackEngine playback)
     {
         if (ReferenceEquals(_playback, playback)) return;
+        // DEV-18: reset while _playback still points at the old engine, so a dim left on it
+        // cannot leak into the swapped-in engine (or survive into the next show).
+        _ftbController.Reset();
         if (_playback != null)
         {
             _playback.PlaybackAbnormallyInterrupted -= OnPlaybackAbnormallyInterrupted;
@@ -688,6 +761,10 @@ public sealed class MainWindow : GradientForm
         else if (panel == _devicesPanel) _devicesPanel.Refresh_();
         else if (panel == _activitiesPanel) _activitiesPanel.RefreshTree();
         else if (panel == _settingsPanel) _settingsPanel.Refresh_();
+        // DEV-15: ShowPanel cleared the host, so the banner (if due) must be re-added above
+        // the newly hosted page. The panel refreshes above may already have fired
+        // ContentChanged; this call is idempotent.
+        RefreshFirstRunBanner();
     }
 
     /// <summary>Applies a theme to the window and records it for whichever page is hosted right now;
@@ -709,8 +786,12 @@ public sealed class MainWindow : GradientForm
         // never leak into the venue; it comes back when Program stops.
         _preview.Muted = _preview2.Muted = state == OutputState.Active;
         UpdateStatusLabel();
-        // DEV-15: the first-run guide deferred while output was active gets its try now.
-        if (state != OutputState.Active) ShowFirstRunGuideIfEmpty();
+        // DEV-18: leaving Active resets the FTB state (a disconnect mid-fade must not leave a
+        // dim or a curtain behind for the next show). Entering Active needs no action.
+        if (state != OutputState.Active) _ftbController.Reset();
+        // DEV-15: output stopping may make the empty state showable again (the banner
+        // never shows while output is Active — RefreshFirstRunBanner hides it then).
+        RefreshFirstRunBanner();
     }
 
     /// <summary>Double-click / 播放·预览 / 在本地预览: load and play in the Preview monitor. Always internal —
@@ -843,6 +924,9 @@ public sealed class MainWindow : GradientForm
         if (InvokeRequired) { BeginInvoke(() => OnProgramFileStarted(file)); return; }
         EnterSection(_playback?.CurrentActivity);
         NotifyProgramReady();
+        // DEV-03: the program engine advanced (Take, auto-advance) with no state change —
+        // an unlocked NEXT item may just have gone on air; re-lock the detail panel.
+        _activitiesPanel.RefreshDetailProtection();
     }
 
     private void OnProgramPlaybackStateChanged(PlaybackChannelState state)
@@ -1026,8 +1110,21 @@ public sealed class MainWindow : GradientForm
     /// <summary>急停 from outside the window (HTTP 外控): the same as 「■ 停止输出」.</summary>
     internal void EmergencyStop() => StopProgramOutput();
 
+    /// <summary>DEV-18: FTB — the single choke point (dock 黑场 button + Ctrl+B). Only while local
+    /// media is on air: a device cast owns the program picture, and with nothing on air there
+    /// is nothing to black out. Never a global hotkey, never a stop: the output stays
+    /// connected, and F12 still stops at once (StopProgramOutput resets the controller first).</summary>
+    private void ToggleFadeToBlack()
+    {
+        if (_stateMachine.State != OutputState.Active || _stateMachine.Source != ProgramSource.LocalMedia || _playback == null) return;
+        _ftbController.Toggle();
+    }
+
     private void StopProgramOutput()
     {
+        // DEV-18: F12 / 停止输出 never waits for a fade — the FTB state resets first, synchronously,
+        // so the curtain is down and both dims are full before anything else stops.
+        _ftbController.Reset();
         // DEV-06: a pending Take decision dies with the stop — dismissing its notice resolves it
         // as cancelled, so a choice made after stopping can never take anything back on air.
         _pendingTakeToast?.Dismiss();
@@ -1084,6 +1181,17 @@ public sealed class MainWindow : GradientForm
             if (keyData == settings.HotkeyFor(HotkeyAction.PauseProgram)) { TogglePlayPause(); return true; }
             if (keyData == settings.HotkeyFor(HotkeyAction.NextItem)) { _activitiesPanel.RunNext(); return true; }
             if (keyData == settings.HotkeyFor(HotkeyAction.PreviousItem)) { _activitiesPanel.RunPrevious(); return true; }
+            // DEV-18: FTB (default Ctrl+B, rebindable, app-only). Inactive while typing — Ctrl+B
+            // is Bold in a text box, and the box must keep it (the typing+editingKey exemption
+            // above does not cover Ctrl+letter keys, so the !typing gate is explicit here) — and
+            // while an embedded Office/WPS document is being edited on Program, whose own window
+            // owns the picture. Real-machine check needed for the edit-state detection.
+            if (!typing && keyData == settings.HotkeyFor(HotkeyAction.FadeToBlack)
+                && _playback?.OfficeSession?.Status != OfficeSessionStatus.Editing)
+            {
+                ToggleFadeToBlack();
+                return true;
+            }
         }
         return base.ProcessCmdKey(ref msg, keyData);
     }

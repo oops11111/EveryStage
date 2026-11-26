@@ -140,6 +140,9 @@ public sealed partial class ActivitiesPanel
     {
         var (_, activity, file) = GetSelection();
         if (activity == null || file?.Kind != MediaKind.Document) return;
+        // DEV-03: belt-and-braces behind the disabled button/menu item — the dialog must
+        // never open for a locked file, even if an enablement refresh was missed.
+        if (DetailEditLocked(file)) return;
         using var dialog = new DocumentSettingsDialog(file);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         var old = file.Document;
