@@ -1435,9 +1435,19 @@ internal static class DocumentTests
             Console.WriteLine("PASS: window may stay partly off screen; an unreachable title bar is brought back");
         }
         // 第二十一轮 notices: a fixed three-slot area in the 监看 column; a fourth drops the oldest; no ON AIR bar.
+        // DEV-10: a Critical notice is never evicted and never auto-closes, so a startup-problem toast
+        // left over from an earlier phase would sit at the head of the stack; dismiss what is on screen
+        // first (promoting and dismissing anything queued behind it) so the check below tests
+        // ordinary-notice eviction only.
         {
             var stack = (ToastStack)type.GetField("_toastStack", flags)!.GetValue(window)!;
             int areaHeight = stack.Height;
+            for (int attempt = 0; attempt < 5 && stack.Notices.Count > 0; attempt++)
+            {
+                foreach (var old in stack.Notices.ToList()) old.Dismiss();
+                Pump(50);
+            }
+            Require(stack.Notices.Count == 0, "Pre-existing notices did not dismiss.");
             for (int i = 1; i <= 4; i++) stack.Show($"通知 {i}", ToastSeverity.Info);
             Pump(50);
             Require(stack.Notices.Count == ToastStack.MaxVisible && stack.Notices[0].Message == "通知 2" && stack.Height == areaHeight
@@ -1446,6 +1456,22 @@ internal static class DocumentTests
             Require(WaitFor(() => stack.Notices.Count == 0, 5000), "Notices did not close by themselves after 3 s.");
             Require(type.GetField("_onAir", flags) == null, "The ON AIR bar is still there.");
             Console.WriteLine("PASS: notices sit in the right column (max 3, fixed height, close after 3 s); no ON AIR bar");
+        }
+        // DEV-10: a Critical notice survives a pile of ordinary notices and the 3 s lifetime, until dismissed.
+        {
+            var stack = (ToastStack)type.GetField("_toastStack", flags)!.GetValue(window)!;
+            int areaHeight = stack.Height;
+            stack.Show("严重问题", ToastSeverity.Critical);
+            for (int i = 1; i <= 4; i++) stack.Show($"通知 {i}", ToastSeverity.Info);
+            Pump(50);
+            Require(stack.Notices.Count == ToastStack.MaxVisible && stack.Notices[0].Message == "严重问题" && stack.Height == areaHeight,
+                $"Critical notice did not survive ordinary notices: {stack.Notices.Count} shown, first \"{(stack.Notices.Count > 0 ? stack.Notices[0].Message : "<none>")}\", height {stack.Height} (area {areaHeight}).");
+            Require(WaitFor(() => stack.Notices.Count == 1 && stack.Notices[0].Message == "严重问题", 5000),
+                "Critical notice disappeared without being dismissed.");
+            stack.Notices[0].Dismiss();
+            Pump(50);
+            Require(stack.Notices.Count == 0, "Critical notice did not dismiss on demand.");
+            Console.WriteLine("PASS: Critical notices are never evicted and never auto-close; dismissed on demand");
         }
         // Two identical 监看 windows: with only the main display, files play in the first free window
         // (both busy: the top one); a file dropped on a window plays in that window.
