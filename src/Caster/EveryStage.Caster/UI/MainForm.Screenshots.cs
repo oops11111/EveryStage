@@ -7,9 +7,9 @@ namespace EveryStage.Caster.UI;
 
 public sealed partial class MainForm
 {
-    /// <summary>CI only (<c>--ui-screenshots &lt;dir&gt;</c>): renders every page and the cast bar in both
-    /// themes, with made-up sample terminals, so the layout can be reviewed without a LAN or a
-    /// terminal. Never reached in normal use.</summary>
+    /// <summary>CI only (<c>--ui-screenshots &lt;dir&gt;</c>): renders every page and the cast bar in
+    /// the single Tech dark theme, with made-up sample terminals, so the layout can be reviewed
+    /// without a LAN or a terminal. Never reached in normal use.</summary>
     internal void CaptureScreenshots(string directory)
     {
         Directory.CreateDirectory(directory);
@@ -28,11 +28,10 @@ public sealed partial class MainForm
             new TerminalListEntry(Guid.NewGuid(), "展厅 LED", null, DateTimeOffset.Now.AddDays(-12)),
         };
 
-        foreach (var theme in new[] { CasterTheme.Light, CasterTheme.Dark })
+        // DEV-13: Tech dark is the only look — one pass, no theme cycling.
+        foreach (var theme in new[] { CasterTheme.Dark })
         {
-            _settings.Theme = theme;
             ModernUi.SetTheme(theme);
-            UpdateThemeButton();
             ApplyThemeEverywhere();
             string prefix = $"caster-{theme.ToString().ToLowerInvariant()}";
 

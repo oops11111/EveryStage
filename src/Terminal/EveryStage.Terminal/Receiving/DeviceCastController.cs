@@ -35,7 +35,13 @@ internal sealed class DeviceCastController : IDisposable
     private readonly Func<VideoSurface?> _programSurface;
     private readonly Func<PlaybackEngine?> _playback;
     private readonly Func<VideoSurface, int, int, int, bool, int, int, int, bool, byte, byte, Guid, byte[], byte[], IPAddress, IDeviceCastStream> _streamFactory;
-    private readonly Func<DiscoveryService.CastStartInfo, string, bool, OverlayWindow, bool> _confirmReplacement;
+    private readonly Func<DiscoveryService.CastStartInfo, string, bool, OverlayWindow, Task<bool>> _confirmReplacement;
+    private PendingReplacement? _pendingReplacement;
+
+    /// <summary>A replacement decision awaiting the operator: its task resolves when the operator
+    /// chooses (or dismisses the notice — a dismissal declines). Kept so a superseding connect can
+    /// refuse it instead of leaving a stale decision on screen.</summary>
+    private sealed record PendingReplacement(TaskCompletionSource<bool> Completion, ToastNotification Toast);
 
     private IDeviceCastStream? _receiver;
     private VideoSurface? _deviceSurface;
@@ -62,7 +68,7 @@ internal sealed class DeviceCastController : IDisposable
         Func<VideoSurface?> programSurface,
         Func<PlaybackEngine?> playback,
         Func<VideoSurface, int, int, int, bool, int, int, int, bool, byte, byte, Guid, byte[], byte[], IPAddress, IDeviceCastStream>? streamFactory = null,
-        Func<DiscoveryService.CastStartInfo, string, bool, OverlayWindow, bool>? confirmReplacement = null,
+        Func<DiscoveryService.CastStartInfo, string, bool, OverlayWindow, Task<bool>>? confirmReplacement = null,
         Func<int, int, EveryStage.Rendering.Audio.AudioPlaybackClock>? audioOutputFactory = null,
         Action<string>? audioRecovered = null)
     {
@@ -78,7 +84,7 @@ internal sealed class DeviceCastController : IDisposable
             audioIsAac, payloadType, audioPayloadType, mediaSessionId, videoKey, audioKey, allowedSender) =>
             new CastReceiverStream(surface, width, height, videoPort, hasAudio, audioSampleRate, audioChannels, audioPort,
                 audioIsAac, payloadType, audioPayloadType, mediaSessionId, videoKey, audioKey, allowedSender, audioOutputFactory, audioRecovered));
-        _confirmReplacement = confirmReplacement ?? ShowReplacementDialog;
+        _confirmReplacement = confirmReplacement ?? ShowReplacementToastAsync;
     }
 
     public bool HasReceiver => _receiver != null;
@@ -97,7 +103,12 @@ internal sealed class DeviceCastController : IDisposable
         catch (Exception) { }
     }
 
-    public void Connect(DiscoveryService.CastStartInfo info)
+    /// <summary>Starts a cast request. DEV-06: the replacement decision is a non-modal notice, so
+    /// this awaits the operator instead of blocking the UI thread on a dialog — the current picture
+    /// stays until the operator decides, a pending decision never auto-proceeds, and F12 keeps
+    /// working throughout. Must be called on the UI thread (Program.cs posts it there); the awaits
+    /// resume on that same context, so the control creation below stays on the UI thread.</summary>
+    public async Task ConnectAsync(DiscoveryService.CastStartInfo info)
     {
         var overlay = _overlay();
         var programSurface = _programSurface();
@@ -113,14 +124,43 @@ internal sealed class DeviceCastController : IDisposable
 
         if (_receiver != null && info.DeviceId != _deviceId)
         {
+            // A decision is already pending for another device: refuse at once instead of stacking
+            // a second decision the operator has not seen.
+            if (_pendingReplacement != null)
+            {
+                info.CompleteStart(false, "终端操作员正在确认另一台设备的投屏请求，请稍后再试。", false);
+                return;
+            }
             info.CompleteStart(false, null, true);
             string current = _deviceName ?? _deviceId.ToString();
-            if (!_confirmReplacement(info, current, _onProgram, overlay))
+            var receiverAtRequest = _receiver;
+            bool accepted;
+            try { accepted = await _confirmReplacement(info, current, _onProgram, overlay); }
+            catch (Exception ex)
+            {
+                info.CompleteStart(false, ex.Message, false);
+                return;
+            }
+            if (!accepted)
             {
                 info.CompleteStart(false, "终端操作员拒绝了投屏请求。", false);
                 return;
             }
+            // A different receiver took over while the operator decided (a same-device reconnect
+            // replaces directly): the request this decision was about is stale — refuse it rather
+            // than tearing down the live session.
+            if (!ReferenceEquals(_receiver, receiverAtRequest))
+            {
+                info.CompleteStart(false, "投屏请求已过时，另一路投屏已接管。", false);
+                return;
+            }
             RestoreProgram();
+        }
+        else
+        {
+            // A direct connect (same device, or no current receiver) supersedes any pending
+            // decision: refuse it — its request no longer describes the live receiver.
+            RefusePendingReplacement();
         }
 
         Stop("replaced_by_new_cast");
@@ -330,12 +370,35 @@ internal sealed class DeviceCastController : IDisposable
         _onProgram = true;
     }
 
-    private bool ShowReplacementDialog(DiscoveryService.CastStartInfo info, string currentDeviceName, bool currentOnProgram, OverlayWindow overlay)
+    /// <summary>The replacement decision as a sticky notice (DEV-06): 接受 / 拒绝 actions, and
+    /// dismissing it without choosing declines. The notice stays until the operator acts, the
+    /// current picture stays until then, and no choice ever auto-proceeds.</summary>
+    private Task<bool> ShowReplacementToastAsync(DiscoveryService.CastStartInfo info, string currentDeviceName, bool currentOnProgram, OverlayWindow overlay)
     {
-        using var dialog = new DeviceCastRequestDialog(info.DeviceName, currentDeviceName, currentOnProgram);
-        OperatorScreen.PlaceOnOperatorScreen(dialog, _mainWindow, overlay.Monitor);
-        dialog.ShowDialog(_mainWindow);
-        return dialog.Accepted;
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        string where = currentOnProgram ? "正在大屏上" : "正在预览";
+        var toast = _mainWindow.ShowStickyToast(
+            $"“{info.DeviceName}”请求投屏，是否替换当前设备“{currentDeviceName}”（{where}）？",
+            ToastSeverity.Warning,
+            new ToastAction("接受", () => completion.TrySetResult(true)),
+            new ToastAction("拒绝", () => completion.TrySetResult(false)));
+        var pending = new PendingReplacement(completion, toast);
+        _pendingReplacement = pending;
+        toast.Dismissed += () =>
+        {
+            if (ReferenceEquals(_pendingReplacement, pending)) _pendingReplacement = null;
+            completion.TrySetResult(false);
+        };
+        return completion.Task;
+    }
+
+    /// <summary>Refuses a pending replacement decision (a direct connect superseded it): dismissing
+    /// the notice resolves its task as refused.</summary>
+    private void RefusePendingReplacement()
+    {
+        var pending = _pendingReplacement;
+        _pendingReplacement = null;
+        pending?.Toast.Dismiss();
     }
 
     private void RestoreProgram()

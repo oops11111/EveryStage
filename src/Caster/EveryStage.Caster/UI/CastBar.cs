@@ -32,7 +32,7 @@ internal sealed class CastBar : Form
     private const uint WdaExcludeFromCapture = 0x11;
 
     private const int BarHeight = 48, BarWidth = 560, DetailsHeight = 236;
-    private const int MetricsHeight = 46, WarningHeight = 22;
+    private const int MetricsHeight = 46, WarningHeight = 22, DisclosureHeight = 20;
 
     private readonly string _terminalName;
     private readonly BarButton _expand = new() { Glyph = ButtonGlyph.ChevronDown, AccessibleName = "展开详情" };
@@ -42,6 +42,13 @@ internal sealed class CastBar : Form
     private readonly ThemedLabel _latencyTitle = Small("延迟"), _resolutionTitle = Small("分辨率 · 码率"), _confirmedTitle = Small("终端确认"), _soundTitle = Small("声音");
     private readonly ThemedLabel _latency = Value(), _resolution = Value(), _confirmed = Value(), _sound = Value();
     private readonly ThemedLabel _warning = new ThemedLabel { Font = new Font(ModernUi.UiFont, 9F), Visible = false }.With(TextRole.Warning);
+    // DEV-08: the auth≠encryption line, always visible while casting — the short form of the
+    // standby page's wording, so the operator never has to unfold the details to see it.
+    private readonly ThemedLabel _disclosure = new ThemedLabel
+    {
+        Font = new Font(ModernUi.UiFont, 8.5F),
+        Text = "画面经设备认证但不加密，请只在受信任的局域网中使用。",
+    }.With(TextRole.Muted);
     private readonly ThemedLabel _software = new ThemedLabel { Font = new Font(ModernUi.UiFont, 9F), Visible = false, Text = "这台电脑没有显卡编码器，正在用软件编码，CPU 占用会高一些。" }.With(TextRole.Warning);
     private readonly TextBox _details = new() { ReadOnly = true, Multiline = true, BorderStyle = BorderStyle.None, ScrollBars = ScrollBars.Vertical, Font = new Font(ModernUi.UiFont, 8.5F) };
     private readonly ThemedLabel _note = new ThemedLabel { Font = new Font(ModernUi.UiFont, 8.5F) }.With(TextRole.Muted);
@@ -68,7 +75,7 @@ internal sealed class CastBar : Form
         Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         ClientSize = new Size(BarWidth, BarHeight + MetricsHeight);
 
-        _metricsPanel.Controls.AddRange(new Control[] { _latencyTitle, _resolutionTitle, _confirmedTitle, _soundTitle, _latency, _resolution, _confirmed, _sound, _warning });
+        _metricsPanel.Controls.AddRange(new Control[] { _latencyTitle, _resolutionTitle, _confirmedTitle, _soundTitle, _latency, _resolution, _confirmed, _sound, _warning, _disclosure });
         _detailsPanel.Controls.AddRange(new Control[] { _software, _details, _note });
         Controls.AddRange(new Control[] { _expand, _stop, _metricsPanel, _detailsPanel });
         _expand.Click += (_, _) => SetExpanded(!_detailsPanel.Visible);
@@ -88,9 +95,21 @@ internal sealed class CastBar : Form
         base.OnHandleCreated(e);
         try { ExcludedFromCapture = SetWindowDisplayAffinity(Handle, WdaExcludeFromCapture); }
         catch (EntryPointNotFoundException) { ExcludedFromCapture = false; }
+        // Pessimistic until MainForm places the bar and reports whether it sits on the captured
+        // screen (DEV-08): without exclusion it would appear in the cast picture.
+        UpdateCaptureNote(onCapturedScreen: true);
+    }
+
+    /// <summary>The details-panel note about where the bar may appear: exclusion working means
+    /// never; otherwise it depends on whether the bar sits on the captured screen. Called after
+    /// placement (and again if the bar is moved off the captured screen).</summary>
+    public void UpdateCaptureNote(bool onCapturedScreen)
+    {
         _note.Text = ExcludedFromCapture
             ? "可以拖到屏幕任何位置。这个小条不会出现在大屏上。"
-            : "可以拖到屏幕任何位置。这台电脑的 Windows 版本较旧，这个小条会出现在大屏画面里。";
+            : onCapturedScreen
+                ? "可以拖到屏幕任何位置。这台电脑的 Windows 版本较旧，这个小条会出现在大屏画面里。"
+                : "可以拖到屏幕任何位置。这个小条在未投送的屏幕上，不会出现在大屏上。";
     }
 
     /// <summary>Top-centre of the screen the operator was working on.</summary>
@@ -115,8 +134,8 @@ internal sealed class CastBar : Form
     }
 
     /// <summary>Collapsed height: title row + the always-visible metrics row (+ the warning line
-    /// while a drop counter is non-zero).</summary>
-    private int MetricsPanelHeight => LogicalToDeviceUnits(MetricsHeight + (_warning.Visible ? WarningHeight : 0));
+    /// while a drop counter is non-zero) + the persistent auth≠encryption line (DEV-08).</summary>
+    private int MetricsPanelHeight => LogicalToDeviceUnits(MetricsHeight + (_warning.Visible ? WarningHeight : 0) + DisclosureHeight);
 
     private void UpdateBarSize()
     {
@@ -223,6 +242,7 @@ internal sealed class CastBar : Form
             values[i].Bounds = new Rectangle(x, s(24), col - gap, s(20));
         }
         if (_warning.Visible) _warning.Bounds = new Rectangle(pad, s(46), ClientSize.Width - pad * 2, s(20));
+        _disclosure.Bounds = new Rectangle(pad, s(46) + (_warning.Visible ? s(WarningHeight) : 0), ClientSize.Width - pad * 2, s(18));
         int w = _detailsPanel.Width - s(32), y = s(12);
         if (_software.Visible)
         {

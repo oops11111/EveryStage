@@ -522,7 +522,10 @@ internal sealed class TerminalApplicationContext : ApplicationContext
 
     private void OnCastStartRequested(DiscoveryService.CastStartInfo info)
     {
-        _uiContext.Post(_ => _deviceCastController?.Connect(info), null);
+        // DEV-06: ConnectAsync awaits the operator's replacement decision on a non-modal notice;
+        // it never throws out of the posted callback (every failure answers the request itself),
+        // so discarding the task here cannot lose an unobserved exception.
+        _uiContext.Post(_ => _ = _deviceCastController?.ConnectAsync(info), null);
     }
 
     private void OnCastStopRequested(Guid deviceId)

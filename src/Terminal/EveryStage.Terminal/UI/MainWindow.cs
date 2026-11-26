@@ -47,6 +47,8 @@ public sealed class MainWindow : GradientForm
     private readonly MusicDrawer _musicDrawer;
     private readonly Panel _monitorColumn;
     private readonly RoundedActionButton _expandMonitorButton;
+    private readonly RoundedActionButton _collapseStopButton; // DEV-22: red stop entry, collapsed column only
+    private readonly Label _stickyBadge; // DEV-10: sticky-notice count, collapsed column only
     private bool _monitorCollapsed;
 
     // Preview channel: always exists, renders into the dock's monitor, independent of the extended
@@ -58,6 +60,9 @@ public sealed class MainWindow : GradientForm
     private readonly PlaybackEngine _preview2;
     private readonly VideoSurface? _preview2VideoSurface;
     private readonly ToastStack _toastStack;
+    /// <summary>A Take decision awaiting the operator (DEV-06): dismissed by a full stop, so a
+    /// choice made after stopping can never take anything back on air.</summary>
+    private ToastNotification? _pendingTakeToast;
     private readonly Label _statusLabel;
     private readonly RoundedActionButton _emergencyStop;
     private readonly EmergencyStopHotkey _emergencyHotkey;
@@ -203,7 +208,31 @@ public sealed class MainWindow : GradientForm
         new ToolTip().SetToolTip(_expandMonitorButton, "展开监看栏");
         _expandMonitorButton.Click += (_, _) => SetMonitorCollapsed(false);
         _previewDock.CollapseRequested += () => SetMonitorCollapsed(true);
+        _stickyBadge = new Label
+        {
+            Dock = DockStyle.Top,
+            Height = LogicalToDeviceUnits(26),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Visible = false,
+            Font = new Font(ModernUi.UiFontSemibold, 10F),
+            Cursor = Cursors.Hand,
+        };
+        new ToolTip().SetToolTip(_stickyBadge, "有需要处理的消息，点一下展开监看栏");
+        _stickyBadge.Click += (_, _) => SetMonitorCollapsed(false);
+        // DEV-22: the collapsed column keeps its own red stop entry — the same action and the same
+        // StopAvailable rule as the title-bar button, reachable without expanding the column first.
+        _collapseStopButton = new RoundedActionButton
+        {
+            Text = "■", AccessibleName = "停止输出（急停 F12）", Dock = DockStyle.Top,
+            Height = LogicalToDeviceUnits(34), Visible = false,
+            BackColor = Color.FromArgb(180, 40, 48), ForeColor = Color.White,
+        };
+        ModernUi.StyleButton(_collapseStopButton, primary: true, danger: true);
+        new ToolTip().SetToolTip(_collapseStopButton, "停止输出（急停 F12）");
+        _collapseStopButton.Click += (_, _) => StopProgramOutput();
         _monitorColumn.Controls.Add(_previewDock);
+        _monitorColumn.Controls.Add(_stickyBadge);
+        _monitorColumn.Controls.Add(_collapseStopButton);
         _monitorColumn.Controls.Add(_expandMonitorButton);
         _previewVideoSurface = TryCreateVideoSurface(_previewDock.PreviewSurface);
         _previewDock.PreviewSurface.VideoHostResized += (w, h) =>
@@ -254,6 +283,7 @@ public sealed class MainWindow : GradientForm
         _previewDock.TakeRequested += style => TakePreviewToProgram(style);
         _previewDock.SwapRequested += SwapPreviewAndProgram;
         _previewDock.StopProgramRequested += StopProgramOutput;
+        _previewDock.TogglePauseRequested += TogglePlayPause; // DEV-11: presenter-window Space
         _previewDock.DeviceTakeRequested += () => DeviceTakeRequested?.Invoke();
         _previewDock.DeviceRevertRequested += () => DeviceRevertRequested?.Invoke();
         _previewDock.ViewProgramRequested += ViewProgramFromDeviceCard;
@@ -262,10 +292,12 @@ public sealed class MainWindow : GradientForm
         // PDF / Word / presentation controls and Preview → Program document sync (实时同步 / 冻结 / 更新大屏).
         _documentSync = new DocumentProgramSync(_preview, () => _playback);
         _previewDock.BindDocumentSync(_documentSync);
+        // DEV-06: reload decisions ask on the sticky-notice surface, never a modal dialog.
+        _previewDock.ConfirmAsync = (message, options) => ShowDecisionToastAsync(message, options);
         // Closing a Word document or presentation with unsaved edits asks here — never a WPS/Word dialog.
-        OfficeSessionManager.Shared.ConfirmSaveOnClose = session => (bool)Invoke(() =>
-            MessageBox.Show(this, $"“{Path.GetFileName(session.SourcePath)}”有未保存的修改，关闭前是否保存？", "保存文档",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes);
+        // DEV-06: a sticky notice with 保存 / 丢弃, never a modal — the close waits for the answer,
+        // and dismissing without choosing aborts the close (the manager keeps the session open).
+        OfficeSessionManager.Shared.ConfirmSaveOnClose = session => AskSaveBeforeCloseAsync(session);
 
         // One shared instance rather than a separate `new FileOperationLogger()` per panel: both
         // panels' loggers ultimately append to the same physical file
@@ -346,8 +378,9 @@ public sealed class MainWindow : GradientForm
         hotkeysButton.Click += (_, _) => { using var dialog = new HotkeyListDialog(_settingsStore.Current); dialog.ShowDialog(this); };
 
         var titleBar = new AppTitleBar(this, "终端机");
-        // Two stop buttons share one rule (SharedPreviewDock.StopAvailable): this one in the title
-        // bar, reachable from every page, and the dock's own button beside the monitors (U1-06).
+        // Three stop buttons share one rule (SharedPreviewDock.StopAvailable): this one in the title
+        // bar, reachable from every page, the dock's own button beside the monitors (U1-06), and the
+        // collapsed column's red entry (DEV-22).
         _emergencyStop = new RoundedActionButton
         {
             Text = "■ 停止输出", AccessibleName = "停止输出（急停 F12）", Width = 140,
@@ -379,7 +412,9 @@ public sealed class MainWindow : GradientForm
         _monitorColumn.Controls.Add(_toastStack);
         _monitorColumn.Controls.SetChildIndex(_previewDock, 0);
         _emergencyHotkey = new EmergencyStopHotkey(StopProgramOutput, message => _toastStack.Show(message, ToastSeverity.Critical));
+        _emergencyHotkey.GlobalStateChanged += UpdateStatusLabel; // DEV-10: persistent status line
         _emergencyHotkey.Configure(settingsStore.Current.GlobalEmergencyStopEnabled, settingsStore.Current.HotkeyFor(HotkeyAction.EmergencyStopGlobal));
+        _toastStack.NoticesChanged += UpdateStickyBadge; // DEV-10: collapsed-column count badge
         if (_playback != null) _playback.PlaybackAbnormallyInterrupted += OnPlaybackAbnormallyInterrupted;
 
         // See PlaybackEngine.PlaybackDeclinedByCastSwitch's own doc comment (README risk #9): a
@@ -421,10 +456,13 @@ public sealed class MainWindow : GradientForm
     /// 已经持有的数据（<see cref="_library"/> 与 <see cref="_scenarioStore"/>），不需要新依赖，也不需要
     /// 持久化「已看过」标记：用户一旦导入文件或建了活动，条件自然不再成立，之后启动不会再出现。
     /// 注意默认方案是 ActivitiesPanel 的 <c>EnsureAtLeastOneScenario</c> 补建的空方案（零个活动），
-    /// 所以判断看的是「活动总数」，不是「方案是否存在」。</summary>
+    /// 所以判断看的是「活动总数」，不是「方案是否存在」。DEV-15：输出中绝不弹出——那时操作员正在
+    /// 跑演出，不是 onboarding；那次尝试不消耗，输出停止后由 <see cref="OnStateChanged"/> 再试。</summary>
     private void ShowFirstRunGuideIfEmpty()
     {
         if (_firstRunGuideShown || !FirstRunGuideEnabled) return;
+        if (InvokeRequired) { try { BeginInvoke(ShowFirstRunGuideIfEmpty); } catch (InvalidOperationException) { } return; }
+        if (_stateMachine.State == OutputState.Active) return;
         _firstRunGuideShown = true;
         if (_library.Files.Count > 0) return;
         if (_scenarioStore.Scenarios.Any(scenario => scenario.Activities.Count > 0)) return;
@@ -533,6 +571,39 @@ public sealed class MainWindow : GradientForm
     internal void ShowToast(string message, ToastSeverity severity, params ToastAction[] actions) =>
         _toastStack.Show(message, severity, actions);
 
+    /// <summary>A decision notice (DEV-06): stays until the operator chooses or dismisses it, and is
+    /// never evicted — the returned notice's <c>Dismissed</c> event resolves the pending decision.</summary>
+    internal ToastNotification ShowStickyToast(string message, ToastSeverity severity, params ToastAction[] actions) =>
+        _toastStack.ShowSticky(message, severity, actions);
+
+    /// <summary>Save / discard decision for a closing Office session (DEV-06): a sticky notice, so
+    /// the close waits without blocking F12. Choosing resolves true/false; dismissing without
+    /// choosing resolves null (the manager aborts the close and keeps the session).</summary>
+    private async Task<bool?> AskSaveBeforeCloseAsync(OfficeSession session)
+    {
+        int? choice = await ShowDecisionToastAsync(
+            $"“{Path.GetFileName(session.SourcePath)}”有未保存的修改，关闭前是否保存？", ["保存", "丢弃"]).ConfigureAwait(true);
+        return choice switch { 0 => true, 1 => false, _ => null };
+    }
+
+    /// <summary>A decision on the sticky-notice surface (DEV-06): one action per option, staying
+    /// until the operator chooses; dismissing without choosing resolves null (never a default
+    /// choice). The notice may be requested from a background thread, so it is marshaled to the
+    /// UI thread.</summary>
+    private Task<int?> ShowDecisionToastAsync(string message, string[] options)
+    {
+        var completion = new TaskCompletionSource<int?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Show()
+        {
+            var actions = options.Select((label, i) => new ToastAction(label, () => completion.TrySetResult(i))).ToArray();
+            var toast = ShowStickyToast(message, ToastSeverity.Warning, actions);
+            toast.Dismissed += () => completion.TrySetResult(null);
+        }
+        if (InvokeRequired) BeginInvoke(new Action(Show));
+        else Show();
+        return completion.Task;
+    }
+
     /// <summary>Starts the playlist marked 「启动后自动播放」 (called once by the application at startup).</summary>
     public void StartBackgroundMusic() => _music.AutoPlayOnStartup();
 
@@ -576,8 +647,21 @@ public sealed class MainWindow : GradientForm
         _monitorCollapsed = collapsed;
         _previewDock.Visible = !collapsed;
         _expandMonitorButton.Visible = collapsed;
+        _collapseStopButton.Visible = collapsed;
+        UpdateStickyBadge();
         ApplyFrameMetrics();
         UpdateStatusLabel(); // the collapsed-column device indicator (OP-29) depends on this
+    }
+
+    /// <summary>DEV-10: the collapsed column keeps a count of the sticky notices (Critical and
+    /// decision toasts) that never evict — visible only while the column is collapsed.</summary>
+    private void UpdateStickyBadge()
+    {
+        if (InvokeRequired) { BeginInvoke(UpdateStickyBadge); return; }
+        int count = _toastStack.StickyCount;
+        _stickyBadge.Visible = _monitorCollapsed && count > 0;
+        _stickyBadge.Text = $"⚠ {count}";
+        ModernUi.SetForegroundRole(_stickyBadge, UiForegroundRole.Danger);
     }
 
     /// <summary>The 1px divider between the rail / monitor column and the page area.</summary>
@@ -614,6 +698,8 @@ public sealed class MainWindow : GradientForm
         // Safety colours are stable across themes; they do not follow the old-colour remapping.
         _emergencyStop.BackColor = ModernUi.Palette.DangerFill;
         _emergencyStop.ForeColor = ModernUi.Palette.DangerFillForeground;
+        _collapseStopButton.BackColor = ModernUi.Palette.DangerFill;
+        _collapseStopButton.ForeColor = ModernUi.Palette.DangerFillForeground;
         foreach (Control hosted in _panelHost.Controls) _panelPalettes[hosted] = ModernUi.Palette;
     }
 
@@ -623,6 +709,8 @@ public sealed class MainWindow : GradientForm
         // never leak into the venue; it comes back when Program stops.
         _preview.Muted = _preview2.Muted = state == OutputState.Active;
         UpdateStatusLabel();
+        // DEV-15: the first-run guide deferred while output was active gets its try now.
+        if (state != OutputState.Active) ShowFirstRunGuideIfEmpty();
     }
 
     /// <summary>Double-click / 播放·预览 / 在本地预览: load and play in the Preview monitor. Always internal —
@@ -649,10 +737,13 @@ public sealed class MainWindow : GradientForm
     /// <summary>The 投屏 click (单击 or 双击, 设置 · 投屏键): straight onto the big screen; the window that
     /// follows the big screen keeps following it, else the first free window starts to, else the top one.
     /// With only the main display it plays in a window instead.</summary>
-    private void CastFile(MediaFile file) =>
-        CastSnapshot(new PlaybackEngine.Snapshot(file, null, -1, TimeSpan.Zero, false), engine => engine.RequestPlay(file, PlaybackTrigger.ManualSkip));
+    private async void CastFile(MediaFile file)
+    {
+        await CastSnapshotAsync(new PlaybackEngine.Snapshot(file, null, -1, TimeSpan.Zero, false),
+            engine => engine.RequestPlay(file, PlaybackTrigger.ManualSkip));
+    }
 
-    private bool CastSnapshot(PlaybackEngine.Snapshot snapshot, Action<PlaybackEngine> playLocally)
+    private async Task<bool> CastSnapshotAsync(PlaybackEngine.Snapshot snapshot, Action<PlaybackEngine> playLocally)
     {
         if (_playback == null)
         {
@@ -662,7 +753,7 @@ public sealed class MainWindow : GradientForm
             return false;
         }
         int target = _previewDock.ProgramWindow ?? _previewDock.FreeWindow(forLocalPlayback: false);
-        if (!TakeSnapshot(snapshot)) return false;
+        if (await TakeSnapshotAsync(snapshot) != true) return false;
         _previewDock.SyncWindowToProgram(target);
         return true;
     }
@@ -724,10 +815,10 @@ public sealed class MainWindow : GradientForm
 
     /// <summary>流程 「下一项 ▶」 / double-click / space: put this item on the big screen, continuing the
     /// section from there. Without an extended display it plays in Preview instead.</summary>
-    private void RunActivityItem(Activity activity, int index)
+    private async void RunActivityItem(Activity activity, int index)
     {
         if (index < 0 || index >= activity.Files.Count) return;
-        bool cast = CastSnapshot(new PlaybackEngine.Snapshot(activity.Files[index], activity, index, TimeSpan.Zero, false),
+        bool cast = await CastSnapshotAsync(new PlaybackEngine.Snapshot(activity.Files[index], activity, index, TimeSpan.Zero, false),
             engine => engine.RequestPlay(activity, index, PlaybackTrigger.ManualSkip));
         if (!cast && _playback == null) EnterSection(activity);
     }
@@ -780,7 +871,7 @@ public sealed class MainWindow : GradientForm
     /// on that frame"; re-taking from it is refused by the Take guard). The other window keeps
     /// whatever it was playing.</summary>
     /// <param name="style">切换 / 淡入淡出 from the dock; null (Ctrl+Enter) uses the item's or 设置's transition.</param>
-    private void TakePreviewToProgram(TransitionStyle? style = null)
+    private async void TakePreviewToProgram(TransitionStyle? style = null)
     {
         int window = _previewDock.ActiveWindow;
         var engine = WindowEngine(window);
@@ -813,15 +904,18 @@ public sealed class MainWindow : GradientForm
         }
         if (_playback != null) _playback.PendingTransition = style;
         // The window taken from now follows the big screen (its own playback stops: no double audio).
-        if (TakeSnapshot(snapshot)) _previewDock.SyncWindowToProgram(window);
-        else if (_playback != null) _playback.PendingTransition = null;
+        // DEV-06: null means another Take decision is already pending — leave PendingTransition
+        // alone, the pending decision owns the take.
+        bool? took = await TakeSnapshotAsync(snapshot);
+        if (took == true) _previewDock.SyncWindowToProgram(window);
+        else if (took == false && _playback != null) _playback.PendingTransition = null;
     }
 
     /// <summary>「⇄ 对调」: the active window's content goes on air with a fade, and what was
     /// on air comes back into the window that followed the big screen, forced paused (OP-01)
     /// — it does NOT keep playing, so pressing it again swaps back. With nothing on air
     /// there is nothing to swap back: the Take still happens and a toast says so (OP-28).</summary>
-    private void SwapPreviewAndProgram()
+    private async void SwapPreviewAndProgram()
     {
         var onAir = _stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.LocalMedia
             ? _playback?.CaptureSnapshot() : null;
@@ -835,9 +929,12 @@ public sealed class MainWindow : GradientForm
             return;
         }
         if (_playback != null) _playback.PendingTransition = TransitionStyle.Dissolve;
-        if (!TakeSnapshot(next))
+        // DEV-06: null means another Take decision is already pending — leave PendingTransition
+        // alone, the pending decision owns the take.
+        bool? took = await TakeSnapshotAsync(next);
+        if (took != true)
         {
-            if (_playback != null) _playback.PendingTransition = null;
+            if (took == false && _playback != null) _playback.PendingTransition = null;
             return;
         }
         _previewDock.SyncWindowToProgram(window);
@@ -858,22 +955,40 @@ public sealed class MainWindow : GradientForm
         WindowEngine(back).RequestPlay(onAir.Value with { Paused = true }, PlaybackTrigger.ManualSkip);
     }
 
-    private bool TakeSnapshot(PlaybackEngine.Snapshot snapshot)
+    /// <summary>Puts a Preview snapshot on Program. DEV-06: the two confirmations (a device cast is
+    /// on air; the cast switch is off) ask on the sticky-notice surface instead of a modal dialog —
+    /// the take waits for the operator, the current picture stays, and F12 keeps working throughout.
+    /// Returns true when the snapshot was accepted for Program, false when refused/cancelled/
+    /// dismissed, and null when another Take decision is already pending (the caller must then do
+    /// nothing — the pending decision owns the take, including any pending transition).</summary>
+    private async Task<bool?> TakeSnapshotAsync(PlaybackEngine.Snapshot snapshot)
     {
         if (_playback == null)
         {
             _toastStack.Show("未连接扩展屏，无法投到屏幕。连接扩展显示器后即可投出；本地预览不受影响。", ToastSeverity.Warning);
             return false;
         }
-        if (_stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.DeviceCast
-            && MessageBox.Show(this, "扩展屏正在输出设备来投的画面。\n切换为本地内容后，设备画面将退回设备投屏窗口。是否继续？", "投到屏幕",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-            return false;
+        if (_stateMachine.State == OutputState.Active && _stateMachine.Source == ProgramSource.DeviceCast)
+        {
+            if (_pendingTakeToast != null)
+            {
+                _toastStack.Show("已有待确认的投屏决定，请先处理。", ToastSeverity.Warning);
+                return null;
+            }
+            int? choice = await AskTakeDecisionAsync(
+                "扩展屏正在输出设备来投的画面。\n切换为本地内容后，设备画面将退回设备投屏窗口。是否继续？");
+            if (choice != 0) return false;
+        }
         if (!_stateMachine.CastSwitchOn)
         {
-            if (MessageBox.Show(this, "投屏开关已关闭（可在托盘菜单中切换）。\n是否开启投屏开关并投到屏幕？", "投到屏幕",
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-                return false;
+            if (_pendingTakeToast != null)
+            {
+                _toastStack.Show("已有待确认的投屏决定，请先处理。", ToastSeverity.Warning);
+                return null;
+            }
+            int? choice = await AskTakeDecisionAsync(
+                "投屏开关已关闭（可在托盘菜单中切换）。\n是否开启投屏开关并投到屏幕？");
+            if (choice != 0) return false;
             _stateMachine.SetCastSwitch(true);
         }
         // Re-taking the file already on air would silently restart it from its start position
@@ -890,17 +1005,45 @@ public sealed class MainWindow : GradientForm
         return _playback.RequestPlay(snapshot);
     }
 
+    /// <summary>A Take decision on the sticky-notice surface (DEV-06): 继续 / 取消, staying until
+    /// the operator chooses; dismissing without choosing cancels the take.</summary>
+    private Task<int?> AskTakeDecisionAsync(string message)
+    {
+        var completion = new TaskCompletionSource<int?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var toast = ShowStickyToast(message, ToastSeverity.Warning,
+            new ToastAction("继续", () => completion.TrySetResult(0)),
+            new ToastAction("取消", () => completion.TrySetResult(1)));
+        toast.Dismissed += () =>
+        {
+            if (ReferenceEquals(_pendingTakeToast, toast)) _pendingTakeToast = null;
+            completion.TrySetResult(null);
+        };
+        _pendingTakeToast = toast;
+        return completion.Task;
+    }
+
     /// <summary>"停止输出": take the extended display off air. Both preview windows stop as well.</summary>
     /// <summary>急停 from outside the window (HTTP 外控): the same as 「■ 停止输出」.</summary>
     internal void EmergencyStop() => StopProgramOutput();
 
     private void StopProgramOutput()
     {
+        // DEV-06: a pending Take decision dies with the stop — dismissing its notice resolves it
+        // as cancelled, so a choice made after stopping can never take anything back on air.
+        _pendingTakeToast?.Dismiss();
+        _pendingTakeToast = null;
         _stateMachine.Disconnect();
         _playback?.Stop();
         _preview.Stop();
         _preview2.Stop();
         _music.Stop();
+        // DEV-01: full stop only — release the parked slideshow session AFTER the engines stop, so a
+        // parked session can never be adopted again after the operator has stopped everything. The
+        // park slot is singular in the shared session manager (not per engine), and releasing it is
+        // idempotent. This must not live inside PlaybackEngine.Stop(): an ordinary stop or file
+        // change parks the session on purpose (PR #14 warm re-Take), and releasing there would
+        // cold-start it.
+        OfficeSessionManager.Shared.ReleaseParkedSession();
         _liveSection = null;
     }
 
@@ -1040,6 +1183,7 @@ public sealed class MainWindow : GradientForm
         bool failed = _programFailure
             || (active && _stateMachine.Source == ProgramSource.LocalMedia && _playback?.State == PlaybackChannelState.Failed);
         _emergencyStop.Enabled = _previewDock.StopAvailable;
+        _collapseStopButton.Enabled = _previewDock.StopAvailable; // DEV-22: same rule as the title-bar button
         var (message, role) =
             failed ? ("● 大屏播放失败", UiForegroundRole.Danger)
             : active && (_playback == null || _stateMachine.Source == ProgramSource.DeviceCast) ? ("● 大屏输出中 · 设备来投", UiForegroundRole.Danger)
@@ -1053,6 +1197,9 @@ public sealed class MainWindow : GradientForm
         if (_monitorCollapsed && _deviceInPreview) message += " · 1 台设备在预览";
         // Stalled device signal (OP-27): the frozen picture must not keep passing for live.
         if (_deviceSignalStalled) message += " · 信号中断";
+        // DEV-10: a global 急停 key that is switched on but cannot work globally stays on the
+        // status line until it is fixed — the one-time Critical toast alone is too easy to miss.
+        if (_emergencyHotkey.GloballyIneffective) message += " · ⚠ 全局急停未生效";
         _statusLabel.Text = message;
         ModernUi.SetForegroundRole(_statusLabel, role);
         _filesPanel.SetOutputActive(active);

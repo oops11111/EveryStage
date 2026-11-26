@@ -10,8 +10,10 @@ public sealed partial class MainForm
     private long _lastEncoderDropCount;
     private DateTime _lastEncoderDropAt = DateTime.MinValue;
 
-    /// <summary>The cast is running: the window steps aside and the bar takes over.</summary>
-    private void EnterCastingMode(DiscoveredTerminal terminal, string monitorLabel)
+    /// <summary>The cast is running: the window steps aside and the bar takes over. Returns false
+    /// when the cast was stopped again at once (DEV-08: the bar could not be kept out of the cast
+    /// picture and there was nowhere else to put it).</summary>
+    private bool EnterCastingMode(DiscoveredTerminal terminal, string monitorLabel, int outputIndex)
     {
         _pairedTerminal = terminal;
         _castMonitorLabel = monitorLabel;
@@ -25,9 +27,46 @@ public sealed partial class MainForm
         _castBar.StopRequested += () => { if (!IsDisposed) BeginInvoke(new Action(() => StopCast())); };
         _castBar.PlaceOn(screen);
         _castBar.Show();
+        if (!EnsureBarNotOnCapturedScreen(outputIndex)) return false;
         Hide();
         _liveCastStatsTimer.Start();
         RefreshLiveCastStats();
+        return true;
+    }
+
+    /// <summary>DEV-08: if Windows would not keep the bar out of the cast picture
+    /// (<see cref="CastBar.ExcludedFromCapture"/>) and the bar sits on the captured screen, move it
+    /// to another screen — or stop the cast when there is nowhere to move it to. A bar on any other
+    /// screen cannot land on program output, exclusion or not. Returns false when the cast was stopped.</summary>
+    private bool EnsureBarNotOnCapturedScreen(int outputIndex)
+    {
+        if (_castBar == null || _castBar.ExcludedFromCapture) return true;
+        Rectangle? captured = null;
+        try
+        {
+            using var gpu = new EveryStage.Rendering.D3D11Device();
+            var match = EveryStage.Caster.Capture.ScreenCaptureSource.EnumerateOutputs(gpu)
+                .FirstOrDefault(o => o.OutputIndex == outputIndex);
+            if (match.DeviceName != null) captured = match.Bounds;
+        }
+        catch (Exception) { } // cannot tell which screen is captured: leave the bar; its note warns
+        if (captured == null) return true;
+        var barScreen = Screen.FromControl(_castBar);
+        bool onCapturedScreen = barScreen.Bounds == captured.Value;
+        _castBar.UpdateCaptureNote(onCapturedScreen);
+        if (!onCapturedScreen) return true;
+        var other = Screen.AllScreens.FirstOrDefault(s => s.Bounds != captured.Value);
+        if (other != null)
+        {
+            _castBar.PlaceOn(other);
+            _castBar.UpdateCaptureNote(onCapturedScreen: false);
+            return true;
+        }
+        // Nowhere to move it to: the bar would sit inside the cast picture — stop instead, with the
+        // reason on the (non-modal) problems page.
+        StopCast(new Problem("投屏已停止", "这台电脑无法把投屏小条排除在投屏画面之外，而只有一个屏幕可放。",
+            new[] { "换一台较新的 Windows 电脑投屏，或接一块扩展屏，把小条放在不投送的屏幕上。" }, null));
+        return false;
     }
 
     /// <summary>Ends the cast (from the bar's 停止, or because it broke) and brings the window back.</summary>
@@ -112,17 +151,24 @@ public sealed partial class MainForm
             ? (session.IsRttStale ? "测量中" : $"约 {rtt.TotalMilliseconds:F0} ms")
             : "测量中";
         // OP-30: the sound cell is liveness-gated — with no terminal report there is nothing to
-        // say about sound. "不可用" is gone: audio simply not being sent says so.
+        // say about sound. "不可用" is gone: audio simply not being sent says so. DEV-14: the cell
+        // reads the session's locked choice (not the live setting, which could change mid-cast),
+        // and a capture/encode failure reads "出错" even when no audio ever flowed — the video
+        // keeps running, and the failure stays visible on the bar.
         string sound = !session.IsTerminalAlive ? "未知（终端无回应）"
-            : !_settings.IncludeAudio ? "未投送"
-            : session.HasAudio ? (session.AudioError != null ? "出错" : "正常")
+            : session.AudioError != null ? "出错"
+            : !session.IncludeAudio ? "未投送"
+            : session.HasAudio ? "正常"
             : "未投送音频";
 
         // The warning line mirrors the details text's drop lines: shown only while a drop
-        // counter is non-zero, one line, same wording — plus the OP-14 silence prompt.
+        // counter is non-zero, one line, same wording — plus the OP-14 silence prompt, plus the
+        // DEV-14 persistent audio-failure line (video keeps running; the reason stays in details).
         var warningParts = new List<string>();
         if (terminalSilent)
             warningParts.Add("终端超过 5 秒没有回应，画面可能没有送达 — 点右上角「停止」结束本次投屏。");
+        if (session.AudioError != null)
+            warningParts.Add("声音不可用（采集或编码出错），画面继续投送。");
         if (networkDrops > 0 || session.AudioChunksDroppedForBackpressure > 0)
             warningParts.Add($"网络发送跟不上丢弃：视频 {networkDrops} 个，声音 {session.AudioChunksDroppedForBackpressure} 个");
         if (encoderDrops > 0)

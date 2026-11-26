@@ -178,7 +178,7 @@ public sealed partial class MainForm
             await _liveCastSession.StartAsync();
             if (IsDisposed || Disposing) return;
             if (_liveCastSession.LastError is { } startError) throw new InvalidOperationException(startError);
-            EnterCastingMode(terminal, resolvedLabel);
+            EnterCastingMode(terminal, resolvedLabel, resolvedIndex);
         }
         catch (Exception ex)
         {

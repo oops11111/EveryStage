@@ -90,6 +90,23 @@ await RunAsync("Pairing keys and identities move into the restricted secure fold
     }
     finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
 });
+await RunAsync("Secure migration failure never falls back to the legacy path (DEV-07)", () =>
+{
+    string root = Path.Combine(Path.GetTempPath(), "EveryStage-SecureFail-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(root);
+        File.WriteAllText(Path.Combine(root, "paired-devices.json"), "[1]");
+        // The secure folder cannot be created (a file sits where the directory goes): the move fails.
+        File.WriteAllText(Path.Combine(root, "secure"), "not a directory");
+        string resolved = EveryStage.Discovery.SecureDataPaths.Resolve("paired-devices.json", root);
+        bool ok = resolved == Path.Combine(root, "secure", "paired-devices.json")
+            && EveryStage.Discovery.SecureDataPaths.MigrationFailed("paired-devices.json", root)
+            && File.ReadAllText(Path.Combine(root, "paired-devices.json")) == "[1]";
+        return Task.FromResult<(bool, string?)>(ok ? (true, null) : (false, "Failed migration fell back to the legacy path or was not recorded."));
+    }
+    finally { try { Directory.Delete(root, recursive: true); } catch (IOException) { } }
+});
 await RunAsync("Log export", () => Task.FromResult(TestLogExport()));
 await RunAsync("Cast audio frames carry their own capture time (A-3)", () => Task.FromResult(TestPcmTimeline()));
 await RunAsync("Log writer: daily retention, write failures counted, folder recreated, export while writing", () => Task.FromResult(TestDailyRollingLogWriter()));

@@ -14,6 +14,12 @@ public static class HttpControlToken
 
     public static string Path { get; set; } = EveryStage.Discovery.SecureDataPaths.Resolve("http-control-token.txt");
 
+    /// <summary>DEV-07: the token file could not be moved into the restricted secure folder (or is
+    /// owned by an untrusted account) — the token works for this run only and is never written to
+    /// the legacy path. Reading this forces the type initializer, hence the <see cref="Resolve"/>
+    /// above, so the failure is recorded before it is reported.</summary>
+    public static bool StorageMigrationFailed => EveryStage.Discovery.SecureDataPaths.MigrationFailed("http-control-token.txt");
+
     public static string Current()
     {
         lock (Gate)

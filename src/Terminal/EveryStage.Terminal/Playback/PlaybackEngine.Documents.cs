@@ -82,6 +82,9 @@ public sealed partial class PlaybackEngine
     private int _presenterBrowseSlide;
     private DocumentPlaybackMode _documentMode;
     private string? _documentNotice;
+    /// <summary>The session this play is still opening (DEV-02): only its progress posts may change
+    /// the notice — a post queued before the open finished is ignored once this is cleared.</summary>
+    private OfficeSession? _openingSession;
     private System.Windows.Forms.Timer? _documentAutoTimer;
     private DateTime _documentAutoLastTick;
     private bool _documentAutoPaused;
@@ -363,12 +366,14 @@ public sealed partial class PlaybackEngine
     {
         int version = _contentLoadVersion;
         var session = OfficeSessions.AcquireWriter(file.SourcePath, suite);
+        string? noticeBeforeOpen = BeginOpenProgress(session);
         try
         {
             await session.EnsureOpenAsync(settings);
         }
         catch (Exception ex)
         {
+            EndOpenProgress(session);
             _ = OfficeSessions.ReleaseAsync(session);
             if (version == _contentLoadVersion && ReferenceEquals(file, _currentFile))
             {
@@ -379,9 +384,12 @@ public sealed partial class PlaybackEngine
         }
         if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile))
         {
+            EndOpenProgress(session);
             _ = OfficeSessions.ReleaseAsync(session);
             return;
         }
+        EndOpenProgress(session);
+        _documentNotice = noticeBeforeOpen;
         AttachOfficeSession(session);
         ShowLatestOfficeFrame(force: true);
     }
@@ -394,12 +402,14 @@ public sealed partial class PlaybackEngine
             forProgram: bounds != null, programBounds: bounds ?? OfficeSessionManager.ParkingBounds);
         var app = _settingsStore.Current;
         session.TransitionPolicy = (SlideTransitionFor(file) != null, app.KeepMorphTransitions, app.KeepAutoAdvanceTransitions);
+        string? noticeBeforeOpen = BeginOpenProgress(session);
         try
         {
             await session.EnsureOpenAsync(settings);
         }
         catch (Exception ex)
         {
+            EndOpenProgress(session);
             _ = OfficeSessions.ReleaseAsync(session);
             if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile)) return;
             // PowerPoint refuses some files that WPS Presentation opens (and the other way round): try the
@@ -427,6 +437,7 @@ public sealed partial class PlaybackEngine
         }
         if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile))
         {
+            EndOpenProgress(session);
             _ = OfficeSessions.ReleaseAsync(session);
             return;
         }
@@ -437,11 +448,22 @@ public sealed partial class PlaybackEngine
         session.AdoptedFromPark = false;
         if (adopted && !await session.VerifyAliveForAdoptAsync().ConfigureAwait(false))
         {
+            EndOpenProgress(session);
             _ = OfficeSessions.ReleaseAsync(session);
             if (version == _contentLoadVersion && ReferenceEquals(file, _currentFile))
                 await PlayNativeShowAsync(file, suite, settings, startSlide, triedOther);
             return;
         }
+        // DEV-01: discard on arrival — the verify above is an await, so a stop (or a superseding
+        // play) may have landed while it ran. Never attach or show this session afterwards.
+        if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile))
+        {
+            EndOpenProgress(session);
+            _ = OfficeSessions.ReleaseAsync(session);
+            return;
+        }
+        EndOpenProgress(session);
+        _documentNotice = noticeBeforeOpen;
         AttachOfficeSession(session);
         if (Channel == PlaybackChannel.Preview)
         {
@@ -452,6 +474,19 @@ public sealed partial class PlaybackEngine
         // freezes the previous program picture, so the audience never sees the parked slide.
         if (adopted && session.Position.Slide != startSlide)
             await SlideCommandAsync(s => s.GoToSlideAsync(startSlide), "转到指定页", SlideMove.Jump);
+        // DEV-01: same guard after the Jump await — a stop during the navigation must not let the
+        // old session's first frame reach the screen. Release directly (never park here): the stop
+        // may already have released the park, and parking now would silently resurrect a session
+        // after a full stop. Detach only if this engine still holds this session: a superseding
+        // play may already have attached a new session, and detaching that one would cut its
+        // frame callbacks.
+        if (version != _contentLoadVersion || !ReferenceEquals(file, _currentFile))
+        {
+            EndOpenProgress(session);
+            if (ReferenceEquals(_officeSession, session)) DetachOfficeSession(release: false);
+            _ = OfficeSessions.ReleaseAsync(session);
+            return;
+        }
         ShowLatestOfficeFrame(force: true);
         if (settings.SecondsPerPage is > 0) ArmDocumentAutoTimer(file, settings);
         _ = WatchForBlankShowAsync(file, session, settings, startSlide, version);
@@ -485,6 +520,33 @@ public sealed partial class PlaybackEngine
     }
 
     // ── Office frames and session state ──────────────────────────────────────────────────────────
+
+    /// <summary>Starts open-progress reporting for <paramref name="session"/> (DEV-02): the session's
+    /// "正在打开…" / "正在原生播放…" reports reach the Preview heading through the document notice.
+    /// Returns the notice the open must restore when it finishes. Reports are marshaled to the UI
+    /// thread and ignored once the open ends, so a report queued earlier never overwrites a newer
+    /// notice. Never a modal, never blocking: F12/Esc keep working while the open runs.</summary>
+    private string? BeginOpenProgress(OfficeSession session)
+    {
+        string? noticeBeforeOpen = _documentNotice;
+        _openingSession = session;
+        session.OpenProgress = progress => _output.Post(() =>
+        {
+            if (!ReferenceEquals(_openingSession, session)) return;
+            _documentNotice = progress ?? noticeBeforeOpen;
+            RaiseDocumentChanged();
+        });
+        return noticeBeforeOpen;
+    }
+
+    /// <summary>Ends open-progress reporting for <paramref name="session"/>: the session stops
+    /// reporting, and any progress post still queued is ignored. Does not touch the notice — the
+    /// caller owns it (restore on success, overwrite on failure, leave alone when superseded).</summary>
+    private void EndOpenProgress(OfficeSession session)
+    {
+        if (ReferenceEquals(_openingSession, session)) _openingSession = null;
+        session.OpenProgress = null;
+    }
 
     private void AttachOfficeSession(OfficeSession session)
     {

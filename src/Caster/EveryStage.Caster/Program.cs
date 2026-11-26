@@ -9,7 +9,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        // CI: render every page in both themes to PNG and exit (see MainForm.CaptureScreenshots).
+        // CI: render every page to PNG and exit (see MainForm.CaptureScreenshots).
         int screenshotFlag = Array.IndexOf(args, "--ui-screenshots");
         if (screenshotFlag >= 0 && screenshotFlag + 1 < args.Length) return RunScreenshots(args[screenshotFlag + 1]);
 

@@ -68,16 +68,17 @@ internal sealed class PresenterWindow : Form
         BackColor = Card, ForeColor = Ink, TabStop = true, WordWrap = true,
     };
 
-    // All pages: slide with the wheel or by dragging, click to put that page on the big screen.
+    // All pages: slide with the wheel or by dragging, click to preview, double-click to air.
     private readonly SlideThumbnailStrip _strip = new(Back, Card, Line, Ink, Muted, Accent);
+    private readonly Button _goToAirButton;
 
     // Footer.
-    private readonly Label _keys = MakeLabel("← →  翻页　·　空格  下一步　·　P  暂停　·　F11  最大化", 9.5F, Muted, align: ContentAlignment.MiddleLeft);
+    private readonly Label _keys = MakeLabel("← →  翻页　·　空格  播停　·　Esc  急停　·　P  计时暂停　·　F11  最大化", 9.5F, Muted, align: ContentAlignment.MiddleLeft);
     private readonly Button _previousButton;
     private readonly Button _nextButton;
     private readonly Button _fullScreen;
 
-    private static readonly string[] KeyHints = { "← →  翻页　·　空格  下一步　·　P  暂停　·　F11  最大化", "← → 翻页 · 空格 下一步 · P 暂停", "← → 翻页 · 空格 下一步", "" };
+    private static readonly string[] KeyHints = { "← →  翻页　·　空格  播停　·　Esc  急停　·　P  计时暂停　·　F11  最大化", "← → 翻页 · 空格 播停 · Esc 急停 · P 计时", "← → 翻页 · 空格 播停 · Esc 急停", "" };
 
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 250 };
     private readonly Stopwatch _stopwatch = new();
@@ -86,16 +87,31 @@ internal sealed class PresenterWindow : Form
     private int _version;
     private float _notesSize = 16F;
     private bool _sample;
+    private readonly Action? _stopRequested;
+    private readonly Action? _togglePauseRequested;
+    private int _previewSlide; // DEV-12: the slide being previewed (0 = none, the live view)
+    private int _previewVersion;
+
+    /// <summary>DEV-11: this window never steals focus when it appears — the operator is looking at
+    /// the main window or the hall. A user-initiated open still brings it forward: the dock calls
+    /// Activate() for that case.</summary>
+    protected override bool ShowWithoutActivation => true;
 
     /// <param name="notify">Called with a short message when a thumbnail click is refused
     /// (the clicked page is already on air — OP-23); the host shows it as a toast. Optional so
     /// the window stays constructible in tests without a host.</param>
+    /// <param name="stopRequested">DEV-11: Esc — the full e-stop, via the host's stop entry
+    /// (disconnect first, like the main window's own key).</param>
+    /// <param name="togglePauseRequested">DEV-11: Space — play/pause exactly as the main window
+    /// (the host's PauseProgram wiring, not a second definition of Space).</param>
     public PresenterWindow(Func<SlideShowSession?> show, Func<Rectangle?> programBounds, Func<PlaybackEngine?> program,
-        Action<string>? notify = null)
+        Action<string>? notify = null, Action? stopRequested = null, Action? togglePauseRequested = null)
     {
         _show = show;
         _program = program;
         _notify = notify;
+        _stopRequested = stopRequested;
+        _togglePauseRequested = togglePauseRequested;
         Text = "演讲者视图";
         StartPosition = FormStartPosition.CenterScreen;
         FormBorderStyle = FormBorderStyle.Sizable;
@@ -125,16 +141,19 @@ internal sealed class PresenterWindow : Form
         _smaller = SmallButton("A−", "备注字号变小（Ctrl −）", () => SetNotesSize(_notesSize - 2));
         _larger = SmallButton("A+", "备注字号变大（Ctrl +）", () => SetNotesSize(_notesSize + 2));
         _previousButton = BigButton("◀  上一步", "上一个动画 / 上一页（←）", () => Step(-1), primary: false);
-        _nextButton = BigButton("下一步  ▶", "下一个动画 / 下一页（→ 或 空格）", () => Step(1), primary: true);
+        _nextButton = BigButton("下一步  ▶", "下一个动画 / 下一页（→）", () => Step(1), primary: true);
         _fullScreen = SmallButton("⤢ 最大化", "最大化 / 还原（F11）", ToggleMaximize);
+        _goToAirButton = SmallButton("投到大屏", "把预览的这一页投到大屏（回车也可以）", () => { if (_previewSlide >= 1) GoTo(_previewSlide); });
+        _goToAirButton.Enabled = false;
 
         Controls.AddRange(new Control[]
         {
             _elapsedCaption, _elapsed, _pause, _reset, _page, _step, _clockCaption, _clock,
             _currentCaption, _currentFrame, _nextCaption, _nextFrame, _notesCaption, _smaller, _larger, _notesFrame,
-            _strip, _keys, _previousButton, _nextButton, _fullScreen,
+            _strip, _keys, _previousButton, _nextButton, _fullScreen, _goToAirButton,
         });
         _strip.SlideChosen += GoTo;
+        _strip.SlidePreviewed += Preview;
 
         _timer.Tick += (_, _) => RefreshShow();
         _timer.Start();
@@ -220,7 +239,8 @@ internal sealed class PresenterWindow : Form
         _currentFrame.Bounds = new Rectangle(pad + (leftW - frameW) / 2, frameTop, frameW, frameH);
         _currentFrame.Padding = new Padding(S(3));
 
-        _nextCaption.Bounds = new Rectangle(rightX, bodyTop, rightW, S(CaptionHeight));
+        _nextCaption.Bounds = new Rectangle(rightX, bodyTop, rightW - S(116), S(CaptionHeight));
+        _goToAirButton.Bounds = new Rectangle(rightX + rightW - S(110), bodyTop, S(110), S(28));
         // The next slide gives way before the notes do: the notes keep at least 140 px (they are what the
         // speaker reads), the next slide takes what is left up to its natural 16:9 height.
         int nextH = Math.Max(S(60), Math.Min(rightW * 9 / 16, bodyBottom - frameTop - gap - S(CaptionHeight) - S(2) - S(140)));
@@ -270,20 +290,72 @@ internal sealed class PresenterWindow : Form
 
     private void ToggleMaximize() => WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
 
-    /// <summary>A thumbnail was clicked: put that page on the big screen — unless it is the
-    /// page already on air (OP-23): re-jumping it would restart its animations in front of the
-    /// audience, so the click is refused with a toast instead. Compared against the show's live
-    /// position, not <see cref="PlaybackEngine.BrowsedSlide"/> — the latter is the presenter's
-    /// preview-browse position, and clicking a browsed page is exactly how it goes to air.</summary>
+    /// <summary>A thumbnail was double-clicked (or Enter pressed on the selected one): put that page
+    /// on the big screen — unless it is the page already on air (OP-23): re-jumping it would
+    /// restart its animations in front of the audience, so the action is refused with a toast
+    /// instead. Compared against the show's live position, not <see cref="PlaybackEngine.BrowsedSlide"/> —
+    /// the latter is the presenter's preview-browse position, and airing a previewed page is exactly
+    /// what this does.</summary>
     private void GoTo(int slide)
     {
         if (_program() is not { } program || _show() is not { } show) return;
+        ClearPreviewState();
         if (show.Position.Slide == slide && slide > 0)
         {
             _notify?.Invoke("这一页已在播出");
             return;
         }
         _ = program.SlideCommandAsync(s => s.GoToSlideAsync(slide), $"跳到第 {slide} 页", SlideMove.Jump);
+    }
+
+    /// <summary>DEV-12: a thumbnail was single-clicked (or arrowed to) — preview that page in this
+    /// window's right column without moving the show. The engine's browse state follows
+    /// (<see cref="PlaybackEngine.BrowseSlide"/> is state-only: it never commands the show), so the
+    /// presenter's frozen position stays consistent. Previewing the page already on air is just the
+    /// live view: the preview clears.</summary>
+    private void Preview(int slide)
+    {
+        if (_show() is not { } show || _program() is not { } program) return;
+        if (show.Position.Slide == slide)
+        {
+            ClearPreview();
+            return;
+        }
+        _previewSlide = slide;
+        _previewVersion++;
+        _goToAirButton.Enabled = true;
+        program.BrowseSlide(slide);
+        _ = LoadPreviewAsync(show, slide, _previewVersion);
+    }
+
+    /// <summary>Forgets the preview selection without re-applying anything (used when the show
+    /// itself moves on to the previewed page, or a new show arrives).</summary>
+    private void ClearPreviewState()
+    {
+        _previewSlide = 0;
+        _previewVersion++;
+        _goToAirButton.Enabled = false;
+    }
+
+    /// <summary>Drops the preview and puts the live page back in the right column.</summary>
+    private void ClearPreview()
+    {
+        ClearPreviewState();
+        if (_shown != null && _slide >= 1) _ = LoadAsync(_shown, _slide, ++_version);
+    }
+
+    private async Task LoadPreviewAsync(SlideShowSession show, int slide, int version)
+    {
+        string notes = "";
+        Bitmap? next = null;
+        try { notes = await show.NotesAsync(slide); } catch (Exception) { }
+        if (slide < show.SlideCount)
+            try { next = await show.GetSlideImageAsync(slide + 1, 960); } catch (Exception) { }
+        if (IsDisposed || version != _previewVersion || _previewSlide != slide) { next?.Dispose(); return; }
+        _notes.Text = string.IsNullOrWhiteSpace(notes) ? "（这一页没有备注）" : notes.Trim().Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
+        _notes.SelectionStart = 0;
+        _notes.ScrollToCaret();
+        SetNext(next, $"预览 · 第 {slide} 页");
     }
 
     private void Step(int direction)
@@ -296,18 +368,20 @@ internal sealed class PresenterWindow : Form
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         // The thumbnail strip owns its keys while it has focus: arrows move its selection,
-        // Space/Enter jump to the selected page — the form-level page turning below must
-        // not steal them.
-        if (_strip.Focused && keyData is Keys.Left or Keys.Right or Keys.Space or Keys.Enter)
+        // Enter airs the selected page — the form-level page turning below must not steal them.
+        // Space is NOT strip-owned (DEV-12): it pauses/resumes playback (DEV-11) wherever focus is.
+        if (_strip.Focused && keyData is Keys.Left or Keys.Right or Keys.Enter)
             return base.ProcessCmdKey(ref msg, keyData);
         // Space on a focused button clicks the button (standard behaviour); everywhere else
-        // it steps the show.
+        // it pauses/resumes playback exactly as the main window (DEV-11) — it no longer steps.
         if (keyData == Keys.Space && ActiveControl is Button) return base.ProcessCmdKey(ref msg, keyData);
         switch (keyData)
         {
             // Up/Down are left to the notes box (scrolling long notes); Page keys and arrows turn pages.
-            case Keys.Right or Keys.PageDown or Keys.Space: Step(1); return true;
+            case Keys.Right or Keys.PageDown: Step(1); return true;
             case Keys.Left or Keys.PageUp: Step(-1); return true;
+            case Keys.Space: _togglePauseRequested?.Invoke(); return true;
+            case Keys.Escape: _stopRequested?.Invoke(); return true;
             case Keys.F11: ToggleMaximize(); return true;
             case Keys.P: TogglePause(); return true;
             case Keys.R: ResetTimer(); return true;
@@ -334,6 +408,7 @@ internal sealed class PresenterWindow : Form
             ++_version;
             _shown = show;
             _slide = -1;
+            ClearPreviewState();
             _stopwatch.Reset();
             if (show != null) _stopwatch.Start();
             UpdatePauseText();
@@ -360,6 +435,8 @@ internal sealed class PresenterWindow : Form
         if (position.Slide >= 1 && position.Slide != _slide)
         {
             _slide = position.Slide;
+            // The show caught up with the previewed page: the preview is the live view again.
+            if (_previewSlide == position.Slide) ClearPreviewState();
             _ = LoadAsync(show, position.Slide, ++_version);
         }
     }
@@ -371,7 +448,8 @@ internal sealed class PresenterWindow : Form
         try { notes = await show.NotesAsync(slide); } catch (Exception) { }
         if (slide < show.SlideCount)
             try { next = await show.GetSlideImageAsync(slide + 1, 960); } catch (Exception) { }
-        if (IsDisposed || version != _version) { next?.Dispose(); return; }
+        // DEV-12: while a preview is up, the live load must not clobber the previewed page.
+        if (IsDisposed || version != _version || _previewSlide != 0) { next?.Dispose(); return; }
         _notes.Text = string.IsNullOrWhiteSpace(notes) ? "（这一页没有备注）" : notes.Trim().Replace("\r\n", "\n").Replace("\n", Environment.NewLine);
         _notes.SelectionStart = 0;
         _notes.ScrollToCaret();

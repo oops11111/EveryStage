@@ -10,7 +10,7 @@ public enum OfficeSuite { Wps, MicrosoftOffice }
 public enum OfficeAppKind { Writer, Presentation }
 
 /// <summary>The automation step that failed, reported to the operator and the document log.</summary>
-public enum OfficeStage { StartApplication, OpenFile, GetWindow, StartSlideShow, Control, Save, Close, Convert }
+public enum OfficeStage { StartApplication, OpenFile, GetWindow, StartSlideShow, StripTransitions, Control, Save, Close, Convert }
 
 public sealed class OfficeOperationException : Exception
 {
@@ -32,6 +32,7 @@ public sealed class OfficeOperationException : Exception
         OfficeStage.OpenFile => "打开文件",
         OfficeStage.GetWindow => "获取窗口",
         OfficeStage.StartSlideShow => "启动放映",
+        OfficeStage.StripTransitions => "去除转场",
         OfficeStage.Control => "放映控制",
         OfficeStage.Save => "保存",
         OfficeStage.Close => "关闭",

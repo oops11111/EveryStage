@@ -41,6 +41,18 @@ internal sealed class EmergencyStopHotkey : NativeWindow, IMessageFilter, IDispo
     /// <summary>The key works globally, by either route.</summary>
     public bool Global => _registered || HookActive;
 
+    /// <summary>Whether the global routes are currently meant to be up (the setting).</summary>
+    public bool Enabled => _enabled;
+
+    /// <summary>DEV-10: the global key is switched on and has a key, but neither global route is
+    /// up (and the hotkey recorder is not holding the routes) — the status line must keep saying so
+    /// until it is fixed, not just once in a toast.</summary>
+    public bool GloballyIneffective => _enabled && _key != Keys.None && !Global && !Recording;
+
+    /// <summary>Raised whenever the global state may have changed (Configure, recording
+    /// start/stop): the status line refreshes from <see cref="GloballyIneffective"/>.</summary>
+    internal event Action? GlobalStateChanged;
+
     public Keys Key => _key;
 
     /// <summary>True while 设置 · 热键 is recording a key: every key then goes to the recorder, and the
@@ -102,6 +114,7 @@ internal sealed class EmergencyStopHotkey : NativeWindow, IMessageFilter, IDispo
             _enabled = false; // force Configure to set up again
             Configure(true, _key);
         }
+        GlobalStateChanged?.Invoke();
     }
 
     public void Configure(bool enabled) => Configure(enabled, _key);
@@ -115,18 +128,27 @@ internal sealed class EmergencyStopHotkey : NativeWindow, IMessageFilter, IDispo
         ReleaseGlobal();
         _enabled = enabled;
         _key = key;
-        if (!enabled || key == Keys.None) return;
+        if (!enabled || key == Keys.None)
+        {
+            GlobalStateChanged?.Invoke();
+            return;
+        }
         uint modifiers = 0x4000; // MOD_NOREPEAT
         if (key.HasFlag(Keys.Alt)) modifiers |= 0x0001;
         if (key.HasFlag(Keys.Control)) modifiers |= 0x0002;
         if (key.HasFlag(Keys.Shift)) modifiers |= 0x0004;
         _registered = RegisterHotKey(Handle, HotkeyId, modifiers, (uint)(key & Keys.KeyCode));
-        if (_registered) return;
+        if (_registered)
+        {
+            GlobalStateChanged?.Invoke();
+            return;
+        }
         int error = Marshal.GetLastWin32Error();
         _hook = SetWindowsHookEx(WH_KEYBOARD_LL, _hookProc, GetModuleHandle(null), 0);
         if (_hook == IntPtr.Zero)
             _failure($"全局急停 {Data.Hotkeys.Format(key)} 无法在全局生效（注册错误 {error}，键盘监听错误 {Marshal.GetLastWin32Error()}）。" +
                      "在 EveryStage 窗口内按此键仍可急停；也可在「设置 · 热键」换一个键。");
+        GlobalStateChanged?.Invoke();
     }
 
     private void ReleaseGlobal()
