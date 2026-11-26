@@ -64,6 +64,8 @@ internal sealed class StandbyView : CasterView
     private readonly ThemedLabel _monitorTitle = NewLabel("投哪块屏幕", TextRole.Text, 10F, semibold: true);
     private readonly FlowLayoutPanel _tiles = new() { WrapContents = true, Margin = Padding.Empty, Padding = Padding.Empty };
     private readonly CheckBox _audio = new() { Text = "同时投送电脑声音", AutoSize = false, Font = new Font(ModernUi.UiFont, 10F), UseMnemonic = false };
+    // DEV-14: the no-audio default, stated on the standby page itself.
+    private readonly ThemedLabel _audioNote = NewLabel("默认不投送电脑声音，勾选后本次投屏带声音。", TextRole.Muted, 9F, align: ContentAlignment.MiddleLeft);
     private readonly ThemedLabel _hint = NewLabel("", TextRole.Muted, 9.5F);
     private readonly ThemedLabel _privacy = NewLabel("投送的是整块屏幕。画面经设备认证但不加密，请只在受信任的局域网中使用。", TextRole.Muted, 9F, align: ContentAlignment.MiddleLeft);
     private readonly ActionButton _start = NewButton("开始投屏", ButtonKind.Primary, ButtonGlyph.Cast, 11F);
@@ -77,7 +79,7 @@ internal sealed class StandbyView : CasterView
 
     public StandbyView()
     {
-        _monitorCard.Controls.AddRange(new Control[] { _monitorTitle, _tiles, _audio });
+        _monitorCard.Controls.AddRange(new Control[] { _monitorTitle, _tiles, _audio, _audioNote });
         // The monitor card and the hint scroll (DiagnosticsView's _scroll pattern); the name,
         // status and start row stay fixed so the button can never be covered by the content.
         _scroll.Controls.AddRange(new Control[] { _monitorCard, _hint });
@@ -177,7 +179,8 @@ internal sealed class StandbyView : CasterView
         _monitorTitle.Bounds = new Rectangle(S(16), S(14), inner, S(22));
         _tiles.Bounds = new Rectangle(S(16), S(42), inner, tilesH);
         _audio.Bounds = new Rectangle(S(16), S(42) + tilesH, inner, S(28));
-        int cardH = S(42) + tilesH + S(28) + S(12);
+        _audioNote.Bounds = new Rectangle(S(16), S(42) + tilesH + S(28), inner, S(20));
+        int cardH = S(42) + tilesH + S(28) + S(20) + S(12);
         _monitorCard.Bounds = new Rectangle(pad + offset.X, offset.Y, sw, cardH);
         _hint.Bounds = new Rectangle(pad + offset.X, offset.Y + cardH + S(12), sw, S(44));
         _scroll.AutoScrollMinSize = new Size(0, cardH + S(12) + S(44));
@@ -287,9 +290,11 @@ internal sealed class ProblemView : CasterView
     private readonly ActionButton _rawToggle = NewButton("原始错误信息（发给技术支持）", ButtonKind.Ghost, ButtonGlyph.ChevronDown, 9.5F);
     private readonly TextBox _raw = new() { ReadOnly = true, Multiline = true, BorderStyle = BorderStyle.None, ScrollBars = ScrollBars.Vertical, Visible = false, Font = new Font(ModernUi.UiFont, 9F) };
     private readonly ActionButton _back = NewButton("返回", ButtonKind.Secondary);
+    private readonly ActionButton _diagnostics = NewButton("诊断", ButtonKind.Ghost, ButtonGlyph.Gear);
     private readonly ActionButton _retry = NewButton("重试", ButtonKind.Primary);
 
     public event Action? BackClicked;
+    public event Action? DiagnosticsClicked;
     public event Action? RetryClicked;
 
     public ProblemView()
@@ -297,7 +302,7 @@ internal sealed class ProblemView : CasterView
         _alertIcon.Paint += (_, e) => Glyphs.Draw(e.Graphics, ButtonGlyph.Warning, new Rectangle(0, 0, _alertIcon.Width, _alertIcon.Width), ModernUi.Palette.Danger);
         _alert.Controls.AddRange(new Control[] { _alertIcon, _title, _reason });
         _stepsCard.Controls.AddRange(new Control[] { _stepsTitle, _steps });
-        Controls.AddRange(new Control[] { _alert, _stepsCard, _rawToggle, _raw, _back, _retry });
+        Controls.AddRange(new Control[] { _alert, _stepsCard, _rawToggle, _raw, _back, _diagnostics, _retry });
         _rawToggle.TextAlign = ContentAlignment.MiddleLeft;
         _rawToggle.Click += (_, _) =>
         {
@@ -306,6 +311,7 @@ internal sealed class ProblemView : CasterView
             PerformLayout();
         };
         _back.Click += (_, _) => BackClicked?.Invoke();
+        _diagnostics.Click += (_, _) => DiagnosticsClicked?.Invoke();
         _retry.Click += (_, _) => RetryClicked?.Invoke();
         OnThemeChanged();
     }
@@ -361,7 +367,9 @@ internal sealed class ProblemView : CasterView
         int buttonsTop = ClientSize.Height - S(24) - S(40);
         _raw.Bounds = new Rectangle(pad + S(12), y, w - S(24), Math.Max(S(24), Math.Min(S(90), buttonsTop - y - S(10))));
         _retry.Bounds = new Rectangle(ClientSize.Width - pad - S(100), buttonsTop, S(100), S(40));
-        _back.Bounds = new Rectangle(_retry.Visible ? _retry.Left - S(10) - S(100) : ClientSize.Width - pad - S(100), buttonsTop, S(100), S(40));
+        // DEV-13: diagnostics lives here now (the sidebar button is gone).
+        _diagnostics.Bounds = new Rectangle(_retry.Visible ? _retry.Left - S(10) - S(100) : ClientSize.Width - pad - S(100), buttonsTop, S(100), S(40));
+        _back.Bounds = new Rectangle(_diagnostics.Left - S(10) - S(100), buttonsTop, S(100), S(40));
     }
 }
 

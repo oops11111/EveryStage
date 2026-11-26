@@ -4,9 +4,10 @@ namespace EveryStage.Terminal.UI;
 
 /// <summary>
 /// A horizontal strip of every slide's thumbnail for the 演讲者视图: slide it with the mouse wheel or by
-/// dragging, click one to put that slide on the big screen. The slide on air is framed and kept in view.
-/// Thumbnails are loaded lazily, visible ones first, one at a time (each is a call into the presentation
-/// program, which must not be flooded mid-show).
+/// dragging, click one to preview it (DEV-12: the presenter window shows that page without moving the
+/// show), double-click or press Enter to put it on the big screen. The slide on air is framed and kept
+/// in view; the preview-selected one gets a dotted frame. Thumbnails are loaded lazily, visible ones
+/// first, one at a time (each is a call into the presentation program, which must not be flooded mid-show).
 /// </summary>
 internal sealed class SlideThumbnailStrip : Control
 {
@@ -20,13 +21,20 @@ internal sealed class SlideThumbnailStrip : Control
     private int _version;
     private bool _loading;
     private int _hover = -1;
-    private int _keyboardSlide;
+    private int _selected; // DEV-12: the preview selection (dotted frame), distinct from the slide on air
     private Point _downAt;
     private float _downOffset;
     private bool _pressed, _dragging;
 
-    /// <summary>A thumbnail was clicked (1-based slide number).</summary>
+    /// <summary>A thumbnail was chosen to go on the big screen: double-click or Enter (1-based slide number).</summary>
     public event Action<int>? SlideChosen;
+
+    /// <summary>A thumbnail was selected for preview: single click or arrow keys (1-based slide number).
+    /// Previewing never moves the show.</summary>
+    public event Action<int>? SlidePreviewed;
+
+    /// <summary>The preview-selected slide (1-based, 0 = none).</summary>
+    public int Selected => _selected;
 
     public SlideThumbnailStrip(Color back, Color card, Color line, Color ink, Color muted, Color accent)
     {
@@ -38,7 +46,7 @@ internal sealed class SlideThumbnailStrip : Control
         TabStop = true;
         AccessibleRole = AccessibleRole.List;
         AccessibleName = "页面缩略图";
-        AccessibleDescription = "方向键选择页面，回车跳到该页";
+        AccessibleDescription = "方向键选择页面并预览，回车把选中的页面投到大屏，双击缩略图也可以";
     }
 
     private int S(int value) => LogicalToDeviceUnits(value);
@@ -59,7 +67,7 @@ internal sealed class SlideThumbnailStrip : Control
         _count = Math.Max(0, count);
         _loader = loader;
         _current = 0;
-        _keyboardSlide = 0;
+        _selected = 0;
         _offset = 0;
         _hover = -1;
         Invalidate();
@@ -111,7 +119,13 @@ internal sealed class SlideThumbnailStrip : Control
     protected override void OnGotFocus(EventArgs e)
     {
         base.OnGotFocus(e);
-        _keyboardSlide = _current >= 1 ? _current : 1;
+        // The selection starts on the slide on air; previewing it is the live view, so the window
+        // simply re-applies the current page.
+        if (_selected < 1 || _selected > _count)
+        {
+            _selected = _current >= 1 ? _current : 1;
+            if (_selected >= 1 && _selected <= _count) SlidePreviewed?.Invoke(_selected);
+        }
         Invalidate();
     }
 
@@ -122,7 +136,9 @@ internal sealed class SlideThumbnailStrip : Control
     }
 
     protected override bool IsInputKey(Keys keyData) =>
-        keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Space or Keys.Enter
+        // DEV-12: Space is NOT a strip key — the form turns it into play/pause (DEV-11), even
+        // with the strip focused. Enter stays: it puts the selected page on the big screen.
+        keyData is Keys.Left or Keys.Right or Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.Enter
             || base.IsInputKey(keyData);
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -130,29 +146,37 @@ internal sealed class SlideThumbnailStrip : Control
         if (_count == 0) { base.OnKeyDown(e); return; }
         int? next = e.KeyCode switch
         {
-            Keys.Left or Keys.Up => Math.Max(1, _keyboardSlide - 1),
-            Keys.Right or Keys.Down => Math.Min(_count, _keyboardSlide + 1),
+            Keys.Left or Keys.Up => Math.Max(1, _selected - 1),
+            Keys.Right or Keys.Down => Math.Min(_count, _selected + 1),
             Keys.Home => 1,
             Keys.End => _count,
             _ => null,
         };
         if (next is { } slide)
         {
-            _keyboardSlide = slide;
-            ScrollIntoView(slide);
-            Invalidate();
-            _ = LoadVisibleAsync();
+            SelectSlide(slide);
             e.Handled = true;
             return;
         }
-        if (e.KeyCode is Keys.Space or Keys.Enter && _keyboardSlide >= 1 && _keyboardSlide <= _count)
+        if (e.KeyCode is Keys.Enter && _selected >= 1 && _selected <= _count)
         {
-            SlideChosen?.Invoke(_keyboardSlide);
+            SlideChosen?.Invoke(_selected);
             e.Handled = true;
             e.SuppressKeyPress = true;
             return;
         }
         base.OnKeyDown(e);
+    }
+
+    /// <summary>Moves the preview selection (arrows, or a click that is not a double-click).</summary>
+    private void SelectSlide(int slide)
+    {
+        if (slide < 1 || slide > _count) return;
+        _selected = slide;
+        ScrollIntoView(slide);
+        Invalidate();
+        _ = LoadVisibleAsync();
+        SlidePreviewed?.Invoke(slide);
     }
 
     protected override void OnMouseWheel(MouseEventArgs e)
@@ -165,6 +189,7 @@ internal sealed class SlideThumbnailStrip : Control
     {
         base.OnMouseDown(e);
         if (e.Button != MouseButtons.Left) return;
+        if (!Focused) Focus(); // arrows/Enter must work right after a click
         _pressed = true;
         _dragging = false;
         _downAt = e.Location;
@@ -197,7 +222,15 @@ internal sealed class SlideThumbnailStrip : Control
         _pressed = false;
         Capture = false;
         Cursor = Cursors.Hand;
-        if (!_dragging && HitTest(e.Location) is var slide and > 0) SlideChosen?.Invoke(slide);
+        if (!_dragging && HitTest(e.Location) is var slide and > 0)
+        {
+            // Single click previews; the second click of a double-click goes to air. (A double-click
+            // also previews first — the preview-then-activate sequence is the natural one.)
+            _selected = slide;
+            Invalidate();
+            if (e.Clicks >= 2) SlideChosen?.Invoke(slide);
+            else SlidePreviewed?.Invoke(slide);
+        }
         _dragging = false;
     }
 
@@ -262,7 +295,7 @@ internal sealed class SlideThumbnailStrip : Control
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         if (_count == 0)
         {
-            TextRenderer.DrawText(g, "放映开始后，这里列出所有页面，点一下就能跳到那一页", Font, ClientRectangle, _muted,
+            TextRenderer.DrawText(g, "放映开始后，这里列出所有页面，点一下先预览，双击（或回车）才跳到那一页", Font, ClientRectangle, _muted,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
             return;
         }
@@ -294,10 +327,11 @@ internal sealed class SlideThumbnailStrip : Control
             TextRenderer.DrawText(g, current ? $"● {slide}  正在放映" : slide.ToString(), Font, label, current ? _accent : _muted,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.NoPrefix);
         }
-        // The keyboard-selected thumb (distinct from the one on air): a dotted accent frame.
-        if (Focused && ShowFocusCues && _keyboardSlide >= 1 && _keyboardSlide <= _count)
+        // The preview-selected thumb (distinct from the one on air): a dotted accent frame,
+        // shown whenever a selection exists — it is the selection, not just a focus cue.
+        if (_selected >= 1 && _selected <= _count && _selected != _current)
         {
-            var focusRect = new Rectangle((int)(Inset + (_keyboardSlide - 1) * Item - _offset), Inset, ThumbWidth, ThumbHeight);
+            var focusRect = new Rectangle((int)(Inset + (_selected - 1) * Item - _offset), Inset, ThumbWidth, ThumbHeight);
             using var focus = new Pen(_accent, S(2)) { DashStyle = DashStyle.Dot };
             g.DrawRectangle(focus, focusRect);
         }

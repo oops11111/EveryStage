@@ -13,7 +13,7 @@ namespace EveryStage.Terminal.Remote;
 /// without it the answer is 401.
 /// <list type="bullet">
 /// <item><c>GET /status</c> — output state, source, cast switch, what Program shows.</item>
-/// <item><c>POST /emergency-stop</c> — 急停 = 停止输出 (Disconnect); there is no 重新投屏 / undo.</item>
+/// <item><c>POST /emergency-stop</c> — 急停 = 全停：先断大屏 (Disconnect)，再停本地窗与背景音乐；there is no 重新投屏 / undo.</item>
 /// </list>
 /// A plain TcpListener on the loopback address (no http.sys URL reservation, no firewall rule). Each
 /// request is written to the audit log (logs\http-control). No HTTPS, no LAN binding in this version.

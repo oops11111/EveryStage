@@ -66,7 +66,7 @@ public sealed class SettingsPanel : UserControl
     private bool _loading;
 
     /// <summary>Shows a toast in the main window (the 10 s 撤销 offer after a risky change).</summary>
-    public Func<string, ToastSeverity, ToastAction[], ToastNotification>? ShowToast { get; set; }
+    public Func<string, ToastSeverity, ToastAction[], ToastNotification?>? ShowToast { get; set; }
 
     // Sentinel for the ComboBox's "自动选择" item — no real MonitorInfo.DeviceName is ever an empty
     // string, so this can't collide with an actual monitor.
@@ -259,7 +259,7 @@ public sealed class SettingsPanel : UserControl
         _httpControlCheckbox = new CheckBox { Text = "启用", AutoSize = true, Checked = settings.HttpControlEnabled, AccessibleName = "HTTP 外控" };
         _httpControlCheckbox.CheckedChanged += (_, _) => Commit(s => s.HttpControlEnabled = _httpControlCheckbox.Checked, "HTTP 外控");
         network.AddRow("HTTP 外控（仅本机）", $"供本机的中控软件使用：http://127.0.0.1:{EveryStage.Terminal.Remote.HttpControlServer.DefaultPort}，" +
-            "GET /status 查询状态，POST /emergency-stop 急停（等同「停止输出」，没有撤销）。每个请求都要带令牌（Authorization: Bearer）；只监听本机，局域网无法访问",
+            "GET /status 查询状态，POST /emergency-stop 急停＝全停：先断大屏，再停本地窗与背景音乐，没有撤销。每个请求都要带令牌（Authorization: Bearer）；只监听本机，局域网无法访问",
             "即时生效", UiForegroundRole.Accent, _httpControlCheckbox);
         var copyToken = new RoundedActionButton { Text = "复制令牌", Width = 92, Height = 30 };
         ModernUi.StyleButton(copyToken);
@@ -278,6 +278,11 @@ public sealed class SettingsPanel : UserControl
             _savedLabel.Text = "令牌已重置";
         };
         network.AddRow("访问令牌", "令牌保存在受限的数据目录中，只显示不保存在设置文件里；泄露时请重置", null, null, copyToken, resetToken);
+        // DEV-07: the token file could not be moved into the restricted folder — the token works
+        // for this run only and is never written to the old location. Say so here, where the token
+        // lives, instead of failing silently.
+        if (EveryStage.Terminal.Remote.HttpControlToken.StorageMigrationFailed)
+            network.AddNote("⚠ 令牌文件未能迁入受限目录：当前令牌仅在本次运行内有效，重启后会变化；请检查数据目录的权限后重启终端机。");
         network.AddNote("投屏的媒体内容经过设备认证，但没有加密：局域网内的其他人可能截获画面和声音。请只在受信任的局域网中使用。");
 
         // --- 诊断 ---
@@ -475,7 +480,7 @@ public sealed class SettingsPanel : UserControl
                 }),
             });
             var expiry = new System.Windows.Forms.Timer { Interval = 10_000 };
-            expiry.Tick += (_, _) => { expiry.Dispose(); toast.Dismiss(); };
+            expiry.Tick += (_, _) => { expiry.Dispose(); toast?.Dismiss(); }; // toast is null while queued (DEV-10)
             expiry.Start();
         }
         return true;

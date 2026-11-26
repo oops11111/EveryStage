@@ -80,7 +80,7 @@ jobs:
           $process = Start-Process -FilePath $exe.FullName -ArgumentList @('--ui-screenshots', (Resolve-Path artifacts/screenshots).Path) -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw "Caster screenshot run failed with exit code $($process.ExitCode)" }
           $shots = Get-ChildItem artifacts/screenshots -Filter 'caster-*.png'
-          if ($shots.Count -lt 14) { throw "Expected 14 Caster screenshots, got $($shots.Count)" }
+          if ($shots.Count -lt 7) { throw "Expected 7 Caster screenshots, got $($shots.Count)" }
 
       - name: Upload self-test logs and timeout dumps
         if: always()

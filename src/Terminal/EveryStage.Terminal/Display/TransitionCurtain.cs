@@ -1,6 +1,7 @@
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using EveryStage.Terminal.Data;
+using EveryStage.Terminal.Documents;
 using EveryStage.Terminal.Playback;
 
 namespace EveryStage.Terminal.Display;
@@ -140,6 +141,8 @@ internal sealed class TransitionController : IDisposable
     private TransitionStyle _style;
     private int _duration;
     private DateTime _phaseStart;
+    private DateTime _switchStarted; // the switch itself (DEV-02 item 4): the first-frame wait is measured from here, including a dip-to-black fade
+    private bool _transitionCompleted; // a reveal ran to the end: Finish logs the inter-item wait (DEV-02 item 4)
     private DateTime? _readyAt;
     private Phase _phase = Phase.Idle;
 
@@ -199,7 +202,9 @@ internal sealed class TransitionController : IDisposable
         _style = style;
         _duration = Math.Clamp(settings.TransitionMilliseconds, 100, 3000);
         _readyAt = null;
+        _transitionCompleted = false;
         _phaseStart = DateTime.UtcNow;
+        _switchStarted = _phaseStart;
         _phase = _style == TransitionStyle.DipToBlack && _curtain?.Black < 1f ? Phase.FadingToBlack : Phase.Waiting;
         _timer.Start();
     }
@@ -218,7 +223,9 @@ internal sealed class TransitionController : IDisposable
         _style = TransitionStyle.Dissolve;
         _duration = milliseconds;
         _readyAt = null;
+        _transitionCompleted = false;
         _phaseStart = DateTime.UtcNow;
+        _switchStarted = _phaseStart;
         _goLiveStarted = DateTime.UtcNow;
         _phase = Phase.Waiting;
         _timer.Start();
@@ -256,19 +263,29 @@ internal sealed class TransitionController : IDisposable
                 if (timedOut && _style == TransitionStyle.Dissolve) curtain.Black = 1; // no picture: go to black, then reveal
                 if ((_readyAt is { } at && DateTime.UtcNow - at >= Settle) || timedOut)
                 {
+                    // DEV-02 item 4: the wait for the new item's first picture, recorded on its own —
+                    // never folded into show_open_timing's start=/open=/strip=/show= stages.
+                    OfficeSessionManager.Shared.Log.LogEvent("show_first_frame_wait", _target?.SourcePath ?? "",
+                        detail: $"wait={(long)(DateTime.UtcNow - _switchStarted).TotalMilliseconds}ms timeout={timedOut.ToString().ToLowerInvariant()}");
                     _phase = Phase.Revealing;
                     _phaseStart = DateTime.UtcNow;
                 }
                 break;
             case Phase.Revealing:
                 curtain.Opacity = Math.Max(0, 1 - t);
-                if (t >= 1) Finish();
+                if (t >= 1) { _transitionCompleted = true; Finish(); }
                 break;
         }
     }
 
     private void Finish()
     {
+        // DEV-02 item 4: the whole inter-item transition wait (switch to reveal complete), recorded
+        // on its own — never folded into show_open_timing. Abandoned transitions log nothing.
+        if (_transitionCompleted && _target != null)
+            OfficeSessionManager.Shared.Log.LogEvent("item_transition_wait", _target.SourcePath,
+                detail: $"total={(long)(DateTime.UtcNow - _switchStarted).TotalMilliseconds}ms style={_style} reveal={_duration}ms");
+        _transitionCompleted = false;
         _goLiveStarted = null;
         _timer.Stop();
         _phase = Phase.Idle;

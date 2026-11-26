@@ -133,7 +133,7 @@ public sealed partial class FilesPanel : UserControl
     /// instead of a modal MessageBox (审查 L-03: a result the operator does not have to decide
     /// anything about must not steal focus mid-show); when it is not wired, callers fall back to
     /// the MessageBox they used before — see <c>ShowSuccessNotice</c>.</summary>
-    public Func<string, ToastSeverity, ToastAction[], ToastNotification>? ShowToast { get; set; }
+    public Func<string, ToastSeverity, ToastAction[], ToastNotification?>? ShowToast { get; set; }
 
     /// <summary>Raised when the user double-clicks a file to play it standalone (no activity
     /// context — see <c>PlaybackEngine.RequestPlay(MediaFile)</c>'s own doc comment on what that

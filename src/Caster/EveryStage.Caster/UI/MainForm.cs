@@ -40,8 +40,6 @@ public sealed partial class MainForm : GradientForm
     private readonly ThemedSurface _sidebar = new() { Kind = SurfaceKind.Sidebar };
     private readonly ThemedLabel _sidebarTitle;
     private readonly ListBox _terminalListBox;
-    private readonly ActionButton _diagnosticsButton;
-    private readonly ActionButton _themeButton;
     private readonly ThemedSurface _content = new();
     private readonly EmptyView _emptyView = new();
     private readonly StandbyView _standbyView = new();
@@ -88,7 +86,8 @@ public sealed partial class MainForm : GradientForm
         _identity = identity;
         _pairedTerminals = pairedTerminals;
         _settings = CasterSettings.Load();
-        ModernUi.SetTheme(_settings.Theme);
+        // DEV-13: Tech dark is the only look — the saved theme preference is inert.
+        ModernUi.SetTheme(CasterTheme.Dark);
 
         Text = "EveryStage 投屏器";
         ClientSize = new Size(800, 520);
@@ -117,22 +116,9 @@ public sealed partial class MainForm : GradientForm
             .SetValue(_terminalListBox, true);
         _terminalListBox.DrawItem += DrawTerminalRow;
         _terminalListBox.SelectedIndexChanged += (_, _) => { if (!_refreshingList) OnTerminalSelected(); };
-        _diagnosticsButton = new ActionButton { Text = "诊断", Kind = ButtonKind.Ghost, Glyph = ButtonGlyph.Gear, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(ModernUi.UiFont, 9.5F) };
-        _diagnosticsButton.Click += (_, _) =>
-        {
-            // OP-36: diagnostics must not silently abandon a pairing wait behind its page —
-            // entry is blocked until the pairing resolves or is cancelled.
-            if (_pairingWaiting)
-            {
-                MessageBox.Show(this, "正在等终端机确认配对。先完成配对或点「取消」，再打开诊断。", "配对进行中", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
-            }
-            ShowView(_diagnosticsView!);
-        };
-        _themeButton = new ActionButton { Kind = ButtonKind.Ghost, Glyph = ButtonGlyph.Theme, TextAlign = ContentAlignment.MiddleLeft, Font = new Font(ModernUi.UiFont, 9.5F) };
-        _themeButton.Click += (_, _) => CycleTheme();
-        UpdateThemeButton();
-        _sidebar.Controls.AddRange(new Control[] { _sidebarTitle, _terminalListBox, _diagnosticsButton, _themeButton });
+        // DEV-13: the sidebar holds only the terminal list now; diagnostics lives on the
+        // problems page (ProblemView), and the theme switch is gone (Tech dark only).
+        _sidebar.Controls.AddRange(new Control[] { _sidebarTitle, _terminalListBox });
         _sidebar.Layout += (_, _) => LayoutSidebar();
         _sidebar.Paint += (_, e) =>
         {
@@ -147,6 +133,17 @@ public sealed partial class MainForm : GradientForm
         _standbyView.AudioChanged += include => { _settings.IncludeAudio = include; SaveSettingsOrWarn(); };
         _pairingView.CancelClicked += CancelPairing;
         _problemView.BackClicked += ShowSelectedTerminal;
+        // DEV-13: the problems page is the diagnostics path now that the sidebar button is gone.
+        // The pairing-wait guard moves with it (OP-36).
+        _problemView.DiagnosticsClicked += () =>
+        {
+            if (_pairingWaiting)
+            {
+                MessageBox.Show(this, "正在等终端机确认配对。先完成配对或点「取消」，再打开诊断。", "配对进行中", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            ShowView(_diagnosticsView!);
+        };
         _problemView.RetryClicked += () =>
         {
             // OP-35: a retry re-runs the start, which silently returns when the terminal is
@@ -219,7 +216,6 @@ public sealed partial class MainForm : GradientForm
         // Displays plugged in or removed while this window waits: DXGI output indices are positional, so
         // a stale list could make the chosen entry capture a different physical screen (audit A-13).
         Microsoft.Win32.SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
-        Microsoft.Win32.SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
         _listRefreshTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _listRefreshTimer.Tick += (_, _) => RefreshTerminalList();
@@ -271,10 +267,7 @@ public sealed partial class MainForm : GradientForm
         int s(int v) => LogicalToDeviceUnits(v);
         int w = _sidebar.ClientSize.Width - s(1);
         _sidebarTitle.Bounds = new Rectangle(s(20), s(10), w - s(32), s(22));
-        int bottom = _sidebar.ClientSize.Height - s(12);
-        _themeButton.Bounds = new Rectangle(s(12), bottom - s(34), w - s(24), s(34));
-        _diagnosticsButton.Bounds = new Rectangle(s(12), _themeButton.Top - s(4) - s(34), w - s(24), s(34));
-        _terminalListBox.Bounds = new Rectangle(s(12), s(36), w - s(24), Math.Max(s(40), _diagnosticsButton.Top - s(10) - s(36)));
+        _terminalListBox.Bounds = new Rectangle(s(12), s(36), w - s(24), Math.Max(s(40), _sidebar.ClientSize.Height - s(12) - s(36)));
     }
 
     private void ShowView(CasterView view)
@@ -338,41 +331,8 @@ public sealed partial class MainForm : GradientForm
         MessageBox.Show(this, "偏好未能保存，下次启动将恢复旧值。", "保存偏好", MessageBoxButtons.OK, MessageBoxIcon.Warning);
     }
 
-    private void CycleTheme()
-    {
-        _settings.Theme = _settings.Theme switch
-        {
-            CasterTheme.System => CasterTheme.Light,
-            CasterTheme.Light => CasterTheme.Dark,
-            _ => CasterTheme.System,
-        };
-        SaveSettingsOrWarn();
-        ModernUi.SetTheme(_settings.Theme);
-        UpdateThemeButton();
-        ApplyThemeEverywhere();
-    }
-
-    private void UpdateThemeButton()
-    {
-        _themeButton.Text = $"主题：{ModernUi.ThemeName(_settings.Theme)}";
-        _themeButton.AccessibleName = $"切换主题，当前{ModernUi.ThemeName(_settings.Theme)}";
-    }
-
-    private void OnUserPreferenceChanged(object? sender, Microsoft.Win32.UserPreferenceChangedEventArgs e)
-    {
-        if (_settings.Theme != CasterTheme.System || IsDisposed || !IsHandleCreated) return;
-        try
-        {
-            BeginInvoke(new Action(() =>
-            {
-                if (IsDisposed) return;
-                var before = ModernUi.Palette;
-                ModernUi.SetTheme(CasterTheme.System);
-                if (!ReferenceEquals(before, ModernUi.Palette)) ApplyThemeEverywhere();
-            }));
-        }
-        catch (InvalidOperationException) { } // handle destroyed meanwhile (closing)
-    }
+    // DEV-13: no theme cycling — Tech dark is the only look, and the saved theme preference is
+    // inert. The UserPreferenceChanged subscription is gone with it.
 
     private void ApplyThemeEverywhere()
     {
@@ -399,7 +359,6 @@ public sealed partial class MainForm : GradientForm
             // a late TerminalListChanged from BeginInvoke-ing onto a form mid-teardown.
             _discoveryClient.TerminalListChanged -= OnTerminalListChanged;
             Microsoft.Win32.SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged; // static events: would keep this form alive
-            Microsoft.Win32.SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             _pairingCts?.Cancel();
             _listRefreshTimer.Dispose();
             _captureStatsTimer.Dispose();

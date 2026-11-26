@@ -163,7 +163,7 @@ public sealed partial class MainForm
         text.AppendLine($"生成时间：{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         text.AppendLine($"程序版本：{version}");
         text.AppendLine($"系统：{RuntimeInformation.OSDescription}（{RuntimeInformation.OSArchitecture}）");
-        text.AppendLine($"主题：{ModernUi.ThemeName(_settings.Theme)} · 投送声音：{(_settings.IncludeAudio ? "是" : "否")}");
+        text.AppendLine($"主题：{ModernUi.ThemeName(ModernUi.Theme)} · 投送声音：{(_settings.IncludeAudio ? "是" : "否")}");
         text.AppendLine();
 
         text.AppendLine("显示器：");

@@ -841,8 +841,14 @@ internal static class PreviewProgramTests
                 lastReplacementNewDevice = info.DeviceName;
                 lastReplacementCurrentDevice = currentDeviceName;
                 lastReplacementCurrentOnProgram = currentOnProgram;
-                return replacementDecisions.Dequeue();
+                // DEV-06: the decision delegate is async now (the product answers on a non-modal
+                // notice); the test answers synchronously, so the task is already complete and no
+                // expectation below changes.
+                return Task.FromResult(replacementDecisions.Dequeue());
             });
+        // DEV-06: ConnectAsync runs to completion inline here — the injected decision above
+        // answers synchronously, so the blocking wait never blocks. Production awaits it.
+        void ConnectSync(DiscoveryService.CastStartInfo info) => controller!.ConnectAsync(info).GetAwaiter().GetResult();
         void DropDeviceForLocalTake() => controller?.DropFromProgram(discardRestorePoint: true);
         void DropDeviceForIdle(OutputState state)
         {
@@ -864,7 +870,7 @@ internal static class PreviewProgramTests
                 Require(ready && !pending && error == null,
                     $"Switch-off device request should still enter preview: ready={ready}, pending={pending}, error={error}");
             });
-            controller.Connect(switchOff);
+            ConnectSync(switchOff);
             Require(controller.HasReceiver && currentStream != null && currentStream.AudioMuted,
                 "Switch-off device request should create a muted preview receiver.");
             controller.StopForDevice(switchOffId);
@@ -880,7 +886,7 @@ internal static class PreviewProgramTests
             {
                 Require(ready && !pending && error == null, $"First device was not accepted: ready={ready}, pending={pending}, error={error}");
             });
-            controller.Connect(first);
+            ConnectSync(first);
             Require(controller.HasReceiver && currentStream != null && currentStream.StartCount == 1, "Device did not connect to the preview stream.");
             Require(currentStream!.AudioMuted, "Preview stream should start muted.");
             controller.OnDefaultAudioOutputChanged();
@@ -928,7 +934,7 @@ internal static class PreviewProgramTests
             var sameDeviceResponses = new List<(bool Ready, string? Error, bool Pending)>();
             var sameDeviceReconnect = CastInfo(first.DeviceId, "会议室笔记本", (ready, error, pending) =>
                 sameDeviceResponses.Add((ready, error, pending)));
-            controller.Connect(sameDeviceReconnect);
+            ConnectSync(sameDeviceReconnect);
             Require(replacementPrompts == promptsBeforeSameDevice, "Same-device reconnect should not ask for second-device confirmation.");
             Require(sameDeviceResponses.Count == 1 && sameDeviceResponses[0].Ready && !sameDeviceResponses[0].Pending && sameDeviceResponses[0].Error == null,
                 "Same-device reconnect did not complete immediately.");
@@ -945,7 +951,7 @@ internal static class PreviewProgramTests
             replacementDecisions.Enqueue(false);
             var rejected = CastInfo(Guid.NewGuid(), "拒绝的设备", (ready, error, pending) =>
                 rejectedResponses.Add((ready, error, pending)));
-            controller.Connect(rejected);
+            ConnectSync(rejected);
             Require(replacementPrompts == 1 && lastReplacementNewDevice == "拒绝的设备"
                     && lastReplacementCurrentDevice == "会议室笔记本" && !lastReplacementCurrentOnProgram,
                 "Second-device rejection did not show the expected preview-state confirmation.");
@@ -964,7 +970,7 @@ internal static class PreviewProgramTests
             replacementDecisions.Enqueue(true);
             var accepted = CastInfo(Guid.NewGuid(), "访客电脑", (ready, error, pending) =>
                 acceptedResponses.Add((ready, error, pending)));
-            controller.Connect(accepted);
+            ConnectSync(accepted);
             Require(replacementPrompts == promptsBeforeAccept + 1 && lastReplacementNewDevice == "访客电脑"
                     && lastReplacementCurrentDevice == "会议室笔记本" && lastReplacementCurrentOnProgram,
                 "Second-device acceptance did not show the expected on-Program confirmation.");
@@ -1003,7 +1009,7 @@ internal static class PreviewProgramTests
             {
                 Require(ready && !pending && error == null, $"Timeout device was not accepted: ready={ready}, pending={pending}, error={error}");
             });
-            controller.Connect(timeoutDevice);
+            ConnectSync(timeoutDevice);
             controller.TakeToProgram();
             currentStream!.LastPacketReceivedAt = DateTime.UtcNow - TimeSpan.FromSeconds(30);
             controller.CheckLiveness();
@@ -1015,7 +1021,7 @@ internal static class PreviewProgramTests
             {
                 Require(ready && !pending && error == null, $"Failed device was not accepted: ready={ready}, pending={pending}, error={error}");
             });
-            controller.Connect(failedDevice);
+            ConnectSync(failedDevice);
             controller.TakeToProgram();
             currentStream!.PresentLoopFailed = true;
             controller.CheckDecodeHealth();
@@ -1029,7 +1035,7 @@ internal static class PreviewProgramTests
             {
                 Require(ready && !pending && error == null, $"Second device was not accepted: ready={ready}, pending={pending}, error={error}");
             });
-            controller.Connect(second);
+            ConnectSync(second);
             Require(currentStream != null && currentStream.AudioMuted, "Second preview stream should start muted.");
             controller.TakeToProgram();
             Require(machine.Source == ProgramSource.DeviceCast, "Idle restore case did not put device on Program.");

@@ -21,6 +21,13 @@ internal sealed class DocumentControlBar : Panel
 {
     private sealed record Item(Control Control, string Text, Func<bool> Enabled, Func<bool>? Checked, Action? Run);
 
+    /// <summary>Reload decisions (DEV-06): the notice text and the action labels; returns the chosen
+    /// action's index, or null when dismissed without choosing (cancel). Unset falls back to the
+    /// previous modal dialogs (standalone/test use).</summary>
+    public Func<string, string[], Task<int?>>? ConfirmAsync { get; set; }
+
+    private bool _reloadDecisionPending;
+
     private readonly DocumentProgramSync _sync;
     private readonly ToolTip _toolTip;
     private readonly int _buttonHeight;
@@ -309,20 +316,45 @@ internal sealed class DocumentControlBar : Panel
 
     private async void ReloadPresentation()
     {
-        if (SlideShow is not { } show) return;
-        bool dirty = await show.EditorIsDirtyAsync();
-        bool save = false;
-        if (dirty)
+        // DEV-06: one pending reload decision at a time — a second click while the notice is up
+        // is ignored instead of stacking a second decision.
+        if (SlideShow is not { } show || _reloadDecisionPending) return;
+        _reloadDecisionPending = true;
+        try
         {
-            var answer = MessageBox.Show(FindForm(), "演示文稿有未保存的修改，重新载入前是否保存？\n（重新载入后大屏将显示放映画面）",
-                "重新载入放映", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
-            if (answer == DialogResult.Cancel) return;
-            save = answer == DialogResult.Yes;
+            bool dirty = await show.EditorIsDirtyAsync();
+            bool save = false;
+            if (dirty)
+            {
+                int? choice = await AskReloadChoiceAsync(
+                    "演示文稿有未保存的修改，重新载入前是否保存？\n（重新载入后大屏将显示放映画面）",
+                    ["保存", "丢弃"], MessageBoxButtons.YesNoCancel);
+                if (choice == null) return; // dismissed: lose nothing, switch nothing
+                save = choice == 0;
+            }
+            else if (_sync.ProgramShowsSameDocument)
+            {
+                int? choice = await AskReloadChoiceAsync("重新载入后大屏将显示放映画面，是否继续？",
+                    ["继续", "取消"], MessageBoxButtons.OKCancel);
+                if (choice != 0) return;
+            }
+            RunAsync(Target!.ReloadPresentationAsync(save));
         }
-        else if (_sync.ProgramShowsSameDocument && MessageBox.Show(FindForm(), "重新载入后大屏将显示放映画面，是否继续？", "重新载入放映",
-                     MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK)
-            return;
-        RunAsync(Target!.ReloadPresentationAsync(save));
+        finally { _reloadDecisionPending = false; }
+    }
+
+    /// <summary>Asks the reload decision on the non-modal notice surface when wired (DEV-06);
+    /// otherwise the previous modal dialogs. Maps the dialog answer onto the option index.</summary>
+    private async Task<int?> AskReloadChoiceAsync(string message, string[] options, MessageBoxButtons fallbackButtons)
+    {
+        if (ConfirmAsync != null) return await ConfirmAsync(message, options).ConfigureAwait(true);
+        var answer = MessageBox.Show(FindForm(), message, "重新载入放映", fallbackButtons, MessageBoxIcon.Question);
+        return answer switch
+        {
+            DialogResult.Yes or DialogResult.OK => 0,
+            DialogResult.No => 1,
+            _ => null,
+        };
     }
 
     // ── Layout with overflow ─────────────────────────────────────────────────────────────────────

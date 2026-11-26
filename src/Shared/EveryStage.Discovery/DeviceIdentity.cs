@@ -44,6 +44,13 @@ public sealed class DeviceIdentity
     {
         string path = pathOverride ?? SecureDataPaths.Resolve($"{fileNameStem}-identity.json");
 
+        // DEV-07: the secure copy could not be established (migration failed, or an untrusted
+        // owner): use a throwaway identity for this run only and never persist it — minting and
+        // writing a fresh identity to the secure target now would orphan the real identity still
+        // sitting in the legacy file. Save() refuses via _loadDegraded, as for a locked file.
+        if (SecureDataPaths.MigrationFailed($"{fileNameStem}-identity.json"))
+            return new DeviceIdentity { DeviceId = Guid.NewGuid(), DeviceName = Environment.MachineName, _persistedPath = path, _loadDegraded = true };
+
         if (File.Exists(path))
         {
             try

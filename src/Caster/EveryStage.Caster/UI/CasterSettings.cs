@@ -4,11 +4,13 @@ namespace EveryStage.Caster.UI;
 
 /// <summary>The Caster's two personal preferences: the colour theme and whether casts carry the
 /// computer's sound. Per Windows user (%LOCALAPPDATA%\EveryStage\caster-settings.json); a missing or
-/// unreadable file simply means the defaults (follow Windows, sound on).</summary>
+/// unreadable file simply means the defaults (Tech dark only — the saved theme is inert since
+/// DEV-13; sound off — DEV-14: a fresh install never sends computer sound unless the operator
+/// turns it on; a saved choice is kept).</summary>
 internal sealed class CasterSettings
 {
     public CasterTheme Theme { get; set; } = CasterTheme.System;
-    public bool IncludeAudio { get; set; } = true;
+    public bool IncludeAudio { get; set; } = false;
 
     private static readonly string FilePath = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EveryStage", "caster-settings.json");

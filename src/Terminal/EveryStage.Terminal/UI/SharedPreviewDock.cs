@@ -89,6 +89,15 @@ internal sealed class SharedPreviewDock : Panel
     private bool _deviceConnected;
     private bool _deviceOnProgram;
     private DocumentControlBar? _documentBar;
+    private Func<string, string[], Task<int?>>? _confirmAsync;
+
+    /// <summary>Reload decisions (DEV-06): forwarded to the document bar when it is bound — a
+    /// non-modal notice instead of a modal dialog. See <see cref="DocumentControlBar.ConfirmAsync"/>.</summary>
+    public Func<string, string[], Task<int?>>? ConfirmAsync
+    {
+        get => _confirmAsync;
+        set { _confirmAsync = value; if (_documentBar != null) _documentBar.ConfirmAsync = value; }
+    }
     private DocumentProgramSync? _documentSync;
     // Which window the document bar sits under (0 = top, 1 = bottom), and which engine its
     // DocumentChanged subscription is on — both follow the operator's window (see RefreshDocumentBar).
@@ -132,6 +141,10 @@ internal sealed class SharedPreviewDock : Panel
     /// <summary>"停止输出": take whatever is on the extended display off air.</summary>
     public event Action? StopProgramRequested;
 
+    /// <summary>DEV-11: the presenter window's Space — play/pause exactly as the main window.
+    /// The host wires it to the same TogglePlayPause the PauseProgram hotkey uses.</summary>
+    public event Action? TogglePauseRequested;
+
     /// <summary>「收起 ›」: MainWindow hides the column and gives the page the full width.</summary>
     public event Action? CollapseRequested;
     public event Action? DeviceTakeRequested;
@@ -164,7 +177,7 @@ internal sealed class SharedPreviewDock : Panel
         _presenterButton = TextButton("演讲者视图", "打开演讲者视图（需有正在放映的演示文稿）");
         _presenterButton.Font = new Font(ModernUi.UiFont, 8.5F);
         _presenterButton.AccessibleName = "打开演讲者视图";
-        _presenterButton.Click += (_, _) => OpenPresenterView();
+        _presenterButton.Click += (_, _) => OpenPresenterView(userInitiated: true);
         _collapseButton = TextButton("收起 ›", "收起监看栏，文件区占满整个宽度");
         _collapseButton.Font = new Font(ModernUi.UiFont, 8.5F);
         _collapseButton.Click += (_, _) => CollapseRequested?.Invoke();
@@ -189,7 +202,7 @@ internal sealed class SharedPreviewDock : Panel
             Math.Max(1, _deviceCard.VideoHost.ClientSize.Width), Math.Max(1, _deviceCard.VideoHost.ClientSize.Height));
 
         var statusMenu = new ContextMenuStrip();
-        var presenterItem = statusMenu.Items.Add("打开演讲者视图", null, (_, _) => OpenPresenterView());
+        var presenterItem = statusMenu.Items.Add("打开演讲者视图", null, (_, _) => OpenPresenterView(userInitiated: true));
         statusMenu.Opening += (_, _) => presenterItem.Enabled = CurrentShow != null;
         _status.ContextMenuStrip = statusMenu;
 
@@ -493,6 +506,7 @@ internal sealed class SharedPreviewDock : Panel
     {
         _documentSync = sync;
         _documentBar = new DocumentControlBar(sync, _toolTip, ButtonHeight) { Visible = false };
+        _documentBar.ConfirmAsync = _confirmAsync;
         _documentBar.StopProgramRequested += () => StopProgramRequested?.Invoke();
         _documentBar.Changed += RefreshNow;
         Controls.Add(_documentBar);
@@ -537,11 +551,13 @@ internal sealed class SharedPreviewDock : Panel
         _program?.DocumentMode == DocumentPlaybackMode.NativeShow ? _program.OfficeSession as EveryStage.Terminal.Documents.SlideShowSession : null;
 
     /// <summary>演讲者视图: a normal, resizable and maximizable window (like a presentation program's own
-    /// presenter view) for the show running on the big screen.</summary>
-    private void OpenPresenterView()
+    /// presenter view) for the show running on the big screen. DEV-11: only a user-initiated open
+    /// brings the window forward — an automatic open (a new show appearing) never steals focus.</summary>
+    private void OpenPresenterView(bool userInitiated = false)
     {
         if (_presenterWindow is { IsDisposed: false })
         {
+            if (!userInitiated) return;
             if (_presenterWindow.WindowState == FormWindowState.Minimized) _presenterWindow.WindowState = FormWindowState.Normal;
             _presenterWindow.Activate();
             return;
@@ -549,13 +565,16 @@ internal sealed class SharedPreviewDock : Panel
         var owner = FindForm();
         if (owner == null || !owner.Visible) return;
         _presenterWindow = new PresenterWindow(() => CurrentShow, () => ProgramScreenBounds?.Invoke(), () => _program,
-            message => (FindForm() as MainWindow)?.ShowToast(message, ToastSeverity.Warning));
+            message => (FindForm() as MainWindow)?.ShowToast(message, ToastSeverity.Warning),
+            stopRequested: () => StopProgramRequested?.Invoke(),
+            togglePauseRequested: () => TogglePauseRequested?.Invoke());
         // Open on the operator's screen, never on top of the big screen.
         var work = Screen.FromControl(owner).WorkingArea;
         _presenterWindow.StartPosition = FormStartPosition.Manual;
         _presenterWindow.Size = new Size(Math.Min(_presenterWindow.Width, work.Width), Math.Min(_presenterWindow.Height, work.Height));
         _presenterWindow.Location = new Point(work.Left + (work.Width - _presenterWindow.Width) / 2, work.Top + (work.Height - _presenterWindow.Height) / 2);
         _presenterWindow.Show(owner);
+        if (userInitiated) _presenterWindow.Activate();
     }
 
     /// <summary>Extra stop condition supplied by the host (background music playing): the dock's own

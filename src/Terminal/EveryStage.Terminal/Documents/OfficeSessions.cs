@@ -151,37 +151,50 @@ public abstract class OfficeSession
     /// <summary>The shared open: the first channel starts it, the other awaits the same task (UI thread).</summary>
     public Task EnsureOpenAsync(DocumentPlaybackSettings settings) => OpenTask ??= OpenAsync(settings);
 
+    /// <summary>Open progress for the operator-facing notice (DEV-02): the engine sets this while it
+    /// awaits the open, and the open chain reports "正在打开…" / "正在原生播放…" (null when done).
+    /// Invoked from the open chain's own thread — the engine marshals it to the UI thread.</summary>
+    public Action<string?>? OpenProgress { get; set; }
+
+    private protected void ReportOpenProgress(string? notice) => OpenProgress?.Invoke(notice);
+
     public Task? OpenTask { get; private set; }
 
     public async Task OpenAsync(DocumentPlaybackSettings settings)
     {
         try
         {
+            ReportOpenProgress("正在打开…");
             if (OfficeApplicationController.IsPasswordProtected(SourcePath))
                 throw new OfficeOperationException(OfficeStage.OpenFile, SuiteName, null, "文档受密码保护，无法在 EveryStage 中打开。");
-            // One dispatch, as before; the two stages are timed separately inside it so the
-            // summary event can tell a slow application start from a slow file open.
-            await Dispatcher.InvokeAsync(() =>
-            {
-                var stage = System.Diagnostics.Stopwatch.StartNew();
-                Controller.Start();
-                _appStartMs = stage.ElapsedMilliseconds;
-                stage.Restart();
-                OpenCore(settings);
-                _openFileMs = stage.ElapsedMilliseconds;
-                return true;
-            }, OpenTimeout).ConfigureAwait(false);
+            // DEV-02: two separate bounded dispatches — a hung application start must not be
+            // charged to the file-open stage (and the other way round): each timeout fails only
+            // its own stage, with that stage's name in the message. Both stay bounded, never infinite.
+            var stage = System.Diagnostics.Stopwatch.StartNew();
+            try { await Dispatcher.InvokeAsync(() => { Controller.Start(); return true; }, OpenTimeout).ConfigureAwait(false); }
+            catch (TimeoutException ex) { throw new OfficeOperationException(OfficeStage.StartApplication, SuiteName, Version, ex.Message, ex); }
+            _appStartMs = stage.ElapsedMilliseconds;
+            stage.Restart();
+            try { await Dispatcher.InvokeAsync(() => { OpenCore(settings); return true; }, OpenTimeout).ConfigureAwait(false); }
+            catch (TimeoutException ex) { throw new OfficeOperationException(OfficeStage.OpenFile, SuiteName, Version, ex.Message, ex); }
+            _openFileMs = stage.ElapsedMilliseconds;
             LogEvent("opened");
             await AfterOpenAsync(settings).ConfigureAwait(false);
+            ReportOpenProgress(null);
         }
         catch (Exception ex)
         {
+            ReportOpenProgress(null);
+            // DEV-02: a stage timeout is wrapped with its own stage above but still counts as a
+            // timeout for the kill decision below — only terminating the hung process ends a dialog
+            // blocked inside WPS/Office.
+            bool timedOut = ex is TimeoutException || ex is OfficeOperationException { InnerException: TimeoutException };
             Fail(ex is TimeoutException ? new OfficeOperationException(OfficeStage.OpenFile, SuiteName, Version, ex.Message, ex) : ex);
             StopCapture(keepLastFrame: false);
             _health.Change(Timeout.Infinite, Timeout.Infinite);
             // Leave no application behind: a hung call (a dialog inside WPS/Office) can only be ended by
             // terminating the process this session started; otherwise quit it normally.
-            if (ex is TimeoutException) Controller.KillStartedProcesses();
+            if (timedOut) Controller.KillStartedProcesses();
             else
             {
                 try { await Dispatcher.InvokeAsync(() => { Controller.Quit(); return true; }, TimeSpan.FromSeconds(20)).ConfigureAwait(false); }
@@ -393,27 +406,33 @@ public sealed class SlideShowSession : OfficeSession
         _bounds = bounds;
         var policy = TransitionPolicy;
         long stripMs = 0, showMs = 0;
-        var window = await Dispatcher.InvokeAsync(() =>
+        ReportOpenProgress("正在原生播放…");
+        IntPtr window;
+        if (policy.Unify && _strippedPolicy != policy)
         {
-            if (policy.Unify && _strippedPolicy != policy)
+            // The strip mutates the open document, so a session whose document was already
+            // stripped with this policy skips the per-slide COM walk (PR #14: strip once per session).
+            // DEV-02: the strip gets its own bounded dispatch — a hung strip fails only this
+            // stage (the show then falls back to static slides) instead of eating the show's
+            // budget too. Any other strip failure still degrades to "no strip", as before.
+            var stage = System.Diagnostics.Stopwatch.StartNew();
+            try
             {
-                // Change 2: the strip mutates the open document, so a session whose document was
-                // already stripped with this policy skips the per-slide COM walk.
-                var stage = System.Diagnostics.Stopwatch.StartNew();
-                try
-                {
-                    SlidesWithOwnTransition = Controller.StripSlideTransitions(policy.KeepMorph, policy.KeepAutoAdvance);
-                    _strippedPolicy = policy;
-                }
-                catch (Exception) { SlidesWithOwnTransition = new HashSet<int>(); }
-                stripMs = stage.ElapsedMilliseconds;
+                SlidesWithOwnTransition = await Dispatcher.InvokeAsync(() => Controller.StripSlideTransitions(policy.KeepMorph, policy.KeepAutoAdvance), CallTimeout).ConfigureAwait(false);
+                _strippedPolicy = policy;
             }
-            else if (!policy.Unify) SlidesWithOwnTransition = Enumerable.Range(1, Math.Max(1, SlideCount)).ToHashSet();
-            var showStage = System.Diagnostics.Stopwatch.StartNew();
-            var started = Controller.StartSlideShow(slide, EndSlide, Loop, bounds);
-            showMs = showStage.ElapsedMilliseconds;
-            return started;
-        }, CallTimeout).ConfigureAwait(false);
+            catch (TimeoutException ex) { throw new OfficeOperationException(OfficeStage.StripTransitions, SuiteName, Version, ex.Message, ex); }
+            catch (Exception) { SlidesWithOwnTransition = new HashSet<int>(); }
+            stripMs = stage.ElapsedMilliseconds;
+        }
+        else if (!policy.Unify) SlidesWithOwnTransition = Enumerable.Range(1, Math.Max(1, SlideCount)).ToHashSet();
+        var showStage = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            window = await Dispatcher.InvokeAsync(() => Controller.StartSlideShow(slide, EndSlide, Loop, bounds), CallTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException ex) { throw new OfficeOperationException(OfficeStage.StartSlideShow, SuiteName, Version, ex.Message, ex); }
+        showMs = showStage.ElapsedMilliseconds;
         _showWindow = window;
         ShowRunning = true;
         StartCapture(window, null);
@@ -660,8 +679,10 @@ public sealed class OfficeSessionManager
     public DocumentLogger Log => _log;
 
     /// <summary>Asked (on the UI thread) when a session with unsaved edits closes: true = save,
-    /// false = discard. Unset (tests) discards.</summary>
-    public Func<OfficeSession, bool>? ConfirmSaveOnClose { get; set; }
+    /// false = discard, null = abort the close (DEV-06: the operator dismissed the decision without
+    /// choosing — the session stays open with its edits intact, and is asked about again later).
+    /// Unset (tests) discards. Never a modal: the answer arrives asynchronously.</summary>
+    public Func<OfficeSession, Task<bool?>>? ConfirmSaveOnClose { get; set; }
 
     public IReadOnlyList<OfficeSession> Sessions => _sessions;
 
@@ -803,8 +824,12 @@ public sealed class OfficeSessionManager
     public Task ReleaseAsync(OfficeSession session)
     {
         // A released session is no longer parked, whoever held the slot's reference: the slot only
-        // ever holds unreferenced sessions, so releasing one ends the park either way.
-        if (ReferenceEquals(session, _parked))
+        // ever holds unreferenced sessions, so releasing one ends the park either way. The park
+        // snapshot is kept so an aborted close (DEV-06: the operator dismissed the save decision)
+        // can put the park back exactly as it was.
+        bool wasParked = ReferenceEquals(session, _parked);
+        long parkedLength = _parkedLength, parkedTicks = _parkedLastWriteTicks;
+        if (wasParked)
         {
             _parked = null;
             _parkedLength = _parkedLastWriteTicks = -1;
@@ -812,7 +837,7 @@ public sealed class OfficeSessionManager
         if (--session.References > 0) return Task.CompletedTask;
         _sessions.Remove(session);
         if (session.Status == OfficeSessionStatus.Closed) return Task.CompletedTask;
-        var closing = CloseAsync(session);
+        var closing = CloseAsync(session, wasParked, parkedLength, parkedTicks);
         lock (_closing) _closing.Add(closing);
         _ = closing.ContinueWith(t => { lock (_closing) _closing.Remove(t); }, TaskScheduler.Default);
         return closing;
@@ -820,7 +845,7 @@ public sealed class OfficeSessionManager
 
     private readonly List<Task> _closing = new();
 
-    private async Task CloseAsync(OfficeSession session)
+    private async Task<bool> CloseAsync(OfficeSession session, bool wasParked, long parkedLength, long parkedTicks)
     {
         bool save = false;
         if (session.Status is not (OfficeSessionStatus.Failed or OfficeSessionStatus.Closed) && ConfirmSaveOnClose != null)
@@ -829,25 +854,56 @@ public sealed class OfficeSessionManager
             try { dirty = await session.IsDirtyAsync().ConfigureAwait(true); } catch (Exception) { }
             if (dirty)
             {
-                try { save = ConfirmSaveOnClose(session); } catch (Exception) { save = false; }
+                bool? answer;
+                try { answer = await ConfirmSaveOnClose(session).ConfigureAwait(true); }
+                catch (Exception) { answer = false; }
+                if (answer == null)
+                {
+                    // DEV-06: dismissed without choosing — abort the close. ReleaseAsync already
+                    // dropped the session from _sessions and its reference, so put both back: the
+                    // document stays open (in its editor window) with its edits intact, and a later
+                    // close — at exit, at the latest — asks again. Nothing is discarded, nothing
+                    // is switched away on the operator's behalf. A parked session goes back in the
+                    // park slot when nothing else took it meanwhile (a newer show parked while the
+                    // decision was pending keeps the slot); otherwise it stays a plain open session.
+                    if (!_sessions.Contains(session)) _sessions.Add(session);
+                    session.References = 1;
+                    if (wasParked && _parked == null && session is SlideShowSession parked)
+                    {
+                        _parked = parked;
+                        _parkedLength = parkedLength;
+                        _parkedLastWriteTicks = parkedTicks;
+                    }
+                    return false;
+                }
+                save = answer == true;
             }
         }
         await session.CloseAsync(save).ConfigureAwait(false);
         if (session is SlideShowSession show) show.DeleteImages();
+        return true;
     }
 
     /// <summary>Closes every session (including ones already closing) — application exit. Unsaved edits
-    /// are discarded only when no confirm callback is set.</summary>
-    public Task CloseAllAsync()
+    /// are discarded only when no confirm callback is set. A dismissed save decision (DEV-06) aborts
+    /// that session's close and returns it to <see cref="_sessions"/>, so the next round asks again
+    /// instead of the exit silently leaving the document open; rounds stop when nothing remains.</summary>
+    public async Task CloseAllAsync()
     {
-        foreach (var session in _sessions.ToList())
+        while (true)
         {
-            session.References = 1;
-            _ = ReleaseAsync(session);
+            var sessions = _sessions.ToList();
+            if (sessions.Count == 0) return;
+            foreach (var session in sessions)
+            {
+                session.References = 1;
+                _ = ReleaseAsync(session);
+            }
+            Task[] pending;
+            lock (_closing) pending = _closing.ToArray();
+            if (pending.Length == 0) return;
+            await Task.WhenAll(pending).ConfigureAwait(false);
         }
-        Task[] pending;
-        lock (_closing) pending = _closing.ToArray();
-        return Task.WhenAll(pending);
     }
 
     /// <summary>Waits on the UI thread (pumping messages, so save prompts still work) until every

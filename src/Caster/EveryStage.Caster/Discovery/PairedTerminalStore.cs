@@ -31,6 +31,10 @@ public sealed class PairedTerminalStore
     public PairedTerminalStore(string? storePathOverride = null)
     {
         _storePath = storePathOverride ?? EveryStage.Discovery.SecureDataPaths.Resolve("caster-paired-terminals.json");
+        // DEV-07: a failed secure migration leaves no readable copy in the secure folder — refuse
+        // saves (the existing _loadFailed guard) so nothing is ever written back to the legacy path.
+        // MainForm already shows the read-only alert for LoadFailed.
+        if (EveryStage.Discovery.SecureDataPaths.MigrationFailed("caster-paired-terminals.json")) _loadFailed = true;
         _terminals = Load();
     }
 

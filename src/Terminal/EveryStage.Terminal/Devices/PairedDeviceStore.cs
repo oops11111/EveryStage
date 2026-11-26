@@ -24,6 +24,10 @@ public sealed class PairedDeviceStore
     public PairedDeviceStore(string? storePathOverride = null)
     {
         _storePath = storePathOverride ?? EveryStage.Discovery.SecureDataPaths.Resolve("paired-devices.json");
+        // DEV-07: a failed secure migration leaves no readable copy in the secure folder — refuse
+        // saves (the existing _loadFailed guard) so nothing is ever written back to the legacy path.
+        // DevicesPanel already shows the read-only alert for LoadFailed.
+        if (EveryStage.Discovery.SecureDataPaths.MigrationFailed("paired-devices.json")) _loadFailed = true;
         _devices = Load();
     }
 

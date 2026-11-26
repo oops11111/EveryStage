@@ -119,7 +119,7 @@ public sealed partial class ActivitiesPanel : UserControl, IActivityRowHost
     /// SettingsPanel's). The delete flows in ActivitiesPanel.Scenarios.cs use it for the 10 s 撤销 offer
     /// after a scenario/activity is deleted. Null when not wired — deletions then behave exactly as
     /// before, just without the undo offer.</summary>
-    public Func<string, ToastSeverity, ToastAction[], ToastNotification>? ShowToast { get; set; }
+    public Func<string, ToastSeverity, ToastAction[], ToastNotification?>? ShowToast { get; set; }
 
     /// <summary>Run this item now: MainWindow puts it on the big screen (or in Preview without one).</summary>
     public event Action<Activity, int>? RunRequested;
