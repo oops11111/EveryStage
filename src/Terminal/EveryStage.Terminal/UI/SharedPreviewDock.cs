@@ -11,7 +11,7 @@ namespace EveryStage.Terminal.UI;
 /// 「监看」— the right-hand column beside every main page.
 ///
 /// Top row: the big screen's status, 「停止输出」 and 「收起」. Below it two identical monitor windows whose
-/// captions name their role and path (DEV-19/DEV-22: 大屏·PGM / 预览·PVW, plus 原生/静态/静态（已降级）).
+/// captions name their role and path (DEV-19/DEV-22: 播出窗·PGM / 预览窗·PVW, plus 原生/静态/静态（已降级）).
 /// Each window has its own preview engine and the same compact transport, and either plays
 /// its own content locally or follows the big screen: then it shows exactly what the extended display
 /// shows (<see cref="ProgramMirror"/>, red flashing border) and its transport drives the big screen.
@@ -920,7 +920,10 @@ internal sealed class SharedPreviewDock : Panel
             string name = _synced && source == ProgramSource.DeviceCast ? "设备来投"
                 : file == null ? "" : Path.GetFileName(file.SourcePath) + (engine?.CurrentDecodeLabel is { } decode ? " · " + decode : "");
             // DEV-19/DEV-22: the caption names the path the picture actually travels. The
-            // following window is "大屏·PGM" (red); the other window is "预览·PVW" (green).
+            // following window is "播出窗·PGM" (red); the other window is "预览窗·PVW" (green).
+            // The caption strip carries the role in solid colour (red wash while following,
+            // green wash while previewing) — no glass/blur: the surface is captured, and a
+            // DWM backdrop would be fragile here. High-contrast themes keep system colours.
             // The mode word names the real document path — 原生 / 静态 / 静态（已降级） — and
             // is never "原生" after a downgrade. No PGM label when the window is not
             // following a live LocalMedia program (no extended screen, device cast, output
@@ -933,20 +936,30 @@ internal sealed class SharedPreviewDock : Panel
             string loadingText = file?.Kind == MediaKind.Document && engine?.CurrentContentNote is { } note && note != ""
                 ? note : "加载中";
             string caption = _synced
-                ? (programLive ? (isProgram ? "● 大屏·PGM" : "● 大屏") + pathSuffix + " · " + name
+                ? (programLive ? (isProgram ? "● 播出窗·PGM" : "● 播出窗") + pathSuffix + " · " + name
                     + (failed ? "（播出失败）" : "") // OP-26: the follow caption names the failure
                     + (engine?.IsPaused == true ? " · 已暂停" : "") : "大屏未输出")
                 : state switch
                 {
-                    PlaybackChannelState.Loading => "预览·PVW" + pathSuffix + " · " + name + " · " + loadingText,
-                    PlaybackChannelState.Playing => "预览·PVW" + pathSuffix + " · " + name,
-                    PlaybackChannelState.Paused when engine!.IsCompleted => "预览·PVW" + pathSuffix + " · " + name + " · 播放完成",
-                    PlaybackChannelState.Paused => "预览·PVW" + pathSuffix + " · " + name + " · 已暂停",
-                    PlaybackChannelState.Failed => "预览·PVW" + pathSuffix + " · " + name + " · 播放失败",
+                    PlaybackChannelState.Loading => "预览窗·PVW" + pathSuffix + " · " + name + " · " + loadingText,
+                    PlaybackChannelState.Playing => "预览窗·PVW" + pathSuffix + " · " + name,
+                    PlaybackChannelState.Paused when engine!.IsCompleted => "预览窗·PVW" + pathSuffix + " · " + name + " · 播放完成",
+                    PlaybackChannelState.Paused => "预览窗·PVW" + pathSuffix + " · " + name + " · 已暂停",
+                    PlaybackChannelState.Failed => "预览窗·PVW" + pathSuffix + " · " + name + " · 播放失败",
                     _ => "空闲 · 把文件拖到这里，或单击文件播放",
                 };
             if (!_synced && engine?.Muted == true && state is PlaybackChannelState.Playing or PlaybackChannelState.Paused) caption += " · 静音（大屏输出中）";
-            SetTextRole(_caption, caption, _synced && programLive ? UiForegroundRole.Danger
+            bool hasContent = state is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed);
+            // Role tint on the caption strip: red wash while following Program live, green
+            // wash while previewing with content, plain otherwise (idle, failed, or following
+            // while the output is stopped). Text goes light on a wash so it stays readable.
+            bool following = _synced && programLive;
+            bool previewing = !_synced && hasContent && state != PlaybackChannelState.Failed;
+            var wash = palette.IsHighContrast || (!following && !previewing) ? Color.Transparent
+                : following ? ModernUi.Mix(palette.SurfaceRaised, palette.Danger, 0.30f)
+                : ModernUi.Mix(palette.SurfaceRaised, palette.Preview, 0.18f);
+            if (_caption.BackColor != wash) _caption.BackColor = wash;
+            SetTextRole(_caption, caption, following || previewing ? UiForegroundRole.Text
                 : state == PlaybackChannelState.Failed ? UiForegroundRole.Danger : file == null ? UiForegroundRole.Muted
                 : _synced ? UiForegroundRole.Text : UiForegroundRole.Success);
             // The full notice (downgrade reason, dialog pending, read-only…) rides the
@@ -957,7 +970,6 @@ internal sealed class SharedPreviewDock : Panel
 
             // Frame: red while following the big screen (the mirror flashes itself), accent for the active
             // local window, plain otherwise.
-            bool hasContent = state is not (PlaybackChannelState.Idle or PlaybackChannelState.Failed);
             var frameColor = _synced ? palette.ProgramBorder : active && hasContent ? palette.Accent : palette.Border;
             if (_frame.BackColor != frameColor) _frame.BackColor = frameColor;
 

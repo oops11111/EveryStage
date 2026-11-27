@@ -185,8 +185,8 @@ public sealed class SettingsPanel : UserControl
                     "把投屏键改为「单击」？\n之后在文件库或流程里单击一个文件就会直接投到大屏。演出中请小心误点。");
             else Commit(s => s.ClickTakesToAir = false, "投屏键");
         };
-        output.AddRow("投屏键", "用哪种点击把文件直接投到大屏：大屏待机时直接上屏，并在空闲的监看窗口里同步显示、控制；两个窗口都在用时用上面的窗口；" +
-            "只有一块屏时直接在窗口里播放。另一种点击（以及把文件拖到窗口上）只在监看窗口里播放。改为单击前会确认",
+        output.AddRow("投屏键", "用哪种点击把文件直接投到大屏：大屏待机时直接上屏，并在空闲的窗口里同步显示、控制；两个窗口都在用时用上面的窗口；" +
+            "只有一块屏时直接在窗口里播放。另一种点击（以及把文件拖到窗口上）只在预览窗里播放。改为单击前会确认",
             "即时生效", UiForegroundRole.Accent, _castClick);
         _goLiveFade = new NumericUpDown { Minimum = 0, Maximum = 2000, Increment = 100, Width = 70, Value = Math.Clamp(settings.GoLiveFadeMilliseconds, 0, 2000) };
         _goLiveFade.ValueChanged += (_, _) => Commit(s => s.GoLiveFadeMilliseconds = (int)_goLiveFade.Value, "上屏淡入");
