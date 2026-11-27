@@ -277,7 +277,7 @@ public sealed class MainWindow : GradientForm
             bool forceHere = Control.ModifierKeys.HasFlag(Keys.Control);
             if (_previewDock.ProgramWindow == window && !forceHere)
             {
-                _toastStack?.Show("跟随窗不动，已在另一监看窗口预览。", ToastSeverity.Info);
+                _toastStack?.Show("播出窗不动，已在预览窗预览。", ToastSeverity.Info);
                 PlayInWindow(dropped, 1 - window);
                 return;
             }
@@ -1032,7 +1032,7 @@ public sealed class MainWindow : GradientForm
         }
         if (programWindow is not { } back)
         {
-            _toastStack.Show("没有跟随大屏的窗口，换回的内容无处可放。", ToastSeverity.Warning);
+            _toastStack.Show("没有播出窗，换回的内容无处可放。", ToastSeverity.Warning);
             return;
         }
         _previewDock.UseForLocalPlayback(back);
